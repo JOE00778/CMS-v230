@@ -197,6 +197,13 @@ with tab_day:
     _ld = _last["sale_date"]
     _hdr = "前日データ" if get_lang() == "ja" else "前日数据"
     st.markdown(f"**{_hdr}** · {_ld.month}月{_ld.day}日")
+    if _prev is not None:
+        _pdt = _prev["sale_date"]
+        st.caption(
+            f"増減は前々日（{_pdt.month}月{_pdt.day}日）比"
+            if get_lang() == "ja"
+            else f"涨跌为环比前前日（{_pdt.month}月{_pdt.day}日）"
+        )
 
     def _delta(key, pct=False):
         if _prev is None:
