@@ -224,6 +224,7 @@ with tab_day:
     # x 軸 = 日付。月選択済みなので "N日" 形式で簡潔表示（chart 用に datetime 化）
     chart_src = daily.copy()
     chart_src["sale_date"] = pd.to_datetime(chart_src["sale_date"])
+    chart_src["margin_disp"] = chart_src["gross_margin"].apply(lambda x: f"{x:.2f}%")
     _x = alt.X("sale_date:T", title=None,
                axis=alt.Axis(format="%-d日", labelAngle=0, tickCount="day"))
     _date_tip = alt.Tooltip("sale_date:T", title=_col("sale_date"), format="%Y-%m-%d")
@@ -232,7 +233,8 @@ with tab_day:
     rev_lbl, gp_lbl = _col("revenue"), _col("gross_profit")
     _tip = [_date_tip,
             alt.Tooltip("revenue:Q", title=rev_lbl, format=",.0f"),
-            alt.Tooltip("gross_profit:Q", title=gp_lbl, format=",.0f")]
+            alt.Tooltip("gross_profit:Q", title=gp_lbl, format=",.0f"),
+            alt.Tooltip("margin_disp:N", title=_col("gross_margin"))]
     _nearest = alt.selection_point(nearest=True, on="pointerover",
                                    fields=["sale_date"], empty=False)
     _base = alt.Chart(chart_src).encode(x=_x)
