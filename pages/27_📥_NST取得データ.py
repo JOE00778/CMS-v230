@@ -41,6 +41,17 @@ def _query(sql: str, params: tuple = ()):
         return None, str(e)
 
 
+# カテゴリ / 頻度 の日本語ラベル（技術用語をプレーン表示に）
+_CAT_LABEL = {"basic": "📦 商品マスタ", "inventory": "🏬 在庫", "sales": "💰 売上"}
+_FREQ_LABEL = {"daily": "毎日", "monthly": "毎月"}
+
+
+def _job_title(category, frequency, run_time) -> str:
+    cat = _CAT_LABEL.get(category, category)
+    freq = _FREQ_LABEL.get(frequency, frequency)
+    return f"{cat}  ·  {freq} {str(run_time)[:5]} 自動取得"
+
+
 tab1, tab2, tab_sched, tab_manual, tab3 = st.tabs([
     t("📦 商品マスタ"),
     t("🏬 在庫 (JD-物流-千葉)"),
@@ -194,9 +205,10 @@ with tab_sched:
             new_vals = {}
             for _, r in sched_df.iterrows():
                 jk = r["job_key"]
-                st.markdown(f"**{jk}**  ·  {r['category']} / {r['frequency']} / domains={r['domains']}")
+                st.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
                 if r.get("description"):
                     st.caption("📋 " + str(r["description"]))
+                st.caption(f"🆔 ジョブID: {jk}　|　取得対象(domains): {r['domains']}")
                 c1, c2, c3, c4 = st.columns([1.2, 1.5, 2, 2])
                 en = c1.checkbox(t("有効"), value=bool(r["enabled"]), key=f"en_{jk}")
                 rt = c2.text_input(t("起動時刻 HH:MM"), value=str(r["run_time"])[:5], key=f"rt_{jk}")
@@ -234,8 +246,8 @@ with tab_manual:
     st.subheader(t("手動でデータ取得"))
     st.caption(t("「今すぐ取得」を押すと、常駐ディスパッチャが1分以内に daily_pull を起動します"))
     jobs_df, err = _query(
-        "SELECT job_key, domains, run_now, last_status, description "
-        "FROM nst.pull_schedule WHERE enabled ORDER BY job_key"
+        "SELECT job_key, category, frequency, run_time, domains, run_now, "
+        "last_status, description FROM nst.pull_schedule WHERE enabled ORDER BY job_key"
     )
     if err:
         st.error(t("接続エラー: ") + err)
@@ -244,11 +256,11 @@ with tab_manual:
     else:
         for _, r in jobs_df.iterrows():
             jk = r["job_key"]
-            c1, c2, c3 = st.columns([3, 2, 2])
-            c1.markdown(f"**{jk}**")
+            c1, c2, c3 = st.columns([3.5, 1.5, 2])
+            c1.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
             if r.get("description"):
                 c1.caption("📋 " + str(r["description"]))
-            c2.caption(f"{r['last_status'] or '-'}")
+            c2.caption(f"前回: {r['last_status'] or '-'}")
             if r["run_now"]:
                 c3.info(t("⏳ 実行待ち…"))
             elif c3.button(t("▶️ 今すぐ取得"), key=f"run_{jk}", type="primary"):
