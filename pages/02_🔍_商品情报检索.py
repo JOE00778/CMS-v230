@@ -1,16 +1,15 @@
-"""模块 #7 商品情报检索（legacy `search_item` 替代）。
+"""模块 #7 商品情报检索 · NST API データ（nst.item_master_raw）ベース.
 
-数据：多表 JOIN
-- inventory_snapshot（按 internal_id 聚合 SUM(qty)、MAX(handling/cost/maker)）
-- sales_line（按 item_code 聚合 SUM(qty/revenue)）
-- inventory_turnover（按 item_code 取 turnover_rate / avg_days_on_hand）
+2026-05-21 全面改写：旧 inventory_snapshot / sales_line / inventory_turnover
+（手動 Excel 時代の死表）→ NST API 直取得データへ。
 
-统一视图给出每个 SKU 的:
-- 基础信息：item_code / UPC / 商品名 / メーカー / ランク / 取扱区分
-- 库存：在庫合計 / 確保済 / バックオーダー / 在庫金額
-- 成本：std_cost / avg_cost
-- 销售：直近期间 销量 / 売上 / 毛利率
-- 周转：回転率 / 平均手持日数
+データ源:
+- nst.item_master_raw    商品マスタ（全輸出商品 · 表示名/メーカー/ランク/取扱区分/
+                          原価各種/カートン入数/発注ロット）
+- nst.inventory_snapshot 在庫（手持/利用可能/注文済）最新スナップショット
+- nst.sales_monthly      売上（全期間 累計 販売数量/総収益 を SKU 単位で集計）
+
+統一ビュー: SKU ごとに 基礎情報 + 在庫 + 原価 + 累計売上 を横断検索・CSV 出力。
 """
 from __future__ import annotations
 
@@ -18,9 +17,9 @@ import re
 
 import pandas as pd
 import streamlit as st
-from shared.i18n import t, lang_selector
 
 from shared.db import get_connection
+from shared.i18n import lang_selector, t, get_lang
 
 st.set_page_config(page_title=t("商品情报检索"), page_icon="🔍", layout="wide")
 from shared.auth import require_password
@@ -30,343 +29,267 @@ inject_theme()
 lang_selector()
 conn = get_connection()
 
-st.title(t("🔍 商品情报检索"))
-st.caption(
-    "库存 + 销售 + 周转率 多源 JOIN · 多维筛选 · CSV 导出 · "
-    "🔒 自动过滤为「輸出」部门商品"
-)
+_JA = get_lang() == "ja"
 
-inv_count = conn.execute("SELECT COUNT(*) AS c FROM inventory_snapshot").fetchone()["c"]
-if inv_count == 0:
-    st.warning(t("⚠️ `inventory_snapshot` 表为空。请到「⚙️ 数据导入与设置」上传库存数据 .xls。"))
+
+def _L(zh: str, ja: str) -> str:
+    return ja if _JA else zh
+
+
+st.title(t("🔍 商品情报检索"))
+st.caption(_L(
+    "NST 商品主档 + 库存快照 + 累计销售 整合检索 · 多维筛选 · CSV 导出（仅輸出事业商品）",
+    "NST 商品マスタ + 在庫スナップショット + 売上累計 を統合検索 · 多軸フィルタ · "
+    "CSV 出力（輸出事業の商品のみ）",
+))
+
+# 列見出し: (中文, 日本語) — UI 言語追従（page 04/05 と統一）
+_LBL = {
+    "item_code":          ("商品编码", "アイテム"),
+    "jan":                ("UPC编码", "UPCコード"),
+    "display_name":       ("显示名", "表示名"),
+    "maker":              ("厂商", "メーカー名"),
+    "item_rank":          ("商品等级", "商品ランク"),
+    "handling_cd":        ("经销状态", "取扱区分"),
+    "qty_on_hand":        ("现有库存", "手持"),
+    "qty_available":      ("可用库存", "利用可能"),
+    "qty_on_order":       ("在订数量", "注文済"),
+    "stock_amount":       ("库存金额", "在庫金額"),
+    "cost":               ("标准原价", "標準原価"),
+    "average_cost":       ("平均原价", "平均原価"),
+    "cost_estimate":      ("定义原价", "定義原価"),
+    "last_purchase_cost": ("前次购入价", "前回購入価格"),
+    "carton_qty":         ("箱入数", "カートン入数"),
+    "order_lot":          ("发注批量", "発注ロット"),
+    "qty_sold":           ("累计销量", "累計販売数"),
+    "revenue":            ("累计销售额", "累計売上"),
+}
+
+
+def _cc(*keys) -> dict:
+    return {k: (_LBL[k][1] if _JA else _LBL[k][0]) for k in keys}
+
+
+def _query(sql: str, params: tuple = ()):
+    try:
+        cur = conn.execute(sql, params) if params else conn.execute(sql)
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if cur.description else []
+        return pd.DataFrame([dict(zip(cols, r)) for r in rows], columns=cols), None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None, str(e)
+
+
+# ============================================================
+# データ有無チェック
+# ============================================================
+chk, err = _query("SELECT COUNT(*) AS c FROM nst.item_master_raw")
+if err:
+    st.error(_L("商品マスタ未取得 or 接続エラー: ", "商品マスタ未取得 or 接続エラー: ") + err)
+    st.info(_L("请到 page 27「📥 NST 取得数据」执行 items 任务。",
+               "page 27「📥 NST 取得データ」で items ジョブを実行してください。"))
+    st.stop()
+if chk is None or int(chk.iloc[0]["c"]) == 0:
+    st.warning(_L("⚠️ 商品主档为空。请到 page 27「📥 NST 取得数据」执行 items 任务。",
+                  "⚠️ 商品マスタが空です。page 27「📥 NST 取得データ」で items ジョブを実行してください。"))
     st.stop()
 
 
 # ============================================================
-# 拼一份 SKU-level 视图（cache 5 分钟）
+# SKU-level 統合ビュー（cache 5 分）
 # ============================================================
 @st.cache_data(ttl=300)
 def load_sku_view() -> pd.DataFrame:
-    # 用参数化 LIKE · psycopg2 把字面量 '%' 当 format placeholder 会报 IndexError
     sql = """
         WITH inv AS (
-            SELECT
-                internal_id,
-                MAX(item_code) AS item_code,
-                MAX(upc) AS upc,
-                MAX(display_name) AS display_name,
-                MAX(handling_status) AS handling_status,
-                MAX(department) AS department,
-                MAX(owner) AS owner,
-                MAX(avg_cost) AS avg_cost,
-                MAX(std_cost) AS std_cost,
-                SUM(qty_on_hand) AS qty_on_hand,
-                SUM(qty_committed) AS qty_committed,
-                SUM(qty_backorder) AS qty_backorder,
-                SUM(total_amount) AS total_amount
-            FROM inventory_snapshot
-            WHERE department LIKE :dept_pattern
-            GROUP BY internal_id
+            SELECT item_internal_id, qty_on_hand, qty_available, qty_on_order
+            FROM nst.inventory_snapshot
+            WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)
         ),
-        sales_agg AS (
-            SELECT
-                item_code,
-                SUM(qty_sold) AS qty_sold,
-                SUM(revenue) AS revenue,
-                SUM(gross_profit) AS gross_profit,
-                MAX(rank) AS rank,
-                MAX(maker) AS maker
-            FROM sales_line
-            GROUP BY item_code
-        ),
-        turnover AS (
-            SELECT
-                item_code,
-                MAX(turnover_rate) AS turnover_rate,
-                MAX(avg_days_on_hand) AS avg_days_on_hand
-            FROM inventory_turnover
-            GROUP BY item_code
+        sales AS (
+            SELECT item_internal_id,
+                   SUM(qty_sold) AS qty_sold,
+                   SUM(revenue)  AS revenue
+            FROM nst.sales_monthly
+            GROUP BY item_internal_id
         )
         SELECT
-            inv.internal_id,
-            inv.item_code,
-            inv.upc,
-            inv.display_name,
-            inv.handling_status,
-            inv.department,
-            inv.owner,
-            sales_agg.maker,
-            sales_agg.rank,
-            inv.qty_on_hand,
-            inv.qty_committed,
-            inv.qty_backorder,
-            inv.avg_cost,
-            inv.std_cost,
-            inv.total_amount,
-            sales_agg.qty_sold,
-            sales_agg.revenue,
-            sales_agg.gross_profit,
-            turnover.turnover_rate,
-            turnover.avg_days_on_hand
-        FROM inv
-        LEFT JOIN sales_agg ON sales_agg.item_code = inv.item_code
-        LEFT JOIN turnover ON turnover.item_code = inv.item_code
+            im.internal_id, im.item_code, im.jan, im.display_name,
+            im.maker, im.item_rank, im.handling_cd, im.is_inactive,
+            im.cost, im.average_cost, im.cost_estimate, im.last_purchase_cost,
+            im.carton_qty, im.order_lot,
+            inv.qty_on_hand, inv.qty_available, inv.qty_on_order,
+            (COALESCE(im.average_cost, im.cost_estimate, 0)
+                * COALESCE(inv.qty_on_hand, 0)) AS stock_amount,
+            sales.qty_sold, sales.revenue
+        FROM nst.item_master_raw im
+        LEFT JOIN inv   ON inv.item_internal_id   = im.internal_id
+        LEFT JOIN sales ON sales.item_internal_id = im.internal_id
     """
-    return pd.DataFrame([dict(r) for r in conn.execute(sql, {"dept_pattern": "%輸出%"}).fetchall()])
+    rows = conn.execute(sql).fetchall()
+    cols = ["internal_id", "item_code", "jan", "display_name", "maker", "item_rank",
+            "handling_cd", "is_inactive", "cost", "average_cost", "cost_estimate",
+            "last_purchase_cost", "carton_qty", "order_lot", "qty_on_hand",
+            "qty_available", "qty_on_order", "stock_amount", "qty_sold", "revenue"]
+    return pd.DataFrame([dict(zip(cols, r)) for r in rows], columns=cols)
 
 
 df = load_sku_view()
 total_skus = len(df)
 
-
 # ============================================================
 # 筛选 UI
 # ============================================================
-ALL = "全部"
+_ALL = _L("全部", "全部")
 
 c1, c2 = st.columns(2)
-with c1:
-    keyword_code = st.text_input(t("商品コード / JAN"), placeholder="例: 4515061012818")
-with c2:
-    keyword_name = st.text_input(t("商品名（部分一致）"), placeholder="例: パーフェクトジェル")
+keyword_code = c1.text_input(_L("商品编码 / JAN", "アイテム / JAN"), placeholder="例: 4515061012818")
+keyword_name = c2.text_input(_L("商品名（部分匹配）", "商品名（部分一致）"), placeholder="例: パーフェクトジェル")
 
-multi_jan = st.text_area(
-    t("批量 JAN（换行 / 逗号分隔）"),
-    placeholder="4901234567890\n4987654321098",
-    height=100,
-)
+with st.expander(_L("📋 批量 JAN（换行 / 逗号分隔）", "📋 複数 JAN（改行・カンマ区切り）")):
+    multi_jan = st.text_area(
+        "multi_jan", placeholder="4901234567890\n4987654321098",
+        height=100, label_visibility="collapsed",
+    )
 
-c3, c4, c5, c6 = st.columns(4)
 
-with c3:
-    handle_opts = sorted([h for h in df["handling_status"].dropna().unique().tolist()])
-    handle_pick = st.selectbox(t("取扱区分"), [ALL, "在扱中（除取扱中止）"] + handle_opts)
+def _opts(col: str) -> list:
+    return sorted({str(v).strip() for v in df[col].dropna().tolist() if str(v).strip()})
 
-with c4:
-    rank_opts = sorted([
-        r for r in df["rank"].dropna().unique().tolist()
-        if r and r != "取扱中止"
-    ])
-    rank_pick = st.selectbox(t("商品ランク"), [ALL] + rank_opts)
 
-with c5:
-    # 品牌下拉（按商品数量降序）
-    if "maker" in df.columns:
-        maker_counts = (
-            df["maker"].dropna().astype(str).str.strip()
-            .replace("", pd.NA).dropna().value_counts()
-        )
-        maker_opts = maker_counts.index.tolist()
-    else:
-        maker_opts = []
-    maker_pick = st.selectbox(t("品牌"), [ALL] + maker_opts)
-
-with c6:
-    show_only_in_stock = st.checkbox(t("仅有库存（qty > 0）"), value=False)
-
+f1, f2, f3, f4 = st.columns(4)
+handle_pick = f1.selectbox(_L("经销状态", "取扱区分"), [_ALL] + _opts("handling_cd"))
+rank_pick = f2.selectbox(_L("商品等级", "商品ランク"), [_ALL] + _opts("item_rank"))
+maker_pick = f3.selectbox(_L("厂商", "メーカー名"), [_ALL] + _opts("maker"))
+with f4:
+    st.write("")
+    in_stock = st.checkbox(_L("仅有库存（>0）", "在庫あり（>0）"), value=False)
+    hide_inactive = st.checkbox(_L("隐藏停用品", "休止品を隠す"), value=True)
 
 # ============================================================
 # Apply filters
 # ============================================================
-df_view = df.copy()
-
-# 多 JAN 优先
-jan_list = [j.strip() for j in re.split(r"[,\n\r]+", multi_jan) if j.strip()]
+v = df.copy()
+jan_list = [j.strip() for j in re.split(r"[,\n\r、，]+", multi_jan) if j.strip()]
 if jan_list:
-    df_view = df_view[
-        df_view["upc"].astype(str).isin(jan_list)
-        | df_view["item_code"].astype(str).isin(jan_list)
-    ]
-elif keyword_code:
+    v = v[v["jan"].astype(str).isin(jan_list) | v["item_code"].astype(str).isin(jan_list)]
+elif keyword_code.strip():
     kw = keyword_code.strip()
-    df_view = df_view[
-        df_view["item_code"].astype(str).str.contains(kw, case=False, na=False)
-        | df_view["upc"].astype(str).str.contains(kw, case=False, na=False)
-        | df_view["internal_id"].astype(str).str.contains(kw, case=False, na=False)
+    v = v[
+        v["item_code"].astype(str).str.contains(kw, case=False, na=False)
+        | v["jan"].astype(str).str.contains(kw, case=False, na=False)
+        | v["internal_id"].astype(str).str.contains(kw, case=False, na=False)
     ]
-
-if keyword_name:
-    df_view = df_view[
-        df_view["display_name"].astype(str).str.contains(keyword_name.strip(), case=False, na=False)
-    ]
-
-if handle_pick == "在扱中（除取扱中止）":
-    df_view = df_view[df_view["handling_status"] != "取扱中止"]
-elif handle_pick != ALL:
-    df_view = df_view[df_view["handling_status"] == handle_pick]
-
-if rank_pick != ALL:
-    df_view = df_view[df_view["rank"] == rank_pick]
-
-if maker_pick != ALL:
-    df_view = df_view[df_view["maker"].astype(str) == maker_pick]
-
-if show_only_in_stock:
-    df_view = df_view[df_view["qty_on_hand"].fillna(0) > 0]
-
+if keyword_name.strip():
+    v = v[v["display_name"].astype(str).str.contains(keyword_name.strip(), case=False, na=False)]
+if handle_pick != _ALL:
+    v = v[v["handling_cd"] == handle_pick]
+if rank_pick != _ALL:
+    v = v[v["item_rank"] == rank_pick]
+if maker_pick != _ALL:
+    v = v[v["maker"].astype(str) == maker_pick]
+if in_stock:
+    v = v[v["qty_on_hand"].fillna(0) > 0]
+if hide_inactive:
+    v = v[v["is_inactive"] != True]  # noqa: E712
 
 # ============================================================
 # 顶部统计 + 表格
 # ============================================================
-hl, hr = st.columns([1, 0.2])
-hl.subheader(t("商品一覧"))
+hl, hr = st.columns([1, 0.25])
+hl.subheader(_L("商品一览", "商品一覧"))
 hr.markdown(
-    f"<h4 style='text-align:right; margin-top: .6em;'>{len(df_view):,} / {total_skus:,} 件</h4>",
+    f"<h4 style='text-align:right;margin-top:.6em;'>{len(v):,} / {total_skus:,} 件</h4>",
     unsafe_allow_html=True,
 )
 
-if df_view.empty:
-    st.info(t("当前条件下没有任何 SKU。调整过滤再试。"))
+if v.empty:
+    st.info(_L("当前条件下没有商品。调整筛选再试。", "この条件の商品がありません。"))
     st.stop()
 
-# 排序：默认按销量降序
+# 数値整形
+for col in ("revenue", "stock_amount", "cost", "average_cost", "cost_estimate",
+            "last_purchase_cost"):
+    v[col] = pd.to_numeric(v[col], errors="coerce")
+
 sort_options = {
-    "销量降序": ("qty_sold", False),
-    "销量升序": ("qty_sold", True),
-    "库存降序": ("qty_on_hand", False),
-    "库存金额降序": ("total_amount", False),
-    "周转率降序": ("turnover_rate", False),
-    "周转率升序（最差先）": ("turnover_rate", True),
-    "商品コード": ("item_code", True),
+    _L("累计销量降序", "累計販売数 降順"): ("qty_sold", False),
+    _L("库存降序", "在庫 降順"): ("qty_on_hand", False),
+    _L("库存金额降序", "在庫金額 降順"): ("stock_amount", False),
+    _L("累计销售额降序", "累計売上 降順"): ("revenue", False),
+    _L("商品编码", "アイテム"): ("item_code", True),
 }
-sort_pick = st.selectbox(t("排序"), list(sort_options.keys()))
-sort_col, sort_asc = sort_options[sort_pick]
-df_view = df_view.sort_values(sort_col, ascending=sort_asc, na_position="last")
+sort_pick = st.selectbox(_L("排序", "並び替え"), list(sort_options.keys()))
+sc, sa = sort_options[sort_pick]
+v = v.sort_values(sc, ascending=sa, na_position="last")
 
-# 显示用：重命名列、格式化金额
-display_cols = [
-    "internal_id", "item_code", "upc", "display_name",
-    "handling_status", "rank", "department",
-    "qty_on_hand", "qty_committed", "qty_backorder",
-    "std_cost", "avg_cost", "total_amount",
-    "qty_sold", "revenue", "gross_profit",
-    "turnover_rate", "avg_days_on_hand",
-]
-df_show = df_view[display_cols].copy()
-df_show = df_show.rename(columns={
-    "internal_id": "Internal ID",
-    "item_code": "アイテム",
-    "upc": "JAN",
-    "display_name": "商品名",
-    "handling_status": "取扱区分",
-    "rank": "ランク",
-    "department": "部門",
-    "qty_on_hand": "在庫合計",
-    "qty_committed": "確保済",
-    "qty_backorder": "バックオーダー",
-    "std_cost": "定義原価",
-    "avg_cost": "平均原価",
-    "total_amount": "在庫金額",
-    "qty_sold": "販売数",
-    "revenue": "売上",
-    "gross_profit": "粗利",
-    "turnover_rate": "回転率",
-    "avg_days_on_hand": "平均手持日数",
-})
-
-# 密度 + 列显示控件 (Phase 2A)
-_dctl1, _dctl2 = st.columns([1, 3])
-with _dctl1:
-    _density = st.radio(
-        t("密度"),
-        [t("紧凑"), t("标准"), t("宽松")],
-        horizontal=True,
-        index=1,
-        key=f"density_{__file__}",
-        label_visibility="collapsed",
-    )
-_density_class = {
-    t("紧凑"): "density-compact",
-    t("标准"): "",
-    t("宽松"): "density-comfy",
-}.get(_density, "")
-
-with st.expander(t("⚙️ 显示列设置")):
-    _all_cols = df_show.columns.tolist()
-    _picked_cols = st.multiselect(
-        t("选择展示列"), _all_cols, default=_all_cols,
-        key=f"colpick_{__file__}",
-    )
-if _picked_cols:
-    df_show_render = df_show[_picked_cols]
-else:
-    df_show_render = df_show
-
-st.markdown(f'<div class="{_density_class}">', unsafe_allow_html=True)
-st.dataframe(df_show_render, use_container_width=True, hide_index=True)
-st.markdown('</div>', unsafe_allow_html=True)
-
-# CSV 下载
-csv = df_show.to_csv(index=False).encode("utf-8-sig")
-st.download_button(
-    t("📥 当前视图 CSV"),
-    data=csv,
-    file_name=f"item_search_{len(df_show)}.csv",
-    mime="text/csv",
+cols = ("item_code", "jan", "display_name", "maker", "item_rank", "handling_cd",
+        "qty_on_hand", "qty_available", "qty_on_order", "stock_amount",
+        "cost", "average_cost", "cost_estimate", "last_purchase_cost",
+        "carton_qty", "order_lot", "qty_sold", "revenue")
+st.dataframe(
+    v[list(cols)], use_container_width=True, height=560, hide_index=True,
+    column_config=_cc(*cols),
 )
 
+csv = v[list(cols)].rename(columns=_cc(*cols)).to_csv(index=False).encode("utf-8-sig")
+st.download_button(_L("📥 当前视图 CSV", "📥 現在のビュー CSV"), data=csv,
+                   file_name=f"item_search_{len(v)}.csv", mime="text/csv")
 
 # ============================================================
-# 单 SKU 详情卡片
+# 単 SKU 詳細
 # ============================================================
 st.divider()
-st.subheader(t("🔎 SKU 详情卡片"))
+st.subheader(_L("🔎 SKU 详情", "🔎 SKU 詳細"))
 
-if len(df_view) > 0:
-    sku_choices = df_view.apply(
-        lambda r: f"{r['item_code']} · {r['display_name'] or '(无商品名)'}",
-        axis=1
-    ).tolist()
-    pick = st.selectbox(t("选择 SKU"), sku_choices)
-    pick_row = df_view.iloc[sku_choices.index(pick)]
+choices = v.apply(lambda r: f"{r['item_code']} · {r['display_name'] or '(无名)'}", axis=1).tolist()
+pick = st.selectbox(_L("选择 SKU", "SKU を選択"), choices)
+row = v.iloc[choices.index(pick)]
 
-    cd1, cd2, cd3 = st.columns(3)
-    with cd1:
-        st.markdown(f"**商品コード**: `{pick_row['item_code']}`")
-        st.markdown(f"**JAN (UPC)**: `{pick_row['upc']}`")
-        st.markdown(f"**Internal ID**: `{pick_row['internal_id']}`")
-        st.markdown(f"**商品名**: {pick_row['display_name']}")
-    with cd2:
-        st.markdown(f"**取扱区分**: {pick_row['handling_status']}")
-        st.markdown(f"**ランク**: {pick_row['rank'] or '—'}")
-        st.markdown(f"**部門**: {pick_row['department'] or '—'}")
-        st.markdown(f"**担当者**: {pick_row['owner'] or '—'}")
-    with cd3:
-        st.metric("在庫合計", f"{int(pick_row['qty_on_hand'] or 0):,}")
-        st.metric("販売実績", f"{int(pick_row['qty_sold'] or 0):,}")
-        if pick_row['turnover_rate'] is not None:
-            st.metric("回転率", f"{pick_row['turnover_rate']:.2f}")
+d1, d2, d3 = st.columns(3)
+with d1:
+    st.markdown(f"**{_LBL['item_code'][1 if _JA else 0]}**: `{row['item_code']}`")
+    st.markdown(f"**{_LBL['jan'][1 if _JA else 0]}**: `{row['jan']}`")
+    st.markdown("**Internal ID**: `%s`" % row["internal_id"])
+    st.markdown(f"**{_LBL['display_name'][1 if _JA else 0]}**: {row['display_name']}")
+with d2:
+    st.markdown(f"**{_LBL['handling_cd'][1 if _JA else 0]}**: {row['handling_cd'] or '—'}")
+    st.markdown(f"**{_LBL['item_rank'][1 if _JA else 0]}**: {row['item_rank'] or '—'}")
+    st.markdown(f"**{_LBL['maker'][1 if _JA else 0]}**: {row['maker'] or '—'}")
+    st.markdown(f"**{_LBL['carton_qty'][1 if _JA else 0]}**: {row['carton_qty'] or '—'}"
+                f" ｜ **{_LBL['order_lot'][1 if _JA else 0]}**: {row['order_lot'] or '—'}")
+with d3:
+    st.metric(_LBL["qty_on_hand"][1 if _JA else 0], f"{int(row['qty_on_hand'] or 0):,}")
+    st.metric(_LBL["qty_available"][1 if _JA else 0], f"{int(row['qty_available'] or 0):,}")
+    st.metric(_LBL["qty_sold"][1 if _JA else 0], f"{int(row['qty_sold'] or 0):,}")
 
-    # 各仓库库存细分 · total_amount = avg_cost × qty_on_hand (与 item_v2 汇总一致)
-    st.markdown(t("**各仓库库存细分**"))
-    inv_detail = pd.DataFrame([dict(r) for r in conn.execute(
-        """
-        SELECT location, bin_number, qty_on_hand, qty_committed, qty_backorder,
-               std_cost, avg_cost,
-               ROUND(COALESCE(avg_cost, std_cost, 0) * COALESCE(qty_on_hand, 0), 2) AS total_amount
-        FROM inventory_snapshot
-        WHERE internal_id = ?
-        ORDER BY location, bin_number
-        """,
-        (pick_row["internal_id"],),
-    ).fetchall()])
-    if not inv_detail.empty:
-        from shared.i18n_columns import localize_df
-        st.dataframe(localize_df(inv_detail), use_container_width=True, hide_index=True)
+# 原価各種
+e1, e2, e3, e4 = st.columns(4)
+e1.metric(_LBL["cost"][1 if _JA else 0], f"¥{(row['cost'] or 0):,.2f}")
+e2.metric(_LBL["average_cost"][1 if _JA else 0], f"¥{(row['average_cost'] or 0):,.2f}")
+e3.metric(_LBL["cost_estimate"][1 if _JA else 0], f"¥{(row['cost_estimate'] or 0):,.2f}")
+e4.metric(_LBL["last_purchase_cost"][1 if _JA else 0], f"¥{(row['last_purchase_cost'] or 0):,.2f}")
 
-    # 销售明细
-    st.markdown(t("**销售明细**"))
-    sales_detail = pd.DataFrame([dict(r) for r in conn.execute(
-        """
-        SELECT source, period_start, period_end, store, qty_sold, revenue, gross_profit, gross_margin
-        FROM sales_line
-        WHERE item_code = ?
-        ORDER BY period_start DESC, store
-        """,
-        (pick_row["item_code"],),
-    ).fetchall()])
-    if sales_detail.empty:
-        st.caption(t("（无销售记录）"))
-    else:
-        from shared.i18n_columns import localize_df
-        st.dataframe(localize_df(sales_detail), use_container_width=True, hide_index=True)
+# 店舗×月 売上明細
+st.markdown(f"**{_L('店铺×月 销售明细', '店舗×月 売上明細')}**")
+sd, _ = _query(
+    "SELECT shop, year_month, qty_sold, revenue FROM nst.sales_monthly "
+    "WHERE item_internal_id = ? ORDER BY year_month DESC, revenue DESC",
+    (row["internal_id"],),
+)
+if sd is None or sd.empty:
+    st.caption(_L("（无销售记录）", "（売上記録なし）"))
+else:
+    st.dataframe(
+        sd, use_container_width=True, hide_index=True,
+        column_config={
+            "shop": _L("店铺", "FB_店舗"),
+            "year_month": _L("年月", "年月"),
+            "qty_sold": _LBL["qty_sold"][1 if _JA else 0],
+            "revenue": _LBL["revenue"][1 if _JA else 0],
+        },
+    )
