@@ -69,122 +69,95 @@ def generate_proposal(
 
     try:
         # ========================================================
-        # SKU 集合 + 销售聚合 + 取扱区分 全部从 sales_line 拉
-        # Boss 决定: 商品等级判定 与库存无关, 完全基于销售数据
-        # 期间过滤:
-        #   - 月度: period_start = X AND period_end = Y (精确匹配单月)
-        #   - 季度: period_start >= Q_start AND period_end <= Q_end (3 个月聚合)
-        #   - 不传: 聚合所有 asean_monthly (旧行为)
+        # 等级判定: NST nst.sales_monthly + item_master_raw ベース
+        #   利益率 = (revenue − cost_estimate×qty) / revenue
+        #            （sales_monthly に粗利未保存のため定義原価で算出・page04/05 と同基準）
+        #   期間: period_start/end の YYYY-MM を year_month 範囲へ変換
         # ========================================================
         if period_start and period_end:
-            # 自动判断单月度 vs 季度: 期间跨度 ≤ 35 天 → 单月精确匹配; 否则范围
-            from datetime import date as _date
-            try:
-                _ds = _date.fromisoformat(period_start)
-                _de = _date.fromisoformat(period_end)
-                _delta_days = (_de - _ds).days
-            except Exception:
-                _delta_days = 999
-            if _delta_days <= 35:
-                # 单月度精确匹配
-                where_clause = "WHERE source = 'asean_monthly' AND period_start = ? AND period_end = ?"
-                params = (period_start, period_end)
-            else:
-                # 季度范围 (3 个月聚合)
-                where_clause = (
-                    "WHERE source = 'asean_monthly' "
-                    "AND period_start >= ? AND period_end <= ?"
-                )
-                params = (period_start, period_end)
+            ym_where = "WHERE s.year_month >= ? AND s.year_month <= ?"
+            params = (period_start[:7], period_end[:7])
         else:
-            where_clause = "WHERE source = 'asean_monthly'"
+            ym_where = ""
             params = ()
-        sales_data = conn.execute(f"""
+        sales_data = [dict(r) for r in conn.execute(f"""
             SELECT
-                item_code,
-                MIN(display_name) as display_name,
-                MIN(handling_status) as handling_status,
-                COALESCE(SUM(revenue), 0) as total_revenue,
-                COALESCE(AVG(gross_margin), 0) as avg_margin,
-                COALESCE(SUM(qty_sold), 0) as total_qty
-            FROM sales_line
-            {where_clause}
-            GROUP BY item_code
-        """, params).fetchall()
+                im.item_code AS item_code,
+                MIN(im.display_name) AS display_name,
+                MIN(im.handling_cd) AS handling_status,
+                COALESCE(SUM(s.revenue), 0) AS total_revenue,
+                COALESCE(SUM(s.qty_sold), 0) AS total_qty,
+                COALESCE(SUM(COALESCE(im.cost_estimate, 0) * s.qty_sold), 0) AS total_cost
+            FROM nst.sales_monthly s
+            JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id
+            {ym_where}
+            GROUP BY im.item_code
+        """, params).fetchall()]
 
         if not sales_data:
             return []
-        sales_data = [dict(r) for r in sales_data]
 
-        # 2. 构建 SKU -> 销售额映射 + 计算 rank_pct
+        # 利益率 = (売上 − 定義原価) / 売上（NST に粗利率なし → cost_estimate で算出）
+        for row in sales_data:
+            rev = row['total_revenue'] or 0
+            row['avg_margin'] = ((rev - (row['total_cost'] or 0)) / rev) if rev else 0.0
+
         sku_to_sales = {row['item_code']: row['total_revenue'] for row in sales_data}
         rank_pcts = calc_sales_rank(sku_to_sales)
-
-        # 3. status_map 直接来自销售表 handling_status (不再读库存表)
         status_map = {row['item_code']: row['handling_status'] or '取扱中' for row in sales_data}
 
-        # 4. qty_map 库存量 (仅用于 reorder 订货建议字段, 等级判定不依赖)
-        # 库存表可空 → qty 默认 0, 不影响等级判定
+        # 在庫量（NST 最新スナップショット · JD-物流-千葉 単一仓）→ reorder 字段用のみ
         qty_map = {}
         try:
             inv_data = conn.execute("""
-                SELECT item_code, SUM(qty_on_hand) as qty
-                FROM inventory_snapshot WHERE location = ?
-                GROUP BY item_code
-            """, (WAREHOUSE_FILTER,)).fetchall()
-            if not inv_data:
-                inv_data = conn.execute("""
-                    SELECT item_code, SUM(qty_on_hand) as qty
-                    FROM nst_inventory_snapshot WHERE location = ?
-                    GROUP BY item_code
-                """, (WAREHOUSE_FILTER,)).fetchall()
-            qty_map = {row['item_code']: row['qty'] or 0 for row in inv_data}
+                SELECT im.item_code AS item_code, SUM(inv.qty_on_hand) AS qty
+                FROM nst.inventory_snapshot inv
+                JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id
+                WHERE inv.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot)
+                GROUP BY im.item_code
+            """).fetchall()
+            qty_map = {row['item_code']: (row['qty'] or 0) for row in inv_data}
         except Exception:
             pass
 
-        # 4. 现有 rank（item_master_netsuite）
-        old_rank_map = {row['item_code']: row['rank']
-                        for row in conn.execute("SELECT upc as item_code, rank FROM item_master_netsuite").fetchall()}
+        # 現行 rank（NST item_master_raw.item_rank）
+        old_rank_map = {
+            row['item_code']: row['item_rank']
+            for row in conn.execute(
+                "SELECT item_code, item_rank FROM nst.item_master_raw WHERE item_code IS NOT NULL"
+            ).fetchall()
+        }
 
-        # 5. 进货周期（用于订货公式）
-        lead_time_map = {row['jan']: row['lead_time_days']
-                         for row in conn.execute("SELECT jan, lead_time_days FROM supply_cycle").fetchall()}
+        # 進货周期: NST になし → calc_reorder で既定 30 日
+        lead_time_map = {}
 
-        # 5b. 3 个月无动销标记 (Boss 新增规则)
-        # 窗口 = period_end 前推 3 个月; 若没传 period_end, 默认用 sales_line 中最大 period_end
+        # 3 ヶ月無動销: sales_monthly の直近 3 ヶ月で qty_sold=0 の SKU
         no_sales_3m_set: set[str] = set()
         try:
-            from datetime import date as _date
             if period_end:
-                _ref_end = _date.fromisoformat(period_end)
+                _ref_ym = period_end[:7]
             else:
-                _row = conn.execute(
-                    "SELECT MAX(period_end) AS m FROM sales_line WHERE source='asean_monthly'"
-                ).fetchone()
-                _ref_end = _date.fromisoformat(_row['m']) if _row and _row['m'] else None
-
-            if _ref_end:
-                # 前推约 3 个月 (90 天) 起点
-                from datetime import timedelta as _td
-                _ref_start = (_ref_end - _td(days=90)).isoformat()
-                _ref_end_iso = _ref_end.isoformat()
-                # 该窗口内有过销售的 SKU
-                _active_skus = {
+                _r = conn.execute("SELECT MAX(year_month) AS m FROM nst.sales_monthly").fetchone()
+                _ref_ym = _r['m'] if _r else None
+            if _ref_ym:
+                _y, _m = int(_ref_ym[:4]), int(_ref_ym[5:7])
+                _sm, _sy = _m - 2, _y
+                while _sm <= 0:
+                    _sm += 12
+                    _sy -= 1
+                _start_ym = f"{_sy:04d}-{_sm:02d}"
+                _active = {
                     r['item_code']
-                    for r in conn.execute(
-                        """
-                        SELECT item_code
-                        FROM sales_line
-                        WHERE source='asean_monthly'
-                          AND period_start >= ? AND period_end <= ?
-                        GROUP BY item_code
-                        HAVING COALESCE(SUM(qty_sold), 0) > 0
-                        """,
-                        (_ref_start, _ref_end_iso),
-                    ).fetchall()
+                    for r in conn.execute("""
+                        SELECT im.item_code AS item_code
+                        FROM nst.sales_monthly s
+                        JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id
+                        WHERE s.year_month >= ? AND s.year_month <= ?
+                        GROUP BY im.item_code
+                        HAVING COALESCE(SUM(s.qty_sold), 0) > 0
+                    """, (_start_ym, _ref_ym)).fetchall()
                 }
-                # 全 SKU 减去窗口活跃集 = 3 个月无动销
-                no_sales_3m_set = {row['item_code'] for row in sales_data} - _active_skus
+                no_sales_3m_set = {row['item_code'] for row in sales_data} - _active
         except Exception:
             no_sales_3m_set = set()
 

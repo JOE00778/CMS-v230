@@ -19,7 +19,7 @@ render_v2_quickview(get_connection(), key_prefix="page07_")
 st.title(t("🏷️ 商品等级判定"))
 st.caption(t(
     "基于销售前 80% × 利润率 ≥59% 的 4 档判定 (A/B/C/停售) · "
-    "仅 Boss 可确认变更 · 财年 3 月开始 (Q1=3-5月 / Q2=6-8月 / Q3=9-11月 / Q4=12-2月)"
+    "财年 3 月开始 (Q1=3-5月 / Q2=6-8月 / Q3=9-11月 / Q4=12-2月)"
 ))
 
 DB = Path(__file__).parent.parent / "data_warehouse" / "warehouse.db"
