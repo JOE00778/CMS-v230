@@ -97,10 +97,16 @@ def generate_proposal(
         if not sales_data:
             return []
 
+        # PG NUMERIC → Decimal を float へ正規化（calc_sales_rank の cumsum 等で float 混在を防ぐ）
+        for row in sales_data:
+            row['total_revenue'] = float(row['total_revenue'] or 0)
+            row['total_qty'] = float(row['total_qty'] or 0)
+            row['total_gp'] = float(row['total_gp'] or 0)
+
         # 利益率 = NetSuite 真実毛利(estgrossprofit) / 売上
         for row in sales_data:
-            rev = row['total_revenue'] or 0
-            row['avg_margin'] = ((row['total_gp'] or 0) / rev) if rev else 0.0
+            rev = row['total_revenue']
+            row['avg_margin'] = (row['total_gp'] / rev) if rev else 0.0
 
         sku_to_sales = {row['item_code']: row['total_revenue'] for row in sales_data}
         rank_pcts = calc_sales_rank(sku_to_sales)
@@ -116,7 +122,7 @@ def generate_proposal(
                 WHERE inv.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot)
                 GROUP BY im.item_code
             """).fetchall()
-            qty_map = {row['item_code']: (row['qty'] or 0) for row in inv_data}
+            qty_map = {row['item_code']: float(row['qty'] or 0) for row in inv_data}
         except Exception:
             pass
 
