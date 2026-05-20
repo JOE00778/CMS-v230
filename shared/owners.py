@@ -14,15 +14,15 @@ import pandas as pd
 OWNER_NA = "未分配"
 OWNER_EXCLUDED = "対象外"
 
-# 负责人 → 担当店舗（「一元管理导出」2026/5 · Boss 権威マッピング）
+# 负责人 → 担当店舗（「一元管理导出改」2026/5 最终版 · Boss 権威マッピング）
 _SHOP_OWNER: dict[str, list[str]] = {
     "邓晓庆": ["Lazada MY", "Lazada PH", "Lazada SG", "Shopee TW", "Shopee toy TW"],
-    "尹雪莉": ["Shopee Cosme VN", "Shopee VN"],
+    "尹雪莉": ["Shopee Cosme VN", "Shopee VN", "Shopee TH"],
     "许慧杰": ["Smikiejapan COUPANG"],
     "刘颖":   ["Shopee Kurashi-Mart.PH", "Shopee Mall PH", "Shopee PH"],
     "裴晓晗": ["Shopee BR", "Shopee Cosme PH", "Shopee Cosme SG",
               "Shopee J-Beauty Hub PH", "Shopee Kurashi-Mart.SG", "Shopee SG",
-              "Shopee TH", "Shopee kurashi_mart.BR"],
+              "Shopee kurashi_mart.BR"],
 }
 # shop（strip 済）→ owner の逆引き
 _OWNER_BY_SHOP = {
