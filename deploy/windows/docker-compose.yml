@@ -56,11 +56,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cms}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cms}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-JO043}
+      # 認証は単一パスワード（CF Access + ADMIN_PASSWORD）。guest / username / page99 は廃止（2026-05-20）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-      GUEST_USERNAME: ${GUEST_USERNAME:-smikiejapan}
-      GUEST_PASSWORD: ${GUEST_PASSWORD}
-      PAGE99_PASSWORD: ${PAGE99_PASSWORD:-}
       LARK_APP_ID: ${LARK_APP_ID:-}
       LARK_APP_SECRET: ${LARK_APP_SECRET:-}
       LARK_REDIRECT_URI: ${LARK_REDIRECT_URI:-}
