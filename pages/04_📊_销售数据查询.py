@@ -122,6 +122,14 @@ rank_filter = f2.selectbox(t("商品ランク"), [_ALL] + _opts("item_rank"))
 maker_filter = f3.selectbox(t("メーカー名"), [_ALL] + _opts("maker"))
 handling_filter = f4.selectbox(t("取扱区分"), [_ALL] + _opts("handling_cd"))
 
+with st.expander(t("📋 複数 JAN / 商品名 一括検索（改行・カンマ区切り）")):
+    multi_kw = st.text_area(
+        t("複数 JAN / 商品名"), placeholder="1 行 1 件 or カンマ区切り",
+        height=120, label_visibility="collapsed",
+    )
+_mk = multi_kw.replace(",", "\n").replace("，", "\n").replace("、", "\n")
+multi_terms = [x.strip() for x in _mk.split("\n") if x.strip()]
+
 # ============================================================
 # クエリ組み立て
 # ============================================================
@@ -141,6 +149,12 @@ if handling_filter != _ALL:
 if kw.strip():
     where.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
     like = f"%{kw.strip()}%"; params += [like, like]
+if multi_terms:
+    _ors = []
+    for _term in multi_terms:
+        _ors.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
+        _like = f"%{_term}%"; params += [_like, _like]
+    where.append("(" + " OR ".join(_ors) + ")")
 where_sql = " AND ".join(where)
 
 if view == t("店舗別"):
