@@ -1,342 +1,271 @@
-"""模块 #6 店铺毛利。
+"""模块 #6 店铺毛利 · NST API 売上データ（nst.sales_daily）ベース.
 
-数据来源：sales_line 表（4 类销售导出共用）。
-- ASEAN 月度（asean_monthly）含店铺
-- 出口店铺别（export_store）含店铺
-- ASEAN 日（asean_daily）只 SKU 维度
-- 出口 アイテム別（export_item）只 SKU 维度
+2026-05-20 全面改写：旧 sales_line（手動 Excel 時代）→ NST API 日次データへ。
+店舗 × 月 の粗利を集計し、月内の日次推移を曲線で可視化（Boss 2026-05-20 依頼）。
 
-业务：
-- 按店铺 × 月份 聚合 总売上 / 総定義原価 / 粗利 / 粗利率
-- 店铺级排序、月份对比
-- TOP N 商品贡献分析
+データ源:
+- nst.sales_daily      店舗 × SKU × 日 の売上（販売数量 / 総収益 JPY）
+- nst.item_master_raw  商品マスタ（定義原価 cost_estimate / 表示名 / メーカー / ランク）
+
+表示:
+- 月選択 + 市場フィルタ
+- 月内日次の粗利推移（曲線図）+ 店舗別 / 市場別 / TOP SKU 集計
+- 粗利 = 総収益 − 定義原価(=cost_estimate×数量) / 粗利率 = 粗利/総収益
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
-
 import pandas as pd
 import streamlit as st
-from shared.i18n import t, lang_selector
-from shared.i18n_columns import localize_df
 
 from shared.db import get_connection
+from shared.i18n import lang_selector, t, get_lang
 from shared.markets import ALL_MARKETS, add_market_column
 
 st.set_page_config(page_title=t("店铺毛利"), page_icon="🏪", layout="wide")
 from shared.auth import require_password
-require_password()
 from shared.theme import inject_theme
+require_password()
 inject_theme()
 lang_selector()
 conn = get_connection()
 
 st.title(t("🏪 店铺毛利"))
-st.caption(t("基于 NetSuite 销售报表 · 自带毛利+毛利率，零计算直接展示"))
+st.caption(t(
+    "NST API 売上データ（日次）· 店舗×月の粗利集計 + 月内日次推移 曲線 · "
+    "粗利/粗利率 自動計算（定義原価ベース）"
+))
 
-
-sales_count = conn.execute(
-    "SELECT COUNT(*) AS c FROM sales_line"
-).fetchone()["c"]
-if sales_count == 0:
-    st.warning(
-        t("⚠️ 没有销售数据。请到「⚙️ 数据导入与设置」上传 "
-        "`【ASEAN】店舗別売上 集計専用.xls` / `【ASEAN】店舗別売上（前日）.xls` / `【輸出】店舗別売上.xls`。")
-    )
-    st.stop()
-
-# 诊断 expander: 上传后展开看 sales_line 各 source × period 分布
-with st.expander(t("🔬 数据源状态诊断 (上传后展开看是否真入库)"), expanded=False):
-    _src_rows = conn.execute(
-        "SELECT source, period_start, period_end, COUNT(*) AS rows "
-        "FROM sales_line "
-        "GROUP BY source, period_start, period_end "
-        "ORDER BY period_start DESC LIMIT 30"
-    ).fetchall()
-    st.dataframe(
-        pd.DataFrame([dict(r) for r in _src_rows]),
-        use_container_width=True, hide_index=True,
-    )
-    st.caption(t(
-        "按日维度查 source IN ('asean_daily') 且 period_start = period_end (单日期)。"
-        "如果数据库里没有 source='asean_daily' 行,说明上传的不是「(前日).xls」。"
-    ))
-
-
-# ============================================================
-# 选择 维度（月度 / 前日）+ 期间
-# ============================================================
-DIM_TO_SOURCES = {
-    t("📅 月度"): ["asean_monthly", "export_store"],
-    t("📊 按日"): ["asean_daily"],
+# 列見出し: (中文, 日本語) — UI 言語追従
+_LBL = {
+    "shop":          ("店铺", "FB_店舗"),
+    "market":        ("市场", "市場"),
+    "sale_date":     ("日期", "日付"),
+    "display_name":  ("显示名", "表示名"),
+    "maker":         ("厂商", "メーカー名"),
+    "item_rank":     ("商品等级", "商品ランク"),
+    "qty":           ("销售数量", "販売数量"),
+    "revenue":       ("总收益", "総収益"),
+    "defined_cost":  ("定义原价", "定義原価"),
+    "gross_profit":  ("毛利", "粗利"),
+    "gross_margin":  ("毛利率", "粗利率"),
+    "n_shop":        ("店铺数", "店舗数"),
+    "n_sku":         ("SKU数", "SKU数"),
 }
-# 三控件 UI 统一为 selectbox（维度 / 期间 / 市场），等宽列
-col_dim, col_period, col_market = st.columns(3)
-with col_dim:
-    sel_dim = st.selectbox(t("维度"), list(DIM_TO_SOURCES.keys()), key="dim_sel")
-allowed_srcs = DIM_TO_SOURCES[sel_dim]
 
-# 期间选项：当前维度下可用的所有期间（先不过滤 store）
-src_placeholders = ",".join("?" * len(allowed_srcs))
-period_opts = conn.execute(
-    f"SELECT period_start, period_end, COUNT(*) AS total, "
-    f"SUM(CASE WHEN store IS NOT NULL AND store != '' THEN 1 ELSE 0 END) AS with_store "
-    f"FROM sales_line WHERE source IN ({src_placeholders}) "
-    f"GROUP BY period_start, period_end ORDER BY period_start DESC",
-    allowed_srcs,
-).fetchall()
-period_choices = [(r["period_start"], r["period_end"]) for r in period_opts]
-if not period_choices:
-    st.warning(
-        f"📊 当前选择「{sel_dim}」对应 source = {allowed_srcs}，"
-        f"但 sales_line 表里没有任何这种 source 的数据。"
-    )
-    st.info(
-        "💡 手动 Excel ingester 已于 2026-05-19 移除（迁移至 NetSuite API 自动定时拉取）。\n"
-        "数据缺失请联系管理员从 PG / NST API 路径补齐。"
-    )
-    st.stop()
+_MONEY = {"revenue", "defined_cost", "gross_profit"}
+_PCT = {"gross_margin"}
+_INT = {"qty", "n_shop", "n_sku"}
 
-# ----- 期间 + 市场（与维度同一行，全部 selectbox 风格统一） -----
-# 月度：单选 selectbox（每个期间一项）
-# 按日：单日 selectbox（每天一项），多天可选「最近 7 天」「最近 30 天」聚合项
-is_daily = sel_dim == t("📊 按日")
 
-if is_daily:
-    daily_dates = sorted(
-        {r["period_start"] for r in period_opts}, reverse=True,
-    )
-    # 构造 selectbox 选项：「最近 7 天」「最近 30 天」+ 每个具体日期
-    today_pseudo = "__last7__"
-    month_pseudo = "__last30__"
-    daily_options = [today_pseudo, month_pseudo]
+def _col(key: str) -> str:
+    return _LBL[key][1] if get_lang() == "ja" else _LBL[key][0]
 
-    def _fmt_daily(opt: str) -> str:
-        if opt == today_pseudo:
-            return t("📈 最近 7 天")
-        if opt == month_pseudo:
-            return t("📈 最近 30 天")
-        return opt
 
-    with col_period:
-        sel_opt = st.selectbox(
-            t("期间"), daily_options,
-            format_func=_fmt_daily, key="period_daily",
-        )
-    if sel_opt == today_pseudo:
-        max_d = datetime.strptime(daily_dates[0], "%Y-%m-%d").date()
-        sel_start_s = (max_d - timedelta(days=6)).isoformat()
-        sel_end_s = max_d.isoformat()
-    elif sel_opt == month_pseudo:
-        max_d = datetime.strptime(daily_dates[0], "%Y-%m-%d").date()
-        sel_start_s = (max_d - timedelta(days=29)).isoformat()
-        sel_end_s = max_d.isoformat()
-    else:
-        sel_start_s = sel_end_s = sel_opt
-else:
-    with col_period:
-        sel_period = st.selectbox(
-            t("期间"),
-            period_choices,
-            format_func=lambda p: f"{p[0]} ~ {p[1]}",
-            key="period_monthly",
-        )
-    sel_start_s, sel_end_s = sel_period[0], sel_period[1]
+def _disp(g: pd.DataFrame, cols: tuple) -> pd.DataFrame:
+    """聚合 DataFrame → 双语列名 + 金额/比率/整数格式化（表示専用）。"""
+    d = g[list(cols)].copy()
+    for c in cols:
+        if c in _MONEY:
+            d[c] = d[c].apply(lambda x: f"¥{x:,.0f}")
+        elif c in _PCT:
+            d[c] = d[c].apply(lambda x: f"{x:.2f}%")
+        elif c in _INT:
+            d[c] = d[c].apply(lambda x: f"{int(x):,}")
+    d.columns = [_col(c) for c in cols]
+    return d
 
-with col_market:
-    mk_choices = [t("全部市场")] + ALL_MARKETS
-    mk_pick = st.selectbox(t("市场"), mk_choices, index=0, key="market_sel")
 
-# 加载明细（不再硬过滤 store IS NOT NULL；店铺识别失败的行用占位符兜底）
-# daily 模式按区间，monthly 模式按精确期间
-if is_daily:
-    df = pd.DataFrame([dict(r) for r in conn.execute(
-        f"""
-        SELECT COALESCE(NULLIF(TRIM(COALESCE(store, '')), ''), '（未识别店铺）') AS store,
-               item_code, display_name, qty_sold, revenue,
-               defined_cost, gross_profit, gross_margin, rank,
-               period_start AS day
-        FROM sales_line
-        WHERE source IN ({src_placeholders})
-          AND period_start >= ? AND period_end <= ?
-        """,
-        (*allowed_srcs, sel_start_s, sel_end_s),
-    ).fetchall()])
-else:
-    df = pd.DataFrame([dict(r) for r in conn.execute(
-        f"""
-        SELECT COALESCE(NULLIF(TRIM(COALESCE(store, '')), ''), '（未识别店铺）') AS store,
-               item_code, display_name, qty_sold, revenue,
-               defined_cost, gross_profit, gross_margin, rank,
-               period_start AS day
-        FROM sales_line
-        WHERE source IN ({src_placeholders}) AND period_start = ? AND period_end = ?
-        """,
-        (*allowed_srcs, sel_start_s, sel_end_s),
-    ).fetchall()])
-
-if df.empty:
-    st.info(t("此条件下无数据。"))
-    st.stop()
-
-# 加 market 列（基于 store）
-df = add_market_column(df, store_col="store")
-
-# 市场过滤
-if mk_pick != t("全部市场"):
-    df = df[df["market"] == mk_pick]
-if df.empty:
-    st.info(t("此市场下无数据。"))
-    st.stop()
+def _query(sql: str, params: tuple = ()):
+    try:
+        cur = conn.execute(sql, params) if params else conn.execute(sql)
+        rows = cur.fetchall()
+        cols = [c[0] for c in cur.description] if cur.description else []
+        return pd.DataFrame([dict(zip(cols, r)) for r in rows], columns=cols), None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None, str(e)
 
 
 # ============================================================
-# 顶部 KPI（总）
+# データ有無チェック
 # ============================================================
-total_qty = int(df["qty_sold"].fillna(0).sum())
-total_rev = df["revenue"].fillna(0).sum()
-total_cost = df["defined_cost"].fillna(0).sum()
-total_gp = df["gross_profit"].fillna(0).sum()
-total_margin = (total_gp / total_rev * 100) if total_rev else 0
+months_df, err = _query(
+    "SELECT DISTINCT to_char(sale_date,'YYYY-MM') AS ym "
+    "FROM nst.sales_daily ORDER BY ym DESC"
+)
+if err:
+    st.error(t("売上テーブル未取得 or 接続エラー: ") + err)
+    st.info(t("page 27「📥 NST 取得データ」→ 手動更新 で sales を実行してください。"))
+    st.stop()
+if months_df is None or months_df.empty:
+    st.warning(t("⚠️ 日次売上データ未取得。page 27「📥 NST 取得データ」で sales ジョブを実行してください。"))
+    st.stop()
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric(t("总销量"), f"{total_qty:,}")
-c2.metric(t("总售价（¥）"), f"{total_rev:,.0f}")
-c3.metric(t("总成本（¥）"), f"{total_cost:,.0f}")
-c4.metric(t("毛利（¥）"), f"{total_gp:,.0f}")
-c5.metric(t("毛利率"), f"{total_margin:.2f}%")
+# ============================================================
+# フィルタ
+# ============================================================
+c1, c2 = st.columns([1, 2])
+ym = c1.selectbox(t("対象月"), months_df["ym"].tolist())
+mk = c2.selectbox(t("市場"), [t("全部市场")] + ALL_MARKETS)
+
+# ============================================================
+# クエリ（当月の日次明細 + 商品マスタ join）
+# ============================================================
+df, e2 = _query(
+    "SELECT s.shop, s.sale_date, s.item_internal_id, "
+    "im.display_name, im.maker, im.item_rank, "
+    "s.qty_sold, s.revenue, "
+    "(COALESCE(im.cost_estimate,0)*s.qty_sold) AS defined_cost "
+    "FROM nst.sales_daily s "
+    "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+    "WHERE to_char(s.sale_date,'YYYY-MM') = ? "
+    "ORDER BY s.sale_date",
+    (ym,),
+)
+if e2:
+    st.error(e2)
+    st.stop()
+if df is None or df.empty:
+    st.info(t("この条件のデータがありません"))
+    st.stop()
+
+df["qty_sold"] = df["qty_sold"].astype(float)
+df["revenue"] = df["revenue"].astype(float)
+df["defined_cost"] = df["defined_cost"].astype(float)
+df["gross_profit"] = df["revenue"] - df["defined_cost"]
+df = add_market_column(df, store_col="shop")
+
+if mk != t("全部市场"):
+    df = df[df["market"] == mk]
+    if df.empty:
+        st.info(t("この市場のデータがありません"))
+        st.stop()
+
+# ============================================================
+# KPI（総）
+# ============================================================
+tot_q = df["qty_sold"].sum()
+tot_r = df["revenue"].sum()
+tot_c = df["defined_cost"].sum()
+tot_g = df["gross_profit"].sum()
+margin = (tot_g / tot_r * 100) if tot_r else 0
+
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric(t("販売数量 計"), f"{tot_q:,.0f}")
+m2.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
+m3.metric(t("定義原価 計"), f"¥{tot_c:,.0f}")
+m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}")
+m5.metric(t("粗利率"), f"{margin:.2f}%")
 
 st.divider()
 
-if is_daily:
-    tab_market, tab_store, tab_top_skus, tab_daily = st.tabs(
-        [t("🌐 按市场聚合"), t("📊 按店铺聚合"), t("🏆 TOP SKU 贡献"), t("📈 按日趋势")]
-    )
-else:
-    tab_market, tab_store, tab_top_skus = st.tabs(
-        [t("🌐 按市场聚合"), t("📊 按店铺聚合"), t("🏆 TOP SKU 贡献")]
-    )
-    tab_daily = None
+tab_day, tab_shop, tab_market, tab_sku = st.tabs(
+    [t("📈 月内日次推移"), t("🏪 店舗別"), t("🌐 市場別"), t("🏆 TOP SKU")]
+)
 
 # ============================================================
-# Tab 0：按市场（东南亚 / 韩国 / 日本）
-# 按日模式: 日期 × 市场, 按日期降序展开 (最近一天在最上)
-# 月度模式: 单期间 × 市场聚合
+# Tab 0：月内日次推移（曲線図）← Boss 依頼の核心
+# ============================================================
+with tab_day:
+    daily = df.groupby("sale_date", as_index=False).agg(
+        qty=("qty_sold", "sum"),
+        revenue=("revenue", "sum"),
+        defined_cost=("defined_cost", "sum"),
+        gross_profit=("gross_profit", "sum"),
+        n_shop=("shop", "nunique"),
+        n_sku=("item_internal_id", "nunique"),
+    ).sort_values("sale_date")
+    daily["gross_margin"] = (
+        daily["gross_profit"] / daily["revenue"].where(daily["revenue"] != 0)
+    ).fillna(0) * 100
+
+    # 曲線図：日次 総収益 / 粗利
+    line = daily.set_index("sale_date")[["revenue", "gross_profit"]].copy()
+    line.columns = [_col("revenue"), _col("gross_profit")]
+    st.line_chart(line, use_container_width=True, height=320)
+
+    # 销量条形图
+    bar = daily.set_index("sale_date")[["qty"]].copy()
+    bar.columns = [_col("qty")]
+    st.bar_chart(bar, use_container_width=True, height=220)
+
+    # 明细表
+    day_cols = ("sale_date", "qty", "revenue", "defined_cost",
+                "gross_profit", "gross_margin", "n_shop", "n_sku")
+    st.dataframe(_disp(daily, day_cols), use_container_width=True, hide_index=True)
+
+# ============================================================
+# Tab 1：店舗別
+# ============================================================
+with tab_shop:
+    g = df.groupby("shop", as_index=False).agg(
+        qty=("qty_sold", "sum"),
+        revenue=("revenue", "sum"),
+        defined_cost=("defined_cost", "sum"),
+        gross_profit=("gross_profit", "sum"),
+        n_sku=("item_internal_id", "nunique"),
+    )
+    g["gross_margin"] = (
+        g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
+    ).fillna(0) * 100
+    g = g.sort_values("gross_profit", ascending=False)
+
+    shop_cols = ("shop", "qty", "revenue", "defined_cost",
+                 "gross_profit", "gross_margin", "n_sku")
+    st.dataframe(_disp(g, shop_cols), use_container_width=True, hide_index=True)
+    chart = g.set_index("shop")[["gross_profit"]].copy()
+    chart.columns = [_col("gross_profit")]
+    st.bar_chart(chart, horizontal=True, use_container_width=True)
+
+# ============================================================
+# Tab 2：市場別
 # ============================================================
 with tab_market:
-    if is_daily:
-        g = df.groupby(["day", "market"], as_index=False).agg(
-            销量=("qty_sold", lambda s: int(s.fillna(0).sum())),
-            总售价=("revenue", lambda s: s.fillna(0).sum()),
-            总成本=("defined_cost", lambda s: s.fillna(0).sum()),
-            毛利=("gross_profit", lambda s: s.fillna(0).sum()),
-            店铺数=("store", "nunique"),
-            SKU数=("item_code", "nunique"),
-        )
-        g["毛利率"] = (g["毛利"] / g["总售价"]).where(g["总售价"] > 0).fillna(0) * 100
-        g = g.sort_values(
-            ["day", "毛利"], ascending=[False, False]
-        ).rename(columns={"day": "日期"})
-    else:
-        g = df.groupby("market", as_index=False).agg(
-            销量=("qty_sold", lambda s: int(s.fillna(0).sum())),
-            总售价=("revenue", lambda s: s.fillna(0).sum()),
-            总成本=("defined_cost", lambda s: s.fillna(0).sum()),
-            毛利=("gross_profit", lambda s: s.fillna(0).sum()),
-            店铺数=("store", "nunique"),
-            SKU数=("item_code", "nunique"),
-        )
-        g["毛利率"] = (g["毛利"] / g["总售价"]).where(g["总售价"] > 0).fillna(0) * 100
-        g = g.sort_values("毛利", ascending=False)
-
-    g_disp = g.copy()
-    g_disp["总售价"] = g_disp["总售价"].apply(lambda x: f"{x:,.0f}")
-    g_disp["总成本"] = g_disp["总成本"].apply(lambda x: f"{x:,.0f}")
-    g_disp["毛利"] = g_disp["毛利"].apply(lambda x: f"{x:,.0f}")
-    g_disp["毛利率"] = g_disp["毛利率"].apply(lambda x: f"{x:.2f}%")
-
-    st.dataframe(localize_df(g_disp), use_container_width=True, hide_index=True)
-    if len(g) > 0:
-        # daily 模式: 按市场汇总区间总毛利做条形图
-        if is_daily:
-            mkt_sum = g.groupby("market", as_index=True)["毛利"].sum().to_frame()
-            st.bar_chart(mkt_sum, horizontal=True)
-        else:
-            st.bar_chart(g.set_index("market")[["毛利"]], horizontal=True)
-
-
-# ============================================================
-# Tab 1：按店铺
-# ============================================================
-with tab_store:
-    g = df.groupby("store", as_index=False).agg(
-        销量=("qty_sold", lambda s: int(s.fillna(0).sum())),
-        总售价=("revenue", lambda s: s.fillna(0).sum()),
-        总成本=("defined_cost", lambda s: s.fillna(0).sum()),
-        毛利=("gross_profit", lambda s: s.fillna(0).sum()),
-        SKU数=("item_code", "nunique"),
+    g = df.groupby("market", as_index=False).agg(
+        qty=("qty_sold", "sum"),
+        revenue=("revenue", "sum"),
+        defined_cost=("defined_cost", "sum"),
+        gross_profit=("gross_profit", "sum"),
+        n_shop=("shop", "nunique"),
+        n_sku=("item_internal_id", "nunique"),
     )
-    g["毛利率"] = (g["毛利"] / g["总售价"]).where(g["总售价"] > 0).fillna(0) * 100
-    g = g.sort_values("毛利", ascending=False)
-    g_disp = g.copy()
-    g_disp["总售价"] = g_disp["总售价"].apply(lambda x: f"{x:,.0f}")
-    g_disp["总成本"] = g_disp["总成本"].apply(lambda x: f"{x:,.0f}")
-    g_disp["毛利"] = g_disp["毛利"].apply(lambda x: f"{x:,.0f}")
-    g_disp["毛利率"] = g_disp["毛利率"].apply(lambda x: f"{x:.2f}%")
+    g["gross_margin"] = (
+        g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
+    ).fillna(0) * 100
+    g = g.sort_values("gross_profit", ascending=False)
 
-    st.dataframe(localize_df(g_disp), use_container_width=True, hide_index=True)
-    st.bar_chart(g.set_index("store")[["毛利"]], horizontal=True)
+    mkt_cols = ("market", "qty", "revenue", "defined_cost",
+                "gross_profit", "gross_margin", "n_shop", "n_sku")
+    st.dataframe(_disp(g, mkt_cols), use_container_width=True, hide_index=True)
+    chart = g.set_index("market")[["gross_profit"]].copy()
+    chart.columns = [_col("gross_profit")]
+    st.bar_chart(chart, horizontal=True, use_container_width=True)
 
 # ============================================================
-# Tab 2：TOP SKU
+# Tab 3：TOP SKU
 # ============================================================
-with tab_top_skus:
+with tab_sku:
     n_top = st.slider(t("Top N"), 10, 100, 30, 10)
-    g = df.groupby(["item_code", "display_name"], as_index=False).agg(
-        销量=("qty_sold", lambda s: int(s.fillna(0).sum())),
-        总售价=("revenue", lambda s: s.fillna(0).sum()),
-        毛利=("gross_profit", lambda s: s.fillna(0).sum()),
+    g = df.groupby(["item_internal_id", "display_name", "maker", "item_rank"],
+                   as_index=False, dropna=False).agg(
+        qty=("qty_sold", "sum"),
+        revenue=("revenue", "sum"),
+        gross_profit=("gross_profit", "sum"),
     )
-    g["毛利率"] = (g["毛利"] / g["总售价"]).where(g["总售价"] > 0).fillna(0) * 100
-    g = g.sort_values("毛利", ascending=False).head(n_top)
-    g_disp = g.copy()
-    g_disp["总售价"] = g_disp["总售价"].apply(lambda x: f"{x:,.0f}")
-    g_disp["毛利"] = g_disp["毛利"].apply(lambda x: f"{x:,.0f}")
-    g_disp["毛利率"] = g_disp["毛利率"].apply(lambda x: f"{x:.2f}%")
-    st.dataframe(localize_df(g_disp), use_container_width=True, hide_index=True)
+    g["gross_margin"] = (
+        g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
+    ).fillna(0) * 100
+    g = g.sort_values("gross_profit", ascending=False).head(n_top)
 
-# ============================================================
-# Tab 3：按日趋势（仅 daily 模式）
-# ============================================================
-if tab_daily is not None:
-    with tab_daily:
-        daily_g = df.groupby("day", as_index=False).agg(
-            销量=("qty_sold", lambda s: int(s.fillna(0).sum())),
-            总售价=("revenue", lambda s: s.fillna(0).sum()),
-            总成本=("defined_cost", lambda s: s.fillna(0).sum()),
-            毛利=("gross_profit", lambda s: s.fillna(0).sum()),
-            店铺数=("store", "nunique"),
-            SKU数=("item_code", "nunique"),
-        ).sort_values("day")
-        daily_g["毛利率"] = (
-            (daily_g["毛利"] / daily_g["总售价"]).where(daily_g["总售价"] > 0).fillna(0) * 100
-        )
-
-        # 折线图：每日总售价 / 毛利
-        chart_df = daily_g.set_index("day")[["总售价", "毛利"]]
-        st.line_chart(chart_df, use_container_width=True)
-
-        # 销量条形图
-        st.bar_chart(daily_g.set_index("day")[["销量"]], use_container_width=True)
-
-        # 明细表
-        daily_disp = daily_g.copy()
-        daily_disp["总售价"] = daily_disp["总售价"].apply(lambda x: f"{x:,.0f}")
-        daily_disp["总成本"] = daily_disp["总成本"].apply(lambda x: f"{x:,.0f}")
-        daily_disp["毛利"] = daily_disp["毛利"].apply(lambda x: f"{x:,.0f}")
-        daily_disp["毛利率"] = daily_disp["毛利率"].apply(lambda x: f"{x:.2f}%")
-        st.dataframe(localize_df(daily_disp), use_container_width=True, hide_index=True)
-
+    sku_cols = ("display_name", "maker", "item_rank", "qty",
+                "revenue", "gross_profit", "gross_margin")
+    st.dataframe(_disp(g, sku_cols), use_container_width=True, hide_index=True)
 
 st.divider()
-st.caption(f"{t('维度')}：{sel_dim} · {t('期间')}：{sel_start_s} ~ {sel_end_s}")
+st.caption(
+    t("対象月") + f"：{ym} · " + t("市場") + f"：{mk} · "
+    + t("表示行（明細）: ") + f"{len(df):,}"
+)
