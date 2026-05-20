@@ -11,8 +11,37 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-from shared.i18n import t, lang_selector
+from shared.i18n import t, lang_selector, get_lang
 from shared.db import get_connection
+
+# テーブル列見出し: (中文, 日本語) — UI 言語に追従。生の列名(handling_cd 等)を出さない。
+_COL_LABELS = {
+    "internal_id":        ("内部ID", "内部ID"),
+    "jan":                ("UPC编码", "UPCコード"),
+    "item_code":          ("名称", "名前"),
+    "display_name":       ("显示名", "表示名"),
+    "maker":              ("厂商", "メーカー名"),
+    "item_rank":          ("商品等级", "商品ランク"),
+    "handling_cd":        ("经销状态", "取扱区分"),
+    "carton_qty":         ("整箱入数", "カートン入数"),
+    "order_lot":          ("订货批量", "発注ロット"),
+    "cost":               ("购入价格", "購入価格"),
+    "average_cost":       ("平均成本", "平均原価"),
+    "last_purchase_cost": ("上次购入价", "前回購入価格"),
+    "cost_estimate":      ("定义成本", "アイテム定義原価"),
+    "department":         ("部门", "部門"),
+    "last_modified":      ("最终更新日", "最終更新日"),
+    "qty_on_hand":        ("现有库存", "手持"),
+    "qty_available":      ("可用库存", "利用可能"),
+    "qty_on_order":       ("订货中", "注文済"),
+    "warehouse":          ("仓库", "在庫保管場所"),
+}
+
+
+def _cc(*keys) -> dict:
+    """指定列の column_config（UI 言語追従）。"""
+    ja = get_lang() == "ja"
+    return {k: (_COL_LABELS[k][1] if ja else _COL_LABELS[k][0]) for k in keys}
 
 st.set_page_config(page_title=t("NST 取得データ"), page_icon="📥", layout="wide")
 from shared.auth import require_admin
@@ -120,23 +149,12 @@ with tab1:
             st.caption(t("表示件数（最大 {n} 件）: ").format(n=LIMIT) + f"{len(df):,}")
             st.dataframe(
                 df, use_container_width=True, height=560,
-                column_config={
-                    "internal_id": "内部ID",
-                    "jan": "UPCコード",
-                    "item_code": "名前",
-                    "display_name": "表示名",
-                    "maker": "メーカー名",
-                    "item_rank": "商品ランク",
-                    "handling_cd": "取扱区分",
-                    "carton_qty": "カートン入数",
-                    "order_lot": "発注ロット",
-                    "cost": "購入価格",
-                    "average_cost": "平均原価",
-                    "last_purchase_cost": "前回購入価格",
-                    "cost_estimate": "アイテム定義原価",
-                    "department": "部門",
-                    "last_modified": "最終更新日",
-                },
+                column_config=_cc(
+                    "internal_id", "jan", "item_code", "display_name", "maker",
+                    "item_rank", "handling_cd", "carton_qty", "order_lot",
+                    "cost", "average_cost", "last_purchase_cost", "cost_estimate",
+                    "department", "last_modified",
+                ),
             )
 
 # ============================================================
@@ -177,16 +195,10 @@ with tab2:
             st.caption(t("表示件数（最大 2000 件）: ") + f"{len(df):,}")
             st.dataframe(
                 df, use_container_width=True, height=560,
-                column_config={
-                    "jan": "UPCコード",
-                    "display_name": "表示名",
-                    "maker": "メーカー名",
-                    "item_rank": "商品ランク",
-                    "qty_on_hand": "手持",
-                    "qty_available": "利用可能",
-                    "qty_on_order": "注文済",
-                    "warehouse": "在庫保管場所",
-                },
+                column_config=_cc(
+                    "jan", "display_name", "maker", "item_rank",
+                    "qty_on_hand", "qty_available", "qty_on_order", "warehouse",
+                ),
             )
 
 # ============================================================
