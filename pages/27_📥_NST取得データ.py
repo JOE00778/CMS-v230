@@ -41,9 +41,11 @@ def _query(sql: str, params: tuple = ()):
         return None, str(e)
 
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab_sched, tab_manual, tab3 = st.tabs([
     t("📦 商品マスタ"),
     t("🏬 在庫 (JD-物流-千葉)"),
+    t("⏰ スケジュール設定"),
+    t("▶️ 手動更新"),
     t("📜 取得履歴"),
 ])
 
@@ -171,6 +173,90 @@ with tab2:
                     "warehouse": t("倉庫"),
                 },
             )
+
+# ============================================================
+# Tab スケジュール設定 nst.pull_schedule（編集）
+# ============================================================
+with tab_sched:
+    st.subheader(t("定时取得スケジュール"))
+    st.caption(t("元川の常駐ディスパッチャが毎分この設定を見て daily_pull を起動します"))
+    sched_df, err = _query(
+        "SELECT job_key, category, frequency, domains, enabled, run_time, "
+        "run_day, last_status, last_run_at FROM nst.pull_schedule ORDER BY job_key"
+    )
+    if err:
+        st.error(t("テーブル未取得 or 接続エラー: ") + err)
+    elif sched_df is None or sched_df.empty:
+        st.info(t("スケジュール未登録"))
+    else:
+        with st.form("sched_form"):
+            new_vals = {}
+            for _, r in sched_df.iterrows():
+                jk = r["job_key"]
+                st.markdown(f"**{jk}**  ·  {r['category']} / {r['frequency']} / domains={r['domains']}")
+                c1, c2, c3, c4 = st.columns([1.2, 1.5, 2, 2])
+                en = c1.checkbox(t("有効"), value=bool(r["enabled"]), key=f"en_{jk}")
+                rt = c2.text_input(t("起動時刻 HH:MM"), value=str(r["run_time"])[:5], key=f"rt_{jk}")
+                rd = None
+                if r["frequency"] == "monthly":
+                    rd = c3.number_input(t("実行日(1-28)"), 1, 28,
+                                         value=int(r["run_day"] or 1), key=f"rd_{jk}")
+                else:
+                    c3.caption(t("（毎日）"))
+                last = r["last_run_at"]
+                c4.caption(t("最終: ") + (str(last)[:16] if last is not None else "-")
+                           + f" / {r['last_status'] or '-'}")
+                new_vals[jk] = (en, rt, rd)
+            if st.form_submit_button(t("💾 保存"), type="primary"):
+                ok = 0
+                for jk, (en, rt, rd) in new_vals.items():
+                    try:
+                        conn.execute(
+                            "UPDATE nst.pull_schedule SET enabled=?, run_time=?, "
+                            "run_day=?, updated_at=now() WHERE job_key=?",
+                            (en, rt.strip(), rd, jk),
+                        )
+                        ok += 1
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"{jk}: {e}")
+                conn.commit()
+                st.success(t("保存しました（{n} 件）").format(n=ok))
+                st.rerun()
+
+# ============================================================
+# Tab 手動更新（run_now フラグを立てる）
+# ============================================================
+with tab_manual:
+    st.subheader(t("手動でデータ取得"))
+    st.caption(t("「今すぐ取得」を押すと、常駐ディスパッチャが1分以内に daily_pull を起動します"))
+    jobs_df, err = _query(
+        "SELECT job_key, domains, run_now, last_status FROM nst.pull_schedule "
+        "WHERE enabled ORDER BY job_key"
+    )
+    if err:
+        st.error(t("接続エラー: ") + err)
+    elif jobs_df is None or jobs_df.empty:
+        st.info(t("有効なジョブがありません"))
+    else:
+        for _, r in jobs_df.iterrows():
+            jk = r["job_key"]
+            c1, c2, c3 = st.columns([2, 2, 2])
+            c1.markdown(f"**{jk}**")
+            c2.caption(f"domains={r['domains']} / {r['last_status'] or '-'}")
+            if r["run_now"]:
+                c3.info(t("⏳ 実行待ち…"))
+            elif c3.button(t("▶️ 今すぐ取得"), key=f"run_{jk}", type="primary"):
+                try:
+                    conn.execute(
+                        "UPDATE nst.pull_schedule SET run_now=TRUE, updated_at=now() "
+                        "WHERE job_key=?", (jk,))
+                    conn.commit()
+                    st.success(t("{j} を予約しました（1分以内に実行）").format(j=jk))
+                    st.rerun()
+                except Exception as e:
+                    conn.rollback()
+                    st.error(str(e))
 
 # ============================================================
 # Tab 3: 取得履歴 nst._pull_runs
