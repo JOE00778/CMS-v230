@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -137,6 +139,9 @@ df["qty_sold"] = df["qty_sold"].astype(float)
 df["revenue"] = df["revenue"].astype(float)
 df["defined_cost"] = df["defined_cost"].astype(float)
 df["gross_profit"] = df["revenue"] - df["defined_cost"]
+# 未来日付（NST に未来 dated の取引が混入）を除外：今日(JST)まで
+_today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
+df = df[df["sale_date"] <= _today]
 df = add_market_column(df, store_col="shop")
 
 if mk != t("全部市场"):
@@ -183,9 +188,12 @@ with tab_day:
         daily["gross_profit"] / daily["revenue"].where(daily["revenue"] != 0)
     ).fillna(0) * 100
 
-    # 前日（当月最新日）データ + 前々日比 delta（曲線図の上に表示）
-    _last = daily.iloc[-1]
-    _prev = daily.iloc[-2] if len(daily) >= 2 else None
+    # 前日データ = 昨日(今日-1)の実績。当月以外/欠測時は「昨日以前の最新日」に回退
+    _yest = _today - dt.timedelta(days=1)
+    _elig = daily[daily["sale_date"] <= _yest]
+    _src = _elig if not _elig.empty else daily
+    _last = _src.iloc[-1]
+    _prev = _src.iloc[-2] if len(_src) >= 2 else None
     _ld = _last["sale_date"]
     _hdr = "前日データ" if get_lang() == "ja" else "前日数据"
     st.markdown(f"**{_hdr}** · {_ld.month}月{_ld.day}日")
