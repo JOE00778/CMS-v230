@@ -7,6 +7,8 @@ data_warehouse/warehouse.db
 data_warehouse/warehouse.db-*
 .streamlit/secrets.toml
 data/
+# SSH 接入配置文档（含内网 IP / CF tunnel 配置 · 仅本地参考 · Boss 决策 2026-05-20 放本地不进 git）
+deploy/windows/SSH-ACCESS.md
 # 审计日志（image_translate 等出境调用记录）已并入 data/ 全量 ignore
 *.xlsx
 *.xls
