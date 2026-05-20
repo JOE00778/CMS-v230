@@ -265,7 +265,7 @@ with tab_day:
     # 粗利率（右軸・破線）
     _l_mg = _base.mark_line(point=True, strokeDash=[5, 3]).encode(
         y=alt.Y("gross_margin:Q", title=None,
-                scale=alt.Scale(domain=[40, 70]),
+                scale=alt.Scale(domain=[50, 70]),
                 axis=alt.Axis(orient="right", format=".0f")),
         color=alt.datum(mg_lbl),
     )
