@@ -229,8 +229,12 @@ with tab_day:
     def _delta(key, pct=False):
         if _prev is None:
             return None
-        diff = float(_last[key]) - float(_prev[key])
-        return f"{diff:+.2f}pt" if pct else f"{diff:+,.0f}"
+        cur, prev = float(_last[key]), float(_prev[key])
+        diff = cur - prev
+        if pct:  # 粗利率は百分点差
+            return f"{diff:+.2f}pt"
+        rate = (diff / prev * 100) if prev else 0.0
+        return f"{diff:+,.0f} ({rate:+.1f}%)"
 
     pq, pr, pg, pm = st.columns(4)
     pq.metric(_col("qty"), f"{int(_last['qty']):,}", _delta("qty"))
