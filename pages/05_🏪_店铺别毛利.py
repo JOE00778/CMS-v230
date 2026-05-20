@@ -183,6 +183,25 @@ with tab_day:
         daily["gross_profit"] / daily["revenue"].where(daily["revenue"] != 0)
     ).fillna(0) * 100
 
+    # 前日（当月最新日）データ + 前々日比 delta（曲線図の上に表示）
+    _last = daily.iloc[-1]
+    _prev = daily.iloc[-2] if len(daily) >= 2 else None
+    _ld = _last["sale_date"]
+    _hdr = "前日データ" if get_lang() == "ja" else "前日数据"
+    st.markdown(f"**{_hdr}** · {_ld.month}月{_ld.day}日")
+
+    def _delta(key, pct=False):
+        if _prev is None:
+            return None
+        diff = float(_last[key]) - float(_prev[key])
+        return f"{diff:+.2f}pt" if pct else f"{diff:+,.0f}"
+
+    pq, pr, pg, pm = st.columns(4)
+    pq.metric(_col("qty"), f"{int(_last['qty']):,}", _delta("qty"))
+    pr.metric(_col("revenue"), f"¥{_last['revenue']:,.0f}", _delta("revenue"))
+    pg.metric(_col("gross_profit"), f"¥{_last['gross_profit']:,.0f}", _delta("gross_profit"))
+    pm.metric(_col("gross_margin"), f"{_last['gross_margin']:.2f}%", _delta("gross_margin", pct=True))
+
     # x 軸 = 日付。月選択済みなので "N日" 形式で簡潔表示（chart 用に datetime 化）
     chart_src = daily.copy()
     chart_src["sale_date"] = pd.to_datetime(chart_src["sale_date"])
