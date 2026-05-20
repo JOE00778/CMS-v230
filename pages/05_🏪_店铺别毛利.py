@@ -228,20 +228,24 @@ with tab_day:
                axis=alt.Axis(format="%-d日", labelAngle=0, tickCount="day"))
     _date_tip = alt.Tooltip("sale_date:T", title=_col("sale_date"), format="%Y-%m-%d")
 
-    # 曲線図：日次 総収益 / 粗利
+    # 曲線図：日次 総収益 / 粗利（同一日付に hover で両方表示）
     rev_lbl, gp_lbl = _col("revenue"), _col("gross_profit")
-    line_long = chart_src.melt(
-        id_vars=["sale_date"], value_vars=["revenue", "gross_profit"],
-        var_name="metric", value_name="value",
+    _tip = [_date_tip,
+            alt.Tooltip("revenue:Q", title=rev_lbl, format=",.0f"),
+            alt.Tooltip("gross_profit:Q", title=gp_lbl, format=",.0f")]
+    _base = alt.Chart(chart_src).encode(x=_x)
+    _l_rev = _base.mark_line(point=True).encode(
+        y=alt.Y("revenue:Q", title=None), color=alt.datum(rev_lbl), tooltip=_tip,
     )
-    line_long["metric"] = line_long["metric"].map({"revenue": rev_lbl, "gross_profit": gp_lbl})
-    line_chart = alt.Chart(line_long).mark_line(point=True).encode(
-        x=_x,
-        y=alt.Y("value:Q", title=None),
-        color=alt.Color("metric:N", legend=alt.Legend(title=None, orient="top")),
-        tooltip=[_date_tip, alt.Tooltip("metric:N", title=""),
-                 alt.Tooltip("value:Q", title="", format=",.0f")],
-    ).properties(height=320)
+    _l_gp = _base.mark_line(point=True).encode(
+        y=alt.Y("gross_profit:Q", title=None), color=alt.datum(gp_lbl), tooltip=_tip,
+    )
+    line_chart = (
+        alt.layer(_l_rev, _l_gp)
+        .resolve_scale(color="shared")
+        .properties(height=320)
+        .configure_legend(orient="top", title=None)
+    )
     st.altair_chart(line_chart, use_container_width=True)
 
     # 销量条形图
