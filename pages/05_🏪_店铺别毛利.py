@@ -139,7 +139,7 @@ df, e2 = _query(
     "SELECT s.shop, s.sale_date, s.item_internal_id, "
     "im.display_name, im.maker, im.item_rank, "
     "s.qty_sold, s.revenue, "
-    "(COALESCE(im.cost_estimate,0)*s.qty_sold) AS defined_cost "
+    "s.gross_profit "
     "FROM nst.sales_daily s "
     "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
     "WHERE to_char(s.sale_date,'YYYY-MM') = ? "
@@ -155,8 +155,8 @@ if df is None or df.empty:
 
 df["qty_sold"] = df["qty_sold"].astype(float)
 df["revenue"] = df["revenue"].astype(float)
-df["defined_cost"] = df["defined_cost"].astype(float)
-df["gross_profit"] = df["revenue"] - df["defined_cost"]
+df["gross_profit"] = df["gross_profit"].astype(float)    # NetSuite 真実毛利（estgrossprofit）
+df["defined_cost"] = df["revenue"] - df["gross_profit"]  # NetSuite 口径の原価（売上−毛利）
 # 未来日付除外 + 当日は未確定（07:00 に前日分取得）のため除外：前日まで
 _today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
 _cutoff = _today - dt.timedelta(days=1)

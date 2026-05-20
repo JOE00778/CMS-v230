@@ -161,7 +161,7 @@ if view == t("店舗別"):
     df, e2 = _query(
         "SELECT s.shop, im.jan, im.display_name, im.maker, im.item_rank, im.handling_cd, "
         "s.qty_sold, s.revenue, "
-        "(COALESCE(im.cost_estimate,0)*s.qty_sold) AS teigi_genka, "
+        "s.gross_profit, "
         "inv.qty_on_hand, inv.qty_available "
         "FROM nst.sales_monthly s "
         "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
@@ -176,7 +176,7 @@ else:
     df, e2 = _query(
         "SELECT im.jan, im.display_name, im.maker, im.item_rank, im.handling_cd, "
         "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
-        "(MAX(COALESCE(im.cost_estimate,0))*SUM(s.qty_sold)) AS teigi_genka, "
+        "SUM(s.gross_profit) AS gross_profit, "
         "MAX(inv.qty_on_hand) AS qty_on_hand, MAX(inv.qty_available) AS qty_available "
         "FROM nst.sales_monthly s "
         "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
@@ -199,8 +199,8 @@ elif df is None or df.empty:
     st.info(t("この条件のデータがありません"))
 else:
     df["revenue"] = df["revenue"].astype(float)
-    df["teigi_genka"] = df["teigi_genka"].astype(float)
-    df["arari"] = df["revenue"] - df["teigi_genka"]
+    df["arari"] = df["gross_profit"].astype(float)          # NetSuite 真実毛利（estgrossprofit）
+    df["teigi_genka"] = df["revenue"] - df["arari"]         # NetSuite 口径の原価（売上−毛利）
     df["arari_rate"] = (df["arari"] / df["revenue"].where(df["revenue"] != 0)).round(4)
 
     tot_q = df["qty_sold"].astype(float).sum()

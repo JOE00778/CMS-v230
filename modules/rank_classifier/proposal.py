@@ -87,7 +87,7 @@ def generate_proposal(
                 MIN(im.handling_cd) AS handling_status,
                 COALESCE(SUM(s.revenue), 0) AS total_revenue,
                 COALESCE(SUM(s.qty_sold), 0) AS total_qty,
-                COALESCE(SUM(COALESCE(im.cost_estimate, 0) * s.qty_sold), 0) AS total_cost
+                COALESCE(SUM(s.gross_profit), 0) AS total_gp
             FROM nst.sales_monthly s
             JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id
             {ym_where}
@@ -97,10 +97,10 @@ def generate_proposal(
         if not sales_data:
             return []
 
-        # 利益率 = (売上 − 定義原価) / 売上（NST に粗利率なし → cost_estimate で算出）
+        # 利益率 = NetSuite 真実毛利(estgrossprofit) / 売上
         for row in sales_data:
             rev = row['total_revenue'] or 0
-            row['avg_margin'] = ((rev - (row['total_cost'] or 0)) / rev) if rev else 0.0
+            row['avg_margin'] = ((row['total_gp'] or 0) / rev) if rev else 0.0
 
         sku_to_sales = {row['item_code']: row['total_revenue'] for row in sales_data}
         rank_pcts = calc_sales_rank(sku_to_sales)
