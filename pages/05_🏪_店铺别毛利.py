@@ -228,20 +228,27 @@ with tab_day:
                axis=alt.Axis(format="%-d日", labelAngle=0, tickCount="day"))
     _date_tip = alt.Tooltip("sale_date:T", title=_col("sale_date"), format="%Y-%m-%d")
 
-    # 曲線図：日次 総収益 / 粗利（同一日付に hover で両方表示）
+    # 曲線図：日次 総収益 / 粗利（日付軸どこに hover しても両方表示）
     rev_lbl, gp_lbl = _col("revenue"), _col("gross_profit")
     _tip = [_date_tip,
             alt.Tooltip("revenue:Q", title=rev_lbl, format=",.0f"),
             alt.Tooltip("gross_profit:Q", title=gp_lbl, format=",.0f")]
+    _nearest = alt.selection_point(nearest=True, on="pointerover",
+                                   fields=["sale_date"], empty=False)
     _base = alt.Chart(chart_src).encode(x=_x)
     _l_rev = _base.mark_line(point=True).encode(
-        y=alt.Y("revenue:Q", title=None), color=alt.datum(rev_lbl), tooltip=_tip,
+        y=alt.Y("revenue:Q", title=None), color=alt.datum(rev_lbl),
     )
     _l_gp = _base.mark_line(point=True).encode(
-        y=alt.Y("gross_profit:Q", title=None), color=alt.datum(gp_lbl), tooltip=_tip,
+        y=alt.Y("gross_profit:Q", title=None), color=alt.datum(gp_lbl),
     )
+    # 透明な縦ルールで日付軸全体を hover 対象に → 最近傍の日に縦線+両値 tooltip
+    _rule = _base.mark_rule(color="#888").encode(
+        opacity=alt.condition(_nearest, alt.value(0.35), alt.value(0)),
+        tooltip=_tip,
+    ).add_params(_nearest)
     line_chart = (
-        alt.layer(_l_rev, _l_gp)
+        alt.layer(_l_rev, _l_gp, _rule)
         .resolve_scale(color="shared")
         .properties(height=320)
         .configure_legend(orient="top", title=None)
