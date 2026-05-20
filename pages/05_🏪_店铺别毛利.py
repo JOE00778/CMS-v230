@@ -23,6 +23,7 @@ import streamlit as st
 from shared.db import get_connection
 from shared.i18n import lang_selector, t, get_lang
 from shared.markets import ALL_MARKETS, add_market_column
+from shared.owners import OWNER_EXCLUDED, add_owner_column
 
 st.set_page_config(page_title=t("店铺毛利"), page_icon="🏪", layout="wide")
 from shared.auth import require_password
@@ -41,6 +42,7 @@ st.caption(t(
 # 列見出し: (中文, 日本語) — UI 言語追従
 _LBL = {
     "shop":          ("店铺", "FB_店舗"),
+    "owner":         ("负责人", "担当者"),
     "market":        ("市场", "市場"),
     "sale_date":     ("日期", "日付"),
     "display_name":  ("显示名", "表示名"),
@@ -143,6 +145,7 @@ df["gross_profit"] = df["revenue"] - df["defined_cost"]
 _today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
 df = df[df["sale_date"] <= _today]
 df = add_market_column(df, store_col="shop")
+df = add_owner_column(df, shop_col="shop")
 
 if mk != t("全部市场"):
     df = df[df["market"] == mk]
@@ -168,8 +171,8 @@ m5.metric(t("粗利率"), f"{margin:.2f}%")
 
 st.divider()
 
-tab_day, tab_shop, tab_market, tab_sku = st.tabs(
-    [t("📈 月内日次推移"), t("🏪 店舗別"), t("🌐 市場別"), t("🏆 TOP SKU")]
+tab_day, tab_owner, tab_shop, tab_market, tab_sku = st.tabs(
+    [t("📈 月内日次推移"), t("👤 担当者別"), t("🏪 店舗別"), t("🌐 市場別"), t("🏆 TOP SKU")]
 )
 
 # ============================================================
@@ -255,10 +258,37 @@ with tab_day:
     st.dataframe(_disp(daily, day_cols), use_container_width=True, hide_index=True)
 
 # ============================================================
+# Tab：担当者別（日本店=対象外 は除外）
+# ============================================================
+with tab_owner:
+    _od = df[df["owner"] != OWNER_EXCLUDED]
+    if _od.empty:
+        st.info(t("この条件のデータがありません"))
+    else:
+        g = _od.groupby("owner", as_index=False).agg(
+            qty=("qty_sold", "sum"),
+            revenue=("revenue", "sum"),
+            defined_cost=("defined_cost", "sum"),
+            gross_profit=("gross_profit", "sum"),
+            n_shop=("shop", "nunique"),
+            n_sku=("item_internal_id", "nunique"),
+        )
+        g["gross_margin"] = (
+            g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
+        ).fillna(0) * 100
+        g = g.sort_values("gross_profit", ascending=False)
+        owner_cols = ("owner", "qty", "revenue", "defined_cost",
+                      "gross_profit", "gross_margin", "n_shop", "n_sku")
+        st.dataframe(_disp(g, owner_cols), use_container_width=True, hide_index=True)
+        chart = g.set_index("owner")[["gross_profit"]].copy()
+        chart.columns = [_col("gross_profit")]
+        st.bar_chart(chart, horizontal=True, use_container_width=True)
+
+# ============================================================
 # Tab 1：店舗別
 # ============================================================
 with tab_shop:
-    g = df.groupby("shop", as_index=False).agg(
+    g = df.groupby(["shop", "owner"], as_index=False).agg(
         qty=("qty_sold", "sum"),
         revenue=("revenue", "sum"),
         defined_cost=("defined_cost", "sum"),
@@ -270,7 +300,7 @@ with tab_shop:
     ).fillna(0) * 100
     g = g.sort_values("gross_profit", ascending=False)
 
-    shop_cols = ("shop", "qty", "revenue", "defined_cost",
+    shop_cols = ("shop", "owner", "qty", "revenue", "defined_cost",
                  "gross_profit", "gross_margin", "n_sku")
     st.dataframe(_disp(g, shop_cols), use_container_width=True, hide_index=True)
     chart = g.set_index("shop")[["gross_profit"]].copy()
