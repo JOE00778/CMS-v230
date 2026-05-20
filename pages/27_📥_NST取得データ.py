@@ -182,7 +182,8 @@ with tab_sched:
     st.caption(t("元川の常駐ディスパッチャが毎分この設定を見て daily_pull を起動します"))
     sched_df, err = _query(
         "SELECT job_key, category, frequency, domains, enabled, run_time, "
-        "run_day, last_status, last_run_at FROM nst.pull_schedule ORDER BY job_key"
+        "run_day, last_status, last_run_at, description "
+        "FROM nst.pull_schedule ORDER BY job_key"
     )
     if err:
         st.error(t("テーブル未取得 or 接続エラー: ") + err)
@@ -194,6 +195,8 @@ with tab_sched:
             for _, r in sched_df.iterrows():
                 jk = r["job_key"]
                 st.markdown(f"**{jk}**  ·  {r['category']} / {r['frequency']} / domains={r['domains']}")
+                if r.get("description"):
+                    st.caption("📋 " + str(r["description"]))
                 c1, c2, c3, c4 = st.columns([1.2, 1.5, 2, 2])
                 en = c1.checkbox(t("有効"), value=bool(r["enabled"]), key=f"en_{jk}")
                 rt = c2.text_input(t("起動時刻 HH:MM"), value=str(r["run_time"])[:5], key=f"rt_{jk}")
@@ -231,8 +234,8 @@ with tab_manual:
     st.subheader(t("手動でデータ取得"))
     st.caption(t("「今すぐ取得」を押すと、常駐ディスパッチャが1分以内に daily_pull を起動します"))
     jobs_df, err = _query(
-        "SELECT job_key, domains, run_now, last_status FROM nst.pull_schedule "
-        "WHERE enabled ORDER BY job_key"
+        "SELECT job_key, domains, run_now, last_status, description "
+        "FROM nst.pull_schedule WHERE enabled ORDER BY job_key"
     )
     if err:
         st.error(t("接続エラー: ") + err)
@@ -241,9 +244,11 @@ with tab_manual:
     else:
         for _, r in jobs_df.iterrows():
             jk = r["job_key"]
-            c1, c2, c3 = st.columns([2, 2, 2])
+            c1, c2, c3 = st.columns([3, 2, 2])
             c1.markdown(f"**{jk}**")
-            c2.caption(f"domains={r['domains']} / {r['last_status'] or '-'}")
+            if r.get("description"):
+                c1.caption("📋 " + str(r["description"]))
+            c2.caption(f"{r['last_status'] or '-'}")
             if r["run_now"]:
                 c3.info(t("⏳ 実行待ち…"))
             elif c3.button(t("▶️ 今すぐ取得"), key=f"run_{jk}", type="primary"):
