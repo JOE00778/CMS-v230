@@ -34,10 +34,26 @@ lang_selector()
 conn = get_connection()
 
 st.title(t("🏪 店铺毛利"))
+# データ更新日時（sales_daily 最新 pulled_at · UTC→JST）
+try:
+    _u = conn.execute("SELECT max(pulled_at) AS u FROM nst.sales_daily").fetchone()
+    _uval = _u["u"] if _u else None
+except Exception:
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    _uval = None
+if _uval is not None:
+    _uval = _uval.astimezone(dt.timezone(dt.timedelta(hours=9)))
+    _upd_str = _uval.strftime("%Y-%m-%d %H:%M")
+else:
+    _upd_str = "—"
+_upd_lbl = "データ更新" if get_lang() == "ja" else "数据更新"
 st.caption(t(
     "NST API 売上データ（日次）· 店舗×月の粗利集計 + 月内日次推移 曲線 · "
     "粗利/粗利率 自動計算（定義原価ベース）"
-))
+) + f" · {_upd_lbl}: {_upd_str}")
 
 # 列見出し: (中文, 日本語) — UI 言語追従
 _LBL = {
