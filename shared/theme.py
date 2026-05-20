@@ -314,6 +314,9 @@ hr {
 ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.18); border-radius: 980px; border: 2px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.28); border: 2px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ===== 整体缩放 90%（Boss 2026-05-20 · 全页面统一 -10%）===== */
+.stApp { zoom: 0.9; }
 </style>
 """
 
