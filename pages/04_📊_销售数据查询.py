@@ -99,13 +99,28 @@ ym = c1.selectbox(t("対象月"), months_df["year_month"].tolist())
 view = c2.radio(t("表示単位"), [t("店舗別"), t("アイテム別")], horizontal=True)
 kw = c3.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
 
-shop_filter = None
-if view == t("店舗別"):
-    shops_df, _ = _query(
-        "SELECT DISTINCT shop FROM nst.sales_monthly WHERE year_month=? ORDER BY shop", (ym,)
-    )
-    shop_opts = [t("（全店舗）")] + (shops_df["shop"].tolist() if shops_df is not None else [])
-    shop_filter = st.selectbox(t("店舗"), shop_opts)
+# 当月売上商品の各次元 distinct → 絞り込み候補
+_opt_df, _ = _query(
+    "SELECT DISTINCT s.shop, im.item_rank, im.maker, im.handling_cd "
+    "FROM nst.sales_monthly s "
+    "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+    "WHERE s.year_month = ?",
+    (ym,),
+)
+
+
+def _opts(col: str) -> list:
+    if _opt_df is None or col not in _opt_df.columns:
+        return []
+    return sorted({str(v).strip() for v in _opt_df[col].dropna().tolist() if str(v).strip()})
+
+
+_ALL = t("（全部）")
+f1, f2, f3, f4 = st.columns(4)
+shop_filter = f1.selectbox(t("店舗"), [_ALL] + _opts("shop"))
+rank_filter = f2.selectbox(t("商品ランク"), [_ALL] + _opts("item_rank"))
+maker_filter = f3.selectbox(t("メーカー名"), [_ALL] + _opts("maker"))
+handling_filter = f4.selectbox(t("取扱区分"), [_ALL] + _opts("handling_cd"))
 
 # ============================================================
 # クエリ組み立て
@@ -115,8 +130,14 @@ _INV = ("(SELECT item_internal_id, qty_on_hand, qty_available FROM nst.inventory
 
 where = ["s.year_month = ?"]
 params: list = [ym]
-if view == t("店舗別") and shop_filter and shop_filter != t("（全店舗）"):
+if shop_filter != _ALL:
     where.append("s.shop = ?"); params.append(shop_filter)
+if rank_filter != _ALL:
+    where.append("im.item_rank = ?"); params.append(rank_filter)
+if maker_filter != _ALL:
+    where.append("im.maker = ?"); params.append(maker_filter)
+if handling_filter != _ALL:
+    where.append("im.handling_cd = ?"); params.append(handling_filter)
 if kw.strip():
     where.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
     like = f"%{kw.strip()}%"; params += [like, like]
