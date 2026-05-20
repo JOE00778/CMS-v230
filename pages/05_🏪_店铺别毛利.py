@@ -291,12 +291,14 @@ with tab_owner:
         # ② 各负责人ごと：名称(総計) + 配下の店舗別明細
         for _ow in g["owner"].tolist():   # gross_profit 降順
             sub = _od[_od["owner"] == _ow]
+            t_ns = sub["shop"].nunique()
             t_q = sub["qty_sold"].sum()
             t_r = sub["revenue"].sum()
             t_g = sub["gross_profit"].sum()
             t_m = (t_g / t_r * 100) if t_r else 0
             st.markdown(
-                f"**👤 {_ow}** &nbsp;｜&nbsp; {_col('qty')}: {int(t_q):,} ｜ "
+                f"**👤 {_ow}** &nbsp;｜&nbsp; {_col('n_shop')}: {t_ns} ｜ "
+                f"{_col('qty')}: {int(t_q):,} ｜ "
                 f"{_col('revenue')}: ¥{t_r:,.0f} ｜ {_col('gross_profit')}: ¥{t_g:,.0f} ｜ "
                 f"{_col('gross_margin')}: {t_m:.2f}%"
             )
