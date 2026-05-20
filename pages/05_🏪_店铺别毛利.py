@@ -286,7 +286,7 @@ with tab_day:
 
     # 销量条形图
     qty_lbl = _col("qty")
-    bar_chart = alt.Chart(chart_src).mark_bar().encode(
+    bar_chart = alt.Chart(chart_src).mark_bar(size=22).encode(
         x=_x,
         y=alt.Y("qty:Q", title=qty_lbl),
         tooltip=[_date_tip, alt.Tooltip("qty:Q", title=qty_lbl, format=",.0f")],
