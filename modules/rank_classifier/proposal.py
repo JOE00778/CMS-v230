@@ -190,6 +190,11 @@ def generate_proposal(
             })
             old_rank = old_rank_map.get(item_code, 'NEW')
 
+            # Boss 規則（2026-05-21）: 取扱中止は吸収状態 — 現行が取扱中止/停售なら
+            # 等级判定の対象外（降级で取扱中止に入るのは可、取扱中止から A/B/C へ戻すのは不可）
+            if str(old_rank) in ('取扱中止', 'メーカー取扱中止', '停售'):
+                new_rank = '停售'
+
             # 等级波动标记（升 / 降 / 维持）
             rank_order = {'A': 4, 'Aランク': 4, 'Bランク': 3, 'B': 3,
                           'Cランク': 2, 'C': 2, 'NEW': 1, '停售': 0,
