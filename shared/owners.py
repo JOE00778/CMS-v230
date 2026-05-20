@@ -17,9 +17,11 @@ OWNER_EXCLUDED = "対象外"
 # 负责人 → 担当店舗（「负责人毛利情况」表 2026/1 + COUPANG）
 _SHOP_OWNER: dict[str, list[str]] = {
     "邓晓庆": ["Lazada MY", "Lazada PH", "Lazada SG", "Shopee TW", "Shopee toy TW"],
-    "尹雪莉": ["Shopee Cosme PH", "Shopee Cosme VN", "Shopee VN", "Smikiejapan COUPANG"],
-    "刘颖":   ["Shopee J-Beauty Hub PH", "Shopee Mall PH", "Shopee PH"],
-    "裴晓晗": ["Shopee BR", "Shopee Cosme SG", "Shopee Kurashi-Mart.SG", "Shopee SG"],
+    "尹雪莉": ["Shopee Cosme VN", "Shopee VN", "Smikiejapan COUPANG", "Shopee TH"],
+    "刘颖":   ["Shopee J-Beauty Hub PH", "Shopee Mall PH", "Shopee PH",
+              "Shopee Kurashi-Mart.PH"],
+    "裴晓晗": ["Shopee BR", "Shopee Cosme SG", "Shopee Kurashi-Mart.SG", "Shopee SG",
+              "Shopee kurashi_mart.BR", "Shopee Cosme PH"],
 }
 # shop（strip 済）→ owner の逆引き
 _OWNER_BY_SHOP = {
