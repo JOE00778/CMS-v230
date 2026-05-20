@@ -63,36 +63,6 @@ def _gen_months(n=12):
 
 MONTH_OPTIONS = _gen_months(12)
 
-# 数据诊断 expander
-with st.expander(t("🩺 数据诊断 (点击展开看各表行数)"), expanded=False):
-    _conn = get_connection()
-    _diag = {}
-    for label, sql in [
-        ("inventory_snapshot 总行 (xls 系列)", "SELECT COUNT(*) FROM inventory_snapshot"),
-        ("inventory_snapshot WHERE location='JD-物流-千葉' distinct SKU ⭐主源",
-         "SELECT COUNT(DISTINCT item_code) FROM inventory_snapshot WHERE location='JD-物流-千葉'"),
-        ("nst_inventory_snapshot WHERE location='JD-物流-千葉' SKU (XML 旧表 fallback)",
-         "SELECT COUNT(DISTINCT item_code) FROM nst_inventory_snapshot WHERE location='JD-物流-千葉'"),
-        ("sales_line WHERE source='asean_monthly'",
-         "SELECT COUNT(*) FROM sales_line WHERE source='asean_monthly'"),
-        ("item_master_netsuite 行 (旧 rank 来源,可空,影响 old_rank)",
-         "SELECT COUNT(*) FROM item_master_netsuite"),
-        ("supply_cycle 行 (进货周期,可空,影响 reorder)",
-         "SELECT COUNT(*) FROM supply_cycle"),
-    ]:
-        try:
-            _diag[label] = _conn.execute(sql).fetchone()[0]
-        except Exception as _e:
-            _diag[label] = f"ERROR: {_e}"
-    _conn.close()
-    for k, v in _diag.items():
-        icon = "✅" if isinstance(v, int) and v > 0 else "⚠️"
-        st.write(f"{icon} **{k}**: `{v}`")
-    st.caption(t(
-        "若「JD-物流-千葉 SKU」= 0 → 请上传 `輸出通常在庫数残数検索結果.xls`\n"
-        "若「sales_line asean_monthly」= 0 → 请上传 `【ASEAN】店舗別売上 集計専用.xls`"
-    ))
-
 # Tab 1: 生成新建议  Tab 2: 历史回看
 tab1, tab2 = st.tabs([t('🆕 新建议'), t('📜 历史回看')])
 
