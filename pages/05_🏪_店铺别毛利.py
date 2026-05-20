@@ -42,7 +42,7 @@ st.caption(t(
 # 列見出し: (中文, 日本語) — UI 言語追従
 _LBL = {
     "shop":          ("店铺", "FB_店舗"),
-    "owner":         ("负责人", "担当者"),
+    "owner":         ("店铺负责人", "担当者"),
     "market":        ("市场", "市場"),
     "sale_date":     ("日期", "日付"),
     "display_name":  ("显示名", "表示名"),
@@ -171,8 +171,9 @@ m5.metric(t("粗利率"), f"{margin:.2f}%")
 
 st.divider()
 
+_owner_tab = "👤 担当者別" if get_lang() == "ja" else "👤 店铺负责人"
 tab_day, tab_owner, tab_shop, tab_market, tab_sku = st.tabs(
-    [t("📈 月内日次推移"), t("👤 担当者別"), t("🏪 店舗別"), t("🌐 市場別"), t("🏆 TOP SKU")]
+    [t("📈 月内日次推移"), _owner_tab, t("🏪 店舗別"), t("🌐 市場別"), t("🏆 TOP SKU")]
 )
 
 # ============================================================
