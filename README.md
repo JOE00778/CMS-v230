@@ -2,7 +2,7 @@
 
 > Streamlit 経営看板 · 25 ページ · **元川さん（Inspiron 5405 Windows）本番稼働**
 > NetSuite API 自動 pull + Postgres 16 + Cloudflare Tunnel + CF Access
-> 最終更新：2026-05-19
+> 最終更新：2026-05-20
 
 ---
 
@@ -130,13 +130,26 @@ CMS/
 
 ```
 [Mac] Boss が編集
-   ↓ git push
+   ↓ cmsdeploy（= git push + ssh 元川さん git pull · 一括）
 [GitHub: JOE00778/CMS-v230]（コードのみ · データ・凭据は除外）
-   ↓ git pull
-[元川さん] docker compose up -d --build streamlit
-   ↓ 自動再起動
+   ↓ ssh git pull（bind mount · 即時反映 · build 不要）
+[元川さん] streamlit コンテナ自動 reload
+   ↓
 [smikie-cms.cc] 運営が新バージョン使用
 ```
+
+### Mac → 元川さん SSH（2026-05-20 配通）
+
+| 接続 | コマンド | 用途 |
+|---|---|---|
+| 局域网 | `ssh smiki@192.168.68.96` | 同 WiFi/网线 · 直連速い |
+| 异地 | `ssh cms-ssh.smikie-cms.cc` | CF Access（JO@mitsukin.info）+ Tunnel · どこからでも |
+| 一键部署（局域网）| `cmsdeploy` | git push + git pull 一括 |
+| 一键部署（异地）| `cmsdeploy-r` | 同上 · CF 隧道経由 |
+
+- 日常（コードのみ）: `git pull` で bind mount 即時反映、**build 不要**
+- 依存/.env/Dockerfile 変更時のみ: `redeploy.bat`（build 込み）
+- 詳細手順: [`deploy/windows/SSH-ACCESS.md`](deploy/windows/)（本地参考 · gitignore · 内网配置含む）
 
 **Mac は編集専用**。稼働コアは全て元川さんにあります（[mac-editor-only-policy](../.claude/memory/feedback_mac_editor_only_policy.md) 参照）。
 
@@ -157,12 +170,17 @@ uv run streamlit run cms.py
 ### 元川さん（本番）
 
 ```powershell
+# 日常（コードのみ変更 · bind mount 即時反映 · build 不要）
 cd C:\Users\smiki\CMS-v230
 git pull origin main
+# または update-cms.bat ダブルクリック
+
+# 依存/.env/Dockerfile 変更時のみ（build 込み）
 docker compose -f deploy\windows\docker-compose.yml up -d --build streamlit
+# または redeploy.bat
 ```
 
-または `redeploy.bat` ダブルクリック。詳細は [`deploy/windows/README.md`](deploy/windows/README.md)。
+Mac からは `cmsdeploy`（局域网）/ `cmsdeploy-r`（异地）で push + pull 一括。詳細は [`deploy/windows/README.md`](deploy/windows/README.md) + [`deploy/windows/SSH-ACCESS.md`](deploy/windows/)。
 
 ---
 
@@ -195,7 +213,7 @@ docker compose -f deploy\windows\docker-compose.yml up -d --build streamlit
 | タスク | 状態 |
 |---|---|
 | **T-NST-001** NetSuite API 自動 pull 本番稼働 | scaffolding 完了（2026-05-18）· D-101 解除済 · credentials 投入 + run() 実装中 |
-| **T-MIG-001** Mac → 元川さん アセット移転 | 起票済（2026-05-19）· 接続情報待ち |
+| **T-MIG-001** Mac → 元川さん アセット移転 | 起票済（2026-05-19）· **Mac→元川さん SSH 配通（2026-05-20 · 局域网+异地）** · アセット移転実施待ち |
 | **Supabase 廃止** | T-NST-001 完了後・ASEAN 7 ストリーム PG 統合後 |
 | **Phase 4 DB 整理** | ✅ 完了（2026-05-09 · `commits 7b6bf61 + 2dbcf67`）|
 
@@ -217,6 +235,8 @@ docker compose -f deploy\windows\docker-compose.yml up -d --build streamlit
 | [`docs/04-automation-architecture.md`](docs/04-automation-architecture.md) | 自動化アーキテクチャ |
 | [`docs/07-lark-integration.md`](docs/07-lark-integration.md) | 飞书連携 |
 | [`订货逻辑.md`](订货逻辑.md) | Boss 公式（発注ロジック単一事実源）|
+| [`NetSuite-API/`](NetSuite-API/) | NetSuite API フィールド仕様 + 字段清单（中日双语 · 2026-05-20）|
+| [`deploy/windows/SSH-ACCESS.md`](deploy/windows/) | Mac → 元川さん SSH 接入手順（局域网+异地 · **本地 gitignore · 内网配置含む**）|
 
 ### アーカイブ済（参考のみ · 最新版に統合された旧文書）
 
