@@ -134,44 +134,35 @@ with col3:
     department = st.selectbox(t("部門"), DEPARTMENTS)
     location = st.selectbox(t("場所"), LOCATIONS)
 memo = st.text_input(t("备注"), "")
+_tax_pct = st.selectbox(t("税率"), [10, 8, 0], format_func=lambda x: f"{x}%",
+                        help=t("NST 商品マスタは税区分を持たないため一括指定"))
 
 if df_order is not None and not df_order.empty:
-    df_item = pd.DataFrame([dict(r) for r in conn.execute("SELECT * FROM item_master").fetchall()])
+    df_item = pd.DataFrame([dict(r) for r in conn.execute(
+        "SELECT jan, item_code, display_name FROM nst.item_master_raw"
+    ).fetchall()])
     if df_item.empty:
-        st.error(t("❌ item_master 表为空。请先上传商品主档。"))
+        st.error(t("❌ nst.item_master_raw 表为空。请到 page 27「📥 NST 取得数据」执行 items 取得。"))
         st.stop()
     df_item.columns = df_item.columns.str.strip().str.lower()
 
     df_order["jan"] = df_order["jan"].astype(str).str.strip().str.replace(r"^0{5,}", "", regex=True)
     df_item["jan"] = df_item["jan"].astype(str).str.strip().str.replace(r"^0{5,}", "", regex=True)
 
-    def _tax_rate(schedule):
-        if schedule is None or pd.isna(schedule):
-            return 0.0
-        s = str(schedule)
-        if "10" in s:
-            return 0.10
-        if "8" in s:
-            return 0.08
-        return 0.0
-
-    sched_col = "納税スケジュール" if "納税スケジュール" in df_item.columns else None
-    df_item["tax_rate"] = df_item[sched_col].apply(_tax_rate) if sched_col else 0.0
-
     df = df_order.merge(df_item, on="jan", how="left")
-    name_col = "商品名" if "商品名" in df.columns else "display_name"
-    code_col = "商品コード" if "商品コード" in df.columns else "item_code"
+    name_col = "display_name"
+    code_col = "item_code"
 
     missing = df[df[name_col].isna()] if name_col in df.columns else pd.DataFrame()
     if len(missing) > 0:
-        st.warning(t(f"⚠ {len(missing)} 件 JAN 在 item_master 找不到"))
+        st.warning(t(f"⚠ {len(missing)} 件 JAN 在 nst.item_master_raw 找不到"))
         st.dataframe(localize_df(missing[["jan"]]))
 
     qty_col = "ロット×数量" if "ロット×数量" in df.columns else "数量"
     df["数量"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int)
     df["単価"] = pd.to_numeric(df["単価"], errors="coerce").fillna(0).astype(int)
     df["金額"] = df["単価"] * df["数量"]
-    df["税額"] = np.floor(df["金額"] * df["tax_rate"]).fillna(0).astype(int)
+    df["税額"] = np.floor(df["金額"] * (_tax_pct / 100)).fillna(0).astype(int)
     df["総額"] = df["金額"] + df["税額"]
 
     df_out = pd.DataFrame({

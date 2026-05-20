@@ -1,6 +1,7 @@
 """模块 #20 定义原价波动图 · SKU 级 std_cost 历史趋势 + 波动分级.
 
-数据源: std_cost_history（page 03 「定义原价编辑」每次确认变更后写入）
+数据源: nst.cost_history（NST API 毎日拉取 · cost_estimate=定義原価 が変化した時に INSERT）
+        + nst.item_master_raw（item_code / 表示名）
 
 业务:
 - 按 SKU 算 总变更次数 / 当前价 / 历史 min·max / 波动幅度（max-min）/ 波动率（(max-min)/min）
@@ -31,17 +32,25 @@ st.caption(t("SKU 级 std_cost 历史趋势 · 4 档波动分级 · 重点关注
 
 df = pd.DataFrame([
     dict(r) for r in conn.execute(
-        "SELECT * FROM std_cost_history ORDER BY changed_at"
+        "SELECT ch.internal_id, im.item_code, im.jan, im.display_name, "
+        "ch.effective_date AS changed_at, ch.cost_estimate AS std_cost_new "
+        "FROM nst.cost_history ch "
+        "LEFT JOIN nst.item_master_raw im ON im.internal_id = ch.internal_id "
+        "WHERE ch.cost_estimate IS NOT NULL "
+        "ORDER BY ch.internal_id, ch.effective_date"
     ).fetchall()
 ])
 
 if df.empty:
-    st.info(t("暂无定义原价变更历史。请到「💰 定义原价编辑」确认变更后再回来查看。"))
+    st.info(t("暂无定义原价变更历史。NST cost_history 累积 cost_estimate 变化后显示（每日拉取自动检测）。"))
     st.stop()
 
 df["changed_at"] = pd.to_datetime(df["changed_at"], errors="coerce")
 df["std_cost_new"] = pd.to_numeric(df["std_cost_new"], errors="coerce")
-df["std_cost_old"] = pd.to_numeric(df["std_cost_old"], errors="coerce")
+df = df.sort_values(["internal_id", "changed_at"])
+# 旧価 = 同一 SKU の前回 effective_date の cost_estimate（NST は old を持たないため shift で算出）
+df["std_cost_old"] = df.groupby("internal_id")["std_cost_new"].shift(1)
+df["id"] = range(len(df))
 
 # 按 SKU 聚合
 agg = df.groupby("internal_id", as_index=False).agg(
@@ -199,17 +208,18 @@ if options:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 明细表
+    # 明细表（NST cost_history は source/変更人/備考 を持たないため diff を算出表示）
+    sub = sub.copy()
+    sub["diff"] = sub["std_cost_new"] - sub["std_cost_old"]
+    sub["diff_pct"] = sub["diff"] / sub["std_cost_old"].replace({0: pd.NA})
     sub_show = sub[[
-        "changed_at", "std_cost_old", "std_cost_new",
-        "diff", "diff_pct", "source", "changed_by", "notes",
+        "changed_at", "std_cost_old", "std_cost_new", "diff", "diff_pct",
     ]].copy()
     sub_show["diff_pct"] = sub_show["diff_pct"].map(
         lambda x: f"{x:+.2%}" if pd.notna(x) else ""
     )
     sub_show.columns = [
-        t("变更时间"), t("旧价"), t("新价"), t("差额"),
-        t("差额率"), t("来源"), t("变更人"), t("备注"),
+        t("变更时间"), t("旧价"), t("新价"), t("差额"), t("差额率"),
     ]
     st.dataframe(localize_df(sub_show), use_container_width=True, hide_index=True)
 else:
