@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -182,15 +183,37 @@ with tab_day:
         daily["gross_profit"] / daily["revenue"].where(daily["revenue"] != 0)
     ).fillna(0) * 100
 
+    # x 軸 = 日付。月選択済みなので "N日" 形式で簡潔表示（chart 用に datetime 化）
+    chart_src = daily.copy()
+    chart_src["sale_date"] = pd.to_datetime(chart_src["sale_date"])
+    _x = alt.X("sale_date:T", title=None,
+               axis=alt.Axis(format="%-d日", labelAngle=0, tickCount="day"))
+    _date_tip = alt.Tooltip("sale_date:T", title=_col("sale_date"), format="%Y-%m-%d")
+
     # 曲線図：日次 総収益 / 粗利
-    line = daily.set_index("sale_date")[["revenue", "gross_profit"]].copy()
-    line.columns = [_col("revenue"), _col("gross_profit")]
-    st.line_chart(line, use_container_width=True, height=320)
+    rev_lbl, gp_lbl = _col("revenue"), _col("gross_profit")
+    line_long = chart_src.melt(
+        id_vars=["sale_date"], value_vars=["revenue", "gross_profit"],
+        var_name="metric", value_name="value",
+    )
+    line_long["metric"] = line_long["metric"].map({"revenue": rev_lbl, "gross_profit": gp_lbl})
+    line_chart = alt.Chart(line_long).mark_line(point=True).encode(
+        x=_x,
+        y=alt.Y("value:Q", title=None),
+        color=alt.Color("metric:N", legend=alt.Legend(title=None, orient="top")),
+        tooltip=[_date_tip, alt.Tooltip("metric:N", title=""),
+                 alt.Tooltip("value:Q", title="", format=",.0f")],
+    ).properties(height=320)
+    st.altair_chart(line_chart, use_container_width=True)
 
     # 销量条形图
-    bar = daily.set_index("sale_date")[["qty"]].copy()
-    bar.columns = [_col("qty")]
-    st.bar_chart(bar, use_container_width=True, height=220)
+    qty_lbl = _col("qty")
+    bar_chart = alt.Chart(chart_src).mark_bar().encode(
+        x=_x,
+        y=alt.Y("qty:Q", title=qty_lbl),
+        tooltip=[_date_tip, alt.Tooltip("qty:Q", title=qty_lbl, format=",.0f")],
+    ).properties(height=220)
+    st.altair_chart(bar_chart, use_container_width=True)
 
     # 明细表
     day_cols = ("sale_date", "qty", "revenue", "defined_cost",
