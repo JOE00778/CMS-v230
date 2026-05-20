@@ -266,6 +266,7 @@ with tab_owner:
     if _od.empty:
         st.info(t("この条件のデータがありません"))
     else:
+        # ① 负责人汇总（総数据总览）+ 柱状图
         g = _od.groupby("owner", as_index=False).agg(
             qty=("qty_sold", "sum"),
             revenue=("revenue", "sum"),
@@ -284,6 +285,35 @@ with tab_owner:
         chart = g.set_index("owner")[["gross_profit"]].copy()
         chart.columns = [_col("gross_profit")]
         st.bar_chart(chart, horizontal=True, use_container_width=True)
+
+        st.divider()
+
+        # ② 各负责人ごと：名称(総計) + 配下の店舗別明細
+        for _ow in g["owner"].tolist():   # gross_profit 降順
+            sub = _od[_od["owner"] == _ow]
+            t_q = sub["qty_sold"].sum()
+            t_r = sub["revenue"].sum()
+            t_g = sub["gross_profit"].sum()
+            t_m = (t_g / t_r * 100) if t_r else 0
+            st.markdown(
+                f"**👤 {_ow}** &nbsp;｜&nbsp; {_col('qty')}: {int(t_q):,} ｜ "
+                f"{_col('revenue')}: ¥{t_r:,.0f} ｜ {_col('gross_profit')}: ¥{t_g:,.0f} ｜ "
+                f"{_col('gross_margin')}: {t_m:.2f}%"
+            )
+            sg = sub.groupby("shop", as_index=False).agg(
+                qty=("qty_sold", "sum"),
+                revenue=("revenue", "sum"),
+                defined_cost=("defined_cost", "sum"),
+                gross_profit=("gross_profit", "sum"),
+                n_sku=("item_internal_id", "nunique"),
+            )
+            sg["gross_margin"] = (
+                sg["gross_profit"] / sg["revenue"].where(sg["revenue"] != 0)
+            ).fillna(0) * 100
+            sg = sg.sort_values("gross_profit", ascending=False)
+            sg_cols = ("shop", "qty", "revenue", "defined_cost",
+                       "gross_profit", "gross_margin", "n_sku")
+            st.dataframe(_disp(sg, sg_cols), use_container_width=True, hide_index=True)
 
 # ============================================================
 # Tab 1：店舗別
