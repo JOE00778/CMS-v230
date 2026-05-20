@@ -35,6 +35,13 @@ _COL_LABELS = {
     "qty_available":      ("可用库存", "利用可能"),
     "qty_on_order":       ("订货中", "注文済"),
     "warehouse":          ("仓库", "在庫保管場所"),
+    # 売上
+    "shop":               ("店铺", "FB_店舗"),
+    "qty_sold":           ("销售数量", "販売数量"),
+    "revenue":            ("总收益", "総収益"),
+    "teigi_genka":        ("定义原价", "定義原価"),
+    "arari":              ("毛利", "粗利"),
+    "arari_rate":         ("毛利率", "粗利率"),
 }
 
 
@@ -81,9 +88,10 @@ def _job_title(category, frequency, run_time) -> str:
     return f"{cat}  ·  {freq} {str(run_time)[:5]} 自動取得"
 
 
-tab1, tab2, tab_sched, tab_manual, tab3 = st.tabs([
+tab1, tab2, tab_sales, tab_sched, tab_manual, tab3 = st.tabs([
     t("📦 商品マスタ"),
     t("🏬 在庫 (JD-物流-千葉)"),
+    t("💰 売上"),
     t("⏰ スケジュール設定"),
     t("▶️ 手動更新"),
     t("📜 取得履歴"),
@@ -200,6 +208,70 @@ with tab2:
                     "qty_on_hand", "qty_available", "qty_on_order", "warehouse",
                 ),
             )
+
+# ============================================================
+# Tab 売上 nst.sales_monthly（店舗別 / アイテム別）
+# ============================================================
+with tab_sales:
+    months_df, err = _query(
+        "SELECT DISTINCT year_month FROM nst.sales_monthly ORDER BY year_month DESC"
+    )
+    if err:
+        st.error(t("テーブル未取得 or 接続エラー: ") + err)
+    elif months_df is None or months_df.empty:
+        st.info(t("売上データ未取得（sales ジョブ実行後に表示）"))
+    else:
+        c1, c2 = st.columns([1.5, 3])
+        ym = c1.selectbox(t("対象月"), months_df["year_month"].tolist())
+        view = c2.radio(t("表示単位"), [t("店舗別"), t("アイテム別")],
+                        horizontal=True, key="sales_view")
+
+        if view == t("店舗別"):
+            df, e2 = _query(
+                "SELECT s.shop, im.jan, im.display_name, im.maker, im.item_rank, "
+                "s.qty_sold, s.revenue, "
+                "(COALESCE(im.cost_estimate,0) * s.qty_sold) AS teigi_genka "
+                "FROM nst.sales_monthly s "
+                "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+                "WHERE s.year_month = ? ORDER BY s.revenue DESC LIMIT 5000",
+                (ym,),
+            )
+            cols = ("shop", "jan", "display_name", "maker", "item_rank",
+                    "qty_sold", "revenue", "teigi_genka", "arari", "arari_rate")
+        else:
+            df, e2 = _query(
+                "SELECT im.jan, im.display_name, im.maker, im.item_rank, "
+                "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
+                "(MAX(COALESCE(im.cost_estimate,0)) * SUM(s.qty_sold)) AS teigi_genka "
+                "FROM nst.sales_monthly s "
+                "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+                "WHERE s.year_month = ? "
+                "GROUP BY im.jan, im.display_name, im.maker, im.item_rank "
+                "ORDER BY revenue DESC LIMIT 5000",
+                (ym,),
+            )
+            cols = ("jan", "display_name", "maker", "item_rank",
+                    "qty_sold", "revenue", "teigi_genka", "arari", "arari_rate")
+
+        if e2:
+            st.error(e2)
+        elif df is not None and not df.empty:
+            df["revenue"] = df["revenue"].astype(float)
+            df["teigi_genka"] = df["teigi_genka"].astype(float)
+            df["arari"] = df["revenue"] - df["teigi_genka"]
+            df["arari_rate"] = (df["arari"] / df["revenue"].where(df["revenue"] != 0)).round(4)
+            tot_q = df["qty_sold"].astype(float).sum()
+            tot_r = df["revenue"].sum()
+            tot_g = df["arari"].sum()
+            m1, m2, m3 = st.columns(3)
+            m1.metric(t("販売数量 計"), f"{tot_q:,.0f}")
+            m2.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
+            m3.metric(t("粗利 計"), f"¥{tot_g:,.0f}（{(tot_g/tot_r if tot_r else 0):.1%}）")
+            st.caption(t("表示件数（最大 5000 件）: ") + f"{len(df):,}")
+            st.dataframe(df[list(cols)], use_container_width=True, height=520,
+                         column_config=_cc(*cols))
+        else:
+            st.info(t("この月のデータがありません"))
 
 # ============================================================
 # Tab スケジュール設定 nst.pull_schedule（編集）
