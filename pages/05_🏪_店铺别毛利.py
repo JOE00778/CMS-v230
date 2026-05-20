@@ -235,23 +235,32 @@ with tab_day:
             alt.Tooltip("revenue:Q", title=rev_lbl, format=",.0f"),
             alt.Tooltip("gross_profit:Q", title=gp_lbl, format=",.0f"),
             alt.Tooltip("margin_disp:N", title=_col("gross_margin"))]
+    mg_lbl = _col("gross_margin")
     _nearest = alt.selection_point(nearest=True, on="pointerover",
                                    fields=["sale_date"], empty=False)
     _base = alt.Chart(chart_src).encode(x=_x)
+    # 金額（左軸）：総収益 / 粗利
     _l_rev = _base.mark_line(point=True).encode(
         y=alt.Y("revenue:Q", title=None), color=alt.datum(rev_lbl),
     )
     _l_gp = _base.mark_line(point=True).encode(
         y=alt.Y("gross_profit:Q", title=None), color=alt.datum(gp_lbl),
     )
-    # 透明な縦ルールで日付軸全体を hover 対象に → 最近傍の日に縦線+両値 tooltip
+    # 粗利率（右軸・破線）
+    _l_mg = _base.mark_line(point=True, strokeDash=[5, 3]).encode(
+        y=alt.Y("gross_margin:Q", title=None,
+                axis=alt.Axis(orient="right", format=".0f")),
+        color=alt.datum(mg_lbl),
+    )
+    # 透明な縦ルールで日付軸全体を hover 対象に → 最近傍の日に縦線+全値 tooltip
     _rule = _base.mark_rule(color="#888").encode(
         opacity=alt.condition(_nearest, alt.value(0.35), alt.value(0)),
         tooltip=_tip,
     ).add_params(_nearest)
+    _money = alt.layer(_l_rev, _l_gp)   # 左軸共有
     line_chart = (
-        alt.layer(_l_rev, _l_gp, _rule)
-        .resolve_scale(color="shared")
+        alt.layer(_money, _l_mg, _rule)
+        .resolve_scale(y="independent", color="shared")
         .properties(height=320)
         .configure_legend(orient="top", title=None)
     )
