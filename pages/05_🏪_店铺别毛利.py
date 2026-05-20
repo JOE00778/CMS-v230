@@ -157,9 +157,10 @@ df["qty_sold"] = df["qty_sold"].astype(float)
 df["revenue"] = df["revenue"].astype(float)
 df["defined_cost"] = df["defined_cost"].astype(float)
 df["gross_profit"] = df["revenue"] - df["defined_cost"]
-# 未来日付（NST に未来 dated の取引が混入）を除外：今日(JST)まで
+# 未来日付除外 + 当日は未確定（07:00 に前日分取得）のため除外：前日まで
 _today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
-df = df[df["sale_date"] <= _today]
+_cutoff = _today - dt.timedelta(days=1)
+df = df[df["sale_date"] <= _cutoff]
 df = add_market_column(df, store_col="shop")
 df = add_owner_column(df, shop_col="shop")
 
