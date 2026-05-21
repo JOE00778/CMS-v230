@@ -17,6 +17,7 @@ NetSuite CSV Import(Update) 用 Internal ID 作匹配键, 故 CSV 第一列固�
 from __future__ import annotations
 
 import csv
+import datetime
 import io
 
 # NetSuite CSV Import 匹配键(非模板内列, 固定第一列)
@@ -26,6 +27,9 @@ ID_LABEL = "Internal ID"
 COL_ITEM_CODE = "型番"
 COL_RANK = "商品ランク"
 COL_COST = "商品原価"  # ← 定義原価 填此列(Boss 2026-05-21)
+
+# 下载文件名基底：原模板名（前缀加当天日期 YYYYMMDD · Boss 2026-05-21）
+TEMPLATE_BASENAME = "NetSuite【アイテム】マスタ登録-V260326EX_登録者名"
 
 # 模板主表 71 列: (必須标记, 列名) · 顺序 = Excel 列顺序
 NST_MASTER_COLUMNS: list[tuple[str | None, str]] = [
@@ -132,3 +136,11 @@ def build_nst_master_csv(
     for r in rows:
         w.writerow([r.get(id_label, "")] + [r.get(c, "") for c in ordered])
     return buf.getvalue().encode("utf-8-sig")
+
+
+def dated_filename(ext: str = "csv") -> str:
+    """下载文件名：当天日期前缀 + 原模板名。
+
+    例: 20260521_NetSuite【アイテム】マスタ登録-V260326EX_登録者名.csv
+    """
+    return f"{datetime.date.today():%Y%m%d}_{TEMPLATE_BASENAME}.{ext}"

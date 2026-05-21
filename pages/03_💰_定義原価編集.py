@@ -28,6 +28,7 @@ from data_warehouse.templates.nst_item_master import (
     COL_COST,
     ID_LABEL,
     build_nst_master_csv,
+    dated_filename,
 )
 from modules.cost_sync.rules import (
     THRESHOLD_PCT,
@@ -488,13 +489,11 @@ elif step == 3:
 
     csv_bytes = st.session_state.cs_csv_bytes
     if csv_bytes:
-        from datetime import datetime as _dt
-        _fname = f"nst_item_master_{_dt.now().strftime('%Y%m%d_%H%M%S')}.csv"
         st.success(t("已生成 NST 上传模板 CSV（第一列 Internal ID · 「商品原価」列 = 定義原価）"))
         st.download_button(
             t("📥 下载更新 CSV"),
             data=csv_bytes,
-            file_name=_fname,
+            file_name=dated_filename(),
             mime="text/csv",
             type="primary",
             use_container_width=True,

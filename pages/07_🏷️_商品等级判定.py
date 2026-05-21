@@ -10,6 +10,7 @@ from data_warehouse.templates.nst_item_master import (
     COL_RANK,
     ID_LABEL,
     build_nst_master_csv,
+    dated_filename,
 )
 from shared.db import get_connection
 from shared.v2_browser import render_v2_quickview
@@ -290,7 +291,7 @@ with tab1:
                 st.download_button(
                     t("📥 下载 rank_update.csv"),
                     csv_bytes,
-                    file_name=f"nst_item_master_rank_{q}.csv",
+                    file_name=dated_filename(),
                     mime='text/csv',
                 )
 
