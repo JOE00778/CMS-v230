@@ -192,8 +192,22 @@ else:
     bill["amount_ex_tax"] = pd.to_numeric(bill["amount_ex_tax"], errors="coerce").fillna(0.0)
     bill["amount_in_tax"] = pd.to_numeric(bill["amount_in_tax"], errors="coerce").fillna(0.0)
     b_ex, b_in = bill["amount_ex_tax"].sum(), bill["amount_in_tax"].sum()
+
+    bill_prev = _df(
+        "SELECT item_name, amount_ex_tax FROM logistics.cost_billing WHERE year_month=%(ym)s",
+        {"ym": prev_month},
+    ) if prev_month else pd.DataFrame()
+    prev_map, b_ex_prev = {}, 0.0
+    if not bill_prev.empty:
+        bill_prev["amount_ex_tax"] = pd.to_numeric(bill_prev["amount_ex_tax"], errors="coerce").fillna(0.0)
+        prev_map = dict(zip(bill_prev["item_name"], bill_prev["amount_ex_tax"]))
+        b_ex_prev = bill_prev["amount_ex_tax"].sum()
+    mom_total = (b_ex / b_ex_prev - 1) * 100 if b_ex_prev else None
+
     bc1, bc2, bc3 = st.columns(3)
-    bc1.metric(t("JD 費用 税別 合計"), f"¥{b_ex:,.0f}")
+    bc1.metric(t("JD 費用 税別 合計"), f"¥{b_ex:,.0f}",
+               delta=(f"{mom_total:+.1f}% {t('前月比')}" if mom_total is not None else None),
+               delta_color="inverse")
     bc2.metric(t("税込 合計"), f"¥{b_in:,.0f}")
     bc3.metric(t("費用種 数"), f"{len(bill)}")
     _ALLOC = ("OB-Pick&Pack", "Last mile", "Packing Charge")
@@ -201,19 +215,21 @@ else:
     others = bill[~is_alloc].reset_index(drop=True)
 
     if not others.empty:
-        st.markdown(t("###### 🗂️ その他費用（配賦3種以外）"))
+        st.markdown(t("###### 🗂️ その他費用（配賦3種以外 · 前月比）"))
         ncol = 4
         recs = list(others.iterrows())
         for base in range(0, len(recs), ncol):
             ccols = st.columns(ncol)
             for j, (_, r) in enumerate(recs[base:base + ncol]):
                 cn, en = _split_name(r["item_name"])
+                pv = prev_map.get(r["item_name"])
+                mom = (r["amount_ex_tax"] / pv - 1) * 100 if pv else None
                 ccols[j].metric(
                     label=cn,
                     value=f"¥{r['amount_ex_tax']:,.0f}",
-                    delta=t("税込 ¥{v:,.0f}").format(v=r["amount_in_tax"]),
-                    delta_color="off",
-                    help=en or None,
+                    delta=(f"{mom:+.1f}% {t('前月比')}" if mom is not None else None),
+                    delta_color="inverse",
+                    help=(f"{en} ・ " if en else "") + t("税込 ¥{v:,.0f}").format(v=r["amount_in_tax"]),
                 )
 
     with st.expander(t("📋 全費用明細（配賦3種含む · Billing 対账表）"), expanded=False):
