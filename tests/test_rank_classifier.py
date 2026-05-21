@@ -37,7 +37,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.5,  # <= 0.80
             'gross_margin_rate': 0.60,     # >= 0.59
         }
-        assert classify_rank(sku_data) == 'A'
+        assert classify_rank(sku_data) == 'Aランク'
 
     def test_rank_b_top80_low_margin(self):
         """B 档：销售 top 80% + 粗利 < 59%"""
@@ -47,7 +47,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.50,
             'gross_margin_rate': 0.50,
         }
-        assert classify_rank(sku_data) == 'B'
+        assert classify_rank(sku_data) == 'Bランク'
 
     def test_rank_c_outside_top80(self):
         """C 档：销售不在 top 80%"""
@@ -57,7 +57,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.90,  # > 0.80
             'gross_margin_rate': 0.70,      # 即使高利润也是 C
         }
-        assert classify_rank(sku_data) == 'C'
+        assert classify_rank(sku_data) == 'Cランク'
 
     def test_rank_discontinued_netsuite_status(self):
         """停售：NetSuite 取扱中止"""
@@ -67,7 +67,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.10,  # 即使是 top 也停售
             'gross_margin_rate': 0.90,
         }
-        assert classify_rank(sku_data) == '停售'
+        assert classify_rank(sku_data) == '取扱中止'
 
     def test_rank_discontinued_maker_status(self):
         """停售：NetSuite メーカー取扱中止"""
@@ -77,17 +77,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.05,
             'gross_margin_rate': 0.95,
         }
-        assert classify_rank(sku_data) == '停售'
-
-    def test_rank_discontinued_acknowledged_action(self):
-        """停售：模块③改廃确认 action='取扱中止'"""
-        sku_data = {
-            'netsuite_status': '取扱中',
-            'acknowledged_action': '取扱中止',
-            'sales_amount_rank_pct': 0.10,
-            'gross_margin_rate': 0.95,
-        }
-        assert classify_rank(sku_data) == '停售'
+        assert classify_rank(sku_data) == '取扱中止'
 
     def test_sales_rank_boundary_0_79(self):
         """销售 rank_pct 0.79 < 0.80 → top_80"""
@@ -97,7 +87,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.79,
             'gross_margin_rate': 0.60,
         }
-        assert classify_rank(sku_data) == 'A'  # top 80 + high margin
+        assert classify_rank(sku_data) == 'Aランク'  # top 80 + high margin
 
     def test_sales_rank_boundary_0_80(self):
         """销売 rank_pct 0.80 <= 0.80 → top_80（边界包含）"""
@@ -107,7 +97,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.80,
             'gross_margin_rate': 0.60,
         }
-        assert classify_rank(sku_data) == 'A'  # top 80 + high margin
+        assert classify_rank(sku_data) == 'Aランク'  # top 80 + high margin
 
     def test_sales_rank_boundary_0_81(self):
         """销売 rank_pct 0.81 > 0.80 → not top_80 → C"""
@@ -117,7 +107,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.81,
             'gross_margin_rate': 0.60,
         }
-        assert classify_rank(sku_data) == 'C'  # not top 80 → C
+        assert classify_rank(sku_data) == 'Cランク'  # not top 80 → C
 
     def test_margin_boundary_0_58(self):
         """粗利率 0.58 < 0.59 → low_margin → B"""
@@ -127,7 +117,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.50,
             'gross_margin_rate': 0.58,
         }
-        assert classify_rank(sku_data) == 'B'  # top 80 + low margin
+        assert classify_rank(sku_data) == 'Bランク'  # top 80 + low margin
 
     def test_margin_boundary_0_59(self):
         """粗利率 0.59 >= 0.59 → high_margin → A"""
@@ -137,7 +127,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.50,
             'gross_margin_rate': 0.59,
         }
-        assert classify_rank(sku_data) == 'A'  # top 80 + high margin
+        assert classify_rank(sku_data) == 'Aランク'  # top 80 + high margin
 
     def test_margin_boundary_0_60(self):
         """粗利率 0.60 >= 0.59 → high_margin → A"""
@@ -147,7 +137,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.50,
             'gross_margin_rate': 0.60,
         }
-        assert classify_rank(sku_data) == 'A'
+        assert classify_rank(sku_data) == 'Aランク'
 
     def test_discontinued_priority(self):
         """停售优先：netsuite_status 优先于 acknowledged_action"""
@@ -157,7 +147,7 @@ class TestClassifyRank:
             'sales_amount_rank_pct': 0.10,
             'gross_margin_rate': 0.95,
         }
-        assert classify_rank(sku_data) == '停售'
+        assert classify_rank(sku_data) == '取扱中止'
 
     def test_missing_fields_defaults(self):
         """缺失字段默认值处理"""
@@ -167,7 +157,7 @@ class TestClassifyRank:
             # 不提供 sales_amount_rank_pct → 默认 1.0
             # 不提供 gross_margin_rate → 默认 0
         }
-        assert classify_rank(sku_data) == 'C'  # 不 top 80, 低利润
+        assert classify_rank(sku_data) == 'Cランク'  # 不 top 80, 低利润
 
 
 class TestCalcSalesRank:

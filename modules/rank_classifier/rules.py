@@ -1,7 +1,11 @@
-"""等级判定规则 — 核心逻辑 (Boss 重构 v3: 4 档)"""
+"""等级判定规则 — 核心逻辑 (Boss 重构 v3: 4 档)
+
+等级値は NST item_master_raw.item_rank の合法値に統一（回写 NST のため・中日 UI 共通）:
+    Aランク / Bランク / Cランク / NEW / 取扱中止
+"""
 from typing import Literal, Dict
 
-Rank = Literal['A', 'B', 'C', '停售']
+Rank = Literal['Aランク', 'Bランク', 'Cランク', '取扱中止']
 
 
 def classify_rank(sku_data: dict) -> Rank:
@@ -9,11 +13,11 @@ def classify_rank(sku_data: dict) -> Rank:
     4 档判定规则 (Boss 重构 v3)
 
     优先级 (按顺序判断,匹配即返回):
-        1. NetSuite 取扱中止 → '停售'
-        2. 3 个月无动销     → '停售'  (跟取扱中止合并为停售)
-        3. top 80% + ≥59% 高利 → 'A'
-        4. top 80%           → 'B'
-        5. 其他              → 'C'
+        1. NetSuite 取扱中止 → '取扱中止'
+        2. 3 个月无动销     → '取扱中止'  (跟取扱中止合并)
+        3. top 80% + ≥59% 高利 → 'Aランク'
+        4. top 80%           → 'Bランク'
+        5. 其他              → 'Cランク'
 
     Args:
         sku_data: 含以下字段
@@ -22,29 +26,29 @@ def classify_rank(sku_data: dict) -> Rank:
             - gross_margin_rate: float (粗利率,0-1)
             - no_sales_3m: bool (最近 3 个月窗口内总销量 = 0)
 
-    Returns: 'A' / 'B' / 'C' / '停售'
+    Returns: 'Aランク' / 'Bランク' / 'Cランク' / '取扱中止' (NST item_rank 合法値)
 
     注: acknowledged_action (改廃确认路径) 已删除 (Boss 决定: 不需要重复路径,
         NetSuite 取扱中止 单一权威源即可)
     """
-    # 1. NetSuite 取扱中止 → 停售 (最高优先, 系统级状态)
+    # 1. NetSuite 取扱中止 → 取扱中止 (最高优先, 系统级状态)
     if sku_data.get('netsuite_status') in ('取扱中止', 'メーカー取扱中止'):
-        return '停售'
+        return '取扱中止'
 
-    # 2. 3 个月无动销 → 停售 (Boss: 长期不动销品也归停售档)
+    # 2. 3 个月无动销 → 取扱中止 (Boss: 长期不动销品也归取扱中止档)
     if sku_data.get('no_sales_3m'):
-        return '停售'
+        return '取扱中止'
 
-    # 3. top 80% + 高利 → A
+    # 3. top 80% + 高利 → Aランク
     is_top_80 = sku_data.get('sales_amount_rank_pct', 1.0) <= 0.80
     is_high_margin = sku_data.get('gross_margin_rate', 0) >= 0.59
 
     if is_top_80 and is_high_margin:
-        return 'A'
+        return 'Aランク'
     if is_top_80:
-        return 'B'
+        return 'Bランク'
 
-    return 'C'
+    return 'Cランク'
 
 
 def calc_sales_rank(sku_to_sales: Dict[str, float]) -> Dict[str, float]:

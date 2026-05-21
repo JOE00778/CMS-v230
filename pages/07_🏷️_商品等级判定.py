@@ -18,7 +18,7 @@ lang_selector()
 render_v2_quickview(get_connection(), key_prefix="page07_")
 st.title(t("🏷️ 商品等级判定"))
 st.caption(t(
-    "基于销售前 80% × 利润率 ≥59% 的 4 档判定 (A/B/C/停售) · "
+    "基于销售前 80% × 利润率 ≥59% 的 4 档判定 (Aランク/Bランク/Cランク/取扱中止) · "
     "财年 3 月开始 (Q1=3-5月 / Q2=6-8月 / Q3=9-11月 / Q4=12-2月)"
 ))
 
@@ -166,10 +166,11 @@ with tab1:
 
         if 'new_rank' in df.columns:
             counts = df['new_rank'].value_counts()
-            c1.metric(t("A"), int(counts.get('A', 0)))
-            c2.metric(t("B"), int(counts.get('B', 0)))
-            c3.metric(t("C"), int(counts.get('C', 0)))
-            c4.metric(t("停售 (含 3 月无动销)"), int(counts.get('停售', 0)))
+            # 等级値は NST 合法値（中日 UI 共通・翻訳しない）
+            c1.metric("Aランク", int(counts.get('Aランク', 0)))
+            c2.metric("Bランク", int(counts.get('Bランク', 0)))
+            c3.metric("Cランク", int(counts.get('Cランク', 0)))
+            c4.metric("取扱中止", int(counts.get('取扱中止', 0)), help=t("含 3 个月无动销"))
             change_n = (df['old_rank'] != df['new_rank']).sum() if 'old_rank' in df.columns else 0
             c5.metric(t("有变化"), int(change_n))
 

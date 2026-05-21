@@ -18,8 +18,8 @@ from .rules import classify_rank, calc_sales_rank, Rank
 # 仓库硬过滤（v2 决策 · 跟 modules/inventory_health/metrics.py 保持一致）
 WAREHOUSE_FILTER = "JD-物流-千葉"
 
-# 安全系数（按等级差异化订货）
-SAFETY_FACTOR = {'A': 1.5, 'B': 1.0, 'C': 0.5, '停售': 0.0}
+# 安全系数（按等级差异化订货 · NST item_rank 合法値ベース）
+SAFETY_FACTOR = {'Aランク': 1.5, 'Bランク': 1.0, 'Cランク': 0.5, '取扱中止': 0.0}
 
 
 def calc_reorder(monthly_sales: float, lead_time_days: int, rank: str) -> dict:
@@ -188,17 +188,17 @@ def generate_proposal(
                 'gross_margin_rate': margin,
                 'no_sales_3m': no_sales_3m,
             })
-            old_rank = old_rank_map.get(item_code, 'NEW')
+            old_rank = old_rank_map.get(item_code) or 'NEW'
 
-            # Boss 規則（2026-05-21）: 取扱中止は吸収状態 — 現行が取扱中止/停售なら
+            # Boss 規則（2026-05-21）: 取扱中止は吸収状態 — 現行が取扱中止なら
             # 等级判定の対象外（降级で取扱中止に入るのは可、取扱中止から A/B/C へ戻すのは不可）
             if str(old_rank) in ('取扱中止', 'メーカー取扱中止', '停售'):
-                new_rank = '停售'
+                new_rank = '取扱中止'
 
-            # 等级波动标记（升 / 降 / 维持）
-            rank_order = {'A': 4, 'Aランク': 4, 'Bランク': 3, 'B': 3,
-                          'Cランク': 2, 'C': 2, 'NEW': 1, '停售': 0,
-                          '取扱中止': 0, 'メーカー取扱中止': 0}
+            # 等级波动标记（升 / 降 / 维持）· '停售'/'A' 等は旧データ互換のため残す
+            rank_order = {'Aランク': 4, 'A': 4, 'Bランク': 3, 'B': 3,
+                          'Cランク': 2, 'C': 2, 'NEW': 1,
+                          '取扱中止': 0, 'メーカー取扱中止': 0, '停售': 0}
             old_score = rank_order.get(str(old_rank), 1)
             new_score = rank_order.get(new_rank, 2)
             if new_score > old_score:
