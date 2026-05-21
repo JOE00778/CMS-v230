@@ -169,14 +169,15 @@ p, span, label, div { color: #1d1d1f; }
 }
 [data-testid="stButton"] > button[kind="primary"],
 [data-testid="stFormSubmitButton"] > button[kind="primary"] {
-    background: #0071e3 !important;
-    color: #ffffff !important;
+    background: #dbeafe !important;
+    color: #0058b0 !important;
     border-color: #0071e3 !important;
+    font-weight: 600 !important;
 }
 [data-testid="stButton"] > button[kind="primary"]:hover,
 [data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
-    background: #0077ed !important;
-    border-color: #0077ed !important;
+    background: #c5dbfb !important;
+    border-color: #0058b0 !important;
 }
 
 /* ===== page_link · 统一尺寸/间距,active 用统一深色 pill ===== */
