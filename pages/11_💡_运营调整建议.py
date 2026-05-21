@@ -20,6 +20,12 @@ from shared.auth import require_password
 require_password()
 from shared.theme import inject_theme
 inject_theme()
+# 本ページのみ：データ表が画面幅いっぱいに広がるよう全局 1400px 上限を解除
+st.markdown(
+    "<style>[data-testid='stMainBlockContainer'],.main .block-container"
+    "{max-width:100%!important;}</style>",
+    unsafe_allow_html=True,
+)
 lang_selector()
 
 from shared.db import DB_PATH, get_connection
