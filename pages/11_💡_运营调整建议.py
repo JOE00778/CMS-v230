@@ -205,34 +205,49 @@ def _render_sales_delta(_period_kind, _key):
         _w_start = _bounds(_recent[0])[0]
         _w_end = _bounds(_recent[-1])[1]
         _ts_rows = _wconn.execute(
-            "SELECT s.sale_date AS d, SUM(s.qty_sold) AS q "
+            "SELECT s.sale_date AS d, SUM(s.qty_sold) AS q, SUM(s.revenue) AS r "
             "FROM nst.sales_daily s "
             "JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
             "WHERE " + _extra_where + " AND s.sale_date BETWEEN ? AND ? "
             "GROUP BY s.sale_date",
             tuple(_ps) + (_w_start.isoformat(), _w_end.isoformat()),
         ).fetchall()
-        _daily = {}
+        _dq, _dr = {}, {}
         for _tr in _ts_rows:
             _dd = _tr["d"]
             if isinstance(_dd, str):
                 _dd = _dtw.date.fromisoformat(_dd[:10])
-            _daily[_dd] = _daily.get(_dd, 0.0) + float(_tr["q"] or 0)
+            _dq[_dd] = _dq.get(_dd, 0.0) + float(_tr["q"] or 0)
+            _dr[_dd] = _dr.get(_dd, 0.0) + float(_tr["r"] or 0)
+        _period_col = _L("期间", "期間")
         _qty_col = _L("销量", "数量")
-        _series = []
+        _rev_col = _L("营业额", "売上")
+        _ratio_col = (_L("前周比", "前週比") if _period_kind == "week"
+                      else _L("前月比", "前月比"))
+        _rows, _prev_q = [], None
         for _p in _recent:
             _cs, _ce, _, _ = _bounds(_p)
             _clbl = _cs.strftime("%m/%d") if _period_kind == "week" else _p.strftime("%Y-%m")
-            _series.append({
-                "period": _clbl,
-                _qty_col: sum(_v for _d, _v in _daily.items() if _cs <= _d <= _ce),
+            _q = sum(_v for _d, _v in _dq.items() if _cs <= _d <= _ce)
+            _r = sum(_v for _d, _v in _dr.items() if _cs <= _d <= _ce)
+            _ratio = f"{_q / _prev_q * 100:.1f}%" if _prev_q else "—"
+            _rows.append({
+                _period_col: _clbl,
+                _qty_col: int(round(_q)),
+                _rev_col: int(round(_r)),
+                _ratio_col: _ratio,
             })
-        st.line_chart(pd.DataFrame(_series).set_index("period"), height=300)
+            _prev_q = _q
+        _tbl = pd.DataFrame(_rows).set_index(_period_col)
+        # 曲线图上方：每期 销量 / 营业额 / 前期比
+        st.dataframe(_tbl, use_container_width=True)
+        st.line_chart(_tbl[[_qty_col]], height=300)
         if _period_kind == "week":
             _tc = _L(f"最近 {len(_recent)} 周销量推移", f"直近 {len(_recent)} 週の販売数量推移")
         else:
             _tc = _L(f"最近 {len(_recent)} 个月销量推移", f"直近 {len(_recent)} ヶ月の販売数量推移")
-        st.caption((_cap_label + " · " if _cap_label else "") + _tc)
+        st.caption((_cap_label + " · " if _cap_label else "") + _tc
+                   + " · " + _L("前期比 = 本期销量 / 上期销量", "前期比 = 当期数量 / 前期数量"))
 
     st.divider()
     st.markdown("#### " + _L("销量推移分析（店铺 / 品牌 / SKU 维度）",
