@@ -542,8 +542,16 @@ with _q_tab:
         for _pc in ("cross_ratio", "sellthrough", "profit_contrib"):
             if _pc in _colcfg:
                 _colcfg[_pc] = st.column_config.NumberColumn(_colcfg[_pc], format="%.1f%%")
-        # 本表は区域末尾（下方に他要素なし）→ 行数を増やす
+        # 本表は区域末尾 → 行数を増やす
         st.dataframe(
             df[list(cols)], use_container_width=True, height=900,
             column_config=_colcfg,
+        )
+        _ja_dl = get_lang() == "ja"
+        _csv = df[list(cols)].rename(columns=dict(_cc(*cols))).to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "📥 CSV ダウンロード" if _ja_dl else "📥 下载 CSV",
+            _csv,
+            file_name=(f"売上データ_{ym}.csv" if _ja_dl else f"销售数据_{ym}.csv"),
+            mime="text/csv",
         )
