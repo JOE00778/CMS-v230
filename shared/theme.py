@@ -28,6 +28,7 @@ _THEME_CSS = """
 html, body {
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text',
                  'Inter', 'Noto Sans JP', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 17px;  /* 基础字体 大一号（默认 16px → 17px · rem 連動で全体拡大）*/
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
