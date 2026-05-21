@@ -434,11 +434,17 @@ if trend_input.strip():
 
         if len(agg) >= 2:
             import altair as alt
-            # 曲线图（page05 と統一: 点線 + 縦軸タイトル + tooltip）
-            _ch = alt.Chart(agg).mark_line(point=True).encode(
-                x=alt.X("year_month:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
-                y=alt.Y("sell_through_rate:Q", title=t("完売率"), axis=alt.Axis(format=".0%")),
+            # 曲线图（page05 と統一: 点線 + 縦軸タイトル + 縦ルール hover）
+            _x = alt.X("year_month:N", sort=None, title=None, axis=alt.Axis(labelAngle=0))
+            _near = alt.selection_point(nearest=True, on="pointerover",
+                                        fields=["year_month"], empty=False)
+            _b = alt.Chart(agg).encode(x=_x)
+            _ln = _b.mark_line(point=True).encode(
+                y=alt.Y("sell_through_rate:Q", title=t("完売率"), axis=alt.Axis(format=".0%")))
+            _rl = _b.mark_rule(color="#888").encode(
+                opacity=alt.condition(_near, alt.value(0.35), alt.value(0)),
                 tooltip=[alt.Tooltip("year_month:N", title=t("月份")),
                          alt.Tooltip("sell_through_rate:Q", title=t("完売率"), format=".1%")],
-            ).properties(height=300)
-            st.altair_chart(_ch, use_container_width=True)
+            ).add_params(_near)
+            st.altair_chart(alt.layer(_ln, _rl).properties(height=300),
+                            use_container_width=True)

@@ -306,26 +306,30 @@ def _render_sales_delta(_period_kind, _key):
         _tbl = pd.DataFrame(_rows).set_index(_period_col)
         # 曲线图上方：每期 销量 / 营业额 / 利润 / 利润率 / 前期比
         st.dataframe(_tbl, use_container_width=True)
-        # 曲线图（page05 と統一: 销量(左軸) + 利润(右軸) 点線・独立軸）
+        # 曲线图（page05 と統一: 销量(左軸)+利润(右軸) 点線 + 縦ルール hover で全値表示）
         _cdf = _tbl.reset_index()
         _xp = alt.X(field=_period_col, type="nominal", sort=None, title=None,
                     axis=alt.Axis(labelAngle=0))
+        _near = alt.selection_point(nearest=True, on="pointerover",
+                                    fields=[_period_col], empty=False)
         _bse = alt.Chart(_cdf).encode(x=_xp)
         _l_q = _bse.mark_line(point=True).encode(
             y=alt.Y(field=_qty_col, type="quantitative", title=_qty_col,
                     axis=alt.Axis(format=",.0f")),
             color=alt.datum(_qty_col),
-            tooltip=[alt.Tooltip(field=_period_col, type="nominal"),
-                     alt.Tooltip(field=_qty_col, type="quantitative", format=",.0f")],
         )
         _l_g = _bse.mark_line(point=True, strokeDash=[5, 3]).encode(
             y=alt.Y(field=_profit_col, type="quantitative", title=_profit_col,
                     axis=alt.Axis(orient="right", format=",.0f")),
             color=alt.datum(_profit_col),
-            tooltip=[alt.Tooltip(field=_period_col, type="nominal"),
-                     alt.Tooltip(field=_profit_col, type="quantitative", format=",.0f")],
         )
-        _chart = (alt.layer(_l_q, _l_g)
+        _rule = _bse.mark_rule(color="#888").encode(
+            opacity=alt.condition(_near, alt.value(0.35), alt.value(0)),
+            tooltip=[alt.Tooltip(field=_period_col, type="nominal"),
+                     alt.Tooltip(field=_qty_col, type="quantitative", format=",.0f"),
+                     alt.Tooltip(field=_profit_col, type="quantitative", format=",.0f")],
+        ).add_params(_near)
+        _chart = (alt.layer(_l_q, _l_g, _rule)
                   .resolve_scale(y="independent", color="shared")
                   .properties(height=320)
                   .configure_legend(orient="top", title=None))
@@ -597,17 +601,27 @@ with _q_tab:
             _gp_l = "粗利" if _ja_t else "毛利"
             _trend_df["revenue"] = _trend_df["revenue"].astype(float)
             _trend_df["gp"] = _trend_df["gp"].astype(float)
-            _melt = _trend_df.melt(id_vars="ym", value_vars=["revenue", "gp"],
-                                   var_name="kind", value_name="amount")
-            _melt["kind"] = _melt["kind"].map({"revenue": _rev_l, "gp": _gp_l})
-            _tch = alt.Chart(_melt).mark_line(point=True).encode(
-                x=alt.X("ym:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
-                y=alt.Y("amount:Q", title=("金額" if _ja_t else "金额"),
+            # page05 と統一: 点線 + 縦ルール hover で総収益/粗利 同時表示（同一金額軸）
+            _tx = alt.X("ym:N", sort=None, title=None, axis=alt.Axis(labelAngle=0))
+            _tnear = alt.selection_point(nearest=True, on="pointerover",
+                                         fields=["ym"], empty=False)
+            _tb = alt.Chart(_trend_df).encode(x=_tx)
+            _lr = _tb.mark_line(point=True).encode(
+                y=alt.Y("revenue:Q", title=("金額" if _ja_t else "金额"),
                         axis=alt.Axis(format=",.0f")),
-                color=alt.Color("kind:N", title=None),
-                tooltip=[alt.Tooltip("ym:N"), alt.Tooltip("kind:N"),
-                         alt.Tooltip("amount:Q", format=",.0f")],
-            ).properties(height=320).configure_legend(orient="top")
+                color=alt.datum(_rev_l))
+            _lg = _tb.mark_line(point=True).encode(
+                y=alt.Y("gp:Q", title=None), color=alt.datum(_gp_l))
+            _tr = _tb.mark_rule(color="#888").encode(
+                opacity=alt.condition(_tnear, alt.value(0.35), alt.value(0)),
+                tooltip=[alt.Tooltip("ym:N"),
+                         alt.Tooltip("revenue:Q", title=_rev_l, format=",.0f"),
+                         alt.Tooltip("gp:Q", title=_gp_l, format=",.0f")],
+            ).add_params(_tnear)
+            _tch = (alt.layer(_lr, _lg, _tr)
+                    .resolve_scale(color="shared")
+                    .properties(height=320)
+                    .configure_legend(orient="top", title=None))
             st.altair_chart(_tch, use_container_width=True)
             st.caption("総収益合計 / 粗利合計 の月次推移（上の筛选に追従）" if _ja_t
                        else "总收益合计 / 毛利合计 月度趋势（跟随上方筛选变化）")
