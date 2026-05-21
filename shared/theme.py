@@ -211,6 +211,12 @@ p, span, label, div { color: #1d1d1d; }
     background: transparent !important;
     color: #1d1d1d !important;
 }
+/* 文字 label 在 a 内子元素(span / markdown p)·font-size 设在 a 不会传递 → 直接命中子元素 */
+[data-testid="stSidebar"] [data-testid="stPageLink"] a p,
+[data-testid="stSidebar"] [data-testid="stPageLink"] a span,
+[data-testid="stSidebar"] [data-testid="stPageLink"] a div {
+    font-size: 12px !important;
+}
 [data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
     background: rgba(0, 0, 0, 0.04) !important;
 }
