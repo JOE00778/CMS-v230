@@ -9,10 +9,31 @@
 """
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
 OWNER_NA = "未分配"
 OWNER_EXCLUDED = "対象外"
+
+# 市場（国/地域）コード · 店舗名末尾の 2 文字コード or 特例（COUPANG=KR / 日本店=JP）
+_MARKET_CODES = ("PH", "MY", "SG", "TW", "VN", "TH", "BR", "ID", "KR")
+MARKET_OTHER = "其他"
+
+
+def classify_market(shop: str | None) -> str:
+    """店舗名 → 市場（国/地域）。COUPANG=KR · Amazon/ヤフー=JP · 末尾 2 文字国コード。"""
+    s = str(shop or "").strip()
+    if not s:
+        return MARKET_OTHER
+    if "COUPANG" in s.upper():
+        return "KR"
+    if "Amazon" in s or "ヤフー" in s:
+        return "JP"
+    _m = re.search(r"[ ._]([A-Za-z]{2})$", s)
+    if _m and _m.group(1).upper() in _MARKET_CODES:
+        return _m.group(1).upper()
+    return MARKET_OTHER
 
 # 负责人 → 担当店舗（「一元管理导出改」2026/5 最终版 · Boss 権威マッピング）
 _SHOP_OWNER: dict[str, list[str]] = {

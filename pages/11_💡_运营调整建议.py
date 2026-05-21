@@ -10,6 +10,7 @@ import pandas as pd
 import sqlite3
 from pathlib import Path
 
+from shared.owners import classify_market
 from modules.operation_advice.proposal import generate_advice
 from modules.operation_advice.rules import (
     MARGIN_LOW, MARGIN_HIGH, TURNOVER_LOW, TURNOVER_HIGH
@@ -250,26 +251,35 @@ def _render_sales_delta(_period_kind, _key):
                    + " · " + _L("前期比 = 本期销量 / 上期销量", "前期比 = 当期数量 / 前期数量"))
 
     st.divider()
-    st.markdown("#### " + _L("销量推移分析（店铺 / 品牌 / SKU 维度）",
-                            "販売数量推移分析（店舗 / メーカー / SKU）"))
-    st.caption(_L("3 维度可任意组合 · 留空=不限 · 周次=最近10周 / 月度=最近6个月",
-                  "3 軸は任意組合せ可 · 空欄=指定なし · 周次=直近10週 / 月次=直近6ヶ月"))
+    st.markdown("#### " + _L("销量推移分析（市场 / 店铺 / 品牌 / SKU 维度）",
+                            "販売数量推移分析（市場 / 店舗 / メーカー / SKU）"))
+    st.caption(_L("4 维度可任意组合 · 留空=不限 · 周次=最近10周 / 月度=最近6个月",
+                  "4 軸は任意組合せ可 · 空欄=指定なし · 周次=直近10週 / 月次=直近6ヶ月"))
     _ALL = _L("（全部）", "（全て）")
-    _f1, _f2, _f3 = st.columns(3)
     _all_shops = [_sr["shop"] for _sr in _wconn.execute(
         "SELECT DISTINCT shop FROM nst.sales_daily WHERE shop IS NOT NULL ORDER BY shop"
     ).fetchall()]
-    _f_shop = _f1.selectbox(_L("店铺", "店舗"), [_ALL] + _all_shops, key=_key + "_tshop")
+    _market_of = {_s: classify_market(_s) for _s in _all_shops}
+    _markets = sorted(set(_market_of.values()))
     _all_makers = [_mr["maker"] for _mr in _wconn.execute(
         "SELECT DISTINCT maker FROM nst.item_master_raw "
         "WHERE maker IS NOT NULL AND maker <> '' ORDER BY maker"
     ).fetchall()]
-    _f_maker = _f2.selectbox(_L("品牌", "メーカー"), [_ALL] + _all_makers, key=_key + "_tmaker")
-    _f_jan = _f3.text_input(
+    _f1, _f2, _f3, _f4 = st.columns(4)
+    _f_market = _f1.selectbox(_L("市场", "市場"), [_ALL] + _markets, key=_key + "_tmarket")
+    _f_shop = _f2.selectbox(_L("店铺", "店舗"), [_ALL] + _all_shops, key=_key + "_tshop")
+    _f_maker = _f3.selectbox(_L("品牌", "メーカー"), [_ALL] + _all_makers, key=_key + "_tmaker")
+    _f_jan = _f4.text_input(
         _L("SKU（JAN 搜索）", "SKU（JAN 検索）"), key=_key + "_tjan",
         placeholder=_L("JAN 部分一致（留空=不限）", "JAN 部分一致（空欄=指定なし）"),
     )
     _wc, _wp, _caps = [], [], []
+    if _f_market != _ALL:
+        _mshops = [_s for _s in _all_shops if _market_of.get(_s) == _f_market]
+        if _mshops:
+            _wc.append("s.shop IN (" + ",".join(["?"] * len(_mshops)) + ")")
+            _wp.extend(_mshops)
+            _caps.append(_f_market)
     if _f_shop != _ALL:
         _wc.append("s.shop = ?"); _wp.append(_f_shop); _caps.append(_f_shop)
     if _f_maker != _ALL:
