@@ -44,6 +44,14 @@ def _df(sql: str, params=None) -> pd.DataFrame:
     return pd.DataFrame([dict(r) for r in rs])
 
 
+def _split_name(s: str):
+    """'逆向入库费 Return IB-Inspect&Putaway' → ('逆向入库费', 'Return IB…')。"""
+    for i, ch in enumerate(s):
+        if ch.isascii() and ch.isalpha():
+            return s[:i].strip(), s[i:].strip()
+    return s.strip(), ""
+
+
 # ============================================================
 # データ取得
 # ============================================================
@@ -182,25 +190,41 @@ else:
     bc2.metric(t("税込 合計"), f"¥{b_in:,.0f}")
     bc3.metric(t("費用種 数"), f"{len(bill)}")
     _ALLOC = ("OB-Pick&Pack", "Last mile", "Packing Charge")
-    bdisp = bill.copy()
-    bdisp[t("配賦")] = bdisp["item_name"].map(
-        lambda s: t("✅輸出配賦") if any(a in s for a in _ALLOC) else t("総額のみ"))
-    bdisp[t("占比")] = (bdisp["amount_ex_tax"] / b_ex * 100) if b_ex else 0
-    bdisp = bdisp.rename(columns={"item_name": t("費用種"),
-                                  "amount_ex_tax": t("税別(¥)"), "amount_in_tax": t("税込(¥)")})
-    bdisp = bdisp[[t("費用種"), t("税別(¥)"), t("税込(¥)"), t("占比"), t("配賦")]]
-    st.dataframe(
-        bdisp, hide_index=True, use_container_width=True,
-        column_config={
-            t("税別(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
-            t("税込(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
-            t("占比"): st.column_config.NumberColumn(format="%.1f%%"),
-        },
-    )
-    st.caption(t(
-        "※ 合計 = JD 請求書 Billing の Total（全費用種）。"
-        "配賦3種(出库/尾程/耗材)のみ店舗・部署別に配賦、その他は総額のみ。"
-    ))
+    is_alloc = bill["item_name"].apply(lambda s: any(a in s for a in _ALLOC))
+    others = bill[~is_alloc].reset_index(drop=True)
+
+    if not others.empty:
+        st.markdown(t("###### 🗂️ その他費用（配賦3種以外・各項目 税別/税込）"))
+        ncol = 4
+        recs = list(others.iterrows())
+        for base in range(0, len(recs), ncol):
+            ccols = st.columns(ncol)
+            for j, (_, r) in enumerate(recs[base:base + ncol]):
+                cn, en = _split_name(r["item_name"])
+                with ccols[j]:
+                    with st.container(border=True):
+                        st.markdown(f"**{cn}**")
+                        st.caption(en or "　")
+                        st.markdown(f"### ¥{r['amount_ex_tax']:,.0f}")
+                        st.caption(t("税込 ¥{v:,.0f}").format(v=r["amount_in_tax"]))
+
+    with st.expander(t("📋 全費用明細（配賦3種含む · Billing 対账表）"), expanded=False):
+        bdisp = bill.copy()
+        bdisp[t("配賦")] = bdisp["item_name"].apply(
+            lambda s: t("✅輸出配賦") if any(a in s for a in _ALLOC) else t("総額のみ"))
+        bdisp[t("占比")] = (bdisp["amount_ex_tax"] / b_ex * 100) if b_ex else 0
+        bdisp = bdisp.rename(columns={"item_name": t("費用種"),
+                                      "amount_ex_tax": t("税別(¥)"), "amount_in_tax": t("税込(¥)")})
+        bdisp = bdisp[[t("費用種"), t("税別(¥)"), t("税込(¥)"), t("占比"), t("配賦")]]
+        st.dataframe(
+            bdisp, hide_index=True, use_container_width=True,
+            column_config={
+                t("税別(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
+                t("税込(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
+                t("占比"): st.column_config.NumberColumn(format="%.1f%%"),
+            },
+        )
+        st.caption(t("※ 合計 = JD 請求書 Billing Total。配賦3種のみ店舗・部署別配賦、その他は総額。"))
 
 st.divider()
 
