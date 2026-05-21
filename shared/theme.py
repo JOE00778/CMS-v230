@@ -206,7 +206,7 @@ p, span, label, div { color: #1d1d1d; }
     display: flex !important;
     align-items: center !important;
     box-sizing: border-box !important;
-    font-size: 17px !important;
+    font-size: 18px !important;
     line-height: 1.2 !important;
     background: transparent !important;
     color: #1d1d1d !important;
@@ -215,7 +215,7 @@ p, span, label, div { color: #1d1d1d; }
 [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
 [data-testid="stSidebar"] [data-testid="stPageLink"] a span,
 [data-testid="stSidebar"] [data-testid="stPageLink"] a div {
-    font-size: 17px !important;
+    font-size: 18px !important;
 }
 [data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
     background: rgba(0, 0, 0, 0.04) !important;
