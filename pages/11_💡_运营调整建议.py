@@ -197,19 +197,9 @@ def _render_sales_delta(_period_kind, _key):
         "落差 = " + _cur_name + "数量 − " + _prev_name + "数量 · マイナス=減少 · 店舗を選んで個別に原因分析",
     ))
 
-    # ── 単 SKU 詳細：销量推移曲线（周次=最近10周 / 月度=最近6ヶ月・不足分はある分だけ）──
-    st.divider()
-    st.markdown("#### " + _L("单 SKU 详情 · 销量推移", "単品詳細 · 販売数量推移"))
-    _sku_df = _wdf[["jan", "name"]].drop_duplicates()
-    _sku_df = _sku_df[_sku_df["jan"].notna()]
-    if _sku_df.empty:
-        st.info(_L("无可选 SKU", "選択可能な SKU がありません"))
-    else:
-        _sku_map = {f"{_rr['jan']} · {_rr['name']}": _rr["jan"]
-                    for _, _rr in _sku_df.iterrows()}
-        _pick = st.selectbox(_L("选择 SKU（来自上方清单·按落差排序）", "SKU 選択（上の一覧から·落差順）"),
-                             list(_sku_map.keys()), key=_key + "_skupick")
-        _pick_jan = _sku_map[_pick]
+    # ── 销量推移分析：店铺 / 品牌 / SKU 维度を組合せ筛选 ──
+    # （周次=最近10周 / 月度=最近6ヶ月・不足分はある分だけ）
+    def _draw_trend(_extra_where, _ps, _cap_label):
         _N = 10 if _period_kind == "week" else 6
         _recent = list(reversed(_periods[:_N]))
         _w_start = _bounds(_recent[0])[0]
@@ -218,9 +208,9 @@ def _render_sales_delta(_period_kind, _key):
             "SELECT s.sale_date AS d, SUM(s.qty_sold) AS q "
             "FROM nst.sales_daily s "
             "JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
-            "WHERE im.jan = ? AND s.sale_date BETWEEN ? AND ? "
+            "WHERE " + _extra_where + " AND s.sale_date BETWEEN ? AND ? "
             "GROUP BY s.sale_date",
-            (_pick_jan, _w_start.isoformat(), _w_end.isoformat()),
+            tuple(_ps) + (_w_start.isoformat(), _w_end.isoformat()),
         ).fetchall()
         _daily = {}
         for _tr in _ts_rows:
@@ -237,13 +227,44 @@ def _render_sales_delta(_period_kind, _key):
                 "period": _clbl,
                 _qty_col: sum(_v for _d, _v in _daily.items() if _cs <= _d <= _ce),
             })
-        _cdf = pd.DataFrame(_series).set_index("period")
-        st.line_chart(_cdf, height=300)
+        st.line_chart(pd.DataFrame(_series).set_index("period"), height=300)
         if _period_kind == "week":
-            _trend_cap = _L(f"最近 {len(_recent)} 周销量推移", f"直近 {len(_recent)} 週の販売数量推移")
+            _tc = _L(f"最近 {len(_recent)} 周销量推移", f"直近 {len(_recent)} 週の販売数量推移")
         else:
-            _trend_cap = _L(f"最近 {len(_recent)} 个月销量推移", f"直近 {len(_recent)} ヶ月の販売数量推移")
-        st.caption(f"{_pick} · " + _trend_cap)
+            _tc = _L(f"最近 {len(_recent)} 个月销量推移", f"直近 {len(_recent)} ヶ月の販売数量推移")
+        st.caption((_cap_label + " · " if _cap_label else "") + _tc)
+
+    st.divider()
+    st.markdown("#### " + _L("销量推移分析（店铺 / 品牌 / SKU 维度）",
+                            "販売数量推移分析（店舗 / メーカー / SKU）"))
+    st.caption(_L("3 维度可任意组合 · 留空=不限 · 周次=最近10周 / 月度=最近6个月",
+                  "3 軸は任意組合せ可 · 空欄=指定なし · 周次=直近10週 / 月次=直近6ヶ月"))
+    _ALL = _L("（全部）", "（全て）")
+    _f1, _f2, _f3 = st.columns(3)
+    _all_shops = [_sr["shop"] for _sr in _wconn.execute(
+        "SELECT DISTINCT shop FROM nst.sales_daily WHERE shop IS NOT NULL ORDER BY shop"
+    ).fetchall()]
+    _f_shop = _f1.selectbox(_L("店铺", "店舗"), [_ALL] + _all_shops, key=_key + "_tshop")
+    _all_makers = [_mr["maker"] for _mr in _wconn.execute(
+        "SELECT DISTINCT maker FROM nst.item_master_raw "
+        "WHERE maker IS NOT NULL AND maker <> '' ORDER BY maker"
+    ).fetchall()]
+    _f_maker = _f2.selectbox(_L("品牌", "メーカー"), [_ALL] + _all_makers, key=_key + "_tmaker")
+    _f_jan = _f3.text_input(
+        _L("SKU（JAN 搜索）", "SKU（JAN 検索）"), key=_key + "_tjan",
+        placeholder=_L("JAN 部分一致（留空=不限）", "JAN 部分一致（空欄=指定なし）"),
+    )
+    _wc, _wp, _caps = [], [], []
+    if _f_shop != _ALL:
+        _wc.append("s.shop = ?"); _wp.append(_f_shop); _caps.append(_f_shop)
+    if _f_maker != _ALL:
+        _wc.append("im.maker = ?"); _wp.append(_f_maker); _caps.append(_f_maker)
+    if _f_jan.strip():
+        _wc.append("im.jan LIKE ?"); _wp.append(f"%{_f_jan.strip()}%")
+        _caps.append("JAN:" + _f_jan.strip())
+    _extra = " AND ".join(_wc) if _wc else "1=1"
+    _cap_label = " · ".join(_caps) if _caps else _L("全部", "全件")
+    _draw_trend(_extra, _wp, _cap_label)
     _wconn.close()
 
 
