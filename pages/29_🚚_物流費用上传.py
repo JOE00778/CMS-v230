@@ -175,6 +175,26 @@ def run_recompute(ym=None):
     conn.commit()
 
 
+def show_match_feedback():
+    rs = conn.execute(
+        """SELECT r.year_month AS ym,
+                  round(100.0*count(m.parcel_no)/count(*),1) AS match_pct,
+                  round(coalesce(sum(r.amount_ex_tax) FILTER (WHERE m.parcel_no IS NULL),0))::bigint AS unknown_amt,
+                  round(100.0*coalesce(sum(r.amount_ex_tax) FILTER (WHERE m.parcel_no IS NULL),0)/nullif(sum(r.amount_ex_tax),0),1) AS unknown_pct
+           FROM logistics.cost_invoice_raw r
+           LEFT JOIN logistics.order_shop_map m ON r.join_key = m.parcel_no
+           GROUP BY r.year_month ORDER BY r.year_month"""
+    ).fetchall()
+    df = pd.DataFrame([dict(x) for x in rs])
+    if df.empty:
+        return
+    df = df.rename(columns={"ym": t("月"), "match_pct": t("件数命中%"),
+                            "unknown_amt": t("不明額(¥)"), "unknown_pct": t("不明率%")})
+    st.markdown(t("###### 📊 各月 紐付状況（不明率が高い月 = 同期・全平台 BM の補完が必要）"))
+    st.dataframe(df, hide_index=True, use_container_width=True,
+                 column_config={t("不明額(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
+
+
 tab1, tab2, tab3 = st.tabs([
     t("① JD 請求書（費用）"),
     t("② BM（包裹号→店舗）"),
@@ -217,6 +237,7 @@ with tab1:
             st.success(t("✅ {ym}: ").format(ym=ym_in)
                        + " ".join(f"{k}={v}" for k, v in per.items())
                        + t(" 行 書込 + 再集計完了"))
+            show_match_feedback()
 
 # ============================================================
 # tab2 · BM
@@ -224,6 +245,11 @@ with tab1:
 with tab2:
     st.markdown(t("##### BM 包裹导出 .xlsx を上传（包裹号 → 店舗）"))
     st.caption(t("NST 拉取不可 · 平台/JD WMS から導出。包裹号/订单号/物流单号/店铺 を表頭名で自動認識。"))
+    st.warning(t(
+        "⚠️ BM は**対象月と同期 × 全平台**で導出してください"
+        "（国内: 楽天/Amazon/Yahoo/Temu/TikTok ＋ 海外: Shopee/Lazada 等）。"
+        "海外平台のみだと国内運送費(Last mile)が店舗に紐付かず【不明】が激増します。"
+    ))
     upb = st.file_uploader(t("BM xlsx"), type=["xlsx"], key="bm_up")
     if upb and st.button(t("💾 解析 → PG 書込 + 全月再集計"), key="bm_btn", type="primary"):
         with st.spinner(t("解析中…")):
@@ -247,6 +273,7 @@ with tab2:
                 run_recompute(None)
             st.success(t("✅ {n} 包裹 upsert / {s} 店舗 · 全月再集計完了")
                        .format(n=len(bm_rows), s=len(shops)))
+            show_match_feedback()
 
 # ============================================================
 # tab3 · 店舗 → 部署 分類
