@@ -80,10 +80,16 @@ def _grade(row) -> str:
 
 agg[t("波动等级")] = agg.apply(_grade, axis=1)
 
-# KPI 卡片
-g_counts = agg[t("波动等级")].value_counts()
+# KPI は全量基準（無変化数も把握）· 饼图/Top20/列表/下钻は toggle で無変化を除外
+agg_all = agg.copy()
+hide_unchanged = st.toggle(t("隐藏无变化 SKU（仅看有波动）"), value=True)
+if hide_unchanged:
+    agg = agg[agg[t("波动等级")] != t("➖ 无变化")].copy()
+
+# KPI 卡片（全量）
+g_counts = agg_all[t("波动等级")].value_counts()
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric(t("SKU 总数"), len(agg))
+c1.metric(t("SKU 总数"), len(agg_all))
 c2.metric(t("🔴 大波动"), int(g_counts.get(t("🔴 大波动"), 0)))
 c3.metric(t("🟠 中波动"), int(g_counts.get(t("🟠 中波动"), 0)))
 c4.metric(t("🟡 小波动"), int(g_counts.get(t("🟡 小波动"), 0)))
@@ -166,7 +172,7 @@ view_show = view[[
 })
 view_show[t("波动率(%)")] = view_show[t("波动率(%)")].map(lambda x: f"{x:.1f}")
 st.dataframe(localize_df(view_show), use_container_width=True, hide_index=True, height=400)
-st.caption(t(f"显示 {len(view)} / 共 {len(agg)} 个 SKU"))
+st.caption(t(f"显示 {len(view)} / 共 {len(agg_all)} 个 SKU"))
 
 st.divider()
 
