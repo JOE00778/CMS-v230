@@ -1,9 +1,9 @@
-"""全局 UI 主题 · Apple Design Language
+"""全局 UI 主题 · SMIKIE 配色 + Apple 设计语言
 
-苹果设计语言核心：
-- SF Pro / -apple-system 字体栈，负字距大标题
-- #f5f5f7 系统灰背景 + 纯白卡片 + 1px hairline 边框（#d2d2d7）
-- 单一系统蓝 #0071e3 作为强调色，避免多色混用
+设计核心（配色对齐 SmikieJapan 自建站 Empire 主题）：
+- SF Pro / -apple-system 字体栈（中日文 Noto Sans JP），负字距大标题
+- #f7f4ef 暖米白背景（SMIKIE）+ 纯白卡片 + 1px hairline 边框（#d2d2d7）
+- 单一品牌红 #d6000f（SMIKIE）作为强调色，避免多色混用
 - 大留白（24-40px gap），柔和阴影（rgba(0,0,0,0.04)）
 - 12-18px 圆角；按钮 pill / 980px-radius
 - 无 ALL CAPS、无重粗体大写小标题
@@ -35,7 +35,7 @@ html, body {
 
 /* ===== App 背景 ===== */
 [data-testid="stAppViewContainer"] {
-    background: #f5f5f7;
+    background: #f7f4ef;
 }
 /* 顶部 header 完全透明，不再遮住 h1 标题 */
 [data-testid="stHeader"] {
@@ -49,7 +49,7 @@ h1 {
     font-size: 40px !important;
     font-weight: 600 !important;
     letter-spacing: -0.022em !important;
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
     line-height: 1.1 !important;
     margin-bottom: 0.5rem !important;
 }
@@ -57,16 +57,16 @@ h2 {
     font-size: 28px !important;
     font-weight: 600 !important;
     letter-spacing: -0.018em !important;
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
 }
 h3 {
     font-size: 22px !important;
     font-weight: 600 !important;
     letter-spacing: -0.012em !important;
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
 }
-h4 { font-size: 18px !important; font-weight: 600 !important; color: #1d1d1f !important; }
-p, span, label, div { color: #1d1d1f; }
+h4 { font-size: 18px !important; font-weight: 600 !important; color: #1d1d1d !important; }
+p, span, label, div { color: #1d1d1d; }
 
 /* ===== KPI Card — 苹果风纯白卡 ===== */
 [data-testid="stMetric"] {
@@ -89,7 +89,7 @@ p, span, label, div { color: #1d1d1f; }
     letter-spacing: 0 !important;
 }
 [data-testid="stMetricValue"] {
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
     font-weight: 600 !important;
     font-size: 30px !important;
     letter-spacing: -0.018em !important;
@@ -141,10 +141,10 @@ p, span, label, div { color: #1d1d1f; }
     background: transparent !important;
 }
 [data-baseweb="tab"][aria-selected="true"] {
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
 }
 [data-baseweb="tab-highlight"] {
-    background: #1d1d1f !important;
+    background: #1d1d1d !important;
     height: 2px !important;
 }
 
@@ -158,27 +158,31 @@ p, span, label, div { color: #1d1d1f; }
     padding: 0.5rem 1.25rem !important;
     border: 1px solid #d2d2d7 !important;
     background: #ffffff !important;
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
     box-shadow: none !important;
     transition: background 0.15s ease;
 }
 [data-testid="stButton"] > button:hover,
 [data-testid="stDownloadButton"] > button:hover,
 [data-testid="stFormSubmitButton"] > button:hover {
-    background: #f5f5f7 !important;
-    border-color: #1d1d1f !important;
+    background: #f7f4ef !important;
+    border-color: #1d1d1d !important;
 }
 [data-testid="stButton"] > button[kind="primary"],
 [data-testid="stFormSubmitButton"] > button[kind="primary"] {
-    background: #dbeafe !important;
-    color: #0058b0 !important;
-    border-color: #0071e3 !important;
+    background: #d6000f !important;
+    color: #ffffff !important;
+    border-color: #d6000f !important;
     font-weight: 600 !important;
+}
+[data-testid="stButton"] > button[kind="primary"] *,
+[data-testid="stFormSubmitButton"] > button[kind="primary"] * {
+    color: #ffffff !important;
 }
 [data-testid="stButton"] > button[kind="primary"]:hover,
 [data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
-    background: #c5dbfb !important;
-    border-color: #0058b0 !important;
+    background: #a8000c !important;
+    border-color: #a8000c !important;
 }
 
 /* ===== page_link · 统一尺寸/间距,active 用统一深色 pill ===== */
@@ -198,22 +202,22 @@ p, span, label, div { color: #1d1d1f; }
     font-size: 14px !important;
     line-height: 1.2 !important;
     background: transparent !important;
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
 }
 [data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
     background: rgba(0, 0, 0, 0.04) !important;
 }
 /* active page_link: Streamlit 把当前页的 href 设为空字符串作为标记
-   全站选中态统一: 浅蓝背景 #dbeafe + 深蓝字 #0058b0 + 加粗 */
+   全站选中态统一: 浅蓝背景 #fbe5e3 + 深蓝字 #a8000c + 加粗 */
 [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"][href=""],
 [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"][href$="/"]:not([href*="?"]) {
-    background: #dbeafe !important;
-    color: #0058b0 !important;
+    background: #fbe5e3 !important;
+    color: #a8000c !important;
     font-weight: 600 !important;
 }
 [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"][href=""] *,
 [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"][href$="/"]:not([href*="?"]) * {
-    color: #0058b0 !important;
+    color: #a8000c !important;
 }
 
 /* ===== 输入框 / 选择框：圆角 + hairline ===== */
@@ -227,27 +231,27 @@ p, span, label, div { color: #1d1d1f; }
 }
 [data-baseweb="input"]:focus-within input,
 [data-baseweb="select"]:focus-within > div {
-    border-color: #0071e3 !important;
-    box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15) !important;
+    border-color: #d6000f !important;
+    box-shadow: 0 0 0 3px rgba(214, 0, 15, 0.15) !important;
 }
 
 /* ===== Radio / Checkbox — 苹果蓝 ===== */
 [data-baseweb="radio"] [data-checked="true"] {
-    background-color: #0071e3 !important;
-    border-color: #0071e3 !important;
+    background-color: #d6000f !important;
+    border-color: #d6000f !important;
 }
 [data-testid="stCheckbox"] [data-checked="true"] {
-    background-color: #0071e3 !important;
-    border-color: #0071e3 !important;
+    background-color: #d6000f !important;
+    border-color: #d6000f !important;
 }
 
 /* ===== Multiselect 选中标签 — 浅色（默认深蓝太重）===== */
 [data-baseweb="tag"] {
     background-color: #eef0f3 !important;
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
     border: 1px solid #d2d2d7 !important;
 }
-[data-baseweb="tag"] span { color: #1d1d1f !important; }
+[data-baseweb="tag"] span { color: #1d1d1d !important; }
 [data-baseweb="tag"] svg { fill: #6e6e73 !important; }
 
 /* ===== Expander — 圆角卡 ===== */
@@ -259,7 +263,7 @@ p, span, label, div { color: #1d1d1f; }
 }
 [data-testid="stExpander"] summary {
     font-weight: 500 !important;
-    color: #1d1d1f !important;
+    color: #1d1d1d !important;
 }
 
 /* ===== Alert / Info / Warning ===== */
@@ -296,7 +300,7 @@ hr {
     letter-spacing: -0.005em;
 }
 .badge-A { background: rgba(52, 199, 89, 0.12); color: #1f8a3c; }
-.badge-B { background: rgba(0, 113, 227, 0.10); color: #0058b0; }
+.badge-B { background: rgba(214, 0, 15, 0.10); color: #a8000c; }
 .badge-C { background: rgba(142, 142, 147, 0.14); color: #515154; }
 .badge-NEW { background: rgba(255, 149, 0, 0.14); color: #b56400; }
 .badge-RED { background: rgba(255, 59, 48, 0.12); color: #b32419; }
