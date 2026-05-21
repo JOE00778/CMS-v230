@@ -262,23 +262,27 @@ def _render_sales_delta(_period_kind, _key):
         _w_start = _bounds(_recent[0])[0]
         _w_end = _bounds(_recent[-1])[1]
         _ts_rows = _wconn.execute(
-            "SELECT s.sale_date AS d, SUM(s.qty_sold) AS q, SUM(s.revenue) AS r "
+            "SELECT s.sale_date AS d, SUM(s.qty_sold) AS q, SUM(s.revenue) AS r, "
+            "SUM(s.gross_profit) AS g "
             "FROM nst.sales_daily s "
             "JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
             "WHERE " + _extra_where + " AND s.sale_date BETWEEN ? AND ? "
             "GROUP BY s.sale_date",
             tuple(_ps) + (_w_start.isoformat(), _w_end.isoformat()),
         ).fetchall()
-        _dq, _dr = {}, {}
+        _dq, _dr, _dg = {}, {}, {}
         for _tr in _ts_rows:
             _dd = _tr["d"]
             if isinstance(_dd, str):
                 _dd = _dtw.date.fromisoformat(_dd[:10])
             _dq[_dd] = _dq.get(_dd, 0.0) + float(_tr["q"] or 0)
             _dr[_dd] = _dr.get(_dd, 0.0) + float(_tr["r"] or 0)
+            _dg[_dd] = _dg.get(_dd, 0.0) + float(_tr["g"] or 0)
         _period_col = _L("期间", "期間")
         _qty_col = _L("销量", "数量")
         _rev_col = _L("营业额", "売上")
+        _profit_col = _L("利润", "利益")
+        _margin_col = _L("利润率", "利益率")
         _ratio_col = (_L("前周比", "前週比") if _period_kind == "week"
                       else _L("前月比", "前月比"))
         _rows, _prev_q = [], None
@@ -287,27 +291,44 @@ def _render_sales_delta(_period_kind, _key):
             _clbl = _cs.strftime("%m/%d") if _period_kind == "week" else _p.strftime("%Y-%m")
             _q = sum(_v for _d, _v in _dq.items() if _cs <= _d <= _ce)
             _r = sum(_v for _d, _v in _dr.items() if _cs <= _d <= _ce)
+            _g = sum(_v for _d, _v in _dg.items() if _cs <= _d <= _ce)
             _ratio = f"{_q / _prev_q * 100:.1f}%" if _prev_q else "—"
+            _mg = f"{_g / _r * 100:.1f}%" if _r else "—"
             _rows.append({
                 _period_col: _clbl,
                 _qty_col: int(round(_q)),
                 _rev_col: int(round(_r)),
+                _profit_col: int(round(_g)),
+                _margin_col: _mg,
                 _ratio_col: _ratio,
             })
             _prev_q = _q
         _tbl = pd.DataFrame(_rows).set_index(_period_col)
-        # 曲线图上方：每期 销量 / 营业额 / 前期比
+        # 曲线图上方：每期 销量 / 营业额 / 利润 / 利润率 / 前期比
         st.dataframe(_tbl, use_container_width=True)
-        # 曲线图（page05 と統一: 点線 + 縦軸タイトル + tooltip）
+        # 曲线图（page05 と統一: 销量(左軸) + 利润(右軸) 点線・独立軸）
         _cdf = _tbl.reset_index()
-        _chart = alt.Chart(_cdf).mark_line(point=True).encode(
-            x=alt.X(field=_period_col, type="nominal", sort=None, title=None,
-                    axis=alt.Axis(labelAngle=0)),
+        _xp = alt.X(field=_period_col, type="nominal", sort=None, title=None,
+                    axis=alt.Axis(labelAngle=0))
+        _bse = alt.Chart(_cdf).encode(x=_xp)
+        _l_q = _bse.mark_line(point=True).encode(
             y=alt.Y(field=_qty_col, type="quantitative", title=_qty_col,
                     axis=alt.Axis(format=",.0f")),
+            color=alt.datum(_qty_col),
             tooltip=[alt.Tooltip(field=_period_col, type="nominal"),
                      alt.Tooltip(field=_qty_col, type="quantitative", format=",.0f")],
-        ).properties(height=320)
+        )
+        _l_g = _bse.mark_line(point=True, strokeDash=[5, 3]).encode(
+            y=alt.Y(field=_profit_col, type="quantitative", title=_profit_col,
+                    axis=alt.Axis(orient="right", format=",.0f")),
+            color=alt.datum(_profit_col),
+            tooltip=[alt.Tooltip(field=_period_col, type="nominal"),
+                     alt.Tooltip(field=_profit_col, type="quantitative", format=",.0f")],
+        )
+        _chart = (alt.layer(_l_q, _l_g)
+                  .resolve_scale(y="independent", color="shared")
+                  .properties(height=320)
+                  .configure_legend(orient="top", title=None))
         st.altair_chart(_chart, use_container_width=True)
         if _period_kind == "week":
             _tc = _L(f"最近 {len(_recent)} 周销量推移", f"直近 {len(_recent)} 週の販売数量推移")
@@ -433,30 +454,33 @@ with _q_tab:
     _INV = ("(SELECT item_internal_id, qty_on_hand FROM nst.inventory_snapshot "
             "WHERE snapshot_date=(SELECT max(snapshot_date) FROM nst.inventory_snapshot))")
 
-    where = ["s.year_month = ?"]
-    params: list = [ym]
+    # 月份以外の筛选（下方の推移図 = 全月集計で再利用するため分離）
+    _filt: list = []
+    _filtp: list = []
     if market_filter != _ALL:
         _mshops = [_s for _s in _month_shops if classify_market(_s) == market_filter]
         if _mshops:
-            where.append("s.shop IN (" + ",".join(["?"] * len(_mshops)) + ")")
-            params.extend(_mshops)
+            _filt.append("s.shop IN (" + ",".join(["?"] * len(_mshops)) + ")")
+            _filtp.extend(_mshops)
         else:
-            where.append("1=0")
+            _filt.append("1=0")
     if rank_filter != _ALL:
-        where.append("im.item_rank = ?"); params.append(rank_filter)
+        _filt.append("im.item_rank = ?"); _filtp.append(rank_filter)
     if maker_filter != _ALL:
-        where.append("im.maker = ?"); params.append(maker_filter)
+        _filt.append("im.maker = ?"); _filtp.append(maker_filter)
     if handling_filter != _ALL:
-        where.append("im.handling_cd = ?"); params.append(handling_filter)
+        _filt.append("im.handling_cd = ?"); _filtp.append(handling_filter)
     if kw.strip():
-        where.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
-        like = f"%{kw.strip()}%"; params += [like, like]
+        _filt.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
+        like = f"%{kw.strip()}%"; _filtp += [like, like]
     if multi_terms:
         _ors = []
         for _term in multi_terms:
             _ors.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
-            _like = f"%{_term}%"; params += [_like, _like]
-        where.append("(" + " OR ".join(_ors) + ")")
+            _like = f"%{_term}%"; _filtp += [_like, _like]
+        _filt.append("(" + " OR ".join(_ors) + ")")
+    where = ["s.year_month = ?"] + _filt
+    params: list = [ym] + _filtp
     where_sql = " AND ".join(where)
 
     def _enrich(_d, with_stock):
@@ -555,3 +579,35 @@ with _q_tab:
             file_name=(f"売上データ_{ym}.csv" if _ja_dl else f"销售数据_{ym}.csv"),
             mime="text/csv",
         )
+
+        # 表格下方：総収益合計 + 粗利合計 の月次推移（上の筛选に追従・全月集計）
+        st.divider()
+        _tw_sql = " AND ".join(_filt) if _filt else "1=1"
+        _trend_df, _terr = _query(
+            "SELECT s.year_month AS ym, SUM(s.revenue) AS revenue, "
+            "SUM(s.gross_profit) AS gp "
+            "FROM nst.sales_monthly s "
+            "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+            f"WHERE {_tw_sql} GROUP BY s.year_month ORDER BY s.year_month",
+            tuple(_filtp),
+        )
+        if _trend_df is not None and not _trend_df.empty:
+            _ja_t = get_lang() == "ja"
+            _rev_l = "総収益" if _ja_t else "总收益"
+            _gp_l = "粗利" if _ja_t else "毛利"
+            _trend_df["revenue"] = _trend_df["revenue"].astype(float)
+            _trend_df["gp"] = _trend_df["gp"].astype(float)
+            _melt = _trend_df.melt(id_vars="ym", value_vars=["revenue", "gp"],
+                                   var_name="kind", value_name="amount")
+            _melt["kind"] = _melt["kind"].map({"revenue": _rev_l, "gp": _gp_l})
+            _tch = alt.Chart(_melt).mark_line(point=True).encode(
+                x=alt.X("ym:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("amount:Q", title=("金額" if _ja_t else "金额"),
+                        axis=alt.Axis(format=",.0f")),
+                color=alt.Color("kind:N", title=None),
+                tooltip=[alt.Tooltip("ym:N"), alt.Tooltip("kind:N"),
+                         alt.Tooltip("amount:Q", format=",.0f")],
+            ).properties(height=320).configure_legend(orient="top")
+            st.altair_chart(_tch, use_container_width=True)
+            st.caption("総収益合計 / 粗利合計 の月次推移（上の筛选に追従）" if _ja_t
+                       else "总收益合计 / 毛利合计 月度趋势（跟随上方筛选变化）")
