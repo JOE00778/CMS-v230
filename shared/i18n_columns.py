@@ -192,6 +192,14 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
     "changed_by":       {"ja": "変更者",        "zh": "变更人",     "en": "Changed By"},
     "changed_at":       {"ja": "変更日時",      "zh": "变更时间",   "en": "Changed At"},
 
+    # ── page07 等级判定 proposal 列 ──
+    "name":             {"ja": "商品名",        "zh": "商品名",     "en": "Name"},
+    "trend":            {"ja": "推移",          "zh": "趋势",       "en": "Trend"},
+    "advice":           {"ja": "アドバイス",    "zh": "运营建议",   "en": "Advice"},
+    "sales":            {"ja": "売上",          "zh": "销售额",     "en": "Sales"},
+    "margin":           {"ja": "粗利率",        "zh": "毛利率",     "en": "Margin"},
+    "rank_pct":         {"ja": "累計順位",      "zh": "累计排名",   "en": "Rank %"},
+
     # ── 改廃 / discontinue ──
     "month":            {"ja": "月",            "zh": "月份",       "en": "Month"},
     "reason":           {"ja": "理由",          "zh": "理由",       "en": "Reason"},
