@@ -149,6 +149,41 @@ def parse_bm(data: bytes):
     return list(seen.values())
 
 
+def parse_billing(data: bytes, ym: str):
+    """Billing sheet（JD 公式の費用全構成）→ (ym, seq, item_name, ex, in)。Total 行で停止。"""
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    if "Billing" not in wb.sheetnames:
+        wb.close()
+        return []
+    rows = list(wb["Billing"].iter_rows(values_only=True))
+    hdr_idx = next((i for i, r in enumerate(rows)
+                    if any(str(c).strip() == "Item" for c in r if c)
+                    and any("Price before Tax" in str(c) for c in r if c)), None)
+    if hdr_idx is None:
+        wb.close()
+        return []
+    hdr = [(str(x).strip() if x else "") for x in rows[hdr_idx]]
+    ci_cust = find_col(hdr, "Customer")
+    ci_item = find_col(hdr, "Item")
+    ci_ex = find_col(hdr, "Price before Tax", "before Tax")
+    ci_in = find_col(hdr, "Tax inclusive")
+    out, seq = [], 0
+    for r in rows[hdr_idx + 1:]:
+        cust = str(_cell(r, ci_cust)).strip() if _cell(r, ci_cust) else ""
+        item = str(_cell(r, ci_item)).strip() if _cell(r, ci_item) else ""
+        if cust.lower() == "total" or item.lower() == "total":
+            break
+        if not item:
+            continue
+        ex, inc = _num(_cell(r, ci_ex)), _num(_cell(r, ci_in))
+        if ex is None and inc is None:
+            continue
+        seq += 1
+        out.append((ym, seq, item.replace(chr(10), " ").replace(chr(13), " "), ex, inc))
+    wb.close()
+    return out
+
+
 def run_recompute(ym=None):
     conn.execute(
         "DELETE FROM logistics.cost_monthly WHERE (%s IS NULL OR year_month=%s)",
@@ -233,6 +268,16 @@ with tab1:
                     rows,
                 )
                 conn.commit()
+                bill = parse_billing(up.getvalue(), ym_in)
+                if bill:
+                    conn.execute("DELETE FROM logistics.cost_billing WHERE year_month=%s", (ym_in,))
+                    conn.executemany(
+                        """INSERT INTO logistics.cost_billing
+                           (year_month, seq, item_name, amount_ex_tax, amount_in_tax)
+                           VALUES (%s,%s,%s,%s,%s)""",
+                        bill,
+                    )
+                    conn.commit()
                 run_recompute(ym_in)
             st.success(t("✅ {ym}: ").format(ym=ym_in)
                        + " ".join(f"{k}={v}" for k, v in per.items())

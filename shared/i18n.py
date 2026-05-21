@@ -631,7 +631,6 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
         ("pages/16_📈_等级历史趋势.py", "📈 等级历史趋势"),
         ("pages/20_📈_定义原价波动图.py", "📈 定义原价波动图"),
         ("pages/28_🚚_物流費用分析.py", "🚚 物流費用分析"),
-        ("pages/29_🚚_物流費用上传.py", "🚚 物流費用上传"),
     ]),
     ("📦 订货决策", [
         ("pages/25_📦_発注AI_v2.py", "📦 发注AI v2 (多供货商)"),
@@ -653,6 +652,7 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
         ("pages/26_🌐_图片翻译.py", "🌐 图片翻译"),
     ]),
     ("⚙️ 系统设置", [
+        ("pages/29_🚚_物流費用上传.py", "🚚 物流費用上传"),
         ("pages/27_📥_NST取得データ.py", "📥 NST 取得データ"),
         ("pages/22_🗄️_数据库管理.py", "🗄️ 数据库管理"),
     ]),

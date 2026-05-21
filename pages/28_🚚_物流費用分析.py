@@ -162,6 +162,49 @@ st.divider()
 
 
 # ============================================================
+# JD 費用全構成（Billing 対账 · 全費用種 · 店舗/部署分けず）
+# ============================================================
+st.subheader(t("💴 JD 費用全構成（{ym} · Billing 対账）").format(ym=sel_month))
+bill = _df(
+    "SELECT seq, item_name, amount_ex_tax, amount_in_tax "
+    "FROM logistics.cost_billing WHERE year_month=%(ym)s ORDER BY seq",
+    {"ym": sel_month},
+)
+if bill.empty:
+    st.info(t("当月 Billing データなし（請求書アップロード時に自動取込）。"))
+else:
+    bill["amount_ex_tax"] = pd.to_numeric(bill["amount_ex_tax"], errors="coerce").fillna(0.0)
+    bill["amount_in_tax"] = pd.to_numeric(bill["amount_in_tax"], errors="coerce").fillna(0.0)
+    b_ex, b_in = bill["amount_ex_tax"].sum(), bill["amount_in_tax"].sum()
+    bc1, bc2, bc3 = st.columns(3)
+    bc1.metric(t("JD 費用 税別 合計"), f"¥{b_ex:,.0f}")
+    bc2.metric(t("税込 合計"), f"¥{b_in:,.0f}")
+    bc3.metric(t("費用種 数"), f"{len(bill)}")
+    _ALLOC = ("OB-Pick&Pack", "Last mile", "Packing Charge")
+    bdisp = bill.copy()
+    bdisp[t("配賦")] = bdisp["item_name"].map(
+        lambda s: t("✅輸出配賦") if any(a in s for a in _ALLOC) else t("総額のみ"))
+    bdisp[t("占比")] = (bdisp["amount_ex_tax"] / b_ex * 100) if b_ex else 0
+    bdisp = bdisp.rename(columns={"item_name": t("費用種"),
+                                  "amount_ex_tax": t("税別(¥)"), "amount_in_tax": t("税込(¥)")})
+    bdisp = bdisp[[t("費用種"), t("税別(¥)"), t("税込(¥)"), t("占比"), t("配賦")]]
+    st.dataframe(
+        bdisp, hide_index=True, use_container_width=True,
+        column_config={
+            t("税別(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
+            t("税込(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
+            t("占比"): st.column_config.NumberColumn(format="%.1f%%"),
+        },
+    )
+    st.caption(t(
+        "※ 合計 = JD 請求書 Billing の Total（全費用種）。"
+        "配賦3種(出库/尾程/耗材)のみ店舗・部署別に配賦、その他は総額のみ。"
+    ))
+
+st.divider()
+
+
+# ============================================================
 # 店舗别明细表（当月）
 # ============================================================
 st.subheader(t("🏪 店舗別明細（{ym}）").format(ym=sel_month))
