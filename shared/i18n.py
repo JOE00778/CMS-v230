@@ -660,6 +660,8 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
 
 # Sidebar nav 中文 label → 日文（补 TRANSLATIONS_JA 缺失条目）
 for _zh, _ja in [
+    ("📉 周次销量落差", "📉 週間販売差数"),
+    ("📅 月度销量落差", "📅 月間販売差数"),
     ("🚚 物流費用分析", "🚚 物流費用分析"),
     ("🚚 物流費用上传", "🚚 物流費用アップロード"),
     ("🏠 首页", "🏠 ホーム"),
