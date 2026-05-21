@@ -44,18 +44,28 @@ st.caption(t(
 # 列見出し: (中文, 日本語) — UI 言語追従
 _LBL = {
     "shop":          ("店铺", "FB_店舗"),
+    "market":        ("市场", "市場"),
     "jan":           ("UPC编码", "UPCコード"),
-    "display_name":  ("显示名", "表示名"),
-    "maker":         ("厂商", "メーカー名"),
-    "item_rank":     ("商品等级", "商品ランク"),
+    "item_code":     ("商品编号", "アイテム"),
+    "display_name":  ("商品名", "アイテム名"),
+    "maker":         ("品牌", "ブランド"),
+    "item_rank":     ("等级", "ランク"),
     "handling_cd":   ("经销状态", "取扱区分"),
-    "qty_sold":      ("销售数量", "販売数量"),
+    "qty_sold":      ("销售数", "販売数"),
     "revenue":       ("总收益", "総収益"),
+    "unit_price":    ("单价", "単価"),
     "teigi_genka":   ("定义原价", "定義原価"),
     "arari":         ("毛利", "粗利"),
-    "arari_rate":    ("毛利率", "粗利率"),
-    "qty_on_hand":   ("现有库存", "手持"),
+    "arari_rate":    ("粗利率", "粗利率"),
+    "qty_on_hand":   ("库存数", "在庫数"),
     "qty_available": ("可用库存", "利用可能"),
+    "stock_value":   ("库存金额", "在庫金額"),
+    "turnover":      ("回转率", "回転率"),
+    "avg_stock_days": ("平均库存天数", "平均在庫日数"),
+    "cross_ratio":   ("交叉比率", "交差比率"),
+    "sku_status":    ("SKU稼働率", "SKU稼働率"),
+    "stock_sales_ratio": ("库存销售比", "在庫販売比"),
+    "profit_contrib": ("利润贡献率", "利益貢献率"),
 }
 
 
@@ -370,7 +380,7 @@ with _q_tab:
     # ============================================================
     c1, c2, c3 = st.columns([1.2, 2, 3])
     ym = c1.selectbox(t("対象月"), months_df["year_month"].tolist())
-    view = c2.radio(t("表示単位"), [t("店舗別"), t("アイテム別")], horizontal=True)
+    view = c2.radio(t("表示単位"), [t("整体"), t("市场别")], horizontal=True)
     kw = c3.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
 
     # 当月売上商品の各次元 distinct → 絞り込み候補
@@ -390,8 +400,10 @@ with _q_tab:
 
 
     _ALL = t("（全部）")
+    _month_shops = _opts("shop")
+    _market_opts = sorted({classify_market(_s) for _s in _month_shops})
     f1, f2, f3, f4 = st.columns(4)
-    shop_filter = f1.selectbox(t("店舗"), [_ALL] + _opts("shop"))
+    market_filter = f1.selectbox(t("市场"), [_ALL] + _market_opts)
     rank_filter = f2.selectbox(t("商品ランク"), [_ALL] + _opts("item_rank"))
     maker_filter = f3.selectbox(t("メーカー名"), [_ALL] + _opts("maker"))
     handling_filter = f4.selectbox(t("取扱区分"), [_ALL] + _opts("handling_cd"))
@@ -407,13 +419,18 @@ with _q_tab:
     # ============================================================
     # クエリ組み立て
     # ============================================================
-    _INV = ("(SELECT item_internal_id, qty_on_hand, qty_available FROM nst.inventory_snapshot "
+    _INV = ("(SELECT item_internal_id, qty_on_hand FROM nst.inventory_snapshot "
             "WHERE snapshot_date=(SELECT max(snapshot_date) FROM nst.inventory_snapshot))")
 
     where = ["s.year_month = ?"]
     params: list = [ym]
-    if shop_filter != _ALL:
-        where.append("s.shop = ?"); params.append(shop_filter)
+    if market_filter != _ALL:
+        _mshops = [_s for _s in _month_shops if classify_market(_s) == market_filter]
+        if _mshops:
+            where.append("s.shop IN (" + ",".join(["?"] * len(_mshops)) + ")")
+            params.extend(_mshops)
+        else:
+            where.append("1=0")
     if rank_filter != _ALL:
         where.append("im.item_rank = ?"); params.append(rank_filter)
     if maker_filter != _ALL:
@@ -431,38 +448,91 @@ with _q_tab:
         where.append("(" + " OR ".join(_ors) + ")")
     where_sql = " AND ".join(where)
 
-    if view == t("店舗別"):
-        df, e2 = _query(
-            "SELECT s.shop, im.jan, im.display_name, im.maker, im.item_rank, im.handling_cd, "
-            "s.qty_sold, s.revenue, "
-            "s.gross_profit, "
-            "inv.qty_on_hand, inv.qty_available "
+    def _sku_status(_h, _stock, _sold):
+        # Boss 公式: 取扱中止/空→中止 · 有库存且无销售→不動 · 其余空
+        if _h is None or str(_h).strip() in ("", "取扱中止", "メーカー取扱中止"):
+            return "中止"
+        if _stock is None or float(_stock or 0) <= 0:
+            return ""
+        return "" if float(_sold or 0) > 0 else "不動"
+
+    def _enrich(_d, with_stock):
+        """派生指标（销售类 + 可选库存类）。"""
+        _d = _d.copy()
+        for _c in ("qty_sold", "revenue", "gross_profit"):
+            _d[_c] = _d[_c].astype(float)
+        _d["arari"] = _d["gross_profit"]
+        _d["arari_rate"] = (_d["arari"] / _d["revenue"].where(_d["revenue"] != 0) * 100).round(1)
+        _d["unit_price"] = (_d["revenue"] / _d["qty_sold"].where(_d["qty_sold"] != 0)).round(0)
+        _tg = _d["arari"].sum()
+        _d["profit_contrib"] = (_d["arari"] / _tg * 100).round(1) if _tg else 0.0
+        if with_stock:
+            _d["qty_on_hand"] = _d["qty_on_hand"].astype(float)
+            _d["cost_estimate"] = _d["cost_estimate"].astype(float)
+            _soh = _d["qty_on_hand"].where(_d["qty_on_hand"] != 0)
+            _sld = _d["qty_sold"].where(_d["qty_sold"] != 0)
+            _d["stock_value"] = (_d["qty_on_hand"] * _d["cost_estimate"]).round(0)
+            _d["turnover"] = (_d["qty_sold"] / _soh).round(2)            # 月販売数 / 当前在庫（近似）
+            _d["stock_sales_ratio"] = (_d["qty_on_hand"] / _sld).round(2)
+            _d["avg_stock_days"] = (_d["qty_on_hand"] / (_sld / 30)).round(1)
+            _d["cross_ratio"] = (_d["arari_rate"] / 100 * _d["turnover"]).round(2)
+            _d["sku_status"] = _d.apply(
+                lambda r: _sku_status(r.get("handling_cd"), r.get("qty_on_hand"), r.get("qty_sold")),
+                axis=1)
+        return _d
+
+    if view == t("市场别"):
+        # 市場 = 店舗から派生（NST 在庫は単仓全局 → 市場別は销售类指标のみ）
+        df_raw, e2 = _query(
+            "SELECT s.shop, MIN(im.item_code) AS item_code, im.jan, im.display_name, "
+            "im.maker, im.item_rank, "
+            "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
+            "SUM(s.gross_profit) AS gross_profit "
             "FROM nst.sales_monthly s "
             "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
-            f"LEFT JOIN {_INV} inv ON inv.item_internal_id = s.item_internal_id "
-            f"WHERE {where_sql} ORDER BY s.revenue DESC LIMIT 5000",
+            f"WHERE {where_sql} "
+            "GROUP BY s.shop, im.jan, im.display_name, im.maker, im.item_rank",
             tuple(params),
         )
-        cols = ("shop", "jan", "display_name", "maker", "item_rank", "handling_cd",
-                "qty_sold", "revenue", "teigi_genka", "arari", "arari_rate",
-                "qty_on_hand", "qty_available")
+        if df_raw is not None and not df_raw.empty:
+            df_raw["market"] = df_raw["shop"].apply(classify_market)
+            for _c in ("qty_sold", "revenue", "gross_profit"):
+                df_raw[_c] = df_raw[_c].astype(float)
+            df = df_raw.groupby(
+                ["market", "jan", "display_name", "maker", "item_rank"],
+                as_index=False, dropna=False,
+            ).agg(
+                item_code=("item_code", "first"),
+                qty_sold=("qty_sold", "sum"), revenue=("revenue", "sum"),
+                gross_profit=("gross_profit", "sum"),
+            )
+            df = _enrich(df, with_stock=False).sort_values("revenue", ascending=False)
+        else:
+            df = df_raw
+        cols = ("market", "item_code", "maker", "display_name", "item_rank",
+                "qty_sold", "revenue", "unit_price", "arari", "arari_rate", "profit_contrib")
     else:
+        # 整体（全市場合計 · SKU 別）— 销售类 + 库存类 全 17 指标
         df, e2 = _query(
-            "SELECT im.jan, im.display_name, im.maker, im.item_rank, im.handling_cd, "
+            "SELECT MIN(im.item_code) AS item_code, im.jan, im.display_name, im.maker, "
+            "im.item_rank, MIN(im.handling_cd) AS handling_cd, "
             "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
             "SUM(s.gross_profit) AS gross_profit, "
-            "MAX(inv.qty_on_hand) AS qty_on_hand, MAX(inv.qty_available) AS qty_available "
+            "MAX(im.cost_estimate) AS cost_estimate, MAX(inv.qty_on_hand) AS qty_on_hand "
             "FROM nst.sales_monthly s "
             "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
             f"LEFT JOIN {_INV} inv ON inv.item_internal_id = s.item_internal_id "
             f"WHERE {where_sql} "
-            "GROUP BY im.jan, im.display_name, im.maker, im.item_rank, im.handling_cd "
-            "ORDER BY revenue DESC LIMIT 5000",
+            "GROUP BY im.jan, im.display_name, im.maker, im.item_rank "
+            "ORDER BY revenue DESC",
             tuple(params),
         )
-        cols = ("jan", "display_name", "maker", "item_rank", "handling_cd",
-                "qty_sold", "revenue", "teigi_genka", "arari", "arari_rate",
-                "qty_on_hand", "qty_available")
+        if df is not None and not df.empty:
+            df = _enrich(df, with_stock=True)
+        cols = ("item_code", "maker", "display_name", "item_rank",
+                "qty_sold", "revenue", "unit_price", "arari", "arari_rate",
+                "qty_on_hand", "stock_value", "turnover", "avg_stock_days",
+                "cross_ratio", "sku_status", "stock_sales_ratio", "profit_contrib")
 
     # ============================================================
     # 表示
@@ -472,21 +542,16 @@ with _q_tab:
     elif df is None or df.empty:
         st.info(t("この条件のデータがありません"))
     else:
-        df["revenue"] = df["revenue"].astype(float)
-        df["arari"] = df["gross_profit"].astype(float)          # NetSuite 真実毛利（estgrossprofit）
-        df["teigi_genka"] = df["revenue"] - df["arari"]         # NetSuite 口径の原価（売上−毛利）
-        df["arari_rate"] = (df["arari"] / df["revenue"].where(df["revenue"] != 0)).round(4)
-
         tot_q = df["qty_sold"].astype(float).sum()
-        tot_r = df["revenue"].sum()
-        tot_g = df["arari"].sum()
+        tot_r = df["revenue"].astype(float).sum()
+        tot_g = df["arari"].astype(float).sum()
         m1, m2, m3, m4 = st.columns(4)
         m1.metric(t("対象月"), ym)
         m2.metric(t("販売数量 計"), f"{tot_q:,.0f}")
         m3.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
         m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}", f"{(tot_g/tot_r if tot_r else 0):.1%}")
 
-        st.caption(t("表示件数（最大 5000 件）: ") + f"{len(df):,}")
+        st.caption(t("表示件数: ") + f"{len(df):,}" + t("（粗利率/利润贡献率=%, 回転率=月販売/当前在庫·近似）"))
         st.dataframe(
             df[list(cols)], use_container_width=True, height=560,
             column_config=_cc(*cols),
