@@ -196,6 +196,54 @@ def _render_sales_delta(_period_kind, _key):
         "落差 = " + _cur_name + "销量 − " + _prev_name + "销量 · 负值=下降 · 选择店铺可逐店分析原因",
         "落差 = " + _cur_name + "数量 − " + _prev_name + "数量 · マイナス=減少 · 店舗を選んで個別に原因分析",
     ))
+
+    # ── 単 SKU 詳細：销量推移曲线（周次=最近10周 / 月度=最近6ヶ月・不足分はある分だけ）──
+    st.divider()
+    st.markdown("#### " + _L("单 SKU 详情 · 销量推移", "単品詳細 · 販売数量推移"))
+    _sku_df = _wdf[["jan", "name"]].drop_duplicates()
+    _sku_df = _sku_df[_sku_df["jan"].notna()]
+    if _sku_df.empty:
+        st.info(_L("无可选 SKU", "選択可能な SKU がありません"))
+    else:
+        _sku_map = {f"{_rr['jan']} · {_rr['name']}": _rr["jan"]
+                    for _, _rr in _sku_df.iterrows()}
+        _pick = st.selectbox(_L("选择 SKU（来自上方清单·按落差排序）", "SKU 選択（上の一覧から·落差順）"),
+                             list(_sku_map.keys()), key=_key + "_skupick")
+        _pick_jan = _sku_map[_pick]
+        _N = 10 if _period_kind == "week" else 6
+        _recent = list(reversed(_periods[:_N]))
+        _w_start = _bounds(_recent[0])[0]
+        _w_end = _bounds(_recent[-1])[1]
+        _ts_rows = _wconn.execute(
+            "SELECT s.sale_date AS d, SUM(s.qty_sold) AS q "
+            "FROM nst.sales_daily s "
+            "JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+            "WHERE im.jan = ? AND s.sale_date BETWEEN ? AND ? "
+            "GROUP BY s.sale_date",
+            (_pick_jan, _w_start.isoformat(), _w_end.isoformat()),
+        ).fetchall()
+        _daily = {}
+        for _tr in _ts_rows:
+            _dd = _tr["d"]
+            if isinstance(_dd, str):
+                _dd = _dtw.date.fromisoformat(_dd[:10])
+            _daily[_dd] = _daily.get(_dd, 0.0) + float(_tr["q"] or 0)
+        _qty_col = _L("销量", "数量")
+        _series = []
+        for _p in _recent:
+            _cs, _ce, _, _ = _bounds(_p)
+            _clbl = _cs.strftime("%m/%d") if _period_kind == "week" else _p.strftime("%Y-%m")
+            _series.append({
+                "period": _clbl,
+                _qty_col: sum(_v for _d, _v in _daily.items() if _cs <= _d <= _ce),
+            })
+        _cdf = pd.DataFrame(_series).set_index("period")
+        st.line_chart(_cdf, height=300)
+        if _period_kind == "week":
+            _trend_cap = _L(f"最近 {len(_recent)} 周销量推移", f"直近 {len(_recent)} 週の販売数量推移")
+        else:
+            _trend_cap = _L(f"最近 {len(_recent)} 个月销量推移", f"直近 {len(_recent)} ヶ月の販売数量推移")
+        st.caption(f"{_pick} · " + _trend_cap)
     _wconn.close()
 
 
