@@ -433,5 +433,12 @@ if trend_input.strip():
         )
 
         if len(agg) >= 2:
-            chart_df = agg.set_index("year_month")[["sell_through_rate"]]
-            st.line_chart(chart_df, height=260)
+            import altair as alt
+            # 曲线图（page05 と統一: 点線 + 縦軸タイトル + tooltip）
+            _ch = alt.Chart(agg).mark_line(point=True).encode(
+                x=alt.X("year_month:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("sell_through_rate:Q", title=t("完売率"), axis=alt.Axis(format=".0%")),
+                tooltip=[alt.Tooltip("year_month:N", title=t("月份")),
+                         alt.Tooltip("sell_through_rate:Q", title=t("完売率"), format=".1%")],
+            ).properties(height=300)
+            st.altair_chart(_ch, use_container_width=True)

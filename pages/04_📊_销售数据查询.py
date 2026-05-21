@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import altair as alt
 import streamlit as st
 
 from shared.db import get_connection
@@ -297,7 +298,17 @@ def _render_sales_delta(_period_kind, _key):
         _tbl = pd.DataFrame(_rows).set_index(_period_col)
         # 曲线图上方：每期 销量 / 营业额 / 前期比
         st.dataframe(_tbl, use_container_width=True)
-        st.line_chart(_tbl[[_qty_col]], height=300)
+        # 曲线图（page05 と統一: 点線 + 縦軸タイトル + tooltip）
+        _cdf = _tbl.reset_index()
+        _chart = alt.Chart(_cdf).mark_line(point=True).encode(
+            x=alt.X(field=_period_col, type="nominal", sort=None, title=None,
+                    axis=alt.Axis(labelAngle=0)),
+            y=alt.Y(field=_qty_col, type="quantitative", title=_qty_col,
+                    axis=alt.Axis(format=",.0f")),
+            tooltip=[alt.Tooltip(field=_period_col, type="nominal"),
+                     alt.Tooltip(field=_qty_col, type="quantitative", format=",.0f")],
+        ).properties(height=320)
+        st.altair_chart(_chart, use_container_width=True)
         if _period_kind == "week":
             _tc = _L(f"最近 {len(_recent)} 周销量推移", f"直近 {len(_recent)} 週の販売数量推移")
         else:
