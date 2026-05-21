@@ -65,6 +65,7 @@ _LBL = {
     "cross_ratio":   ("交叉比率", "交差比率"),
     "sku_status":    ("SKU稼働率", "SKU稼働率"),
     "stock_sales_ratio": ("库存销售比", "在庫販売比"),
+    "sellthrough":   ("月完売率", "月完売率"),
     "profit_contrib": ("利润贡献率", "利益貢献率"),
 }
 
@@ -529,10 +530,27 @@ with _q_tab:
         )
         if df is not None and not df.empty:
             df = _enrich(df, with_stock=True)
+            # 月完売率 = 当月販売数 ÷（月初在庫 + 当月入庫）×100% · inventory_activity_monthly（jan 集計）
+            _st_df, _ = _query(
+                "SELECT im.jan AS jan, SUM(a.sold_qty) AS st_sold, "
+                "SUM(a.opening_qty) AS st_open, SUM(a.received_qty) AS st_recv "
+                "FROM nst.inventory_activity_monthly a "
+                "JOIN nst.item_master_raw im ON im.internal_id = a.item_internal_id "
+                "WHERE a.year_month = ? GROUP BY im.jan",
+                (ym,),
+            )
+            if _st_df is not None and not _st_df.empty:
+                for _c in ("st_sold", "st_open", "st_recv"):
+                    _st_df[_c] = _st_df[_c].astype(float)
+                _den = (_st_df["st_open"] + _st_df["st_recv"])
+                _st_df["sellthrough"] = (_st_df["st_sold"] / _den.where(_den != 0) * 100).round(1)
+                df = df.merge(_st_df[["jan", "sellthrough"]], on="jan", how="left")
+            else:
+                df["sellthrough"] = None
         cols = ("item_code", "maker", "display_name", "item_rank",
                 "qty_sold", "revenue", "unit_price", "arari", "arari_rate",
                 "qty_on_hand", "stock_value", "turnover", "avg_stock_days",
-                "cross_ratio", "sku_status", "stock_sales_ratio", "profit_contrib")
+                "cross_ratio", "sku_status", "sellthrough", "stock_sales_ratio", "profit_contrib")
 
     # ============================================================
     # 表示
