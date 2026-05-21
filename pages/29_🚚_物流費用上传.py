@@ -19,7 +19,7 @@ import streamlit as st
 from shared.db import get_connection
 from shared.i18n import lang_selector, t
 
-st.set_page_config(page_title=t("物流費用上传"), page_icon="🚚", layout="wide")
+st.set_page_config(page_title=t("物流费用上传"), page_icon="🚚", layout="wide")
 from shared.auth import require_password
 from shared.theme import inject_theme
 require_password()
@@ -27,10 +27,10 @@ inject_theme()
 lang_selector()
 conn = get_connection()
 
-st.title(t("🚚 物流費用上传"))
+st.title(t("🚚 物流费用上传"))
 st.caption(t(
-    "JD 請求書（費用明细）と BM（包裹号→店舗）をアップロード → 自動で配賦集計。"
-    "費用は不含税 · 紐付かない分は【不明】。結果は「🚚 物流費用分析」で確認。"
+    "上传 JD 请求书（费用明细）与 BM（包裹号→店铺）→ 自动配賦汇总。"
+    "费用为不含税 · 无法关联的计入【不明】。结果在「🚚 物流费用分析」查看。"
 ))
 
 INV_SHEETS = {
@@ -224,10 +224,10 @@ def show_match_feedback():
     if df.empty:
         return
     df = df.rename(columns={"ym": t("月"), "match_pct": t("件数命中%"),
-                            "unknown_amt": t("不明額(¥)"), "unknown_pct": t("不明率%")})
-    st.markdown(t("###### 📊 各月 紐付状況（不明率が高い月 = 同期・全平台 BM の補完が必要）"))
+                            "unknown_amt": t("不明金额(¥)"), "unknown_pct": t("不明率%")})
+    st.markdown(t("###### 📊 各月 关联情况（不明率高的月 = 需要补全同期·全平台 BM）"))
     st.dataframe(df, hide_index=True, use_container_width=True,
-                 column_config={t("不明額(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
+                 column_config={t("不明金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
 
 
 def detect_kind(data: bytes, name: str):
@@ -246,24 +246,24 @@ def detect_kind(data: bytes, name: str):
 
 
 tab1, tab2 = st.tabs([
-    t("📤 一括アップロード（請求書 + BM）"),
-    t("店舗→部署 分類"),
+    t("📤 批量上传（请求书 + BM）"),
+    t("店铺→部署 分类"),
 ])
 
 # ============================================================
 # tab1 · 一括アップロード（請求書 + BM 自動判定）
 # ============================================================
 with tab1:
-    st.markdown(t("##### 請求書 + BM をまとめてアップロード（複数可・種別と月を自動判定）"))
-    st.caption(t("請求書: OB-Pick&Pack/Last mile/Packing/Billing を取込（不含税）· 月はファイル名の YYYYMM。"
-                 "BM: 包裹号→店舗。両方まとめて選んで一括処理。"))
+    st.markdown(t("##### 请求书 + BM 一起上传（可多选·自动判定类别与月份）"))
+    st.caption(t("请求书: 录入 OB-Pick&Pack/Last mile/Packing/Billing（不含税）· 月份取自文件名的 YYYYMM。"
+                 "BM: 包裹号→店铺。两者一起选择批量处理。"))
     st.warning(t(
-        "⚠️ BM は**対象月と同期 × 全平台**で導出（国内: 楽天/Amazon/Yahoo/Temu/TikTok ＋ 海外: Shopee/Lazada）。"
-        "海外のみだと国内運送費(Last mile)が紐付かず【不明】激増。"
+        "⚠️ BM 需按**对象月同期 × 全平台**导出（国内: 楽天/Amazon/Yahoo/Temu/TikTok ＋ 海外: Shopee/Lazada）。"
+        "若仅海外则国内运送费(Last mile)无法关联，【不明】激增。"
     ))
-    ups = st.file_uploader(t("xlsx（複数選択可）"), type=["xlsx"],
+    ups = st.file_uploader(t("xlsx（可多选）"), type=["xlsx"],
                            accept_multiple_files=True, key="batch_up")
-    if ups and st.button(t("💾 一括解析 → PG 書込 + 再集計"), key="batch_btn", type="primary"):
+    if ups and st.button(t("💾 批量解析 → 写入 PG + 重算"), key="batch_btn", type="primary"):
         inv_log, bm_log, err_log = [], [], []
         prog = st.progress(0.0, text=t("解析中…"))
         for i, up in enumerate(ups):
@@ -271,11 +271,11 @@ with tab1:
             try:
                 kind, ym = detect_kind(data, up.name)
                 if kind == "invoice" and not ym:
-                    err_log.append(t("❌ {f}: 月份識別不可（名前に YYYYMM 無し）").format(f=up.name))
+                    err_log.append(t("❌ {f}: 无法识别月份（文件名无 YYYYMM）").format(f=up.name))
                 elif kind == "invoice":
                     rows, per = parse_invoice(data, ym)
                     if not rows:
-                        err_log.append(t("❌ {f}: 取込0行").format(f=up.name))
+                        err_log.append(t("❌ {f}: 录入0行").format(f=up.name))
                     else:
                         for ct in {r[1] for r in rows}:
                             conn.execute("DELETE FROM logistics.cost_invoice_raw WHERE year_month=%s AND cost_type=%s", (ym, ct))
@@ -292,7 +292,7 @@ with tab1:
                                    (year_month, seq, item_name, amount_ex_tax, amount_in_tax)
                                    VALUES (%s,%s,%s,%s,%s)""", bill)
                         conn.commit()
-                        inv_log.append(t("✅ 請求書 {ym}: ").format(ym=ym)
+                        inv_log.append(t("✅ 请求书 {ym}: ").format(ym=ym)
                                        + " ".join(f"{k}={v}" for k, v in per.items())
                                        + (f" +Billing{len(bill)}" if bill else ""))
                 elif kind == "bm":
@@ -309,17 +309,17 @@ with tab1:
                                  platform=EXCLUDED.platform, shop=EXCLUDED.shop,
                                  ship_date=EXCLUDED.ship_date, imported_at=now()""", bm_rows)
                         conn.commit()
-                        bm_log.append(t("✅ BM {f}: {n}包裹 / {s}店舗").format(
+                        bm_log.append(t("✅ BM {f}: {n}包裹 / {s}店铺").format(
                             f=up.name, n=len(bm_rows), s=len({r[4] for r in bm_rows if r[4]})))
                 else:
-                    err_log.append(t("❌ {f}: 種別判定不可（請求書/BM どちらでもない）").format(f=up.name))
+                    err_log.append(t("❌ {f}: 无法判定类别（既非请求书也非 BM）").format(f=up.name))
             except Exception as e:
                 err_log.append(f"❌ {up.name}: {e}")
             prog.progress((i + 1) / len(ups), text=f"{i + 1}/{len(ups)}")
-        with st.spinner(t("全月 再集計中…")):
+        with st.spinner(t("全月 重算中…")):
             run_recompute(None)
         if inv_log:
-            st.success(t("請求書 {n} 件").format(n=len(inv_log)) + "\n\n" + "\n\n".join(inv_log))
+            st.success(t("请求书 {n} 件").format(n=len(inv_log)) + "\n\n" + "\n\n".join(inv_log))
         if bm_log:
             st.success(t("BM {n} 件").format(n=len(bm_log)) + "\n\n" + "\n\n".join(bm_log))
         if err_log:
@@ -330,8 +330,8 @@ with tab1:
 # tab2 · 店舗 → 部署 分類
 # ============================================================
 with tab2:
-    st.markdown(t("##### 店舗 → 部署（輸出 / EC）"))
-    st.caption(t("未分類の店舗は【不明】に集計される。分類 → 保存 → 再集計で輸出/ECに反映。"))
+    st.markdown(t("##### 店铺 → 部署（输出 / EC）"))
+    st.caption(t("未分类的店铺会计入【不明】。分类 → 保存 → 重算后反映到 输出/EC。"))
 
     unknown = pd.DataFrame([dict(r) for r in conn.execute(
         """SELECT DISTINCT m.shop AS shop
@@ -342,16 +342,16 @@ with tab2:
     ).fetchall()])
 
     if not unknown.empty:
-        st.warning(t("⚠️ 未分類 {n} 店舗（現在【不明】に集計中）").format(n=len(unknown)))
+        st.warning(t("⚠️ 未分类 {n} 店铺（当前计入【不明】）").format(n=len(unknown)))
         unknown["dept"] = "輸出"
         edited_new = st.data_editor(
             unknown, hide_index=True, key="new_dept",
             column_config={
-                "shop": st.column_config.TextColumn(t("店舗"), disabled=True),
+                "shop": st.column_config.TextColumn(t("店铺"), disabled=True),
                 "dept": st.column_config.SelectboxColumn(t("部署"), options=["輸出", "EC"]),
             },
         )
-        if st.button(t("➕ 登録 + 再集計"), key="new_dept_btn", type="primary"):
+        if st.button(t("➕ 登记 + 重算"), key="new_dept_btn", type="primary"):
             conn.executemany(
                 """INSERT INTO logistics.shop_dept_map (shop, dept) VALUES (%s,%s)
                    ON CONFLICT (shop) DO UPDATE SET dept=EXCLUDED.dept, updated_at=now()""",
@@ -359,27 +359,27 @@ with tab2:
             )
             conn.commit()
             run_recompute(None)
-            st.success(t("✅ 登録 + 再集計完了"))
+            st.success(t("✅ 登记 + 重算完成"))
             st.rerun()
     else:
-        st.success(t("未分類店舗なし ✅"))
+        st.success(t("无未分类店铺 ✅"))
 
     st.divider()
-    st.markdown(t("##### 既存マッピング"))
+    st.markdown(t("##### 既有映射"))
     cur_map = pd.DataFrame([dict(r) for r in conn.execute(
         "SELECT shop, dept FROM logistics.shop_dept_map ORDER BY dept, shop"
     ).fetchall()])
     if cur_map.empty:
-        st.info(t("まだマッピングなし。上の未分類から登録してください。"))
+        st.info(t("还没有映射。请从上方未分类登记。"))
     else:
         edited = st.data_editor(
             cur_map, hide_index=True, num_rows="dynamic", key="edit_dept",
             column_config={
-                "shop": st.column_config.TextColumn(t("店舗")),
+                "shop": st.column_config.TextColumn(t("店铺")),
                 "dept": st.column_config.SelectboxColumn(t("部署"), options=["輸出", "EC"]),
             },
         )
-        if st.button(t("💾 保存 + 再集計"), key="edit_dept_btn"):
+        if st.button(t("💾 保存 + 重算"), key="edit_dept_btn"):
             conn.execute("DELETE FROM logistics.shop_dept_map")
             conn.executemany(
                 """INSERT INTO logistics.shop_dept_map (shop, dept) VALUES (%s,%s)
@@ -389,5 +389,5 @@ with tab2:
             )
             conn.commit()
             run_recompute(None)
-            st.success(t("✅ 保存 + 再集計完了"))
+            st.success(t("✅ 保存 + 重算完成"))
             st.rerun()
