@@ -1,4 +1,4 @@
-"""模块 #1 定義原価編集（原「成本同步」· 2026-05-05 改名）· Streamlit 页面（v2 — 基于 inventory_snapshot 表）。
+"""模块 #1 定義原価編集（原「成本同步」· 2026-05-05 改名）· Streamlit 页面（v3 — 2026-05-21 数据源迁移至 NST API）。
 
 业务定位：NetSuite Standard Cost = 定義原価 字段的统一管理入口。
 本质是修改 NetSuite Standard Cost（= 定義原価）。两种触发场景共用同一流程：
@@ -24,13 +24,17 @@ import pandas as pd
 import streamlit as st
 from shared.i18n import t, lang_selector
 
-from data_warehouse.exports.cost_update import CostUpdateExporter
+from data_warehouse.templates.nst_item_master import (
+    COL_COST,
+    ID_LABEL,
+    build_nst_master_csv,
+)
 from modules.cost_sync.rules import (
     THRESHOLD_PCT,
     THRESHOLD_YEN,
     decide_action,
 )
-from shared.db import OUTPUTS_DIR, get_connection
+from shared.db import get_connection
 
 st.set_page_config(page_title=t("定義原価編集"), page_icon="💰", layout="wide")
 from shared.auth import require_admin
@@ -44,23 +48,20 @@ st.title(t("💰 定義原価編集"))
 st.caption(
     f"NetSuite Standard Cost（定義原価）統一編集口 · "
     f"自動判定阈值 |Δ|≥{THRESHOLD_YEN:.0f}¥ 或 |Δ%|≥{THRESHOLD_PCT:.0%} · "
-    f"新值 = ⌈avg_cost⌉ · avg_cost = アイテム.xls H 列「平均原価」 (直接拉取)"
+    f"新值 = ⌈平均原価⌉ · 数据源 = NST 主档 nst.item_master_raw"
 )
 st.info(t(
-    "📌 当前判断标准品 (纳入更新流程的 SKU) 范围: "
-    "inventory_snapshot 中 ingest 已过滤为 JD-物流-千葉 + 弁天倉庫,"
-    "默认两仓库都看,可在下方「場所」selector 单独选 JD 或 弁天。"
-    "「单仓判断 / 默认仅 JD」改造后置 (跟 page 06 双仓判定一并)。"
+    "📌 数据源已迁移至 NST API（nst.item_master_raw + nst.inventory_snapshot）。"
+    "标准品 = 选定快照 × 仓库下有库存的 SKU，部門锁定「輸出」，可在下方「場所」单独选仓库。"
 ))
 
 # ============================================================
 # 0. 检查数据
 # ============================================================
-inv_count = conn.execute("SELECT COUNT(*) AS c FROM inventory_snapshot").fetchone()["c"]
-if inv_count == 0:
+im_count = conn.execute("SELECT COUNT(*) AS c FROM nst.item_master_raw").fetchone()["c"]
+if im_count == 0:
     st.warning(
-        t("⚠️ `inventory_snapshot` 表为空。请先到「⚙️ 数据导入与设置」上传 "
-        "`FB全倉庫通常在庫数残数検索結果.xls`。")
+        t("⚠️ `nst.item_master_raw` 为空。请先到「📥 NST 取得数据」执行 items 任务。")
     )
     st.stop()
 
@@ -71,14 +72,14 @@ if "cs_step" not in st.session_state:
     st.session_state.cs_step = 1
 if "cs_decisions" not in st.session_state:
     st.session_state.cs_decisions = None
-if "cs_output_path" not in st.session_state:
-    st.session_state.cs_output_path = None
+if "cs_csv_bytes" not in st.session_state:
+    st.session_state.cs_csv_bytes = None
 
 
 def _reset() -> None:
     st.session_state.cs_step = 1
     st.session_state.cs_decisions = None
-    st.session_state.cs_output_path = None
+    st.session_state.cs_csv_bytes = None
 
 
 # ============================================================
@@ -104,38 +105,32 @@ st.divider()
 if step == 1:
     st.subheader(t("📋 步骤 1 / 3：选择数据范围"))
 
-    # 快照选项
+    # 快照选项（NST 库存スナップショット）
     snapshots = conn.execute(
-        "SELECT DISTINCT snapshot_at FROM inventory_snapshot ORDER BY snapshot_at DESC"
+        "SELECT DISTINCT snapshot_date FROM nst.inventory_snapshot ORDER BY snapshot_date DESC"
     ).fetchall()
-    snapshot_choices = [r["snapshot_at"] for r in snapshots]
+    if not snapshots:
+        st.warning(t("⚠️ `nst.inventory_snapshot` 无库存快照。请先到「📥 NST 取得数据」执行 inventory 任务。"))
+        st.stop()
+    snapshot_choices = [r["snapshot_date"] for r in snapshots]
     sel_snapshot = st.selectbox(
         t("在库数据快照（默认最新）"), snapshot_choices, index=0
     )
 
-    # 过滤条件（部门固定为含「輸出」的，不在 UI 暴露；仓库限定 JD + 弁天，ingest 时已过滤）
-    DEPT_KEYWORD = "輸出"
-    LOC_BOTH = "JD + 弁天（默认）"
+    # 部門固定含「輸出」（NST 仅采輸出事業·自动锁定不在 UI 暴露）
+    LOC_BOTH = "全仓库（默认）"
     HANDLE_PRESET_ALL = "全部"
 
-    # 自动锁定 部門：含「輸出」的全部
-    sel_dept = [
-        r["department"] for r in conn.execute(
-            "SELECT DISTINCT department FROM inventory_snapshot WHERE snapshot_at=?",
-            (sel_snapshot,)
-        ).fetchall()
-        if r["department"] and DEPT_KEYWORD in r["department"]
-    ]
-
-    # 数据源
-    loc_all = [r["location"] for r in conn.execute(
-        "SELECT DISTINCT location FROM inventory_snapshot WHERE snapshot_at=? ORDER BY location",
+    # 場所(warehouse) 候选 = 该快照下的仓库
+    loc_all = [r["warehouse"] for r in conn.execute(
+        "SELECT DISTINCT warehouse FROM nst.inventory_snapshot "
+        "WHERE snapshot_date=? AND warehouse IS NOT NULL ORDER BY warehouse",
         (sel_snapshot,)
-    ).fetchall() if r["location"]]
-    handle_all = [r["handling_status"] for r in conn.execute(
-        "SELECT DISTINCT handling_status FROM inventory_snapshot WHERE snapshot_at=? ORDER BY handling_status",
-        (sel_snapshot,)
-    ).fetchall() if r["handling_status"]]
+    ).fetchall() if r["warehouse"]]
+    handle_all = [r["handling_cd"] for r in conn.execute(
+        "SELECT DISTINCT handling_cd FROM nst.item_master_raw "
+        "WHERE handling_cd IS NOT NULL ORDER BY handling_cd"
+    ).fetchall() if r["handling_cd"]]
 
     loc_choices = [LOC_BOTH] + loc_all
     handle_choices = [HANDLE_PRESET_ALL] + handle_all
@@ -151,36 +146,35 @@ if step == 1:
 
     ignore_cost1 = st.checkbox(
         t("忽略当前定义原价为 1 的 SKU"), value=True,
-        help=t("std_cost = 1 多为占位 / 异常值，默认排除"),
+        help=t("定义原价 = 1 多为占位 / 异常值，默认排除"),
     )
 
     st.caption(
-        f"📌 已选场所：{', '.join(sel_locs)} ｜ "
-        f"取扱区分：{', '.join(sel_handle)} ｜ "
-        f"部門（自动锁定）：{', '.join(sel_dept) or '（无）'}"
+        f"📌 已选场所：{', '.join(sel_locs) or '（全部）'} ｜ "
+        f"取扱区分：{', '.join(sel_handle) or '（全部）'} ｜ "
+        f"部門：輸出（自动锁定）"
     )
 
-    # 预览过滤后的 SKU 数（前缀 s. 因后续会 LEFT JOIN item_master_netsuite，department 等字段两表都有）
-    where = ["s.snapshot_at = :snap"]
-    params: dict = {"snap": sel_snapshot}
+    # 过滤 where（im=nst.item_master_raw · inv=nst.inventory_snapshot）· 部門锁定輸出
+    where = ["inv.snapshot_date = :snap", "im.department LIKE :dept"]
+    params: dict = {"snap": sel_snapshot, "dept": "%輸出%"}
     if sel_locs:
         placeholders = ",".join(f":loc{i}" for i in range(len(sel_locs)))
-        where.append(f"s.location IN ({placeholders})")
+        where.append(f"inv.warehouse IN ({placeholders})")
         params.update({f"loc{i}": v for i, v in enumerate(sel_locs)})
     if sel_handle:
         placeholders = ",".join(f":h{i}" for i in range(len(sel_handle)))
-        where.append(f"s.handling_status IN ({placeholders})")
+        where.append(f"im.handling_cd IN ({placeholders})")
         params.update({f"h{i}": v for i, v in enumerate(sel_handle)})
-    if sel_dept:
-        placeholders = ",".join(f":d{i}" for i in range(len(sel_dept)))
-        where.append(f"s.department IN ({placeholders})")
-        params.update({f"d{i}": v for i, v in enumerate(sel_dept)})
     if ignore_cost1:
-        where.append("(s.std_cost IS DISTINCT FROM 1)")
+        where.append("(im.cost_estimate IS DISTINCT FROM 1)")
 
     where_sql = " AND ".join(where)
     sku_count = conn.execute(
-        f"SELECT COUNT(DISTINCT s.internal_id) AS c FROM inventory_snapshot s WHERE {where_sql}",
+        f"SELECT COUNT(DISTINCT im.internal_id) AS c "
+        f"FROM nst.item_master_raw im "
+        f"JOIN nst.inventory_snapshot inv ON inv.item_internal_id = im.internal_id "
+        f"WHERE {where_sql}",
         params,
     ).fetchone()["c"]
 
@@ -192,84 +186,38 @@ if step == 1:
 
     if st.button(t("🚀 计算并预览"), type="primary"):
         # ========================================================
-        # 数据源 (Boss 2026-05 决定):
-        # - std_cost_old / handling_status / qty_on_hand ← inventory_snapshot
-        #   (来自 輸出通常在庫数残数検索結果.xls)
-        # - avg_cost ← nst_item_summary.avg_cost (H 列「平均原価」)
-        #   (来自 アイテム.xls 8 列原表)
+        # 数据源 (NST · 2026-05-21 迁移):
+        # - std_cost_old ← nst.item_master_raw.cost_estimate (定義原価)
+        # - avg_cost     ← nst.item_master_raw.average_cost  (平均原価)
+        # - qty_on_hand  ← nst.inventory_snapshot.qty_on_hand (选定快照+仓库 合计)
         # std_cost_new = ⌈avg_cost⌉ 向上取整
         # ========================================================
         agg_sql = f"""
             SELECT
-                s.internal_id,
-                MAX(s.item_code) AS item_code,
-                MAX(s.upc) AS upc,
-                MAX(s.display_name) AS display_name,
-                MAX(s.handling_status) AS handling_status,
-                MAX(s.std_cost) AS std_cost,
-                SUM(s.qty_on_hand) AS total_qty,
-                MAX(im.maker) AS maker
-            FROM inventory_snapshot s
-            LEFT JOIN item_master_netsuite im ON im.internal_id = s.internal_id
+                im.internal_id,
+                MAX(im.item_code) AS item_code,
+                MAX(im.display_name) AS display_name,
+                MAX(im.handling_cd) AS handling_status,
+                MAX(im.cost_estimate) AS std_cost,
+                MAX(im.average_cost) AS avg_cost,
+                MAX(im.maker) AS maker,
+                COALESCE(SUM(inv.qty_on_hand), 0) AS total_qty
+            FROM nst.item_master_raw im
+            JOIN nst.inventory_snapshot inv ON inv.item_internal_id = im.internal_id
             WHERE {where_sql}
-            GROUP BY s.internal_id
+            GROUP BY im.internal_id
         """
         rows = conn.execute(agg_sql, params).fetchall()
 
-        # 从 nst_item_summary 直接拉 H 列 avg_cost (Boss 决定用此表)
-        item_codes = [r["item_code"] for r in rows if r["item_code"]]
-        avg_cost_by_code: dict[str, float] = {}
-        if item_codes:
-            placeholders = ",".join(f":c{i}" for i in range(len(item_codes)))
-            ic_params = {f"c{i}": v for i, v in enumerate(item_codes)}
-            item_rows = conn.execute(
-                f"""
-                SELECT item_code, avg_cost
-                FROM nst_item_summary
-                WHERE item_code IN ({placeholders})
-                  AND avg_cost IS NOT NULL
-                  AND avg_cost > 0
-                """,
-                ic_params,
-            ).fetchall()
-            for ir in item_rows:
-                avg_cost_by_code[ir["item_code"]] = float(ir["avg_cost"])
-
-        # ── Phase 3.3 · v2 fallback：avg_cost / maker 从 item_v2 兜底 ──
-        # nst_item_summary 经常空 → 用 item_v2 (PK=jan) 作权威源补缺
-        v2_by_jan: dict[str, dict] = {}
-        try:
-            jans = [r["upc"] for r in rows if r["upc"]]
-            if jans:
-                ph = ",".join(f":j{i}" for i in range(len(jans)))
-                jp = {f"j{i}": v for i, v in enumerate(jans)}
-                v2_rows = conn.execute(
-                    f"SELECT jan, avg_cost, maker FROM item_v2 WHERE jan IN ({ph})",
-                    jp,
-                ).fetchall()
-                v2_by_jan = {r["jan"]: dict(r) for r in v2_rows}
-        except Exception:
-            v2_by_jan = {}   # v2 表还没建则跳过
-
-        # 跑业务规则
+        # 跑业务规则（avg_cost / std_cost_old 直接来自 NST 主档）
         decisions = []
         for r in rows:
-            avg_cost = avg_cost_by_code.get(r["item_code"])  # 来自 nst_item_summary
-            v2_row = v2_by_jan.get(r["upc"]) if r["upc"] else None
-            # v2 fallback：avg_cost
-            if avg_cost is None and v2_row and v2_row.get("avg_cost"):
-                avg_cost = float(v2_row["avg_cost"])
-            # v2 fallback：maker
-            maker = r["maker"]
-            if not maker and v2_row and v2_row.get("maker"):
-                maker = v2_row["maker"]
-
             row = {
                 "internal_id": r["internal_id"],
                 "item_code": r["item_code"],
                 "display_name": r["display_name"],
-                "avg_cost": avg_cost,
-                "std_cost_old": r["std_cost"],
+                "avg_cost": float(r["avg_cost"]) if r["avg_cost"] is not None else None,
+                "std_cost_old": float(r["std_cost"]) if r["std_cost"] is not None else None,
             }
             master = {
                 "handling_status": r["handling_status"],
@@ -277,7 +225,7 @@ if step == 1:
             }
             d = decide_action(row, master)
             d["total_qty"] = r["total_qty"]
-            d["maker"] = maker
+            d["maker"] = r["maker"]
             decisions.append(d)
 
         st.session_state.cs_decisions = decisions
@@ -436,39 +384,46 @@ elif step == 2:
             if st.button(
                 t(f"确认并生成 CSV ({n_update} 行) →"), type="primary", use_container_width=True
             ):
-                rows = CostUpdateExporter.build_rows(decisions)
-                file_path, _ = CostUpdateExporter().export(
-                    rows, OUTPUTS_DIR, conn,
-                    notes=f"snapshot={st.session_state.cs_decisions[0].get('snapshot_at', '?') if decisions else '?'}",
-                )
+                # NST 上传模板格式 CSV：第一列 Internal ID + 「商品原価」(= 定義原価)
+                csv_rows = [
+                    {ID_LABEL: d["internal_id"], COL_COST: int(d["std_cost_new"])}
+                    for d in decisions
+                    if d.get("action") == "UPDATE" and d.get("std_cost_new") is not None
+                ]
+                st.session_state.cs_csv_bytes = build_nst_master_csv(csv_rows, [COL_COST])
 
-                # 写入 std_cost_history（驱动 page 03b 波动图）
-                from datetime import datetime
-                changed_at = datetime.utcnow().isoformat()
-                hist_rows = []
-                for d in decisions:
-                    if d.get("action") != "UPDATE":
-                        continue
-                    old = d.get("std_cost_old")
-                    new = d.get("std_cost_new")
-                    diff = (new - old) if (old is not None and new is not None) else None
-                    diff_pct = (diff / old) if (diff is not None and old) else None
-                    src = "manual-override" if d.get("manual_override") else "avg-driven"
-                    hist_rows.append((
-                        d.get("internal_id"), d.get("item_code"), d.get("display_name"),
-                        old, new, diff, diff_pct, changed_at, "BOSS", src,
-                        f"snapshot={d.get('snapshot_at', '?')}",
-                    ))
-                if hist_rows:
-                    conn.executemany(
-                        "INSERT INTO std_cost_history(internal_id,item_code,display_name,"
-                        "std_cost_old,std_cost_new,diff,diff_pct,changed_at,changed_by,source,notes) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        hist_rows,
-                    )
-                    conn.commit()
+                # 写入 std_cost_history（驱动波动图）· 表缺失不阻断下载
+                try:
+                    from datetime import datetime
+                    changed_at = datetime.utcnow().isoformat()
+                    hist_rows = []
+                    for d in decisions:
+                        if d.get("action") != "UPDATE":
+                            continue
+                        old = d.get("std_cost_old")
+                        new = d.get("std_cost_new")
+                        diff = (new - old) if (old is not None and new is not None) else None
+                        diff_pct = (diff / old) if (diff is not None and old) else None
+                        src = "manual-override" if d.get("manual_override") else "avg-driven"
+                        hist_rows.append((
+                            d.get("internal_id"), d.get("item_code"), d.get("display_name"),
+                            old, new, diff, diff_pct, changed_at, "BOSS", src,
+                            f"snapshot={d.get('snapshot_at', '?')}",
+                        ))
+                    if hist_rows:
+                        conn.executemany(
+                            "INSERT INTO std_cost_history(internal_id,item_code,display_name,"
+                            "std_cost_old,std_cost_new,diff,diff_pct,changed_at,changed_by,source,notes) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                            hist_rows,
+                        )
+                        conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
-                st.session_state.cs_output_path = file_path
                 st.session_state.cs_step = 3
                 st.rerun()
 
@@ -479,15 +434,15 @@ elif step == 2:
 elif step == 3:
     st.subheader(t("✅ 步骤 3 / 3：完成"))
 
-    file_path = st.session_state.cs_output_path
-    if file_path and file_path.exists():
-        with file_path.open("rb") as f:
-            data = f.read()
-        st.success(t(f"已生成更新 CSV：`{file_path.name}`"))
+    csv_bytes = st.session_state.cs_csv_bytes
+    if csv_bytes:
+        from datetime import datetime as _dt
+        _fname = f"nst_item_master_{_dt.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        st.success(t("已生成 NST 上传模板 CSV（第一列 Internal ID · 「商品原価」列 = 定義原価）"))
         st.download_button(
             t("📥 下载更新 CSV"),
-            data=data,
-            file_name=file_path.name,
+            data=csv_bytes,
+            file_name=_fname,
             mime="text/csv",
             type="primary",
             use_container_width=True,
@@ -500,12 +455,12 @@ elif step == 3:
             1. NetSuite → **Setup → Import/Export → Import CSV Records**
             2. **Import Type**: `Items` · **Record Type**: `Inventory Item` · **Import**: `Update`
             3. 上传刚下载的 CSV
-            4. **Field Mapping**：CSV `Internal ID` → NetSuite `Internal ID` · CSV `Standard Cost` → NetSuite `Standard Cost`
-            5. 第一次配完保存为 `Cost_Sync_Update` 映射，下次秒上传
+            4. **Field Mapping**：CSV `Internal ID` → NetSuite `Internal ID` · CSV `商品原価` → NetSuite `Standard Cost`（定義原価）
+            5. 第一次配完保存映射，下次秒上传
             """
         )
     else:
-        st.error(t("⚠️ 输出文件丢失，重来一次"))
+        st.error(t("⚠️ 输出内容丢失，重来一次"))
 
     if st.button(t("🔄 再做一次"), type="primary"):
         _reset()

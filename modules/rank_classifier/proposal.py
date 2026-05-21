@@ -83,6 +83,7 @@ def generate_proposal(
         sales_data = [dict(r) for r in conn.execute(f"""
             SELECT
                 im.item_code AS item_code,
+                MIN(im.internal_id) AS internal_id,
                 MIN(im.display_name) AS display_name,
                 MIN(im.handling_cd) AS handling_status,
                 COALESCE(SUM(s.revenue), 0) AS total_revenue,
@@ -214,6 +215,7 @@ def generate_proposal(
 
             proposals.append({
                 'sku': item_code,
+                'internal_id': row.get('internal_id'),
                 'name': name,
                 'old_rank': old_rank,
                 'new_rank': new_rank,

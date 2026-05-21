@@ -112,7 +112,7 @@ p, span, label, div { color: #1d1d1d; }
 [data-testid="stSidebar"] h4,
 [data-testid="stSidebar"] h5 {
     letter-spacing: -0.01em !important;
-    font-size: 13px !important;
+    font-size: 12px !important;
     text-transform: none !important;
     color: #6e6e73 !important;
     margin-top: 1.25rem !important;
@@ -206,7 +206,7 @@ p, span, label, div { color: #1d1d1d; }
     display: flex !important;
     align-items: center !important;
     box-sizing: border-box !important;
-    font-size: 14px !important;
+    font-size: 13px !important;
     line-height: 1.2 !important;
     background: transparent !important;
     color: #1d1d1d !important;

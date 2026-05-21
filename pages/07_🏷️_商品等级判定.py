@@ -5,7 +5,12 @@ import pandas as pd
 import sqlite3
 from pathlib import Path
 from datetime import datetime
-from modules.rank_classifier.proposal import generate_proposal, export_csv
+from modules.rank_classifier.proposal import generate_proposal
+from data_warehouse.templates.nst_item_master import (
+    COL_RANK,
+    ID_LABEL,
+    build_nst_master_csv,
+)
 from shared.db import get_connection
 from shared.v2_browser import render_v2_quickview
 
@@ -274,20 +279,20 @@ with tab1:
                     conn.commit()
                 conn.close()
 
-                # 导出 CSV
-                csv_path = Path(f'/tmp/rank_update_{q}.csv')
-                export_csv(st.session_state.proposal_data, str(csv_path))
-                st.success(t(f"✅ 写入 rank_history {len(rows_to_insert)} 条 + 导出 {csv_path.name}"))
-
-                # 提供下载
-                if csv_path.exists():
-                    with open(csv_path, 'rb') as f:
-                        st.download_button(
-                            t("📥 下载 rank_update.csv"),
-                            f.read(),
-                            file_name=csv_path.name,
-                            mime='text/csv'
-                        )
+                # 导出 NST 上传模板 CSV（第一列 Internal ID + 「商品ランク」· 仅有变化的 SKU）
+                csv_rows = [
+                    {ID_LABEL: int(r["internal_id"]), COL_RANK: r["new_rank"]}
+                    for _, r in view.iterrows()
+                    if r.get("old_rank") != r.get("new_rank") and pd.notna(r.get("internal_id"))
+                ]
+                csv_bytes = build_nst_master_csv(csv_rows, [COL_RANK])
+                st.success(t(f"✅ 写入 rank_history {len(rows_to_insert)} 条 + 生成 CSV {len(csv_rows)} 行"))
+                st.download_button(
+                    t("📥 下载 rank_update.csv"),
+                    csv_bytes,
+                    file_name=f"nst_item_master_rank_{q}.csv",
+                    mime='text/csv',
+                )
 
 with tab2:
     conn = get_connection()
