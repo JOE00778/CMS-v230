@@ -38,6 +38,13 @@ COST_TYPES = [
 CT_KEYS = [k for k, _ in COST_TYPES]
 CT_LABEL = dict(COST_TYPES)
 
+# 梱包材编码 → 名称（配賦表「算式保存用」より）
+MATERIAL_NAMES = {
+    "HC100317": "防水袋", "HC100318": "60サイズ箱", "HC100319": "80サイズ箱",
+    "HC100320": "100サイズ箱", "HC100321": "120サイズ箱", "HC100322": "140サイズ箱",
+    "HC100323": "160サイズ箱", "HC100452": "泡泡袋小", "HC100453": "泡泡袋大",
+}
+
 
 def _df(sql: str, params=None) -> pd.DataFrame:
     rs = conn.execute(sql, params or {}).fetchall()
@@ -272,6 +279,46 @@ with st.expander(t("🏪 店舗別明細（{ym}）").format(ym=sel_month), expan
         file_name=f"logistics_cost_{sel_dept_label}_{sel_month}.csv",
         mime="text/csv",
     )
+
+st.divider()
+
+
+# ============================================================
+# 店舗別 梱包材使用（当月 · 折叠 · material_cd × 店舗）
+# ============================================================
+pk = _df(
+    """SELECT COALESCE(d.dept,'不明') AS dept, COALESCE(m.shop,'(未マッチ包裹)') AS shop,
+              r.material_cd, SUM(r.material_qty) AS qty
+       FROM logistics.cost_invoice_raw r
+       LEFT JOIN logistics.order_shop_map m ON r.join_key = m.parcel_no
+       LEFT JOIN logistics.shop_dept_map  d ON m.shop = d.shop
+       WHERE r.cost_type='packing' AND r.year_month=%(ym)s AND r.material_cd IS NOT NULL
+       GROUP BY 1, 2, 3""",
+    {"ym": sel_month},
+)
+with st.expander(t("🧊 店舗別 梱包材使用（{ym}）").format(ym=sel_month), expanded=False):
+    if sel_dept_label == t("輸出"):
+        pk = pk[pk["dept"] == "輸出"]
+    elif sel_dept_label == t("EC"):
+        pk = pk[pk["dept"] == "EC"]
+    else:
+        pk = pk[pk["dept"] != "不明"]
+    if pk.empty:
+        st.info(t("当月 梱包材データなし。"))
+    else:
+        pk["qty"] = pd.to_numeric(pk["qty"], errors="coerce").fillna(0).astype(int)
+        pkpiv = pk.pivot_table(index="shop", columns="material_cd", values="qty",
+                               aggfunc="sum", fill_value=0)
+        pkpiv = pkpiv.rename(columns=lambda c: MATERIAL_NAMES.get(c, c))
+        pkpiv[t("合計")] = pkpiv.sum(axis=1)
+        pkpiv = pkpiv.sort_values(t("合計"), ascending=False).reset_index()
+        pkpiv = pkpiv.rename(columns={"shop": t("店舗")})
+        st.dataframe(pkpiv, hide_index=True, use_container_width=True, height=480)
+        st.download_button(
+            t("📥 下载 CSV"), pkpiv.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"packing_material_{sel_dept_label}_{sel_month}.csv",
+            mime="text/csv", key="pk_csv",
+        )
 
 st.divider()
 
