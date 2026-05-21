@@ -145,6 +145,17 @@ with _weekly_tab:
             _show = _wdf[_cols].rename(
                 columns={_k2c: (_v[1] if _ja else _v[0]) for _k2c, _v in _hdr.items()})
             st.dataframe(_show, use_container_width=True, height=520)
+            _csv = _show.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                _L("📥 下载 CSV", "📥 CSV ダウンロード"),
+                _csv,
+                file_name=(
+                    _L("周次销量落差_", "週次売上落差_")
+                    + f"{_sel_mon.isoformat()}_"
+                    + f"{(_sel_mon + _dtw.timedelta(days=6)).isoformat()}.csv"
+                ),
+                mime="text/csv",
+            )
             st.caption(_L(
                 "落差 = 本周销量 − 上周销量 · 负值=下降 · 选择店铺可逐店分析原因",
                 "落差 = 今週数量 − 前週数量 · マイナス=減少 · 店舗を選んで個別に原因分析",
