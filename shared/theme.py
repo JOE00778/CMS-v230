@@ -247,6 +247,14 @@ p, span, label, div { color: #1d1d1d; }
     border-color: #d6000f !important;
     box-shadow: 0 0 0 3px rgba(214, 0, 15, 0.15) !important;
 }
+/* 下拉菜单文字放大：selectbox/multiselect 选中值 + 展开选项（默认 14px 偏小）*/
+[data-baseweb="select"] > div,
+[data-baseweb="select"] span,
+[data-baseweb="popover"] [role="option"],
+[data-baseweb="popover"] li,
+[data-baseweb="menu"] li {
+    font-size: 17px !important;
+}
 
 /* ===== Radio / Checkbox — 苹果蓝 ===== */
 [data-baseweb="radio"] [data-checked="true"] {
