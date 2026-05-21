@@ -22,7 +22,7 @@ import os
 import streamlit as st
 
 # 每次重要修复 push 时 bump，Cloud 部署后一眼能看出是不是新版
-APP_VERSION = "2.3.9 · page99-extra-password"
+APP_VERSION = "2.4.0 · nst-master-template"
 
 
 def _secret(name: str, default: str = "") -> str:
@@ -58,7 +58,7 @@ def _login_form() -> None:
         st.session_state["__role"] = "admin"
         return
 
-    st.title("🔒 一元管理系统V2.3")
+    st.title("🔒 一元管理系统V2.4")
     st.caption(f"build {APP_VERSION}")
 
     with st.form("login", clear_on_submit=False):

@@ -54,18 +54,18 @@ h1 {
     margin-bottom: 0.5rem !important;
 }
 h2 {
-    font-size: 28px !important;
+    font-size: 32px !important;
     font-weight: 600 !important;
     letter-spacing: -0.018em !important;
     color: #1d1d1d !important;
 }
 h3 {
-    font-size: 22px !important;
+    font-size: 28px !important;
     font-weight: 600 !important;
     letter-spacing: -0.012em !important;
     color: #1d1d1d !important;
 }
-h4 { font-size: 18px !important; font-weight: 600 !important; color: #1d1d1d !important; }
+h4 { font-size: 22px !important; font-weight: 600 !important; color: #1d1d1d !important; }
 p, span, label, div { color: #1d1d1d; }
 
 /* ===== KPI Card — 苹果风纯白卡 ===== */
