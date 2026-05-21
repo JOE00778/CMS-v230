@@ -18,16 +18,16 @@ import streamlit as st
 
 _THEME_CSS = """
 <style>
-/* ===== Apple System Fonts =====
-   优先 SF Pro（macOS/iOS 自带），降级 Inter / Noto Sans JP */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap');
+/* ===== 系统字体（Boss 2026-05-21 选：按系统语言自动选 CJK 字形）=====
+   system-ui: Mac→苹方/ヒラギノ · Windows(元川)→微软雅黑/游ゴシック，OS 按 locale 自适应中日汉字字形
+   不再加载网络字体（去掉旧 Inter / Noto Sans JP @import）*/
 
 /* 字体：只设 html/body，让继承传递；不覆盖 Streamlit 内部
    为图标 span 设置的 Material Symbols Outlined 字体（否则 ligature 失效，
    会露出 keyboard_arrow_down / keyboard_arrow_right 等原始文本） */
 html, body {
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text',
-                 'Inter', 'Noto Sans JP', 'Helvetica Neue', Arial, sans-serif;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 'Helvetica Neue', Arial, sans-serif;
     font-size: 21px;  /* 基础字体（rem 連動で全体拡大）*/
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
