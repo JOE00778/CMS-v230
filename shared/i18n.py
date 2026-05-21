@@ -630,6 +630,8 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
         ("pages/21_🚀_Shopee上架.py", "🚀 Shopee 上架"),
         ("pages/16_📈_等级历史趋势.py", "📈 等级历史趋势"),
         ("pages/20_📈_定义原价波动图.py", "📈 定义原价波动图"),
+        ("pages/28_🚚_物流費用分析.py", "🚚 物流費用分析"),
+        ("pages/29_🚚_物流費用上传.py", "🚚 物流費用上传"),
     ]),
     ("📦 订货决策", [
         ("pages/25_📦_発注AI_v2.py", "📦 发注AI v2 (多供货商)"),
@@ -658,6 +660,8 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
 
 # Sidebar nav 中文 label → 日文（补 TRANSLATIONS_JA 缺失条目）
 for _zh, _ja in [
+    ("🚚 物流費用分析", "🚚 物流費用分析"),
+    ("🚚 物流費用上传", "🚚 物流費用アップロード"),
     ("🏠 首页", "🏠 ホーム"),
     ("💰 定义原价编辑", "💰 定義原価編集"),
     ("🚫 入荷困难商品", "🚫 入荷困難商品"),
