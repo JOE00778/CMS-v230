@@ -68,7 +68,8 @@ agg["amp_pct"] = (agg["amplitude"] / agg["cost_min"].replace({0: pd.NA}) * 100).
 
 
 def _grade(row) -> str:
-    if row["n_changes"] <= 1:
+    # 变更次数 ≤1，或最高=最低（变动率≈0·价格实际没波动）→ 无变化
+    if row["n_changes"] <= 1 or row["amp_pct"] < 0.05:
         return t("➖ 无变化")
     p = row["amp_pct"]
     if p >= 30:

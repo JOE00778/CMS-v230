@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import html
 import re
 
 import pandas as pd
@@ -61,7 +62,6 @@ _LBL = {
     "qty_available":      ("可用库存", "利用可能"),
     "qty_on_order":       ("在订数量", "注文済"),
     "stock_amount":       ("库存金额", "在庫金額"),
-    "cost":               ("标准原价", "標準原価"),
     "average_cost":       ("平均原价", "平均原価"),
     "cost_estimate":      ("定义原价", "定義原価"),
     "last_purchase_cost": ("前次购入价", "前回購入価格"),
@@ -126,7 +126,7 @@ def load_sku_view() -> pd.DataFrame:
         SELECT
             im.internal_id, im.item_code, im.jan, im.display_name,
             im.maker, im.item_rank, im.handling_cd, im.is_inactive,
-            im.cost, im.average_cost, im.cost_estimate, im.last_purchase_cost,
+            im.average_cost, im.cost_estimate, im.last_purchase_cost,
             im.carton_qty, im.order_lot,
             inv.qty_on_hand, inv.qty_available, inv.qty_on_order,
             (COALESCE(im.average_cost, im.cost_estimate, 0)
@@ -138,7 +138,7 @@ def load_sku_view() -> pd.DataFrame:
     """
     rows = conn.execute(sql).fetchall()
     cols = ["internal_id", "item_code", "jan", "display_name", "maker", "item_rank",
-            "handling_cd", "is_inactive", "cost", "average_cost", "cost_estimate",
+            "handling_cd", "is_inactive", "average_cost", "cost_estimate",
             "last_purchase_cost", "carton_qty", "order_lot", "qty_on_hand",
             "qty_available", "qty_on_order", "stock_amount", "qty_sold", "revenue"]
     return pd.DataFrame([dict(zip(cols, r)) for r in rows], columns=cols)
@@ -218,7 +218,7 @@ if v.empty:
     st.stop()
 
 # 数値整形
-for col in ("revenue", "stock_amount", "cost", "average_cost", "cost_estimate",
+for col in ("revenue", "stock_amount", "average_cost", "cost_estimate",
             "last_purchase_cost"):
     v[col] = pd.to_numeric(v[col], errors="coerce")
 
@@ -235,7 +235,7 @@ v = v.sort_values(sc, ascending=sa, na_position="last")
 
 cols = ("item_code", "jan", "display_name", "maker", "item_rank", "handling_cd",
         "qty_on_hand", "qty_available", "qty_on_order", "stock_amount",
-        "cost", "average_cost", "cost_estimate", "last_purchase_cost",
+        "cost_estimate", "average_cost", "last_purchase_cost",
         "carton_qty", "order_lot", "qty_sold", "revenue")
 st.dataframe(
     v[list(cols)], use_container_width=True, height=560, hide_index=True,
@@ -256,29 +256,53 @@ choices = v.apply(lambda r: f"{r['item_code']} · {r['display_name'] or '(无名
 pick = st.selectbox(_L("选择 SKU", "SKU を選択"), choices)
 row = v.iloc[choices.index(pick)]
 
-d1, d2, d3 = st.columns(3)
-with d1:
-    st.markdown(f"**{_LBL['item_code'][1 if _JA else 0]}**: `{row['item_code']}`")
-    st.markdown(f"**{_LBL['jan'][1 if _JA else 0]}**: `{row['jan']}`")
-    st.markdown("**Internal ID**: `%s`" % row["internal_id"])
-    st.markdown(f"**{_LBL['display_name'][1 if _JA else 0]}**: {row['display_name']}")
-with d2:
-    st.markdown(f"**{_LBL['handling_cd'][1 if _JA else 0]}**: {row['handling_cd'] or '—'}")
-    st.markdown(f"**{_LBL['item_rank'][1 if _JA else 0]}**: {row['item_rank'] or '—'}")
-    st.markdown(f"**{_LBL['maker'][1 if _JA else 0]}**: {row['maker'] or '—'}")
-    st.markdown(f"**{_LBL['carton_qty'][1 if _JA else 0]}**: {row['carton_qty'] or '—'}"
-                f" ｜ **{_LBL['order_lot'][1 if _JA else 0]}**: {row['order_lot'] or '—'}")
-with d3:
-    st.metric(_LBL["qty_on_hand"][1 if _JA else 0], f"{int(row['qty_on_hand'] or 0):,}")
-    st.metric(_LBL["qty_available"][1 if _JA else 0], f"{int(row['qty_available'] or 0):,}")
-    st.metric(_LBL["qty_sold"][1 if _JA else 0], f"{int(row['qty_sold'] or 0):,}")
+def _lb(k: str) -> str:
+    return _LBL[k][1 if _JA else 0]
 
-# 原価各種
-e1, e2, e3, e4 = st.columns(4)
-e1.metric(_LBL["cost"][1 if _JA else 0], f"¥{(row['cost'] or 0):,.2f}")
-e2.metric(_LBL["average_cost"][1 if _JA else 0], f"¥{(row['average_cost'] or 0):,.2f}")
-e3.metric(_LBL["cost_estimate"][1 if _JA else 0], f"¥{(row['cost_estimate'] or 0):,.2f}")
-e4.metric(_LBL["last_purchase_cost"][1 if _JA else 0], f"¥{(row['last_purchase_cost'] or 0):,.2f}")
+
+def _esc(v) -> str:
+    s = "—" if v is None or str(v).strip() == "" else str(v)
+    return html.escape(s)
+
+
+# 基础信息卡（item_code/handling_cd/jan/item_rank/internal_id/maker/carton_qty/order_lot
+# 统一进一张白卡 · 样式对齐下方 stMetric 卡）
+_fields = [
+    (_lb("item_code"), row["item_code"]),
+    (_lb("handling_cd"), row["handling_cd"]),
+    (_lb("jan"), row["jan"]),
+    (_lb("item_rank"), row["item_rank"]),
+    ("Internal ID", row["internal_id"]),
+    (_lb("maker"), row["maker"]),
+    (_lb("carton_qty"), row["carton_qty"]),
+    (_lb("order_lot"), row["order_lot"]),
+]
+_cells = "".join(
+    f'<div><div style="font-size:13px;color:#6e6e73;margin-bottom:2px;">{html.escape(lbl)}</div>'
+    f'<div style="font-size:18px;font-weight:600;color:#1d1d1d;word-break:break-all;">{_esc(val)}</div></div>'
+    for lbl, val in _fields
+)
+st.markdown(
+    f'<div style="background:#fff;border:1px solid #d2d2d7;border-radius:18px;'
+    f'padding:1.25rem 1.5rem;margin-bottom:1rem;">'
+    f'<div style="font-size:13px;color:#6e6e73;margin-bottom:2px;">{html.escape(_lb("display_name"))}</div>'
+    f'<div style="font-size:22px;font-weight:600;color:#1d1d1d;margin-bottom:1.1rem;">{_esc(row["display_name"])}</div>'
+    f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem 1.5rem;">{_cells}</div>'
+    f'</div>',
+    unsafe_allow_html=True,
+)
+
+# 库存
+i1, i2, i3 = st.columns(3)
+i1.metric(_lb("qty_on_hand"), f"{int(row['qty_on_hand'] or 0):,}")
+i2.metric(_lb("qty_available"), f"{int(row['qty_available'] or 0):,}")
+i3.metric(_lb("qty_sold"), f"{int(row['qty_sold'] or 0):,}")
+
+# 原価（定义原价 → 平均原价 → 前次购入价）
+e1, e2, e3 = st.columns(3)
+e1.metric(_lb("cost_estimate"), f"¥{(row['cost_estimate'] or 0):,.2f}")
+e2.metric(_lb("average_cost"), f"¥{(row['average_cost'] or 0):,.2f}")
+e3.metric(_lb("last_purchase_cost"), f"¥{(row['last_purchase_cost'] or 0):,.2f}")
 
 # 店舗×月 売上明細
 st.markdown(f"**{_L('店铺×月 销售明细', '店舗×月 売上明細')}**")

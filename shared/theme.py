@@ -28,7 +28,7 @@ _THEME_CSS = """
 html, body {
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text',
                  'Inter', 'Noto Sans JP', 'Helvetica Neue', Arial, sans-serif;
-    font-size: 17px;  /* 基础字体 大一号（默认 16px → 17px · rem 連動で全体拡大）*/
+    font-size: 21px;  /* 基础字体（rem 連動で全体拡大）*/
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
@@ -125,6 +125,17 @@ p, span, label, div { color: #1d1d1d; }
     border-radius: 14px;
     overflow: hidden;
     background: #ffffff;
+    font-size: 16px;
+}
+
+/* ===== 图表文字放大（Altair/Vega SVG · Plotly · canvas 表は CSS 不可のため対象外）===== */
+[data-testid="stVegaLiteChart"] text,
+[data-testid="stVegaLiteChart"] svg text {
+    font-size: 15px !important;
+}
+[data-testid="stPlotlyChart"] text,
+.js-plotly-plot text {
+    font-size: 15px !important;
 }
 
 /* ===== Tabs — 极简下划线 ===== */

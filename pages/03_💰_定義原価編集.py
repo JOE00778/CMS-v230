@@ -149,6 +149,11 @@ if step == 1:
     sel_locs = loc_all if loc_pick == LOC_BOTH else [loc_pick]
     sel_handle = handle_all if handle_pick == HANDLE_PRESET_ALL else [handle_pick]
 
+    ignore_cost1 = st.checkbox(
+        t("忽略当前定义原价为 1 的 SKU"), value=True,
+        help=t("std_cost = 1 多为占位 / 异常值，默认排除"),
+    )
+
     st.caption(
         f"📌 已选场所：{', '.join(sel_locs)} ｜ "
         f"取扱区分：{', '.join(sel_handle)} ｜ "
@@ -170,6 +175,8 @@ if step == 1:
         placeholders = ",".join(f":d{i}" for i in range(len(sel_dept)))
         where.append(f"s.department IN ({placeholders})")
         params.update({f"d{i}": v for i, v in enumerate(sel_dept)})
+    if ignore_cost1:
+        where.append("(s.std_cost IS DISTINCT FROM 1)")
 
     where_sql = " AND ".join(where)
     sku_count = conn.execute(

@@ -661,6 +661,8 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
 # Sidebar nav 中文 label → 日文（补 TRANSLATIONS_JA 缺失条目）
 for _zh, _ja in [
     ("隐藏无变化 SKU（仅看有波动）", "無変化 SKU を非表示（変動ありのみ）"),
+    ("忽略当前定义原价为 1 的 SKU", "現在の定義原価が 1 の SKU を除外"),
+    ("std_cost = 1 多为占位 / 异常值，默认排除", "std_cost = 1 は仮値 / 異常値が多く、デフォルトで除外"),
     ("📉 周次销量落差", "📉 週間販売差数"),
     ("📅 月度销量落差", "📅 月間販売差数"),
     ("🚚 物流費用分析", "🚚 物流費用分析"),
