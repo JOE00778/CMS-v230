@@ -194,19 +194,20 @@ else:
     others = bill[~is_alloc].reset_index(drop=True)
 
     if not others.empty:
-        st.markdown(t("###### 🗂️ その他費用（配賦3種以外・各項目 税別/税込）"))
+        st.markdown(t("###### 🗂️ その他費用（配賦3種以外）"))
         ncol = 4
         recs = list(others.iterrows())
         for base in range(0, len(recs), ncol):
             ccols = st.columns(ncol)
             for j, (_, r) in enumerate(recs[base:base + ncol]):
                 cn, en = _split_name(r["item_name"])
-                with ccols[j]:
-                    with st.container(border=True):
-                        st.markdown(f"**{cn}**")
-                        st.caption(en or "　")
-                        st.markdown(f"### ¥{r['amount_ex_tax']:,.0f}")
-                        st.caption(t("税込 ¥{v:,.0f}").format(v=r["amount_in_tax"]))
+                ccols[j].metric(
+                    label=cn,
+                    value=f"¥{r['amount_ex_tax']:,.0f}",
+                    delta=t("税込 ¥{v:,.0f}").format(v=r["amount_in_tax"]),
+                    delta_color="off",
+                    help=en or None,
+                )
 
     with st.expander(t("📋 全費用明細（配賦3種含む · Billing 対账表）"), expanded=False):
         bdisp = bill.copy()
@@ -232,8 +233,6 @@ st.divider()
 # ============================================================
 # 店舗别明细表（当月）
 # ============================================================
-st.subheader(t("🏪 店舗別明細（{ym}）").format(ym=sel_month))
-
 amt_piv = cur.pivot_table(index="shop", columns="cost_type", values="amount",
                           aggfunc="sum", fill_value=0)
 qty_piv = cur.pivot_table(index="shop", columns="cost_type", values="qty",
@@ -253,25 +252,26 @@ tbl[t("平均単価")] = (tbl[t("合計")] / tbl[t("件数")].replace(0, pd.NA))
 tbl = tbl.sort_values(t("合計"), ascending=False).reset_index()
 tbl = tbl.rename(columns={"shop": t("店舗")})
 
-st.dataframe(
-    tbl,
-    use_container_width=True,
-    hide_index=True,
-    height=560,
-    column_config={
-        CT_LABEL["pickpack"]: st.column_config.NumberColumn(format="¥%,.0f"),
-        CT_LABEL["lastmile"]: st.column_config.NumberColumn(format="¥%,.0f"),
-        CT_LABEL["packing"]: st.column_config.NumberColumn(format="¥%,.0f"),
-        t("合計"): st.column_config.NumberColumn(format="¥%,.0f"),
-        t("平均単価"): st.column_config.NumberColumn(format="¥%,.1f"),
-    },
-)
-st.download_button(
-    t("📥 下载 CSV"),
-    data=tbl.to_csv(index=False).encode("utf-8-sig"),
-    file_name=f"logistics_cost_{sel_dept_label}_{sel_month}.csv",
-    mime="text/csv",
-)
+with st.expander(t("🏪 店舗別明細（{ym}）").format(ym=sel_month), expanded=False):
+    st.dataframe(
+        tbl,
+        use_container_width=True,
+        hide_index=True,
+        height=560,
+        column_config={
+            CT_LABEL["pickpack"]: st.column_config.NumberColumn(format="¥%,.0f"),
+            CT_LABEL["lastmile"]: st.column_config.NumberColumn(format="¥%,.0f"),
+            CT_LABEL["packing"]: st.column_config.NumberColumn(format="¥%,.0f"),
+            t("合計"): st.column_config.NumberColumn(format="¥%,.0f"),
+            t("平均単価"): st.column_config.NumberColumn(format="¥%,.1f"),
+        },
+    )
+    st.download_button(
+        t("📥 下载 CSV"),
+        data=tbl.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"logistics_cost_{sel_dept_label}_{sel_month}.csv",
+        mime="text/csv",
+    )
 
 st.divider()
 
