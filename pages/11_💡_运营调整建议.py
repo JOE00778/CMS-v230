@@ -53,13 +53,18 @@ with _weekly_tab:
         if isinstance(_mx, str):
             _mx = _dtw.date.fromisoformat(_mx[:10])
         _this_mon = _mx - _dtw.timedelta(days=_mx.weekday())
-        _weeks = [_this_mon - _dtw.timedelta(weeks=_i) for _i in range(12)]
+        _today_w = _dtw.date.today()
+        # 进行中的本周は除外（週日未到来 = 不完整 → 計算しない）· 既定は直近の完整周
+        _weeks = [_this_mon - _dtw.timedelta(weeks=_i) for _i in range(13)]
+        _weeks = [_w for _w in _weeks if _w + _dtw.timedelta(days=6) < _today_w]
+        if not _weeks:
+            _weeks = [_this_mon - _dtw.timedelta(weeks=1)]
 
         def _wk_label(_m):
             return f"{_m.isoformat()} ~ {(_m + _dtw.timedelta(days=6)).isoformat()}"
 
         _c1, _c2, _c3 = st.columns([2, 1, 1])
-        _sel_mon = _c1.selectbox(_L("对象周（周一起点）", "対象週（月曜起点）"),
+        _sel_mon = _c1.selectbox(_L("对象周（仅完整周·默认上周）", "対象週（完了週のみ·既定は前週）"),
                                  _weeks, format_func=_wk_label, index=0)
         _direction = _c2.radio(_L("方向", "方向"),
                                [_L("销量下降", "数量減少"), _L("销量上升", "数量増加"),
@@ -68,9 +73,6 @@ with _weekly_tab:
                                       min_value=0, value=5, step=1)
         _cur_s, _cur_e = _sel_mon, _sel_mon + _dtw.timedelta(days=6)
         _prev_s, _prev_e = _sel_mon - _dtw.timedelta(days=7), _sel_mon - _dtw.timedelta(days=1)
-        if _cur_e >= _dtw.date.today():
-            st.caption(_L("⚠️ 对象周可能进行中（截至当日）· 落差为暂定值",
-                          "⚠️ 対象週は進行中の可能性あり（当日まで）· 落差は暫定値"))
         _shops = [_r["shop"] for _r in _wconn.execute(
             "SELECT DISTINCT shop FROM nst.sales_daily "
             "WHERE sale_date BETWEEN ? AND ? ORDER BY shop",
