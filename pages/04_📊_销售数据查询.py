@@ -379,10 +379,9 @@ with _q_tab:
     # ============================================================
     # フィルタ
     # ============================================================
-    c1, c2, c3 = st.columns([1.2, 2, 3])
+    c1, c2 = st.columns([1, 3])
     ym = c1.selectbox(t("対象月"), months_df["year_month"].tolist())
-    view = c2.radio(t("表示単位"), [t("整体"), t("市场别")], horizontal=True)
-    kw = c3.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
+    kw = c2.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
 
     # 当月売上商品の各次元 distinct → 絞り込み候補
     _opt_df, _ = _query(
@@ -476,81 +475,50 @@ with _q_tab:
             _d["turnover"] = (_d["qty_sold"] / _soh).round(2)            # 月販売数 / 当前在庫（近似）
             _d["stock_sales_ratio"] = (_d["qty_on_hand"] / _sld).round(2)
             _d["avg_stock_days"] = (_d["qty_on_hand"] / (_sld / 30)).round(1)
-            _d["cross_ratio"] = (_d["arari_rate"] / 100 * _d["turnover"]).round(2)
+            _d["cross_ratio"] = (_d["arari_rate"] * _d["turnover"]).round(1)  # 粗利率(%)×回転率 → %表示
             _d["sku_status"] = _d.apply(
                 lambda r: _sku_status(r.get("handling_cd"), r.get("qty_on_hand"), r.get("qty_sold")),
                 axis=1)
         return _d
 
-    if view == t("市场别"):
-        # 市場 = 店舗から派生（NST 在庫は単仓全局 → 市場別は销售类指标のみ）
-        df_raw, e2 = _query(
-            "SELECT s.shop, MIN(im.item_code) AS item_code, im.jan, im.display_name, "
-            "im.maker, im.item_rank, "
-            "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
-            "SUM(s.gross_profit) AS gross_profit "
-            "FROM nst.sales_monthly s "
-            "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
-            f"WHERE {where_sql} "
-            "GROUP BY s.shop, im.jan, im.display_name, im.maker, im.item_rank",
-            tuple(params),
+    # SKU 別 17 指標 + 月完売率（市场/品牌/取扱区分 は上の筛选で絞る · 在庫類は全局口径）
+    df, e2 = _query(
+        "SELECT MIN(im.item_code) AS item_code, im.jan, im.display_name, im.maker, "
+        "im.item_rank, MIN(im.handling_cd) AS handling_cd, "
+        "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
+        "SUM(s.gross_profit) AS gross_profit, "
+        "MAX(im.cost_estimate) AS cost_estimate, MAX(inv.qty_on_hand) AS qty_on_hand "
+        "FROM nst.sales_monthly s "
+        "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+        f"LEFT JOIN {_INV} inv ON inv.item_internal_id = s.item_internal_id "
+        f"WHERE {where_sql} "
+        "GROUP BY im.jan, im.display_name, im.maker, im.item_rank "
+        "ORDER BY revenue DESC",
+        tuple(params),
+    )
+    if df is not None and not df.empty:
+        df = _enrich(df, with_stock=True)
+        # 月完売率 = 当月販売数 ÷（月初在庫 + 当月入庫）×100% · inventory_activity_monthly（jan 集計）
+        _st_df, _ = _query(
+            "SELECT im.jan AS jan, SUM(a.sold_qty) AS st_sold, "
+            "SUM(a.opening_qty) AS st_open, SUM(a.received_qty) AS st_recv "
+            "FROM nst.inventory_activity_monthly a "
+            "JOIN nst.item_master_raw im ON im.internal_id = a.item_internal_id "
+            "WHERE a.year_month = ? GROUP BY im.jan",
+            (ym,),
         )
-        if df_raw is not None and not df_raw.empty:
-            df_raw["market"] = df_raw["shop"].apply(classify_market)
-            for _c in ("qty_sold", "revenue", "gross_profit"):
-                df_raw[_c] = df_raw[_c].astype(float)
-            df = df_raw.groupby(
-                ["market", "jan", "display_name", "maker", "item_rank"],
-                as_index=False, dropna=False,
-            ).agg(
-                item_code=("item_code", "first"),
-                qty_sold=("qty_sold", "sum"), revenue=("revenue", "sum"),
-                gross_profit=("gross_profit", "sum"),
-            )
-            df = _enrich(df, with_stock=False).sort_values("revenue", ascending=False)
+        if _st_df is not None and not _st_df.empty:
+            for _c in ("st_sold", "st_open", "st_recv"):
+                _st_df[_c] = _st_df[_c].astype(float)
+            _den = (_st_df["st_open"] + _st_df["st_recv"])
+            _st_df["sellthrough"] = (_st_df["st_sold"] / _den.where(_den != 0) * 100).round(1)
+            df = df.merge(_st_df[["jan", "sellthrough"]], on="jan", how="left")
         else:
-            df = df_raw
-        cols = ("market", "item_code", "maker", "display_name", "item_rank",
-                "qty_sold", "revenue", "unit_price", "arari", "arari_rate", "profit_contrib")
-    else:
-        # 整体（全市場合計 · SKU 別）— 销售类 + 库存类 全 17 指标
-        df, e2 = _query(
-            "SELECT MIN(im.item_code) AS item_code, im.jan, im.display_name, im.maker, "
-            "im.item_rank, MIN(im.handling_cd) AS handling_cd, "
-            "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
-            "SUM(s.gross_profit) AS gross_profit, "
-            "MAX(im.cost_estimate) AS cost_estimate, MAX(inv.qty_on_hand) AS qty_on_hand "
-            "FROM nst.sales_monthly s "
-            "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
-            f"LEFT JOIN {_INV} inv ON inv.item_internal_id = s.item_internal_id "
-            f"WHERE {where_sql} "
-            "GROUP BY im.jan, im.display_name, im.maker, im.item_rank "
-            "ORDER BY revenue DESC",
-            tuple(params),
-        )
-        if df is not None and not df.empty:
-            df = _enrich(df, with_stock=True)
-            # 月完売率 = 当月販売数 ÷（月初在庫 + 当月入庫）×100% · inventory_activity_monthly（jan 集計）
-            _st_df, _ = _query(
-                "SELECT im.jan AS jan, SUM(a.sold_qty) AS st_sold, "
-                "SUM(a.opening_qty) AS st_open, SUM(a.received_qty) AS st_recv "
-                "FROM nst.inventory_activity_monthly a "
-                "JOIN nst.item_master_raw im ON im.internal_id = a.item_internal_id "
-                "WHERE a.year_month = ? GROUP BY im.jan",
-                (ym,),
-            )
-            if _st_df is not None and not _st_df.empty:
-                for _c in ("st_sold", "st_open", "st_recv"):
-                    _st_df[_c] = _st_df[_c].astype(float)
-                _den = (_st_df["st_open"] + _st_df["st_recv"])
-                _st_df["sellthrough"] = (_st_df["st_sold"] / _den.where(_den != 0) * 100).round(1)
-                df = df.merge(_st_df[["jan", "sellthrough"]], on="jan", how="left")
-            else:
-                df["sellthrough"] = None
-        cols = ("item_code", "maker", "display_name", "item_rank",
-                "qty_sold", "revenue", "unit_price", "arari", "arari_rate",
-                "qty_on_hand", "stock_value", "turnover", "avg_stock_days",
-                "cross_ratio", "sku_status", "sellthrough", "stock_sales_ratio", "profit_contrib")
+            df["sellthrough"] = None
+    cols = ("item_code", "maker", "display_name", "item_rank",
+            "qty_sold", "revenue", "unit_price", "arari", "arari_rate",
+            "qty_on_hand", "stock_value", "turnover", "avg_stock_days",
+            "cross_ratio", "sku_status", "sellthrough", "stock_sales_ratio", "profit_contrib")
 
     # ============================================================
     # 表示
@@ -570,7 +538,12 @@ with _q_tab:
         m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}", f"{(tot_g/tot_r if tot_r else 0):.1%}")
 
         st.caption(t("表示件数: ") + f"{len(df):,}" + t("（粗利率/利润贡献率=%, 回転率=月販売/当前在庫·近似）"))
+        _colcfg = dict(_cc(*cols))
+        for _pc in ("cross_ratio", "sellthrough", "profit_contrib"):
+            if _pc in _colcfg:
+                _colcfg[_pc] = st.column_config.NumberColumn(_colcfg[_pc], format="%.1f%%")
+        # 本表は区域末尾（下方に他要素なし）→ 行数を増やす
         st.dataframe(
-            df[list(cols)], use_container_width=True, height=560,
-            column_config=_cc(*cols),
+            df[list(cols)], use_container_width=True, height=900,
+            column_config=_colcfg,
         )
