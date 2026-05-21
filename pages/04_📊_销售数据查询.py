@@ -448,14 +448,6 @@ with _q_tab:
         where.append("(" + " OR ".join(_ors) + ")")
     where_sql = " AND ".join(where)
 
-    def _sku_status(_h, _stock, _sold):
-        # Boss 公式: 取扱中止/空→中止 · 有库存且无销售→不動 · 其余空
-        if _h is None or str(_h).strip() in ("", "取扱中止", "メーカー取扱中止"):
-            return "中止"
-        if _stock is None or float(_stock or 0) <= 0:
-            return ""
-        return "" if float(_sold or 0) > 0 else "不動"
-
     def _enrich(_d, with_stock):
         """派生指标（销售类 + 可选库存类）。"""
         _d = _d.copy()
@@ -476,9 +468,6 @@ with _q_tab:
             _d["stock_sales_ratio"] = (_d["qty_on_hand"] / _sld).round(2)
             _d["avg_stock_days"] = (_d["qty_on_hand"] / (_sld / 30)).round(1)
             _d["cross_ratio"] = (_d["arari_rate"] * _d["turnover"]).round(1)  # 粗利率(%)×回転率 → %表示
-            _d["sku_status"] = _d.apply(
-                lambda r: _sku_status(r.get("handling_cd"), r.get("qty_on_hand"), r.get("qty_sold")),
-                axis=1)
         return _d
 
     # SKU 別 17 指標 + 月完売率（市场/品牌/取扱区分 は上の筛选で絞る · 在庫類は全局口径）
@@ -518,7 +507,7 @@ with _q_tab:
     cols = ("item_code", "maker", "display_name", "item_rank",
             "qty_sold", "revenue", "unit_price", "arari", "arari_rate",
             "qty_on_hand", "stock_value", "turnover", "avg_stock_days",
-            "cross_ratio", "sku_status", "sellthrough", "stock_sales_ratio", "profit_contrib")
+            "cross_ratio", "sellthrough", "stock_sales_ratio", "profit_contrib")
 
     # ============================================================
     # 表示
