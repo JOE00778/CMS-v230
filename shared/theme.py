@@ -241,6 +241,15 @@ p, span, label, div { color: #1d1d1f; }
     border-color: #0071e3 !important;
 }
 
+/* ===== Multiselect 选中标签 — 浅色（默认深蓝太重）===== */
+[data-baseweb="tag"] {
+    background-color: #eef0f3 !important;
+    color: #1d1d1f !important;
+    border: 1px solid #d2d2d7 !important;
+}
+[data-baseweb="tag"] span { color: #1d1d1f !important; }
+[data-baseweb="tag"] svg { fill: #6e6e73 !important; }
+
 /* ===== Expander — 圆角卡 ===== */
 [data-testid="stExpander"] {
     border: 1px solid #d2d2d7 !important;
