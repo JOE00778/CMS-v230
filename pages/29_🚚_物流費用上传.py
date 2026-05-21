@@ -230,100 +230,106 @@ def show_match_feedback():
                  column_config={t("不明額(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
 
 
-tab1, tab2, tab3 = st.tabs([
-    t("① JD 請求書（費用）"),
-    t("② BM（包裹号→店舗）"),
-    t("③ 店舗→部署 分類"),
+def detect_kind(data: bytes, name: str):
+    """ファイル種別と対象月を自動判定（請求書=費用sheet有/月はファイル名、BM=包裹号列有）。"""
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    sheets = set(wb.sheetnames)
+    wb.close()
+    if sheets & {"OB-Pick&Pack", "Last mile", "Packing Charge", "Billing"}:
+        m = re.search(r"(20\d{2})\D?(\d{2})", name)
+        return "invoice", (f"{m[1]}-{m[2]}" if m else None)
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)  # 包裹导出は read_only 不可
+    is_bm = any(find_col(list(next(s.iter_rows(values_only=True, max_row=1), [])), "包裹号", "包裹號") is not None
+                for s in wb.worksheets)
+    wb.close()
+    return ("bm", None) if is_bm else ("unknown", None)
+
+
+tab1, tab2 = st.tabs([
+    t("📤 一括アップロード（請求書 + BM）"),
+    t("店舗→部署 分類"),
 ])
 
 # ============================================================
-# tab1 · JD 請求書
+# tab1 · 一括アップロード（請求書 + BM 自動判定）
 # ============================================================
 with tab1:
-    st.markdown(t("##### JD 請求書（三金商事）.xlsx を上传"))
-    st.caption(t("OB-Pick&Pack=梱包費用 / Last mile=国内運送費用 / Packing Charge=梱包材 の 3 sheet を取込（不含税）。"))
-    c1, c2 = st.columns([1, 2])
-    ym_in = c1.text_input(t("対象月 YYYY-MM"), placeholder="2026-02")
-    up = c2.file_uploader(t("請求書 xlsx"), type=["xlsx"], key="inv_up")
-    ym_ok = bool(re.fullmatch(r"20\d{2}-\d{2}", ym_in or ""))
-    if up and not ym_ok:
-        st.info(t("対象月を YYYY-MM 形式で入力してください（例 2026-02）。"))
-    if up and ym_ok and st.button(t("💾 解析 → PG 書込 + 再集計"), key="inv_btn", type="primary"):
-        with st.spinner(t("解析中…")):
-            rows, per = parse_invoice(up.getvalue(), ym_in)
-        if not rows:
-            st.error(t("取込行 0 — sheet 名/表頭を確認してください。"))
-        else:
-            with st.spinner(t("PG 書込 + 再集計中…")):
-                for ct in {r[1] for r in rows}:
-                    conn.execute(
-                        "DELETE FROM logistics.cost_invoice_raw WHERE year_month=%s AND cost_type=%s",
-                        (ym_in, ct),
-                    )
-                conn.executemany(
-                    """INSERT INTO logistics.cost_invoice_raw
-                       (year_month, cost_type, join_key, amount_ex_tax, amount_in_tax,
-                        material_cd, material_qty, sku, cost_date)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    rows,
-                )
-                conn.commit()
-                bill = parse_billing(up.getvalue(), ym_in)
-                if bill:
-                    conn.execute("DELETE FROM logistics.cost_billing WHERE year_month=%s", (ym_in,))
-                    conn.executemany(
-                        """INSERT INTO logistics.cost_billing
-                           (year_month, seq, item_name, amount_ex_tax, amount_in_tax)
-                           VALUES (%s,%s,%s,%s,%s)""",
-                        bill,
-                    )
-                    conn.commit()
-                run_recompute(ym_in)
-            st.success(t("✅ {ym}: ").format(ym=ym_in)
-                       + " ".join(f"{k}={v}" for k, v in per.items())
-                       + t(" 行 書込 + 再集計完了"))
-            show_match_feedback()
+    st.markdown(t("##### 請求書 + BM をまとめてアップロード（複数可・種別と月を自動判定）"))
+    st.caption(t("請求書: OB-Pick&Pack/Last mile/Packing/Billing を取込（不含税）· 月はファイル名の YYYYMM。"
+                 "BM: 包裹号→店舗。両方まとめて選んで一括処理。"))
+    st.warning(t(
+        "⚠️ BM は**対象月と同期 × 全平台**で導出（国内: 楽天/Amazon/Yahoo/Temu/TikTok ＋ 海外: Shopee/Lazada）。"
+        "海外のみだと国内運送費(Last mile)が紐付かず【不明】激増。"
+    ))
+    ups = st.file_uploader(t("xlsx（複数選択可）"), type=["xlsx"],
+                           accept_multiple_files=True, key="batch_up")
+    if ups and st.button(t("💾 一括解析 → PG 書込 + 再集計"), key="batch_btn", type="primary"):
+        inv_log, bm_log, err_log = [], [], []
+        prog = st.progress(0.0, text=t("解析中…"))
+        for i, up in enumerate(ups):
+            data = up.getvalue()
+            try:
+                kind, ym = detect_kind(data, up.name)
+                if kind == "invoice" and not ym:
+                    err_log.append(t("❌ {f}: 月份識別不可（名前に YYYYMM 無し）").format(f=up.name))
+                elif kind == "invoice":
+                    rows, per = parse_invoice(data, ym)
+                    if not rows:
+                        err_log.append(t("❌ {f}: 取込0行").format(f=up.name))
+                    else:
+                        for ct in {r[1] for r in rows}:
+                            conn.execute("DELETE FROM logistics.cost_invoice_raw WHERE year_month=%s AND cost_type=%s", (ym, ct))
+                        conn.executemany(
+                            """INSERT INTO logistics.cost_invoice_raw
+                               (year_month, cost_type, join_key, amount_ex_tax, amount_in_tax,
+                                material_cd, material_qty, sku, cost_date)
+                               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""", rows)
+                        bill = parse_billing(data, ym)
+                        if bill:
+                            conn.execute("DELETE FROM logistics.cost_billing WHERE year_month=%s", (ym,))
+                            conn.executemany(
+                                """INSERT INTO logistics.cost_billing
+                                   (year_month, seq, item_name, amount_ex_tax, amount_in_tax)
+                                   VALUES (%s,%s,%s,%s,%s)""", bill)
+                        conn.commit()
+                        inv_log.append(t("✅ 請求書 {ym}: ").format(ym=ym)
+                                       + " ".join(f"{k}={v}" for k, v in per.items())
+                                       + (f" +Billing{len(bill)}" if bill else ""))
+                elif kind == "bm":
+                    bm_rows = parse_bm(data)
+                    if not bm_rows:
+                        err_log.append(t("❌ {f}: 包裹0件").format(f=up.name))
+                    else:
+                        conn.executemany(
+                            """INSERT INTO logistics.order_shop_map
+                               (parcel_no, order_id, waybill_no, platform, shop, ship_date)
+                               VALUES (%s,%s,%s,%s,%s,%s)
+                               ON CONFLICT (parcel_no) DO UPDATE SET
+                                 order_id=EXCLUDED.order_id, waybill_no=EXCLUDED.waybill_no,
+                                 platform=EXCLUDED.platform, shop=EXCLUDED.shop,
+                                 ship_date=EXCLUDED.ship_date, imported_at=now()""", bm_rows)
+                        conn.commit()
+                        bm_log.append(t("✅ BM {f}: {n}包裹 / {s}店舗").format(
+                            f=up.name, n=len(bm_rows), s=len({r[4] for r in bm_rows if r[4]})))
+                else:
+                    err_log.append(t("❌ {f}: 種別判定不可（請求書/BM どちらでもない）").format(f=up.name))
+            except Exception as e:
+                err_log.append(f"❌ {up.name}: {e}")
+            prog.progress((i + 1) / len(ups), text=f"{i + 1}/{len(ups)}")
+        with st.spinner(t("全月 再集計中…")):
+            run_recompute(None)
+        if inv_log:
+            st.success(t("請求書 {n} 件").format(n=len(inv_log)) + "\n\n" + "\n\n".join(inv_log))
+        if bm_log:
+            st.success(t("BM {n} 件").format(n=len(bm_log)) + "\n\n" + "\n\n".join(bm_log))
+        if err_log:
+            st.warning("\n\n".join(err_log))
+        show_match_feedback()
 
 # ============================================================
-# tab2 · BM
+# tab2 · 店舗 → 部署 分類
 # ============================================================
 with tab2:
-    st.markdown(t("##### BM 包裹导出 .xlsx を上传（包裹号 → 店舗）"))
-    st.caption(t("NST 拉取不可 · 平台/JD WMS から導出。包裹号/订单号/物流单号/店铺 を表頭名で自動認識。"))
-    st.warning(t(
-        "⚠️ BM は**対象月と同期 × 全平台**で導出してください"
-        "（国内: 楽天/Amazon/Yahoo/Temu/TikTok ＋ 海外: Shopee/Lazada 等）。"
-        "海外平台のみだと国内運送費(Last mile)が店舗に紐付かず【不明】が激増します。"
-    ))
-    upb = st.file_uploader(t("BM xlsx"), type=["xlsx"], key="bm_up")
-    if upb and st.button(t("💾 解析 → PG 書込 + 全月再集計"), key="bm_btn", type="primary"):
-        with st.spinner(t("解析中…")):
-            bm_rows = parse_bm(upb.getvalue())
-        if not bm_rows:
-            st.error(t("包裹号 列が見つからない / 取込 0 件。"))
-        else:
-            shops = sorted({r[4] for r in bm_rows if r[4]})
-            with st.spinner(t("PG upsert + 再集計中…")):
-                conn.executemany(
-                    """INSERT INTO logistics.order_shop_map
-                       (parcel_no, order_id, waybill_no, platform, shop, ship_date)
-                       VALUES (%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (parcel_no) DO UPDATE SET
-                         order_id=EXCLUDED.order_id, waybill_no=EXCLUDED.waybill_no,
-                         platform=EXCLUDED.platform, shop=EXCLUDED.shop,
-                         ship_date=EXCLUDED.ship_date, imported_at=now()""",
-                    bm_rows,
-                )
-                conn.commit()
-                run_recompute(None)
-            st.success(t("✅ {n} 包裹 upsert / {s} 店舗 · 全月再集計完了")
-                       .format(n=len(bm_rows), s=len(shops)))
-            show_match_feedback()
-
-# ============================================================
-# tab3 · 店舗 → 部署 分類
-# ============================================================
-with tab3:
     st.markdown(t("##### 店舗 → 部署（輸出 / EC）"))
     st.caption(t("未分類の店舗は【不明】に集計される。分類 → 保存 → 再集計で輸出/ECに反映。"))
 

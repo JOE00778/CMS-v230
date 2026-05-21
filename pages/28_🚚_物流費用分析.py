@@ -111,6 +111,7 @@ k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric(
     t("物流費 合計 (¥)"), f"¥{total_cur:,.0f}",
     delta=(f"{mom:+.1f}% {t('前月比')}" if mom is not None else None),
+    delta_color="inverse",
 )
 for col, (key, label) in zip((k2, k3, k4), COST_TYPES):
     amt = float(by_type.get(key, 0))
