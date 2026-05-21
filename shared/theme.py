@@ -206,7 +206,7 @@ p, span, label, div { color: #1d1d1d; }
     display: flex !important;
     align-items: center !important;
     box-sizing: border-box !important;
-    font-size: 13px !important;
+    font-size: 12px !important;
     line-height: 1.2 !important;
     background: transparent !important;
     color: #1d1d1d !important;

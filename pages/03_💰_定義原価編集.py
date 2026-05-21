@@ -41,6 +41,12 @@ from shared.auth import require_admin
 require_admin()
 from shared.theme import inject_theme
 inject_theme()
+# 本ページのみ：データ表が画面幅いっぱいに広がるよう全局 1400px 上限を解除
+st.markdown(
+    "<style>[data-testid='stMainBlockContainer'],.main .block-container"
+    "{max-width:100%!important;}</style>",
+    unsafe_allow_html=True,
+)
 lang_selector()
 conn = get_connection()
 
@@ -50,10 +56,6 @@ st.caption(
     f"自動判定阈值 |Δ|≥{THRESHOLD_YEN:.0f}¥ 或 |Δ%|≥{THRESHOLD_PCT:.0%} · "
     f"新值 = ⌈平均原価⌉ · 数据源 = NST 主档 nst.item_master_raw"
 )
-st.info(t(
-    "📌 数据源已迁移至 NST API（nst.item_master_raw + nst.inventory_snapshot）。"
-    "标准品 = 选定快照 × 仓库下有库存的 SKU，部門锁定「輸出」，可在下方「場所」单独选仓库。"
-))
 
 # ============================================================
 # 0. 检查数据
@@ -144,11 +146,6 @@ if step == 1:
     sel_locs = loc_all if loc_pick == LOC_BOTH else [loc_pick]
     sel_handle = handle_all if handle_pick == HANDLE_PRESET_ALL else [handle_pick]
 
-    ignore_cost1 = st.checkbox(
-        t("忽略当前定义原价为 1 的 SKU"), value=True,
-        help=t("定义原价 = 1 多为占位 / 异常值，默认排除"),
-    )
-
     st.caption(
         f"📌 已选场所：{', '.join(sel_locs) or '（全部）'} ｜ "
         f"取扱区分：{', '.join(sel_handle) or '（全部）'} ｜ "
@@ -166,8 +163,6 @@ if step == 1:
         placeholders = ",".join(f":h{i}" for i in range(len(sel_handle)))
         where.append(f"im.handling_cd IN ({placeholders})")
         params.update({f"h{i}": v for i, v in enumerate(sel_handle)})
-    if ignore_cost1:
-        where.append("(im.cost_estimate IS DISTINCT FROM 1)")
 
     where_sql = " AND ".join(where)
     sku_count = conn.execute(
@@ -210,6 +205,12 @@ if step == 1:
         rows = conn.execute(agg_sql, params).fetchall()
 
         # 跑业务规则（avg_cost / std_cost_old 直接来自 NST 主档）
+        def _is_one(x):
+            try:
+                return x is not None and float(x) == 1
+            except (TypeError, ValueError):
+                return False
+
         decisions = []
         for r in rows:
             row = {
@@ -226,6 +227,12 @@ if step == 1:
             d = decide_action(row, master)
             d["total_qty"] = r["total_qty"]
             d["maker"] = r["maker"]
+            # 标记 当前定义原价 / 平均原価 / 新定义原价 任一 = 1（占位 / 异常值）
+            d["is_price_one"] = (
+                _is_one(d.get("std_cost_old"))
+                or _is_one(d.get("avg_cost"))
+                or _is_one(d.get("std_cost_new"))
+            )
             decisions.append(d)
 
         st.session_state.cs_decisions = decisions
@@ -242,21 +249,45 @@ elif step == 2:
     decisions = st.session_state.cs_decisions or []
     df_all = pd.DataFrame(decisions)
 
-    total = len(df_all)
-    n_update = (df_all["action"] == "UPDATE").sum() if total else 0
-    n_skip = total - n_update
-    n_red = (df_all.get("severity") == "RED").sum() if total else 0
-    n_yellow = (df_all.get("severity") == "YELLOW").sum() if total else 0
+    # is_price_one 兜底（旧 session 无此列）
+    if "is_price_one" not in df_all.columns:
+        df_all["is_price_one"] = False
+    df_all["is_price_one"] = df_all["is_price_one"].fillna(False).astype(bool)
 
-    c1, c2, c3, c4 = st.columns(4)
+    # 两个开关：忽略(显示分流到专门 tab) + 更改(是否写入 CSV)
+    sw1, sw2 = st.columns(2)
+    with sw1:
+        ignore_cost1 = st.checkbox(
+            t("忽略 当前定义原价 / 平均原价 / 新定义原价 = 1 的 SKU"), value=True,
+            help=t("这三个原价中任一 = 1 多为占位 / 异常值；开启后从更新 / 跳过 / 异常清单移到「原价=1」tab"),
+        )
+    with sw2:
+        update_cost1 = st.checkbox(
+            t("更改这些原价 = 1 的 SKU（纳入生成 CSV）"), value=False,
+            help=t("默认不更改；勾选后「原价=1」tab 中触发更新的 SKU 也写入上传 CSV"),
+        )
+
+    # 分类：原价=1 单列 / 主流程
+    df_one = df_all[df_all["is_price_one"]].copy()
+    df_main = df_all[~df_all["is_price_one"]].copy() if ignore_cost1 else df_all.copy()
+
+    total = len(df_main)
+    n_update = (df_main["action"] == "UPDATE").sum() if total else 0
+    n_skip = total - n_update
+    n_red = (df_main.get("severity") == "RED").sum() if total else 0
+    n_yellow = (df_main.get("severity") == "YELLOW").sum() if total else 0
+    n_one = len(df_one)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(t("候选 SKU 总数"), f"{total:,}")
     c2.metric(t("✅ 触发更新"), f"{n_update:,}")
     c3.metric(t("⏭️ 跳过"), f"{n_skip:,}")
     c4.metric(t("⚠️ 异常 R+Y"), f"{n_red + n_yellow:,}")
+    c5.metric(t("💢 原价=1"), f"{n_one:,}")
 
     if n_skip > 0:
         skip_breakdown = (
-            df_all[df_all["action"] != "UPDATE"]["action"]
+            df_main[df_main["action"] != "UPDATE"]["action"]
             .value_counts()
             .to_dict()
         )
@@ -303,10 +334,11 @@ elif step == 2:
 
     st.divider()
 
-    tab_u, tab_s, tab_a = st.tabs([
+    tab_u, tab_s, tab_a, tab_o = st.tabs([
         t(f"✅ 更新清单 ({n_update})"),
         t(f"⏭️ 跳过清单 ({n_skip})"),
         t(f"⚠️ 异常告警 ({n_red + n_yellow})"),
+        t(f"💢 原价=1 ({n_one})"),
     ])
 
     # 列名 → 中文/日文 (走 t() 走 i18n)
@@ -327,7 +359,7 @@ elif step == 2:
     }
 
     with tab_u:
-        df_u = df_all[df_all["action"] == "UPDATE"].copy()
+        df_u = df_main[df_main["action"] == "UPDATE"].copy()
         if df_u.empty:
             st.info(t("本次没有 SKU 触发更新。"))
         else:
@@ -340,7 +372,7 @@ elif step == 2:
             st.dataframe(df_show, use_container_width=True, hide_index=True)
 
     with tab_s:
-        df_s = df_all[df_all["action"] != "UPDATE"].copy()
+        df_s = df_main[df_main["action"] != "UPDATE"].copy()
         if df_s.empty:
             st.info(t("没有任何 SKU 被跳过。"))
         else:
@@ -350,7 +382,7 @@ elif step == 2:
             st.dataframe(df_show, use_container_width=True, hide_index=True)
 
     with tab_a:
-        df_a = df_all[df_all.get("severity").isin(["RED", "YELLOW"])].copy()
+        df_a = df_main[df_main.get("severity").isin(["RED", "YELLOW"])].copy()
         if df_a.empty:
             st.success(t("✅ 无异常告警。"))
         else:
@@ -368,6 +400,29 @@ elif step == 2:
             df_show = df_show.rename(columns=COL_RENAME)
             st.dataframe(df_show, use_container_width=True, hide_index=True)
 
+    with tab_o:
+        if df_one.empty:
+            st.success(t("✅ 没有原价 = 1 的 SKU。"))
+        else:
+            _ocols = ["internal_id", "item_code", "display_name", "maker", "total_qty",
+                      "std_cost_old", "avg_cost", "std_cost_new", "action", "skip_reason"]
+            _ocols = [c for c in _ocols if c in df_one.columns]
+            df_show = df_one[_ocols].rename(columns=COL_RENAME)
+            st.dataframe(df_show, use_container_width=True, hide_index=True)
+            n_one_upd = int((df_one["action"] == "UPDATE").sum())
+            if update_cost1:
+                st.caption(t(f"✅ 已勾选「更改」：其中 {n_one_upd} 个触发更新的将写入上传 CSV"))
+            else:
+                st.caption(t(f"默认不更改：这 {n_one} 个 SKU 不写入 CSV（勾选上方「更改」开关可纳入）"))
+
+    # 写入 CSV 的 SKU = UPDATE 且 (非原价=1 或 已勾选更改原价=1)
+    csv_decisions = [
+        d for d in decisions
+        if d.get("action") == "UPDATE" and d.get("std_cost_new") is not None
+        and (not d.get("is_price_one") or update_cost1)
+    ]
+    n_csv = len(csv_decisions)
+
     st.divider()
     btn_back, btn_next = st.columns(2)
     with btn_back:
@@ -375,20 +430,19 @@ elif step == 2:
             _reset()
             st.rerun()
     with btn_next:
-        if n_update == 0:
+        if n_csv == 0:
             st.button(
                 t("确认并生成 CSV →"), type="primary", disabled=True, use_container_width=True
             )
             st.caption(t("没有需要更新的 SKU"))
         else:
             if st.button(
-                t(f"确认并生成 CSV ({n_update} 行) →"), type="primary", use_container_width=True
+                t(f"确认并生成 CSV ({n_csv} 行) →"), type="primary", use_container_width=True
             ):
                 # NST 上传模板格式 CSV：第一列 Internal ID + 「商品原価」(= 定義原価)
                 csv_rows = [
                     {ID_LABEL: d["internal_id"], COL_COST: int(d["std_cost_new"])}
-                    for d in decisions
-                    if d.get("action") == "UPDATE" and d.get("std_cost_new") is not None
+                    for d in csv_decisions
                 ]
                 st.session_state.cs_csv_bytes = build_nst_master_csv(csv_rows, [COL_COST])
 
@@ -397,9 +451,7 @@ elif step == 2:
                     from datetime import datetime
                     changed_at = datetime.utcnow().isoformat()
                     hist_rows = []
-                    for d in decisions:
-                        if d.get("action") != "UPDATE":
-                            continue
+                    for d in csv_decisions:
                         old = d.get("std_cost_old")
                         new = d.get("std_cost_new")
                         diff = (new - old) if (old is not None and new is not None) else None
