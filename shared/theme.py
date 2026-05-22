@@ -1,13 +1,13 @@
-"""全局 UI 主题 · Neumorphism (Soft UI) + SMIKIE 红强调（2026-05-21 最小改造）
+"""全局 UI 主题 · SMIKIE 配色 + Apple 设计语言
 
-设计核心：
-- system-ui 字体栈（按系统语言自动选中日字形），负字距大标题
-- #E0E5EC 冷灰同色背景，元素与背景同材质，靠双向阴影定义凸起/凹陷（无边框）
-- 双向阴影令牌（:root --neu-out / --neu-in 等）：左上白光 + 右下冷灰
-- 卡片/按钮/dataframe/expander 凸起（--neu-out）；输入框/alert 凹陷井（--neu-in）
-- 单一品牌红 #d6000f（SMIKIE）保留作强调色（primary CTA / 选中 / 告警）
-- 16-24px 圆角；按钮 pill / 980px-radius
-- 限制：st.dataframe 内部 canvas / 图表内部为框架限制，仅做外壳 neumorphic
+设计核心（配色对齐 SmikieJapan 自建站 Empire 主题）：
+- SF Pro / -apple-system 字体栈（中日文 Noto Sans JP），负字距大标题
+- #f7f4ef 暖米白背景（SMIKIE）+ 纯白卡片 + 1px hairline 边框（#d2d2d7）
+- 单一品牌红 #d6000f（SMIKIE）作为强调色，避免多色混用
+- 大留白（24-40px gap），柔和阴影（rgba(0,0,0,0.04)）
+- 12-18px 圆角；按钮 pill / 980px-radius
+- 无 ALL CAPS、无重粗体大写小标题
+- 减号字距 letter-spacing: -0.022em 用于标题
 
 用法：每个 page 顶部调用 inject_theme()，建议放在 require_password() 之后。
 提供 .badge-A/.badge-B/.badge-C/.badge-NEW/.badge-RED 类供 page 使用。
@@ -18,17 +18,6 @@ import streamlit as st
 
 _THEME_CSS = """
 <style>
-/* ===== Neumorphism (Soft UI) 令牌 · 2026-05-21 最小改造 ·
-   同色冷灰背景 + 双向阴影(左上白光/右下冷灰)定义凸起/凹陷 · 保留 SMIKIE 红做强调 */
-:root {
-    --neu-bg: #E0E5EC;
-    --neu-out: 9px 9px 16px rgba(163,177,198,0.6), -9px -9px 16px rgba(255,255,255,0.5);
-    --neu-out-hover: 12px 12px 20px rgba(163,177,198,0.7), -12px -12px 20px rgba(255,255,255,0.6);
-    --neu-out-sm: 5px 5px 10px rgba(163,177,198,0.6), -5px -5px 10px rgba(255,255,255,0.5);
-    --neu-in: inset 6px 6px 10px rgba(163,177,198,0.6), inset -6px -6px 10px rgba(255,255,255,0.5);
-    --neu-in-deep: inset 10px 10px 20px rgba(163,177,198,0.7), inset -10px -10px 20px rgba(255,255,255,0.6);
-}
-
 /* ===== 系统字体（Boss 2026-05-21 选：按系统语言自动选 CJK 字形）=====
    system-ui: Mac→苹方/ヒラギノ · Windows(元川)→微软雅黑/游ゴシック，OS 按 locale 自适应中日汉字字形
    不再加载网络字体（去掉旧 Inter / Noto Sans JP @import）*/
@@ -40,14 +29,13 @@ html, body {
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
                  'Helvetica Neue', Arial, sans-serif;
     font-size: 21px;  /* 基础字体（rem 連動で全体拡大）*/
-    background: #E0E5EC;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
 
-/* ===== App 背景（neumorphic 同色冷灰）===== */
+/* ===== App 背景 ===== */
 [data-testid="stAppViewContainer"] {
-    background: var(--neu-bg);
+    background: #f7f4ef;
 }
 /* 顶部 header 完全透明，不再遮住 h1 标题 */
 [data-testid="stHeader"] {
@@ -80,18 +68,18 @@ h3 {
 h4 { font-size: 22px !important; font-weight: 600 !important; color: #1d1d1d !important; }
 p, span, label, div { color: #1d1d1d; }
 
-/* ===== KPI Card — neumorphic 凸起卡 ===== */
+/* ===== KPI Card — 苹果风纯白卡 ===== */
 [data-testid="stMetric"] {
-    background: var(--neu-bg);
-    border: none;
-    border-radius: 24px;
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 18px;
     padding: 1.25rem 1.5rem;
-    box-shadow: var(--neu-out);
-    transition: transform 0.3s ease-out, box-shadow 0.3s ease-out;
+    box-shadow: none;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 [data-testid="stMetric"]:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--neu-out-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
 }
 [data-testid="stMetricLabel"] {
     color: #6e6e73 !important;
@@ -113,8 +101,10 @@ p, span, label, div { color: #1d1d1d; }
 
 /* ===== Sidebar ===== */
 [data-testid="stSidebar"] {
-    background: var(--neu-bg);
-    border-right: none;
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-right: 1px solid rgba(0, 0, 0, 0.06);
 }
 [data-testid="stSidebar"] h1,
 [data-testid="stSidebar"] h2,
@@ -129,13 +119,12 @@ p, span, label, div { color: #1d1d1d; }
     font-weight: 600 !important;
 }
 
-/* ===== Dataframe — neumorphic 凸起外壳（内部 canvas 为框架限制保持原样）===== */
+/* ===== Dataframe ===== */
 [data-testid="stDataFrame"] {
-    border: none;
-    border-radius: 16px;
+    border: 1px solid #d2d2d7;
+    border-radius: 14px;
     overflow: hidden;
-    background: var(--neu-bg);
-    box-shadow: var(--neu-out-sm);
+    background: #ffffff;
     font-size: 16px;
 }
 
@@ -170,7 +159,7 @@ p, span, label, div { color: #1d1d1d; }
     height: 2px !important;
 }
 
-/* ===== Buttons — neumorphic 凸起 pill（primary = SMIKIE 红强调）===== */
+/* ===== Buttons — Apple pill ===== */
 [data-testid="stButton"] > button,
 [data-testid="stDownloadButton"] > button,
 [data-testid="stFormSubmitButton"] > button {
@@ -178,36 +167,29 @@ p, span, label, div { color: #1d1d1d; }
     font-weight: 500 !important;
     font-size: 14px !important;
     padding: 0.5rem 1.25rem !important;
-    border: none !important;
-    background: var(--neu-bg) !important;
+    border: 1px solid #d2d2d7 !important;
+    background: #ffffff !important;
     color: #1d1d1d !important;
-    box-shadow: var(--neu-out-sm) !important;
-    transition: transform 0.3s ease-out, box-shadow 0.3s ease-out !important;
+    box-shadow: none !important;
+    transition: background 0.15s ease;
 }
 [data-testid="stButton"] > button:hover,
 [data-testid="stDownloadButton"] > button:hover,
 [data-testid="stFormSubmitButton"] > button:hover {
-    transform: translateY(-1px);
-    box-shadow: var(--neu-out) !important;
-}
-[data-testid="stButton"] > button:active,
-[data-testid="stDownloadButton"] > button:active,
-[data-testid="stFormSubmitButton"] > button:active {
-    transform: translateY(0.5px);
-    box-shadow: var(--neu-in) !important;
+    background: #f7f4ef !important;
+    border-color: #1d1d1d !important;
 }
 [data-testid="stButton"] > button[kind="primary"],
 [data-testid="stFormSubmitButton"] > button[kind="primary"] {
-    background: #d6000f !important;
-    color: #ffffff !important;
+    background: #dbeafe !important;
+    color: #0058b0 !important;
+    border-color: #0071e3 !important;
     font-weight: 600 !important;
-    box-shadow: var(--neu-out-sm) !important;
 }
 [data-testid="stButton"] > button[kind="primary"]:hover,
 [data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
-    background: #b8000d !important;
-    transform: translateY(-1px);
-    box-shadow: var(--neu-out) !important;
+    background: #c5dbfb !important;
+    border-color: #0058b0 !important;
 }
 
 /* ===== page_link · 统一尺寸/间距,active 用统一深色 pill ===== */
@@ -251,19 +233,19 @@ p, span, label, div { color: #1d1d1d; }
     color: #a8000c !important;
 }
 
-/* ===== 输入框 / 选择框：neumorphic 凹陷井 ===== */
+/* ===== 输入框 / 选择框：圆角 + hairline ===== */
 [data-baseweb="input"] input,
 [data-baseweb="select"] > div,
 [data-baseweb="textarea"] textarea {
-    border-radius: 16px !important;
-    border: none !important;
-    background: var(--neu-bg) !important;
-    box-shadow: var(--neu-in) !important;
+    border-radius: 12px !important;
+    border-color: #d2d2d7 !important;
+    background: #ffffff !important;
     font-size: 14px !important;
 }
 [data-baseweb="input"]:focus-within input,
 [data-baseweb="select"]:focus-within > div {
-    box-shadow: var(--neu-in-deep), 0 0 0 2px rgba(214, 0, 15, 0.4) !important;
+    border-color: #d6000f !important;
+    box-shadow: 0 0 0 3px rgba(214, 0, 15, 0.15) !important;
 }
 /* 下拉菜单文字放大：selectbox/multiselect 选中值 + 展开选项（默认 14px 偏小）*/
 [data-baseweb="select"] > div,
@@ -293,24 +275,23 @@ p, span, label, div { color: #1d1d1d; }
 [data-baseweb="tag"] span { color: #1d1d1d !important; }
 [data-baseweb="tag"] svg { fill: #6e6e73 !important; }
 
-/* ===== Expander — neumorphic 凸起卡 ===== */
+/* ===== Expander — 圆角卡 ===== */
 [data-testid="stExpander"] {
-    border: none !important;
-    border-radius: 16px !important;
-    background: var(--neu-bg) !important;
-    box-shadow: var(--neu-out-sm) !important;
+    border: 1px solid #d2d2d7 !important;
+    border-radius: 14px !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
 }
 [data-testid="stExpander"] summary {
     font-weight: 500 !important;
     color: #1d1d1d !important;
 }
 
-/* ===== Alert / Info / Warning — neumorphic 凹陷信息条 ===== */
+/* ===== Alert / Info / Warning ===== */
 [data-testid="stAlert"] {
-    border-radius: 16px !important;
-    border: none !important;
-    background: var(--neu-bg) !important;
-    box-shadow: var(--neu-in) !important;
+    border-radius: 14px !important;
+    border: 1px solid #d2d2d7 !important;
+    background: #ffffff !important;
 }
 
 /* ===== Divider — 极淡 ===== */
