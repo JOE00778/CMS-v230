@@ -283,7 +283,7 @@ with tab_day:
     line_chart = (
         alt.layer(_money, _l_mg, _rule)
         .resolve_scale(y="independent", color="shared")
-        .properties(height=320)
+        .properties(width="container", height=320)
         .configure_legend(orient="top", title=None)
     )
     st.altair_chart(line_chart, use_container_width=True)
@@ -294,7 +294,7 @@ with tab_day:
         x=_x,
         y=alt.Y("qty:Q", title=qty_lbl),
         tooltip=[_date_tip, alt.Tooltip("qty:Q", title=qty_lbl, format=",.0f")],
-    ).properties(height=220)
+    ).properties(width="container", height=220)
     st.altair_chart(bar_chart, use_container_width=True)
 
     # 明细表
