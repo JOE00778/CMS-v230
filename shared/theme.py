@@ -14,9 +14,33 @@ import streamlit as st
 
 _THEME_CSS = """
 <style>
-/* ===== 字体栈（系统自适应，不连外网）===== */
+/* ===== 字体加载（本地打包·不连外网）=====
+   Inter→拉丁/数字 · Noto Sans SC→中文 · Noto Sans JP→日文
+   文件在 CMS/static/fonts/，经 Streamlit 静态服务暴露于 app/static/ */
+@font-face { font-family:'Inter'; src:url('app/static/fonts/Inter-400.woff2') format('woff2'); font-weight:400; font-style:normal; font-display:swap; }
+@font-face { font-family:'Inter'; src:url('app/static/fonts/Inter-500.woff2') format('woff2'); font-weight:500; font-style:normal; font-display:swap; }
+@font-face { font-family:'Inter'; src:url('app/static/fonts/Inter-600.woff2') format('woff2'); font-weight:600; font-style:normal; font-display:swap; }
+@font-face { font-family:'Inter'; src:url('app/static/fonts/Inter-700.woff2') format('woff2'); font-weight:700; font-style:normal; font-display:swap; }
+@font-face { font-family:'Noto Sans SC'; src:url('app/static/fonts/NotoSansSC-400.woff2') format('woff2'); font-weight:400; font-style:normal; font-display:swap; }
+@font-face { font-family:'Noto Sans SC'; src:url('app/static/fonts/NotoSansSC-700.woff2') format('woff2'); font-weight:700; font-style:normal; font-display:swap; }
+@font-face { font-family:'Noto Sans JP'; src:url('app/static/fonts/NotoSansJP-400.woff2') format('woff2'); font-weight:400; font-style:normal; font-display:swap; }
+@font-face { font-family:'Noto Sans JP'; src:url('app/static/fonts/NotoSansJP-700.woff2') format('woff2'); font-weight:700; font-style:normal; font-display:swap; }
+
+/* ===== 字体栈（按字符自动选字：拉丁→Inter，中文→Noto SC，日文→Noto JP，缺则落系统）
+   注意：排除 Material Symbols 图标元素，否则覆盖图标字体会露出 arrow_drop_down 等 ligature 文本 */
+html, body,
+[class*="st-"]:not([class*="material-symbols"]),
+[class*="css-"]:not([class*="material-symbols"]),
+[data-testid="stPageLink"] a, [data-testid="stPageLink"] a p, [data-testid="stPageLink"] a span,
+button, input, textarea, select {
+  font-family: 'Inter','Noto Sans SC','Noto Sans JP','PingFang SC','Hiragino Sans','Microsoft YaHei','Yu Gothic',system-ui,-apple-system,sans-serif !important;
+}
+/* 图标字体保护：Material Symbols 必须保留自身字体（双保险）*/
+[class*="material-symbols"], span[class*="material-symbols"],
+[data-testid="stIconMaterial"], .material-icons {
+  font-family: 'Material Symbols Rounded','Material Symbols Outlined','Material Symbols Sharp','Material Icons' !important;
+}
 html, body {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif !important;
   font-size: 21px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
