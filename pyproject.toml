@@ -9,6 +9,7 @@ dependencies = [
     "plotly>=5.20",
     "google-genai>=0.3",
     "requests>=2.31",
+    "streamlit-aggrid>=1.2.1.post2",
 ]
 
 [project.optional-dependencies]

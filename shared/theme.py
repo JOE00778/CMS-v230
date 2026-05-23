@@ -422,4 +422,28 @@ def html_table(df, *, num_from_col: int = 1) -> None:
     )
 
 
-__all__ = ["inject_theme", "html_table"]
+def ag_table(df, *, page_size: int | None = None, fit: bool = True) -> None:
+    """AgGrid 满宽表格（列 flex 自动填满 + 可排序/调列宽 + Modern White 样式·方案4）。
+
+    - 值可为已格式化字符串（如 _disp 输出）或原始数值。
+    - page_size=None：小表自适应高度（domLayout=autoHeight，无内部滚动）。
+    - page_size=N：大表分页（每页 N 行 + 固定高度），适合千行级表（性能优于 HTML 表）。
+    - 样式由 theme.py 的 .ag-* 块统一接管（融入 Modern White）。
+    """
+    from st_aggrid import AgGrid, GridOptionsBuilder
+
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(flex=1, resizable=True, sortable=True, filter=False)
+    if page_size:
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size)
+        opts = gb.build()
+        AgGrid(df, gridOptions=opts, theme="streamlit",
+               fit_columns_on_grid_load=fit, height=560, allow_unsafe_jscode=False)
+    else:
+        opts = gb.build()
+        opts["domLayout"] = "autoHeight"
+        AgGrid(df, gridOptions=opts, theme="streamlit",
+               fit_columns_on_grid_load=fit, allow_unsafe_jscode=False)
+
+
+__all__ = ["inject_theme", "html_table", "ag_table"]

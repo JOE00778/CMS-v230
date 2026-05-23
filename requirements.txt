@@ -1,5 +1,6 @@
 # bump: 2.3.6 — asean_daily UPC fix + version banner + insert=0 raise
 streamlit>=1.32
+streamlit-aggrid>=1.2.1  # 方案4：表格用 AgGrid（列填满+排序+分页）· 新依赖，元川需 rebuild
 pandas>=2.2
 plotly>=5.20
 openpyxl>=3.1
