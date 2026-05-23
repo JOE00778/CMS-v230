@@ -27,7 +27,7 @@ from shared.owners import OWNER_EXCLUDED, add_owner_column
 
 st.set_page_config(page_title=t("店铺毛利"), page_icon="🏪", layout="wide")
 from shared.auth import require_password
-from shared.theme import inject_theme, html_table
+from shared.theme import inject_theme
 require_password()
 inject_theme()
 lang_selector()
@@ -300,7 +300,7 @@ with tab_day:
     # 明细表
     day_cols = ("sale_date", "qty", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "n_shop", "n_sku")
-    html_table(_disp(daily, day_cols))
+    st.dataframe(_disp(daily, day_cols), width="stretch", hide_index=True)
 
 # ============================================================
 # Tab：担当者別（日本店=対象外 は除外）

@@ -144,7 +144,7 @@ p, span, label, div { color: #475569 !important; }
 [data-testid="stPlotlyChart"],
 .chart-container {
   background: #FFFFFF !important;
-  padding: 20px !important;
+  padding: 16px 6px !important;  /* 横向内边距收窄，让图表填满、右边与表格对齐 */
   border-radius: 16px !important;
   border: 1px solid #E2E8F0 !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
