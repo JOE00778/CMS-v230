@@ -144,10 +144,19 @@ p, span, label, div { color: #475569 !important; }
 [data-testid="stPlotlyChart"],
 .chart-container {
   background: #FFFFFF !important;
-  padding: 16px 6px !important;  /* 横向内边距收窄，让图表填满、右边与表格对齐 */
+  padding: 16px 6px !important;
   border-radius: 16px !important;
   border: 1px solid #E2E8F0 !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+  display: flex !important;          /* 绘图内容在卡片内水平居中（填不满时两侧留白对称）*/
+  flex-direction: column !important;
+  align-items: center !important;
+}
+/* 图表内部各层（vega-embed / svg）也居中兜底 */
+[data-testid="stVegaLiteChart"] > *,
+[data-testid="stPlotlyChart"] > * {
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 [data-testid="stVegaLiteChart"] text,
 [data-testid="stPlotlyChart"] text {
