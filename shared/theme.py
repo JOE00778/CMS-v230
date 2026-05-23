@@ -288,6 +288,11 @@ ul[role="listbox"] li,
   font-size: 14px !important;
 }
 
+/* ===== 页面说明 caption（标题下灰字 · 全站 st.caption · 比默认小 1px）===== */
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {
+  font-size: 13px !important;
+}
+
 /* ===== Progress Bar ===== */
 [data-testid="stProgress"] > div > div > div {
   background: linear-gradient(90deg, #4F46E5, #0EA5E9) !important;
