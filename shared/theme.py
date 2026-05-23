@@ -429,8 +429,13 @@ def ag_table(df, *, page_size: int | None = None, fit: bool = True) -> None:
     - page_size=None：小表自适应高度（domLayout=autoHeight，无内部滚动）。
     - page_size=N：大表分页（每页 N 行 + 固定高度），适合千行级表（性能优于 HTML 表）。
     - 样式由 theme.py 的 .ag-* 块统一接管（融入 Modern White）。
+    - 若 streamlit-aggrid 未安装（如元川未 rebuild）→ 自动回退 html_table，绝不崩页。
     """
-    from st_aggrid import AgGrid, GridOptionsBuilder
+    try:
+        from st_aggrid import AgGrid, GridOptionsBuilder
+    except ImportError:
+        html_table(df)
+        return
 
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(flex=1, resizable=True, sortable=True, filter=False)
