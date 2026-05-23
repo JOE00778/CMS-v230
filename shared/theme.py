@@ -137,8 +137,6 @@ p, span, label, div { color: #475569 !important; }
   background: #FFFFFF !important;
   border: 1px solid #E2E8F0 !important;
   border-radius: 16px !important;
-  overflow: hidden !important;
-  width: 100% !important;  /* 强制满宽：use_container_width 在 1.57 没撑满，右边缘与图表对齐 */
 }
 
 /* ===== 图表容器 ===== */
