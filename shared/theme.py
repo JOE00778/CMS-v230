@@ -349,7 +349,9 @@ ul[role="listbox"] li,
   padding-bottom: 3rem !important;
   padding-left: 1.5rem !important;
   padding-right: 1.5rem !important;
-  max-width: 1760px !important;  /* 上限放宽；真正变宽靠窗口加宽+侧栏收窄+留白收窄 */
+  max-width: 1400px !important;   /* 固定窄宽 · 居中：表格/图表卡片都在此宽度内，右边自然对齐 */
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 /* ===== Scrollbar ===== */
