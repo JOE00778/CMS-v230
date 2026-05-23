@@ -300,7 +300,7 @@ with tab_day:
     # 明细表
     day_cols = ("sale_date", "qty", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "n_shop", "n_sku")
-    st.dataframe(_disp(daily, day_cols), use_container_width=True, hide_index=True)
+    st.dataframe(_disp(daily, day_cols), width="stretch", hide_index=True)
 
 # ============================================================
 # Tab：担当者別（日本店=対象外 は除外）
@@ -325,7 +325,7 @@ with tab_owner:
         g = g.sort_values("gross_profit", ascending=False)
         owner_cols = ("owner", "qty", "revenue", "defined_cost",
                       "gross_profit", "gross_margin", "n_shop", "n_sku")
-        st.dataframe(_disp(g, owner_cols), use_container_width=True, hide_index=True)
+        st.dataframe(_disp(g, owner_cols), width="stretch", hide_index=True)
         chart = g.set_index("owner")[["gross_profit"]].copy()
         chart.columns = [_col("gross_profit")]
         st.bar_chart(chart, horizontal=True, use_container_width=True)
@@ -359,7 +359,7 @@ with tab_owner:
             sg = sg.sort_values("gross_profit", ascending=False)
             sg_cols = ("shop", "qty", "revenue", "defined_cost",
                        "gross_profit", "gross_margin", "n_sku")
-            st.dataframe(_disp(sg, sg_cols), use_container_width=True, hide_index=True)
+            st.dataframe(_disp(sg, sg_cols), width="stretch", hide_index=True)
 
 # ============================================================
 # Tab 1：店舗別
@@ -379,7 +379,7 @@ with tab_shop:
 
     shop_cols = ("shop", "owner", "qty", "revenue", "defined_cost",
                  "gross_profit", "gross_margin", "n_sku")
-    st.dataframe(_disp(g, shop_cols), use_container_width=True, hide_index=True)
+    st.dataframe(_disp(g, shop_cols), width="stretch", hide_index=True)
     chart = g.set_index("shop")[["gross_profit"]].copy()
     chart.columns = [_col("gross_profit")]
     st.bar_chart(chart, horizontal=True, use_container_width=True)
@@ -403,7 +403,7 @@ with tab_market:
 
     mkt_cols = ("market", "qty", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "n_shop", "n_sku")
-    st.dataframe(_disp(g, mkt_cols), use_container_width=True, hide_index=True)
+    st.dataframe(_disp(g, mkt_cols), width="stretch", hide_index=True)
     chart = g.set_index("market")[["gross_profit"]].copy()
     chart.columns = [_col("gross_profit")]
     st.bar_chart(chart, horizontal=True, use_container_width=True)
@@ -426,7 +426,7 @@ with tab_sku:
 
     sku_cols = ("display_name", "maker", "item_rank", "qty",
                 "revenue", "gross_profit", "gross_margin")
-    st.dataframe(_disp(g, sku_cols), use_container_width=True, hide_index=True)
+    st.dataframe(_disp(g, sku_cols), width="stretch", hide_index=True)
 
 st.divider()
 st.caption(
