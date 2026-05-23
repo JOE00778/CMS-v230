@@ -161,11 +161,11 @@ p, span, label, div { color: #475569 !important; }
 [data-baseweb="tab"] {
   color: #94A3B8 !important;
   font-weight: 700 !important;
-  font-size: 13px !important;
+  font-size: 14px !important;
   padding: 0.5rem 0.75rem !important;
   background: transparent !important;
 }
-[data-baseweb="tab"] p { font-size: 13px !important; font-weight: 700 !important; }
+[data-baseweb="tab"] p { font-size: 14px !important; font-weight: 700 !important; }
 [data-baseweb="tab"][aria-selected="true"] {
   color: #4F46E5 !important;
   border-bottom: 2px solid #4F46E5 !important;
@@ -232,7 +232,7 @@ p, span, label, div { color: #475569 !important; }
 }
 [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
 [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
-  font-size: 16px !important;
+  font-size: 17px !important;
   font-weight: 500 !important;
 }
 /* Active State */
