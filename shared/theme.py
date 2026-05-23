@@ -6,7 +6,7 @@
 - Inter + Noto Sans SC/JP 字体栈（本地打包，不连外网），21px 基础字号
 - 严格遵循 CMS 主题格式规范（L1 config.toml + L2 本文件），保留 .badge-* 与 .density-* 契约
 
-视觉回滚（满意版基线：max-width 1440 + KPI 28px + 导航 15px + tab 500）：
+视觉回滚（满意版基线：max-width 1440 + KPI 28px + 导航 16px + tab 500）：
 保留 Inter/Noto 字体 + 图标保护 + tabular-nums + html_table 等正面改进。
 zoom：满意版是 system-ui + 0.95；改用 Inter 后字体视觉偏大 ~8-10%，故 zoom 降至 0.88 做全局
 等比补偿（0.95 × (1-0.08) ≈ 0.87 → 取 0.88），字号数值保持满意版原值，整体比例与满意版一致。
@@ -239,7 +239,7 @@ p, span, label, div { color: #475569 !important; }
 }
 [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
 [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
-  font-size: 15px !important;
+  font-size: 16px !important;
   font-weight: 500 !important;
 }
 /* Active State */
