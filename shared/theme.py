@@ -360,6 +360,15 @@ ul[role="listbox"] li,
 ::-webkit-scrollbar-thumb { background: #CBD5E1 !important; border-radius: 20px !important; }
 ::-webkit-scrollbar-thumb:hover { background: #94A3B8 !important; }
 
+/* ===== HTML 满宽表格（html_table 助手 · 列自动拉伸填满，右边缘与图表/页面对齐）===== */
+.cms-table-wrap { width:100% !important; overflow-x:auto; border:1px solid #E2E8F0; border-radius:16px; background:#FFFFFF; }
+.cms-table { width:100% !important; border-collapse:collapse; font-size:14px; table-layout:auto; }
+.cms-table thead th { background:#F8FAFC; color:#64748B; font-weight:600; font-size:12px; text-align:left; padding:10px 14px; border-bottom:1px solid #E2E8F0; white-space:nowrap; }
+.cms-table tbody td { padding:9px 14px; color:#0F172A; border-bottom:1px solid #F1F5F9; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.cms-table tbody tr:last-child td { border-bottom:none; }
+.cms-table tbody tr:hover td { background:#F8FAFC; }
+.cms-table td.num, .cms-table th.num { text-align:right; }
+
 /* ===== Zoom ===== */
 .stApp { zoom: 0.90 !important; }
 </style>
@@ -371,4 +380,34 @@ def inject_theme() -> None:
     st.markdown(_THEME_CSS, unsafe_allow_html=True)
 
 
-__all__ = ["inject_theme"]
+def html_table(df, *, num_from_col: int = 1) -> None:
+    """渲染满宽 HTML 表格（列自动拉伸填满容器，右边缘与图表/页面对齐）。
+
+    - 值需已格式化为字符串（如 _disp() 的输出）。
+    - 第 num_from_col 列起按数字列右对齐（默认第 1 列起；第 0 列通常是名称/日期，左对齐）。
+    - 适合中小表（≤ 数百行）；超大表（千行级）仍用 st.dataframe 以保性能。
+    """
+    import html as _html
+
+    cols = list(df.columns)
+    head = "".join(
+        (f'<th class="num">{_html.escape(str(c))}</th>' if i >= num_from_col
+         else f'<th>{_html.escape(str(c))}</th>')
+        for i, c in enumerate(cols)
+    )
+    body = []
+    for _, row in df.iterrows():
+        tds = "".join(
+            (f'<td class="num">{_html.escape(str(v))}</td>' if i >= num_from_col
+             else f'<td>{_html.escape(str(v))}</td>')
+            for i, v in enumerate(row)
+        )
+        body.append(f"<tr>{tds}</tr>")
+    st.markdown(
+        '<div class="cms-table-wrap"><table class="cms-table">'
+        f'<thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
+
+
+__all__ = ["inject_theme", "html_table"]
