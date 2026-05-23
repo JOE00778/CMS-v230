@@ -1748,7 +1748,7 @@ def lang_selector():
 }
 [data-testid="stSidebar"] .st-key-lang_seg [data-baseweb="button-group"] button {
     padding: 6px 10px !important;
-    font-size: 12.5px !important;
+    font-size: 12px !important;
     border-radius: 980px !important;
     background: transparent !important;
     border: none !important;
@@ -1758,6 +1758,12 @@ def lang_selector():
     width: 100% !important;
     margin: 0 1px !important;
     box-sizing: border-box !important;
+}
+/* 文字在子元素里·强制小字号(否则继承 21px 显得大) */
+[data-testid="stSidebar"] .st-key-lang_seg [data-baseweb="button-group"] button p,
+[data-testid="stSidebar"] .st-key-lang_seg [data-baseweb="button-group"] button span,
+[data-testid="stSidebar"] .st-key-lang_seg [data-baseweb="button-group"] button div {
+    font-size: 12px !important;
 }
 [data-testid="stSidebar"] .st-key-lang_seg [data-baseweb="button-group"] button[aria-pressed="true"],
 [data-testid="stSidebar"] .st-key-lang_seg [data-baseweb="button-group"] button[kind="primary"],

@@ -83,9 +83,11 @@ p, span, label, div { color: #475569 !important; }
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08) !important;
   border-color: #4F46E5 !important;
 }
-[data-testid="stMetricLabel"] {
+[data-testid="stMetricLabel"],
+[data-testid="stMetricLabel"] p,
+[data-testid="stMetricLabel"] div {
   color: #64748B !important;
-  font-size: 13px !important;
+  font-size: 12px !important;  /* 卡片内标签调小(数字 stMetricValue 保持 24px) */
   font-weight: 500 !important;
   text-transform: none !important;
 }
@@ -159,10 +161,11 @@ p, span, label, div { color: #475569 !important; }
 [data-baseweb="tab"] {
   color: #94A3B8 !important;
   font-weight: 700 !important;
-  font-size: 14px !important;
+  font-size: 13px !important;
   padding: 0.5rem 0.75rem !important;
   background: transparent !important;
 }
+[data-baseweb="tab"] p { font-size: 13px !important; font-weight: 700 !important; }
 [data-baseweb="tab"][aria-selected="true"] {
   color: #4F46E5 !important;
   border-bottom: 2px solid #4F46E5 !important;
@@ -229,7 +232,7 @@ p, span, label, div { color: #475569 !important; }
 }
 [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
 [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
-  font-size: 14px !important;
+  font-size: 16px !important;
   font-weight: 500 !important;
 }
 /* Active State */
@@ -258,6 +261,10 @@ p, span, label, div { color: #475569 !important; }
   border-color: #4F46E5 !important;
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15) !important;
 }
+/* 输入框/下拉框文字上下居中 */
+[data-baseweb="select"] > div { display: flex !important; align-items: center !important; }
+[data-baseweb="input"] { display: flex !important; align-items: center !important; }
+[data-baseweb="input"] input { height: 100% !important; }
 /* 表单文字统一 14px：下拉框显示值/菜单选项 + 输入框/文本域(含 placeholder) */
 [data-baseweb="select"] div,
 [data-baseweb="select"] span,
