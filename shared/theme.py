@@ -148,6 +148,7 @@ p, span, label, div { color: #475569 !important; }
   border-radius: 16px !important;
   border: 1px solid #E2E8F0 !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+  text-align: center !important;  /* 安全居中：只居中 inline 级图表，不改宽度·不裁切 */
 }
 [data-testid="stVegaLiteChart"] text,
 [data-testid="stPlotlyChart"] text {
