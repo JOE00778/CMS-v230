@@ -158,7 +158,7 @@ p, span, label, div { color: #475569 !important; }
 }
 [data-baseweb="tab"] {
   color: #94A3B8 !important;
-  font-weight: 500 !important;
+  font-weight: 700 !important;
   font-size: 14px !important;
   padding: 0.5rem 0.75rem !important;
   background: transparent !important;
@@ -272,6 +272,12 @@ ul[role="listbox"] li,
 [data-baseweb="input"] input::placeholder,
 [data-baseweb="textarea"] textarea::placeholder {
   font-size: 14px !important;
+}
+
+/* ===== 页面说明 caption（标题下灰字说明 · 全站 st.caption）===== */
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] p {
+  font-size: 12px !important;
 }
 
 /* ===== Progress Bar ===== */
