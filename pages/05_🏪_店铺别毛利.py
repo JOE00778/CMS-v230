@@ -286,7 +286,7 @@ with tab_day:
         .properties(width="container", height=320)
         .configure_legend(orient="top", title=None)
     )
-    st.altair_chart(line_chart, use_container_width=True)
+    st.altair_chart(line_chart)
 
     # 销量条形图
     qty_lbl = _col("qty")
@@ -295,7 +295,7 @@ with tab_day:
         y=alt.Y("qty:Q", title=qty_lbl),
         tooltip=[_date_tip, alt.Tooltip("qty:Q", title=qty_lbl, format=",.0f")],
     ).properties(width="container", height=220)
-    st.altair_chart(bar_chart, use_container_width=True)
+    st.altair_chart(bar_chart)
 
     # 明细表
     day_cols = ("sale_date", "qty", "revenue", "defined_cost",
