@@ -258,10 +258,13 @@ p, span, label, div { color: #475569 !important; }
   border-color: #4F46E5 !important;
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15) !important;
 }
-/* Dropdown text */
+/* Dropdown text — 框内显示值(div/span)与展开菜单选项统一 14px（修「框内 vs 菜单」大小不一致）*/
+[data-baseweb="select"] div,
 [data-baseweb="select"] span,
+[data-baseweb="popover"] li,
 [data-baseweb="popover"] [role="option"],
-[data-baseweb="menu"] li {
+[data-baseweb="menu"] li,
+ul[role="listbox"] li {
   font-size: 14px !important;
 }
 
