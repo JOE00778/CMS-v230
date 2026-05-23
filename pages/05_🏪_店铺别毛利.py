@@ -300,7 +300,7 @@ with tab_day:
     # 明细表
     day_cols = ("sale_date", "qty", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "n_shop", "n_sku")
-    ag_table(_disp(daily, day_cols))   # 方案4 样例：AgGrid 满宽+可排序
+    html_table(_disp(daily, day_cols))
 
 # ============================================================
 # Tab：担当者別（日本店=対象外 は除外）
