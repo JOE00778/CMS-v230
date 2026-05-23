@@ -365,19 +365,6 @@ ul[role="listbox"] li,
 .cms-table tbody tr:hover td { background:#F8FAFC; }
 .cms-table td.num, .cms-table th.num { text-align:right; }
 
-/* ===== AgGrid 表格样式（方案4 · 融入 Modern White 主题）=====
-   ⚠️ 需安装 streamlit-aggrid 且页面改用 AgGrid 才生效；当前仅样式预置（无 AgGrid 时此块惰性无害）。 */
-.ag-root-wrapper { border:1px solid #E2E8F0 !important; border-radius:16px !important; overflow:hidden !important; background:#FFFFFF !important; }
-.ag-header { background:#F8FAFC !important; border-bottom:1px solid #E2E8F0 !important; }
-.ag-header-cell-label { color:#64748B !important; font-weight:600 !important; font-size:12px !important; font-family:inherit !important; }
-.ag-cell { color:#0F172A !important; font-size:14px !important; font-family:inherit !important; font-variant-numeric:tabular-nums !important; }
-.ag-row:hover .ag-cell { background:#F8FAFC !important; }
-.ag-row { border-bottom:1px solid #F1F5F9 !important; }
-.ag-paging-panel { color:#64748B !important; font-size:12px !important; border-top:1px solid #E2E8F0 !important; }
-.ag-header-cell-filtered { color:#4F46E5 !important; }
-.ag-sort-indicator-icon { color:#4F46E5 !important; }
-.ag-cell-focus:not(.ag-cell-range-selected):focus-within { border-color:#4F46E5 !important; }
-
 /* ===== Zoom =====
    满意版用 system-ui + zoom 0.95。改用 Inter 后字体视觉偏大 ~8-10%（x-height 更高、笔画更饱满），
    故 zoom 降至 0.88 做全局等比补偿（0.95 × (1-0.08) ≈ 0.87 → 取 0.88），
@@ -422,33 +409,4 @@ def html_table(df, *, num_from_col: int = 1) -> None:
     )
 
 
-def ag_table(df, *, page_size: int | None = None, fit: bool = True) -> None:
-    """AgGrid 满宽表格（列 flex 自动填满 + 可排序/调列宽 + Modern White 样式·方案4）。
-
-    - 值可为已格式化字符串（如 _disp 输出）或原始数值。
-    - page_size=None：小表自适应高度（domLayout=autoHeight，无内部滚动）。
-    - page_size=N：大表分页（每页 N 行 + 固定高度），适合千行级表（性能优于 HTML 表）。
-    - 样式由 theme.py 的 .ag-* 块统一接管（融入 Modern White）。
-    - 若 streamlit-aggrid 未安装（如元川未 rebuild）→ 自动回退 html_table，绝不崩页。
-    """
-    try:
-        from st_aggrid import AgGrid, GridOptionsBuilder
-    except ImportError:
-        html_table(df)
-        return
-
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(flex=1, resizable=True, sortable=True, filter=False)
-    if page_size:
-        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size)
-        opts = gb.build()
-        AgGrid(df, gridOptions=opts, theme="streamlit",
-               fit_columns_on_grid_load=fit, height=560, allow_unsafe_jscode=False)
-    else:
-        opts = gb.build()
-        opts["domLayout"] = "autoHeight"
-        AgGrid(df, gridOptions=opts, theme="streamlit",
-               fit_columns_on_grid_load=fit, allow_unsafe_jscode=False)
-
-
-__all__ = ["inject_theme", "html_table", "ag_table"]
+__all__ = ["inject_theme", "html_table"]

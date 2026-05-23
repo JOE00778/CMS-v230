@@ -27,7 +27,7 @@ from shared.owners import OWNER_EXCLUDED, add_owner_column
 
 st.set_page_config(page_title=t("店铺毛利"), page_icon="🏪", layout="wide")
 from shared.auth import require_password
-from shared.theme import inject_theme, html_table, ag_table
+from shared.theme import inject_theme, html_table
 require_password()
 inject_theme()
 lang_selector()
