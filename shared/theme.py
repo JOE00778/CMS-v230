@@ -91,12 +91,14 @@ p, span, label, div { color: #475569 !important; }
 }
 [data-testid="stMetricValue"] {
   color: #0F172A !important;
-  font-size: 20px !important;
+  font-size: 24px !important;  /* 配 white-space:normal 超长数字换行不截断 */
   font-weight: 700 !important;
   letter-spacing: -0.01em !important;
   white-space: normal !important;
   overflow: visible !important;
   line-height: 1.25 !important;
+  font-variant-numeric: tabular-nums !important;  /* 等宽数字：¥金额对齐不跳动(Data-Dense Dashboard 基准) */
+  font-feature-settings: "tnum" 1 !important;
 }
 [data-testid="stMetricValue"] > div {
   white-space: normal !important;
@@ -106,6 +108,7 @@ p, span, label, div { color: #475569 !important; }
 [data-testid="stMetricDelta"] {
   font-size: 13px !important;
   font-weight: 600 !important;
+  font-variant-numeric: tabular-nums !important;
 }
 
 /* ===== Sidebar ===== */
