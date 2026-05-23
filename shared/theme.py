@@ -345,7 +345,7 @@ ul[role="listbox"] li,
 [data-testid="stMainBlockContainer"], .main .block-container {
   padding-top: 1.5rem !important;
   padding-bottom: 3rem !important;
-  max-width: 1440px !important;
+  max-width: 1760px !important;  /* 整页内容上限放宽(满宽表格随之变宽)；要全屏改 100% */
 }
 
 /* ===== Scrollbar ===== */
