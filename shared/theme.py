@@ -317,6 +317,10 @@ ul[role="listbox"] li,
   border: 1px solid #E2E8F0 !important;
   background: #FFFFFF !important;
 }
+/* Expander 标题文字 13px（只命中文字 p，不动展开箭头图标）*/
+[data-testid="stExpander"] summary p {
+  font-size: 13px !important;
+}
 
 /* ===== CMS 自定义类（强制契约）===== */
 .badge-A, .badge-B, .badge-C, .badge-NEW, .badge-RED {
