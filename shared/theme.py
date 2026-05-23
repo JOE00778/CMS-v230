@@ -6,9 +6,10 @@
 - Inter + Noto Sans SC/JP 字体栈（本地打包，不连外网），21px 基础字号
 - 严格遵循 CMS 主题格式规范（L1 config.toml + L2 本文件），保留 .badge-* 与 .density-* 契约
 
-视觉回滚（对齐满意版基线：zoom 0.95 + max-width 1440 + KPI 28px + 导航 14px + tab 500）：
-保留 Inter/Noto 字体 + 图标保护 + tabular-nums + html_table 等正面改进；
-字号/zoom/布局参数回到对齐满意版（撤销固定居中、表格/图表对齐、caption/expander 等微调）。
+视觉回滚（满意版基线：max-width 1440 + KPI 28px + 导航 14px + tab 500）：
+保留 Inter/Noto 字体 + 图标保护 + tabular-nums + html_table 等正面改进。
+zoom：满意版是 system-ui + 0.95；改用 Inter 后字体视觉偏大 ~8-10%，故 zoom 降至 0.88 做全局
+等比补偿（0.95 × (1-0.08) ≈ 0.87 → 取 0.88），字号数值保持满意版原值，整体比例与满意版一致。
 
 用法：每个 page 顶部、require_password() 之后调用一次 inject_theme()。
 """
@@ -359,8 +360,11 @@ ul[role="listbox"] li,
 .cms-table tbody tr:hover td { background:#F8FAFC; }
 .cms-table td.num, .cms-table th.num { text-align:right; }
 
-/* ===== Zoom ===== */
-.stApp { zoom: 0.95 !important; }
+/* ===== Zoom =====
+   满意版用 system-ui + zoom 0.95。改用 Inter 后字体视觉偏大 ~8-10%（x-height 更高、笔画更饱满），
+   故 zoom 降至 0.88 做全局等比补偿（0.95 × (1-0.08) ≈ 0.87 → 取 0.88），
+   所有字号数值保持满意版原值不变，整体比例关系一致。 */
+.stApp { zoom: 0.88 !important; }
 </style>
 """
 
