@@ -355,7 +355,7 @@ ul[role="listbox"] li,
 ::-webkit-scrollbar-thumb:hover { background: #94A3B8 !important; }
 
 /* ===== Zoom ===== */
-.stApp { zoom: 0.95 !important; }
+.stApp { zoom: 0.90 !important; }
 </style>
 """
 
