@@ -148,18 +148,7 @@ p, span, label, div { color: #475569 !important; }
   border-radius: 16px !important;
   border: 1px solid #E2E8F0 !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
-  text-align: center !important;   /* 绘图内容(inline-block vega-embed)水平居中 */
 }
-/* block 渲染的图表元素也居中兜底 */
-[data-testid="stVegaLiteChart"] .vega-embed,
-[data-testid="stVegaLiteChart"] canvas,
-[data-testid="stVegaLiteChart"] svg,
-[data-testid="stVegaLiteChart"] > div > div,
-[data-testid="stPlotlyChart"] .js-plotly-plot {
-  margin-left: auto !important;
-  margin-right: auto !important;
-}
-[data-testid="stVegaLiteChart"] .vega-embed { display: inline-block !important; }
 [data-testid="stVegaLiteChart"] text,
 [data-testid="stPlotlyChart"] text {
   font-family: inherit !important;
