@@ -137,6 +137,10 @@ p, span, label, div { color: #475569 !important; }
   background: #FFFFFF !important;
   border: 1px solid #E2E8F0 !important;
   border-radius: 16px !important;
+  width: fit-content !important;   /* 收缩到内容宽度 */
+  max-width: 100% !important;
+  margin-left: auto !important;    /* 居中（消掉右侧内部空白，整体居中显示）*/
+  margin-right: auto !important;
 }
 
 /* ===== 图表容器 ===== */
