@@ -3,8 +3,12 @@
 设计核心：
 - 浅灰背景 (#F1F5F9) + 纯白卡片 (#FFFFFF) + 靛蓝主色 (#4F46E5)
 - 16px 圆角，柔和阴影，1px hairline 边框 (#E2E8F0)
-- system-ui 字体栈（按 OS 语言自适应中日字形，不连外网），21px 基础字号
+- Inter + Noto Sans SC/JP 字体栈（本地打包，不连外网），21px 基础字号
 - 严格遵循 CMS 主题格式规范（L1 config.toml + L2 本文件），保留 .badge-* 与 .density-* 契约
+
+视觉回滚（对齐满意版基线：zoom 0.95 + max-width 1440 + KPI 28px + 导航 14px + tab 500）：
+保留 Inter/Noto 字体 + 图标保护 + tabular-nums + html_table 等正面改进；
+字号/zoom/布局参数回到对齐满意版（撤销固定居中、表格/图表对齐、caption/expander 等微调）。
 
 用法：每个 page 顶部、require_password() 之后调用一次 inject_theme()。
 """
@@ -74,7 +78,7 @@ p, span, label, div { color: #475569 !important; }
   background: #FFFFFF !important;
   border: 1px solid #E2E8F0 !important;
   border-radius: 16px !important;
-  padding: 18px 16px !important;
+  padding: 20px 24px !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -87,19 +91,19 @@ p, span, label, div { color: #475569 !important; }
 [data-testid="stMetricLabel"] p,
 [data-testid="stMetricLabel"] div {
   color: #64748B !important;
-  font-size: 12px !important;  /* 卡片内标签调小(数字 stMetricValue 保持 24px) */
+  font-size: 13px !important;
   font-weight: 500 !important;
   text-transform: none !important;
 }
 [data-testid="stMetricValue"] {
   color: #0F172A !important;
-  font-size: 24px !important;  /* 配 white-space:normal 超长数字换行不截断 */
+  font-size: 28px !important;
   font-weight: 700 !important;
   letter-spacing: -0.01em !important;
   white-space: normal !important;
   overflow: visible !important;
   line-height: 1.25 !important;
-  font-variant-numeric: tabular-nums !important;  /* 等宽数字：¥金额对齐不跳动(Data-Dense Dashboard 基准) */
+  font-variant-numeric: tabular-nums !important;
   font-feature-settings: "tnum" 1 !important;
 }
 [data-testid="stMetricValue"] > div {
@@ -137,10 +141,7 @@ p, span, label, div { color: #475569 !important; }
   background: #FFFFFF !important;
   border: 1px solid #E2E8F0 !important;
   border-radius: 16px !important;
-  width: fit-content !important;   /* 收缩到内容宽度 */
-  max-width: 100% !important;
-  margin-left: auto !important;    /* 居中（消掉右侧内部空白，整体居中显示）*/
-  margin-right: auto !important;
+  overflow: hidden !important;
 }
 
 /* ===== 图表容器 ===== */
@@ -148,11 +149,10 @@ p, span, label, div { color: #475569 !important; }
 [data-testid="stPlotlyChart"],
 .chart-container {
   background: #FFFFFF !important;
-  padding: 16px 6px !important;
+  padding: 20px !important;
   border-radius: 16px !important;
   border: 1px solid #E2E8F0 !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
-  text-align: center !important;  /* 安全居中：只居中 inline 级图表，不改宽度·不裁切 */
 }
 [data-testid="stVegaLiteChart"] text,
 [data-testid="stPlotlyChart"] text {
@@ -167,12 +167,11 @@ p, span, label, div { color: #475569 !important; }
 }
 [data-baseweb="tab"] {
   color: #94A3B8 !important;
-  font-weight: 700 !important;
+  font-weight: 500 !important;
   font-size: 14px !important;
   padding: 0.5rem 0.75rem !important;
   background: transparent !important;
 }
-[data-baseweb="tab"] p { font-size: 14px !important; font-weight: 700 !important; }
 [data-baseweb="tab"][aria-selected="true"] {
   color: #4F46E5 !important;
   border-bottom: 2px solid #4F46E5 !important;
@@ -239,7 +238,7 @@ p, span, label, div { color: #475569 !important; }
 }
 [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
 [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
-  font-size: 17px !important;
+  font-size: 14px !important;
   font-weight: 500 !important;
 }
 /* Active State */
@@ -288,12 +287,6 @@ ul[role="listbox"] li,
   font-size: 14px !important;
 }
 
-/* ===== 页面说明 caption（标题下灰字说明 · 全站 st.caption）===== */
-[data-testid="stCaptionContainer"],
-[data-testid="stCaptionContainer"] p {
-  font-size: 12px !important;
-}
-
 /* ===== Progress Bar ===== */
 [data-testid="stProgress"] > div > div > div {
   background: linear-gradient(90deg, #4F46E5, #0EA5E9) !important;
@@ -324,10 +317,6 @@ ul[role="listbox"] li,
   border: 1px solid #E2E8F0 !important;
   background: #FFFFFF !important;
 }
-/* Expander 标题文字 13px（只命中文字 p，不动展开箭头图标）*/
-[data-testid="stExpander"] summary p {
-  font-size: 13px !important;
-}
 
 /* ===== CMS 自定义类（强制契约）===== */
 .badge-A, .badge-B, .badge-C, .badge-NEW, .badge-RED {
@@ -351,12 +340,8 @@ ul[role="listbox"] li,
 /* ===== Main Container ===== */
 [data-testid="stMainBlockContainer"], .main .block-container {
   padding-top: 1.5rem !important;
-  padding-bottom: 3rem !important;
-  padding-left: 1.5rem !important;
-  padding-right: 1.5rem !important;
-  max-width: 1400px !important;   /* 固定窄宽 · 居中：表格/图表卡片都在此宽度内，右边自然对齐 */
-  margin-left: auto !important;
-  margin-right: auto !important;
+  padding-bottom: 1.5rem !important;
+  max-width: 1440px !important;
 }
 
 /* ===== Scrollbar ===== */
@@ -375,7 +360,7 @@ ul[role="listbox"] li,
 .cms-table td.num, .cms-table th.num { text-align:right; }
 
 /* ===== Zoom ===== */
-.stApp { zoom: 0.90 !important; }
+.stApp { zoom: 0.95 !important; }
 </style>
 """
 
