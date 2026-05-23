@@ -365,6 +365,19 @@ ul[role="listbox"] li,
 .cms-table tbody tr:hover td { background:#F8FAFC; }
 .cms-table td.num, .cms-table th.num { text-align:right; }
 
+/* ===== AgGrid 表格样式（方案4 · 融入 Modern White 主题）=====
+   ⚠️ 需安装 streamlit-aggrid 且页面改用 AgGrid 才生效；当前仅样式预置（无 AgGrid 时此块惰性无害）。 */
+.ag-root-wrapper { border:1px solid #E2E8F0 !important; border-radius:16px !important; overflow:hidden !important; background:#FFFFFF !important; }
+.ag-header { background:#F8FAFC !important; border-bottom:1px solid #E2E8F0 !important; }
+.ag-header-cell-label { color:#64748B !important; font-weight:600 !important; font-size:12px !important; font-family:inherit !important; }
+.ag-cell { color:#0F172A !important; font-size:14px !important; font-family:inherit !important; font-variant-numeric:tabular-nums !important; }
+.ag-row:hover .ag-cell { background:#F8FAFC !important; }
+.ag-row { border-bottom:1px solid #F1F5F9 !important; }
+.ag-paging-panel { color:#64748B !important; font-size:12px !important; border-top:1px solid #E2E8F0 !important; }
+.ag-header-cell-filtered { color:#4F46E5 !important; }
+.ag-sort-indicator-icon { color:#4F46E5 !important; }
+.ag-cell-focus:not(.ag-cell-range-selected):focus-within { border-color:#4F46E5 !important; }
+
 /* ===== Zoom =====
    满意版用 system-ui + zoom 0.95。改用 Inter 后字体视觉偏大 ~8-10%（x-height 更高、笔画更饱满），
    故 zoom 降至 0.88 做全局等比补偿（0.95 × (1-0.08) ≈ 0.87 → 取 0.88），
