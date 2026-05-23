@@ -343,11 +343,13 @@ ul[role="listbox"] li,
 .density-comfy [data-testid="stDataFrame"] td,
 .density-comfy [data-testid="stDataFrame"] th { padding: 1rem 1.2rem !important; font-size: 15px !important; }
 
-/* ===== Main Container ===== */
+/* ===== Main Container（固定 1440 · 居中）===== */
 [data-testid="stMainBlockContainer"], .main .block-container {
   padding-top: 1.5rem !important;
   padding-bottom: 1.5rem !important;
   max-width: 1440px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 /* ===== Scrollbar ===== */
