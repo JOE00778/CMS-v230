@@ -118,6 +118,9 @@ p, span, label, div { color: #475569 !important; }
   background: #FFFFFF !important;
   border-right: 1px solid #E2E8F0 !important;
   box-shadow: 2px 0 10px rgba(0, 0, 0, 0.02) !important;
+  min-width: 280px !important;
+  max-width: 280px !important;
+  width: 280px !important;
 }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 {
@@ -345,7 +348,9 @@ ul[role="listbox"] li,
 [data-testid="stMainBlockContainer"], .main .block-container {
   padding-top: 1.5rem !important;
   padding-bottom: 3rem !important;
-  max-width: 1760px !important;  /* 整页内容上限放宽(满宽表格随之变宽)；要全屏改 100% */
+  padding-left: 1.5rem !important;
+  padding-right: 1.5rem !important;
+  max-width: 1760px !important;  /* 上限放宽；真正变宽靠窗口加宽+侧栏收窄+留白收窄 */
 }
 
 /* ===== Scrollbar ===== */
