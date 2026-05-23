@@ -27,17 +27,17 @@ _THEME_CSS = """
 @font-face { font-family:'Noto Sans JP'; src:url('app/static/fonts/NotoSansJP-700.woff2') format('woff2'); font-weight:700; font-style:normal; font-display:swap; }
 
 /* ===== 字体栈（按字符自动选字：拉丁→Inter，中文→Noto SC，日文→Noto JP，缺则落系统）
-   注意：排除 Material Symbols 图标元素，否则覆盖图标字体会露出 arrow_drop_down 等 ligature 文本 */
+   关键：只设 html/body + 显式文字元素，靠继承传递；绝不用 [class*=st-] 大锤，
+   否则会盖掉 Streamlit 自带 Material Symbols 图标(class=st-emotion-cache-*)，露出 keyboard_double_arrow 等文本 */
 html, body,
-[class*="st-"]:not([class*="material-symbols"]),
-[class*="css-"]:not([class*="material-symbols"]),
 [data-testid="stPageLink"] a, [data-testid="stPageLink"] a p, [data-testid="stPageLink"] a span,
-button, input, textarea, select {
+[data-baseweb="tab"], [data-baseweb="select"] div, [data-baseweb="select"] span,
+[data-baseweb="popover"] li, [data-baseweb="menu"] li, [data-baseweb="input"] input,
+button, textarea, select {
   font-family: 'Inter','Noto Sans SC','Noto Sans JP','PingFang SC','Hiragino Sans','Microsoft YaHei','Yu Gothic',system-ui,-apple-system,sans-serif !important;
 }
-/* 图标字体保护：Material Symbols 必须保留自身字体（双保险）*/
-[class*="material-symbols"], span[class*="material-symbols"],
-[data-testid="stIconMaterial"], .material-icons {
+/* 图标字体保护：真正的 Material Symbols 图标(markdown :material/...:)保留自身字体（backstop）*/
+[class*="material-symbols"], [data-testid="stIconMaterial"], .material-icons {
   font-family: 'Material Symbols Rounded','Material Symbols Outlined','Material Symbols Sharp','Material Icons' !important;
 }
 html, body {
@@ -74,7 +74,7 @@ p, span, label, div { color: #475569 !important; }
   background: #FFFFFF !important;
   border: 1px solid #E2E8F0 !important;
   border-radius: 16px !important;
-  padding: 20px 24px !important;
+  padding: 18px 16px !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -91,9 +91,17 @@ p, span, label, div { color: #475569 !important; }
 }
 [data-testid="stMetricValue"] {
   color: #0F172A !important;
-  font-size: 28px !important;
+  font-size: 20px !important;
   font-weight: 700 !important;
   letter-spacing: -0.01em !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  line-height: 1.25 !important;
+}
+[data-testid="stMetricValue"] > div {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
 }
 [data-testid="stMetricDelta"] {
   font-size: 13px !important;
