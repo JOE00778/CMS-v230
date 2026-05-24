@@ -286,13 +286,21 @@ with tab1:
                     for _, r in view.iterrows()
                     if r.get("old_rank") != r.get("new_rank") and pd.notna(r.get("internal_id"))
                 ]
-                csv_bytes = build_nst_master_csv(csv_rows, [COL_RANK])
-                st.success(t(f"✅ 写入 rank_history {len(rows_to_insert)} 条 + 生成 CSV {len(csv_rows)} 行"))
+                # 存 session_state：download_button 必须渲染在 if st.button() 之外，
+                # 否则点下载触发 rerun → button 返回 False → 下载控件消失 → 无法下载
+                st.session_state["rank_csv_bytes"] = build_nst_master_csv(csv_rows, [COL_RANK])
+                st.session_state["rank_csv_stat"] = (len(rows_to_insert), len(csv_rows))
+
+            # 渲染在 button 块外：rerun 后仍存在，下载才能完成
+            if st.session_state.get("rank_csv_bytes") is not None:
+                _n_ins, _n_csv = st.session_state.get("rank_csv_stat", (0, 0))
+                st.success(t(f"✅ 写入 rank_history {_n_ins} 条 + 生成 CSV {_n_csv} 行"))
                 st.download_button(
                     t("📥 下载 rank_update.csv"),
-                    csv_bytes,
+                    st.session_state["rank_csv_bytes"],
                     file_name=dated_filename(),
                     mime='text/csv',
+                    key="dl_rank_csv",
                 )
 
 with tab2:
