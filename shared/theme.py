@@ -220,6 +220,11 @@ p, span, label, div { color: #475569 !important; }
   border-color: #4338CA !important;
   box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3) !important;
 }
+/* primary 内层文字强制白字（否则被全局 `p,span,div{color:#475569}` 盖成深灰，落深靛蓝底上看不清）*/
+[data-testid="stButton"] > button[kind="primary"] *,
+[data-testid="stFormSubmitButton"] > button[kind="primary"] * {
+  color: #FFFFFF !important;
+}
 
 /* ===== Navigation (stPageLink) ===== */
 [data-testid="stSidebar"] [data-testid="stPageLink"] a {
