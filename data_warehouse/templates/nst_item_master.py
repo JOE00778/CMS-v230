@@ -7,8 +7,9 @@
   R1 必須标记 / R2 字段名(表头) / R3 输入说明 / R4 示例 / R5+ 数据
 生成 CSV 时按手册流程: 删 R1/R3/R4(及示例数据), 保留 R2 作表头, 删非输入空列。
 
-NetSuite CSV Import(Update) 用 Internal ID 作匹配键, 故 CSV 第一列固定为
-"Internal ID"(非模板内列), 其后接本次实际变更的模板列(已删空列)。
+NetSuite CSV Import(Update) 用「型番」(= 商品编码 item_code)作匹配键(Boss 2026-05-24
+更正; 此前曾用 Internal ID), 故 CSV 第一列固定为模板内列「型番」, 其后接本次实际
+变更的模板列(已删空列)。id_label 参数默认仍为 Internal ID, 调用方传 id_label=COL_ITEM_CODE。
 
 字段映射约定(Boss 2026-05-21 拍板):
   - 定義原価(page03 Standard Cost) → 模板「商品原価」列(模板叫法不同, 同 Q 列位置)
@@ -20,7 +21,8 @@ import csv
 import datetime
 import io
 
-# NetSuite CSV Import 匹配键(非模板内列, 固定第一列)
+# 旧匹配键(非模板内列)。现 NST CSV Import 改用「型番」匹配(Boss 2026-05-24)，
+# 此常量保留作 build_nst_master_csv 的 id_label 默认值兜底，实际调用方传 COL_ITEM_CODE。
 ID_LABEL = "Internal ID"
 
 # 常用字段列名(模板 R2 原文)

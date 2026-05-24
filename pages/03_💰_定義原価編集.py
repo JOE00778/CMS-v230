@@ -26,7 +26,7 @@ from shared.i18n import t, lang_selector
 
 from data_warehouse.templates.nst_item_master import (
     COL_COST,
-    ID_LABEL,
+    COL_ITEM_CODE,
     build_nst_master_csv,
     dated_filename,
 )
@@ -434,12 +434,15 @@ elif step == 2:
             if st.button(
                 t(f"确认并生成 CSV ({n_csv} 行) →"), type="primary", use_container_width=True
             ):
-                # NST 上传模板格式 CSV：第一列 Internal ID + 「商品原価」(= 定義原価)
+                # NST 上传模板格式 CSV：第一列 型番(商品编码) + 「商品原価」(= 定義原価)
+                # NST CSV Import 以「型番」做匹配键(Boss 2026-05-24)，非 Internal ID
                 csv_rows = [
-                    {ID_LABEL: d["internal_id"], COL_COST: int(d["std_cost_new"])}
+                    {COL_ITEM_CODE: d["item_code"], COL_COST: int(d["std_cost_new"])}
                     for d in csv_decisions
                 ]
-                st.session_state.cs_csv_bytes = build_nst_master_csv(csv_rows, [COL_COST])
+                st.session_state.cs_csv_bytes = build_nst_master_csv(
+                    csv_rows, [COL_COST], id_label=COL_ITEM_CODE
+                )
 
                 # 写入 std_cost_history（驱动波动图）· 表缺失不阻断下载
                 try:
