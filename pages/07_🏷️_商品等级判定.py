@@ -8,7 +8,7 @@ from datetime import datetime
 from modules.rank_classifier.proposal import generate_proposal
 from data_warehouse.templates.nst_item_master import (
     COL_RANK,
-    ID_LABEL,
+    COL_ITEM_CODE,
     build_nst_master_csv,
     dated_filename,
 )
@@ -280,15 +280,18 @@ with tab1:
                     conn.commit()
                 conn.close()
 
-                # 导出 NST 上传模板 CSV（第一列 Internal ID + 「商品ランク」· 仅有变化的 SKU）
+                # 导出 NST 上传模板 CSV（第一列 型番 + 「商品ランク」· 仅有变化的 SKU）
+                # NST CSV Import 以「型番」做匹配键(Boss 2026-05-24)，非 Internal ID
                 csv_rows = [
-                    {ID_LABEL: int(r["internal_id"]), COL_RANK: r["new_rank"]}
+                    {COL_ITEM_CODE: r["sku"], COL_RANK: r["new_rank"]}
                     for _, r in view.iterrows()
-                    if r.get("old_rank") != r.get("new_rank") and pd.notna(r.get("internal_id"))
+                    if r.get("old_rank") != r.get("new_rank") and pd.notna(r.get("sku"))
                 ]
                 # 存 session_state：download_button 必须渲染在 if st.button() 之外，
                 # 否则点下载触发 rerun → button 返回 False → 下载控件消失 → 无法下载
-                st.session_state["rank_csv_bytes"] = build_nst_master_csv(csv_rows, [COL_RANK])
+                st.session_state["rank_csv_bytes"] = build_nst_master_csv(
+                    csv_rows, [COL_RANK], id_label=COL_ITEM_CODE
+                )
                 st.session_state["rank_csv_stat"] = (len(rows_to_insert), len(csv_rows))
 
             # 渲染在 button 块外：rerun 后仍存在，下载才能完成
