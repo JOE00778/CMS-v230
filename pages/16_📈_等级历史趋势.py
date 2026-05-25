@@ -30,7 +30,18 @@ if not quarters:
     st.info(t("暂无历史数据。请先在「🏷️ 商品等级判定」page 确认变更。"))
     st.stop()
 
-sel_q = st.multiselect(t("季度筛选"), quarters, default=quarters[:3] if len(quarters) >= 3 else quarters)
+# 月份选项（按变更时间 changed_at 的 YYYY-MM）
+months = [
+    r["m"] for r in conn.execute(
+        "SELECT DISTINCT to_char(changed_at,'YYYY-MM') AS m "
+        "FROM rank_history WHERE changed_at IS NOT NULL ORDER BY m DESC"
+    ).fetchall()
+]
+
+_fq, _fm = st.columns(2)
+sel_q = _fq.multiselect(t("季度筛选"), quarters,
+                        default=quarters[:3] if len(quarters) >= 3 else quarters)
+sel_m = _fm.multiselect(t("月份筛选"), months, placeholder=t("全部"))
 
 if not sel_q:
     st.warning(t("请至少选择一个季度。"))
@@ -51,6 +62,13 @@ df = pd.DataFrame([dict(r) for r in _rows_df])
 if df.empty:
     st.info(t("选定季度内无变更记录。"))
     st.stop()
+
+# 月份筛选（按 changed_at 的 YYYY-MM·空选=全部）
+if sel_m:
+    df = df[pd.to_datetime(df["changed_at"]).dt.strftime("%Y-%m").isin(sel_m)]
+    if df.empty:
+        st.info(t("选定月份内无变更记录。"))
+        st.stop()
 
 # 細筛：多 SKU/商品名 搜索 + 旧/新等级（空选=全部）
 fc1, fc2, fc3 = st.columns([2, 1, 1])
