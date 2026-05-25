@@ -589,7 +589,8 @@ with top_v2:
             st.info(t("先に「📊 発注計算」タブで仕入先管理リストをアップロード"))
         else:
             sups = [r[0] for r in conn.execute(
-                "SELECT DISTINCT supplier_name FROM supplier_quote ORDER BY zone_rank, supplier_name"
+                "SELECT supplier_name FROM supplier_quote "
+                "GROUP BY supplier_name ORDER BY MIN(zone_rank), supplier_name"
             ).fetchall()]
             sel = st.selectbox(t("仕入先"), sups, key="sup_view_sel")
             rows = conn.execute(
