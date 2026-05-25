@@ -1,7 +1,7 @@
-"""模块 #30 供应商采购分析 · 発注書(PO)ベースの仕入先比价 / 月度采购额.
+"""模块 #30 供应商采购分析 · 発注書(PO)ベースの仕入先比价 / 月度总订货金额.
 
 数据源:
-  nst.po_supplier_monthly       仕入先 × 月 → 総発注金額（采购额）
+  nst.po_supplier_monthly       仕入先 × 月 → 総発注金額（总订货金额）
   nst.po_item_supplier_monthly  SKU × 仕入先 × 月 → 数量/金额/加重平均単価（比价 / 历史原価）
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ lang_selector()
 conn = get_connection()
 
 st.title(t("📊 供应商采购分析（発注書ベース）"))
-st.caption(t("数据源 NetSuite 発注書 · 仕入先月度采购额 + SKU 多供应商比价 / 历史原価"))
+st.caption(t("数据源 NetSuite 発注書 · 仕入先月度总订货金额 + SKU 多供应商比价 / 历史原価"))
 
 
 def _df(sql: str, params=None) -> pd.DataFrame:
@@ -31,7 +31,7 @@ def _df(sql: str, params=None) -> pd.DataFrame:
 
 
 # ============================================================
-# 仕入先 × 月（采购额）
+# 仕入先 × 月（总订货金额）
 # ============================================================
 try:
     sm = _df(
@@ -64,16 +64,16 @@ tot_prev = float(prev["total_amount"].sum()) if not prev.empty else 0.0
 mom = (tot_cur / tot_prev - 1) * 100 if tot_prev else None
 
 k1, k2, k3 = st.columns(3)
-k1.metric(t("采购额 合计 (¥)"), f"¥{tot_cur:,.0f}",
+k1.metric(t("总订货金额 合计 (¥)"), f"¥{tot_cur:,.0f}",
           delta=(f"{mom:+.1f}% {t('环比上月')}" if mom is not None else None),
-          delta_color="off")  # 采购额升降好坏取决于备货策略，不强行着色
+          delta_color="off")  # 总订货金额升降好坏取决于备货策略，不强行着色
 k2.metric(t("PO 件数"), f"{int(cur['po_count'].sum()):,}")
 k3.metric(t("仕入先 数"), f"{cur['vendor_id'].nunique():,}")
 
 st.divider()
 
-# --- 月度采购额趋势（Top 8 供应商）---
-st.subheader(t("📈 仕入先 月度采购额推移（Top 8）"))
+# --- 月度总订货金额趋势（Top 8 供应商）---
+st.subheader(t("📈 仕入先 月度总订货金额推移（Top 8）"))
 top_vendors = (sm.groupby("vendor_name")["total_amount"].sum()
                .sort_values(ascending=False).head(8).index.tolist())
 trend = sm[sm["vendor_name"].isin(top_vendors)]
@@ -82,11 +82,11 @@ trend_piv = trend.groupby(["year_month", "vendor_name"])["total_amount"].sum().r
 if not trend_piv.empty:
     line = alt.Chart(trend_piv).mark_line(point=True).encode(
         x=alt.X("year_month:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("total_amount:Q", title=t("采购额 (日元)")),
+        y=alt.Y("total_amount:Q", title=t("总订货金额 (日元)")),
         color=alt.Color("vendor_name:N", title=t("仕入先")),
         tooltip=[alt.Tooltip("year_month:N", title=t("月份")),
                  alt.Tooltip("vendor_name:N", title=t("仕入先")),
-                 alt.Tooltip("total_amount:Q", title=t("采购额"), format=",.0f")],
+                 alt.Tooltip("total_amount:Q", title=t("总订货金额"), format=",.0f")],
     )
     st.altair_chart(line.properties(height=320).configure_legend(orient="top"),
                     use_container_width=True)
@@ -94,14 +94,14 @@ if not trend_piv.empty:
 st.divider()
 
 # --- 当月供应商排行 ---
-st.subheader(t("🏆 仕入先采购额排行（{ym}）").format(ym=sel_month))
+st.subheader(t("🏆 仕入先总订货金额排行（{ym}）").format(ym=sel_month))
 rank = (cur.groupby("vendor_name")
         .agg(amount=("total_amount", "sum"), po=("po_count", "sum"), qty=("qty_ordered", "sum"))
         .reset_index().sort_values("amount", ascending=False))
-rank = rank.rename(columns={"vendor_name": t("仕入先"), "amount": t("采购额(¥)"),
+rank = rank.rename(columns={"vendor_name": t("仕入先"), "amount": t("总订货金额(¥)"),
                             "po": t("PO件数"), "qty": t("発注数")})
 st.dataframe(rank, hide_index=True, use_container_width=True, height=400,
-             column_config={t("采购额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
+             column_config={t("总订货金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
 st.download_button(t("📥 CSV 下载"), rank.to_csv(index=False).encode("utf-8-sig"),
                    file_name=f"po_supplier_{sel_month}.csv", mime="text/csv")
 
