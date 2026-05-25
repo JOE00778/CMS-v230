@@ -1689,7 +1689,7 @@ def lang_selector():
         "[data-testid='stSidebarNav']{display:none!important;}"
         # 日期 + 语言选择：置顶·居中（Boss 2026-05-25）
         "section[data-testid='stSidebar'] [data-testid='stSidebarUserContent']{padding-top:0.5rem;}"
-        ".cms-date-big{text-align:center;line-height:1.25;margin:.1rem 0 .5rem;}"
+        ".cms-date-big{text-align:center;line-height:1.2;margin:.1rem 0 .15rem;}"
         ".cms-date-big .num{display:block;font-size:1.5rem;font-weight:700;}"
         ".cms-date-big .meta{display:block;font-size:.82rem;color:#64748B;}"
         # 语言选择 segmented_control(testid=stButtonGroup·从容器JS确认) + radio fallback 居中。
