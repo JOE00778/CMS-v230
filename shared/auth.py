@@ -58,6 +58,7 @@ def _login_form() -> None:
         st.session_state["__role"] = "admin"
         return
 
+    st.markdown(_LOGIN_NARROW_CSS, unsafe_allow_html=True)  # 登录页收窄居中
     st.title("🔒 一元管理系统V2.4")
     st.caption(f"build {APP_VERSION}")
 
@@ -112,6 +113,21 @@ _COMPACT_LAYOUT_CSS = """
 h1, h2, h3 {
     margin-top: 0.5rem !important;
     padding-top: 0 !important;
+}
+</style>
+"""
+
+
+# 登录页专用：内容区收窄居中（覆盖全局 1600）+ 上方留白（Boss 2026-05-25）
+_LOGIN_NARROW_CSS = """
+<style>
+[data-testid="stMainBlockContainer"],
+.main .block-container,
+[data-testid="block-container"] {
+    max-width: 460px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    padding-top: 8vh !important;
 }
 </style>
 """

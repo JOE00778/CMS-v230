@@ -1688,8 +1688,11 @@ def lang_selector():
         ".cms-date-big{text-align:center;line-height:1.25;margin:.1rem 0 .5rem;}"
         ".cms-date-big .num{display:block;font-size:1.5rem;font-weight:700;}"
         ".cms-date-big .meta{display:block;font-size:.82rem;color:#64748B;}"
-        "section[data-testid='stSidebar'] div[data-testid='stButtonGroup']"
-        "{display:flex;justify-content:center;}"
+        # 语言选择 segmented_control（及 radio fallback）水平居中
+        "section[data-testid='stSidebar'] [data-testid='stSegmentedControl'],"
+        "section[data-testid='stSidebar'] [data-testid='stSegmentedControl']>div,"
+        "section[data-testid='stSidebar'] div[role='radiogroup']"
+        "{display:flex!important;justify-content:center!important;}"
         "</style>",
         unsafe_allow_html=True,
     )
