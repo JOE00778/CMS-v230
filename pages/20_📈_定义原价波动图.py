@@ -36,8 +36,23 @@ def _load(sql: str) -> pd.DataFrame:
     return pd.DataFrame([dict(r) for r in conn.execute(sql).fetchall()])
 
 
-def _render_volatility(df: pd.DataFrame, *, value_label: str,
-                       key_prefix: str, empty_msg: str) -> None:
+def _pct_color(v):
+    """涨跌着色：正绿负红（Boss 口径 加绿减红）。"""
+    if pd.isna(v):
+        return ""
+    if v > 0:
+        return "color:#16A34A"
+    if v < 0:
+        return "color:#DC2626"
+    return ""
+
+
+def _pct_fmt(v) -> str:
+    return f"{v:+.1f}%" if pd.notna(v) else "—"
+
+
+def _render_volatility(df: pd.DataFrame, *, value_label: str, key_prefix: str,
+                       empty_msg: str, show_latest: bool = False) -> None:
     """通用价格波动分析。df 列: internal_id / item_code / display_name / changed_at / std_cost_new。"""
     if df.empty:
         st.info(empty_msg)
@@ -59,11 +74,15 @@ def _render_volatility(df: pd.DataFrame, *, value_label: str,
         cost_min=("std_cost_new", "min"),
         cost_max=("std_cost_new", "max"),
         cost_current=("std_cost_new", "last"),
+        cost_prev=("std_cost_old", "last"),
         last_changed_at=("changed_at", "max"),
         first_changed_at=("changed_at", "min"),
     )
     agg["amplitude"] = agg["cost_max"] - agg["cost_min"]
     agg["amp_pct"] = (agg["amplitude"] / agg["cost_min"].replace({0: pd.NA}) * 100).fillna(0).astype(float)
+    # 最近一次 vs 上次 进货价 增幅%
+    agg["latest_pct"] = ((agg["cost_current"] - agg["cost_prev"])
+                         / agg["cost_prev"].replace({0: pd.NA}) * 100)
 
     grade_col = t("波动等级")
 
@@ -116,18 +135,28 @@ def _render_volatility(df: pd.DataFrame, *, value_label: str,
         st.subheader(t("🏆 波动 Top 20"))
         top = agg.sort_values("amp_pct", ascending=False).head(20).copy()
         top["amp_pct_fmt"] = top["amp_pct"].map(lambda x: f"{x:.1f}%")
-        show_cols = ["item_code", "display_name", grade_col, "n_changes",
-                     "cost_min", "cost_max", "cost_current", "amp_pct_fmt"]
-        top_show = top[show_cols].rename(columns={
-            "item_code": t("商品代码"),
-            "display_name": t("商品名"),
-            "n_changes": t("变更次数"),
-            "cost_min": t("历史最低"),
-            "cost_max": t("历史最高"),
-            "cost_current": t("当前价"),
-            "amp_pct_fmt": t("波动率"),
-        })
-        st.dataframe(localize_df(top_show), use_container_width=True, hide_index=True, height=420)
+        _cols = ["item_code", "display_name", grade_col, "n_changes",
+                 "cost_min", "cost_max", "cost_current"]
+        _ren = {
+            "item_code": t("商品代码"), "display_name": t("商品名"),
+            "n_changes": t("变更次数"), "cost_min": t("历史最低"),
+            "cost_max": t("历史最高"), "cost_current": t("当前价"),
+        }
+        if show_latest:
+            _cols += ["cost_prev", "latest_pct"]
+            _ren["cost_current"] = t("最近进货价")
+            _ren["cost_prev"] = t("上次进货价")
+            _ren["latest_pct"] = t("最近增幅%")
+        _cols.append("amp_pct_fmt")
+        _ren["amp_pct_fmt"] = t("波动率")
+        top_show = top[_cols].rename(columns=_ren)
+        if show_latest:
+            st.dataframe(
+                top_show.style.map(_pct_color, subset=[t("最近增幅%")])
+                .format({t("最近增幅%"): _pct_fmt}),
+                use_container_width=True, hide_index=True, height=420)
+        else:
+            st.dataframe(localize_df(top_show), use_container_width=True, hide_index=True, height=420)
 
     st.divider()
 
@@ -154,20 +183,29 @@ def _render_volatility(df: pd.DataFrame, *, value_label: str,
         view = view[cond]
 
     view = view.sort_values("amp_pct", ascending=False)
-    view_show = view[[
-        "item_code", "display_name", grade_col,
-        "n_changes", "cost_min", "cost_max", "cost_current", "amp_pct",
-    ]].rename(columns={
-        "item_code": t("商品代码"),
-        "display_name": t("商品名"),
-        "n_changes": t("变更次数"),
-        "cost_min": t("历史最低"),
-        "cost_max": t("历史最高"),
-        "cost_current": t("当前价"),
-        "amp_pct": t("波动率(%)"),
-    })
+    _vcols = ["item_code", "display_name", grade_col,
+              "n_changes", "cost_min", "cost_max", "cost_current"]
+    _vren = {
+        "item_code": t("商品代码"), "display_name": t("商品名"),
+        "n_changes": t("变更次数"), "cost_min": t("历史最低"),
+        "cost_max": t("历史最高"), "cost_current": t("当前价"),
+    }
+    if show_latest:
+        _vcols += ["cost_prev", "latest_pct"]
+        _vren["cost_current"] = t("最近进货价")
+        _vren["cost_prev"] = t("上次进货价")
+        _vren["latest_pct"] = t("最近增幅%")
+    _vcols.append("amp_pct")
+    _vren["amp_pct"] = t("波动率(%)")
+    view_show = view[_vcols].rename(columns=_vren)
     view_show[t("波动率(%)")] = view_show[t("波动率(%)")].map(lambda x: f"{x:.1f}")
-    st.dataframe(localize_df(view_show), use_container_width=True, hide_index=True, height=400)
+    if show_latest:
+        st.dataframe(
+            view_show.style.map(_pct_color, subset=[t("最近增幅%")])
+            .format({t("最近增幅%"): _pct_fmt}),
+            use_container_width=True, hide_index=True, height=400)
+    else:
+        st.dataframe(localize_df(view_show), use_container_width=True, hide_index=True, height=400)
     st.caption(t("显示 {n} / 共 {total} 个 SKU").format(n=len(view), total=len(agg_all)))
 
     st.divider()
@@ -248,6 +286,7 @@ with tab_po:
     _render_volatility(
         _load(_SQL_PO), value_label=t("进货价 (¥)"), key_prefix="po",
         empty_msg=t("暂无进货价（PO）历史。nst.purchase_order_line 取得后显示。"),
+        show_latest=True,
     )
 
 with tab_cost:
