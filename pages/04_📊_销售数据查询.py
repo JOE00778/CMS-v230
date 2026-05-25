@@ -234,7 +234,17 @@ def _render_sales_delta(_period_kind, _key):
              "delta", "delta_pct", "rev_prev", "rev_cur"]
     _show = _wdf[_cols].rename(
         columns={_kk: (_v[1] if _ja else _v[0]) for _kk, _v in _hdr.items()})
-    st.dataframe(_show, use_container_width=True, height=520)
+
+    # 落差 / 落差% 涨跌着色：正绿负红（Boss 2026-05-25）
+    def _pos_neg_color(_val):
+        try:
+            _f = float(_val)
+        except (TypeError, ValueError):
+            return ""
+        return "color:#16A34A" if _f > 0 else ("color:#DC2626" if _f < 0 else "")
+    _dcols = [_c for _c in ("落差", "落差%") if _c in _show.columns]
+    st.dataframe(_show.style.map(_pos_neg_color, subset=_dcols),
+                 use_container_width=True, height=520)
     _csv = _show.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         _L("📥 下载 CSV", "📥 CSV ダウンロード"),

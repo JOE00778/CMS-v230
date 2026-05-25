@@ -51,6 +51,14 @@ def html_table(df, *, num_from_col: int = 1) -> None:
     - 适合中小表（≤ 数百行）；超大表（千行级）仍用 st.dataframe 以保性能。
     """
     import html as _html
+    import re as _re
+
+    def _fmt(v) -> str:
+        """单元格 escape 后，给涨跌 (+..%/pp) 上绿、(-..%/pp) 上红（Boss 2026-05-25）。"""
+        s = _html.escape(str(v))
+        s = _re.sub(r'(\(\+[^)]*\))', r'<span style="color:#16A34A;font-weight:600">\1</span>', s)
+        s = _re.sub(r'(\(-[^)]*\))', r'<span style="color:#DC2626;font-weight:600">\1</span>', s)
+        return s
 
     cols = list(df.columns)
     head = "".join(
@@ -61,8 +69,8 @@ def html_table(df, *, num_from_col: int = 1) -> None:
     body = []
     for _, row in df.iterrows():
         tds = "".join(
-            (f'<td class="num">{_html.escape(str(v))}</td>' if i >= num_from_col
-             else f'<td>{_html.escape(str(v))}</td>')
+            (f'<td class="num">{_fmt(v)}</td>' if i >= num_from_col
+             else f'<td>{_fmt(v)}</td>')
             for i, v in enumerate(row)
         )
         body.append(f"<tr>{tds}</tr>")
