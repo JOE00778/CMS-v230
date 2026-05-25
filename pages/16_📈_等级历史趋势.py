@@ -4,7 +4,6 @@ from shared.i18n_columns import localize_df
 import pandas as pd
 import sqlite3
 from pathlib import Path
-import plotly.graph_objects as go
 
 st.set_page_config(page_title=t("等级历史趋势"), page_icon="📈", layout="wide")
 from shared.auth import require_password
@@ -42,13 +41,41 @@ import re as _re
 _safe_q = [_re.sub(r"[^A-Za-z0-9_-]", "", str(q))[:20] for q in sel_q]
 _in_clause = ",".join(f"'{q}'" for q in _safe_q if q)
 _rows_df = conn.execute(
-    f"SELECT * FROM rank_history WHERE quarter IN ({_in_clause}) "
-    f"ORDER BY changed_at DESC"
+    f"SELECT rh.*, im.display_name FROM rank_history rh "
+    f"LEFT JOIN nst.item_master_raw im ON im.item_code = rh.sku "
+    f"WHERE rh.quarter IN ({_in_clause}) "
+    f"ORDER BY rh.changed_at DESC"
 ).fetchall()
 df = pd.DataFrame([dict(r) for r in _rows_df])
 
 if df.empty:
     st.info(t("选定季度内无变更记录。"))
+    st.stop()
+
+# 細筛：多 SKU/商品名 搜索 + 旧/新等级（空选=全部）
+fc1, fc2, fc3 = st.columns([2, 1, 1])
+_sku_kw = fc1.text_input(t("SKU / 商品名 搜索（多个用空格/逗号/换行分隔）"),
+                         placeholder=t("留空=全部"))
+_old_opts = sorted(df["old_rank"].dropna().unique().tolist())
+_new_opts = sorted(df["new_rank"].dropna().unique().tolist())
+_old_sel = fc2.multiselect(t("旧等级"), _old_opts, placeholder=t("全部"))
+_new_sel = fc3.multiselect(t("新等级"), _new_opts, placeholder=t("全部"))
+
+if _sku_kw.strip():
+    _terms = [x.strip() for x in _re.split(r"[\s,，、]+", _sku_kw) if x.strip()]
+    if _terms:
+        _mask = pd.Series(False, index=df.index)
+        for _term in _terms:
+            _mask |= df["sku"].astype(str).str.contains(_term, case=False, na=False, regex=False)
+            _mask |= df["display_name"].astype(str).str.contains(_term, case=False, na=False, regex=False)
+        df = df[_mask]
+if _old_sel:
+    df = df[df["old_rank"].isin(_old_sel)]
+if _new_sel:
+    df = df[df["new_rank"].isin(_new_sel)]
+
+if df.empty:
+    st.info(t("筛选后无记录。请放宽 SKU / 等级筛选。"))
     st.stop()
 
 # 等级评分映射
@@ -76,30 +103,9 @@ c4.metric(t("➡️ 稳定"), int(stable_count))
 
 st.divider()
 
-# 桑基图（流向）
-st.subheader(t("等级流向（Sankey）"))
-flow = df.groupby(['old_rank', 'new_rank']).size().reset_index(name='count')
-
-if not flow.empty:
-    labels = sorted(list(set(flow['old_rank'].tolist() + flow['new_rank'].tolist())))
-    label_idx = {l: i for i, l in enumerate(labels)}
-
-    fig = go.Figure(go.Sankey(
-        node=dict(label=labels, color=['#1f77b4'] * len(labels)),
-        link=dict(
-            source=[label_idx[r] for r in flow['old_rank']],
-            target=[label_idx[r] for r in flow['new_rank']],
-            value=flow['count'].tolist(),
-        )
-    ))
-    fig.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0))
-    st.plotly_chart(fig, use_container_width=True)
-
-st.divider()
-
 # 历史变化表
 st.subheader(t("变更明细"))
-display_df = df[['sku', 'quarter', 'old_rank', 'new_rank', 'changed_by', 'changed_at']].copy()
+display_df = df[['sku', 'display_name', 'quarter', 'old_rank', 'new_rank', 'changed_at']].copy()
 display_df = display_df.sort_values('changed_at', ascending=False)
 
 st.dataframe(
@@ -121,7 +127,7 @@ if unique_skus:
     sku_history = df[df['sku'] == sel_sku].sort_values('changed_at', ascending=False)
 
     st.dataframe(
-        localize_df(sku_history[['quarter', 'old_rank', 'new_rank', 'changed_by', 'changed_at']]),
+        localize_df(sku_history[['quarter', 'old_rank', 'new_rank', 'changed_at']]),
         use_container_width=True,
         hide_index=True
     )
