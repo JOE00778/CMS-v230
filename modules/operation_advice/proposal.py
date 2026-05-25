@@ -95,15 +95,28 @@ def generate_advice(year_month: str = "2026-04",
         }
         results.sort(key=lambda x: (priority_order.get(x["advice"], 9), -x["inventory_value"]))
 
-        # 持久化（DELETE+INSERT·避免 SQLite 専用 INSERT OR REPLACE 在 PG 失败）
+        # 去重（同 sku 保留首条·防主键 (sku, year_month) 批内冲突）
+        _seen, _uniq = set(), []
+        for _r in results:
+            if _r["sku"] not in _seen:
+                _seen.add(_r["sku"])
+                _uniq.append(_r)
+        results = _uniq
+
+        # 持久化（upsert·ON CONFLICT 兼容 PG/SQLite·不依赖 DELETE）
         if persist and results:
             now = datetime.now(timezone.utc).isoformat()
-            conn.execute("DELETE FROM operation_advice_monthly WHERE year_month = ?", (year_month,))
             conn.executemany("""
                 INSERT INTO operation_advice_monthly
                 (sku, year_month, rank, margin_pct, monthly_turnover, cross_ratio,
                  margin_lv, turnover_lv, advice, reason, inventory_value, calculated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (sku, year_month) DO UPDATE SET
+                    rank = EXCLUDED.rank, margin_pct = EXCLUDED.margin_pct,
+                    monthly_turnover = EXCLUDED.monthly_turnover, cross_ratio = EXCLUDED.cross_ratio,
+                    margin_lv = EXCLUDED.margin_lv, turnover_lv = EXCLUDED.turnover_lv,
+                    advice = EXCLUDED.advice, reason = EXCLUDED.reason,
+                    inventory_value = EXCLUDED.inventory_value, calculated_at = EXCLUDED.calculated_at
             """, [
                 (r["sku"], year_month, r["rank"], r["margin_pct"], r["monthly_turnover"],
                  r["cross_ratio"], r["margin_lv"], r["turnover_lv"], r["advice"],
