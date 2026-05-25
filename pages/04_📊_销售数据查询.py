@@ -566,11 +566,20 @@ with _q_tab:
         tot_q = df["qty_sold"].astype(float).sum()
         tot_r = df["revenue"].astype(float).sum()
         tot_g = df["arari"].astype(float).sum()
-        m1, m2, m3, m4 = st.columns(4)
+        tot_soh = df["qty_on_hand"].astype(float).sum()       # 在庫数 計
+        tot_sv = df["stock_value"].astype(float).sum()         # 库存总金额
+        _turnover = (tot_q / tot_soh) if tot_soh else 0        # 平均月周转率(加权=总販売/总在庫)
+        _ssr = (tot_soh / tot_q) if tot_q else 0               # 整体库存销售比
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric(t("対象月"), ym)
         m2.metric(t("販売数量 計"), f"{tot_q:,.0f}")
         m3.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
-        m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}", f"{(tot_g/tot_r if tot_r else 0):.1%}")
+        m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}")
+        m5.metric(t("粗利率"), f"{(tot_g/tot_r if tot_r else 0):.1%}")
+        n1, n2, n3 = st.columns(3)
+        n1.metric(t("库存总金额"), f"¥{tot_sv:,.0f}")
+        n2.metric(t("平均月周转率"), f"{_turnover:.2f}")
+        n3.metric(t("整体库存销售比"), f"{_ssr:.2f}")
 
         st.caption(t("表示件数: ") + f"{len(df):,}" + t("（粗利率/利润贡献率=%, 回転率=月販売/当前在庫·近似）"))
         _colcfg = dict(_cc(*cols))
@@ -580,7 +589,7 @@ with _q_tab:
         # 本表は区域末尾 → 行数を増やす
         st.dataframe(
             df[list(cols)], use_container_width=True, height=900,
-            column_config=_colcfg,
+            column_config=_colcfg, hide_index=True,
         )
         _ja_dl = get_lang() == "ja"
         _csv = df[list(cols)].rename(columns=dict(_cc(*cols))).to_csv(index=False).encode("utf-8-sig")
