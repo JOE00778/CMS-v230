@@ -2,9 +2,10 @@
 
 入力:
   - supplier_quote テーブル (仕入先 × JAN の報価, zone 分類付き)
-  - shop_sales テーブル (source='export_item' = 【輸出】アイテム別売上（概要）= 月次 SKU 販売数量)
-  - item_v2 (display_name / maker / rank / handling_status 補完用)
-  - item_inventory_snapshot_v2 (現在庫: 手持 / 確保済 / 注文済)  ← Boss 2026-05-12
+  - nst.sales_monthly (輸出·月次 SKU 販売数量·旧 shop_sales/export_item 置換 2026-05-26)
+  - nst.item_master_raw (display_name / maker / item_rank / handling_cd·旧 item_v2)
+  - nst.inventory_snapshot (現在庫: 手持 / 確保済 / 注文済·旧 item_inventory_snapshot_v2)
+  - nst.inventory_activity_monthly (月完売率·旧 item_monthly_turnover)
 
 発注ロジック (Boss 2026-05-12):
   目標在庫 = max(平均月販, 直近月販) × トレンド係数(1.2/1.0/0.7) × (納期カバー月数 + 安全在庫月数)
@@ -101,20 +102,22 @@ SALES_SOURCE_PRIORITY = ["export_item"]
 
 
 def _load_monthly_sales(conn, months: int = 3, sales_source: str = "auto") -> tuple[pd.DataFrame, str]:
-    candidates = SALES_SOURCE_PRIORITY if sales_source == "auto" else [sales_source]
-    for src in candidates:
-        rows = conn.execute(
-            "SELECT jan, period_start, SUM(qty_sold) AS qty "
-            "FROM shop_sales WHERE source = ? AND qty_sold IS NOT NULL "
-            "GROUP BY jan, period_start", (src,)
-        ).fetchall()
-        if rows:
-            df = pd.DataFrame([dict(r) for r in rows])
-            periods = sorted(df["period_start"].dropna().unique())[-months:]
-            df = df[df["period_start"].isin(periods)].copy()
-            df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
-            return df, src
-    return pd.DataFrame(columns=["jan", "period_start", "qty"]), (candidates[0] if candidates else "")
+    # nst.sales_monthly（輸出·月次 SKU 販売数）→ JAN 単位集計（旧 shop_sales/export_item 置換·2026-05-26）
+    rows = conn.execute(
+        "SELECT im.jan AS jan, s.year_month AS period_start, SUM(s.qty_sold) AS qty "
+        "FROM nst.sales_monthly s "
+        "JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+        "WHERE im.jan IS NOT NULL AND s.qty_sold IS NOT NULL "
+        "GROUP BY im.jan, s.year_month"
+    ).fetchall()
+    src = "export_item"
+    if rows:
+        df = pd.DataFrame([dict(r) for r in rows])
+        periods = sorted(df["period_start"].dropna().unique())[-months:]
+        df = df[df["period_start"].isin(periods)].copy()
+        df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
+        return df, src
+    return pd.DataFrame(columns=["jan", "period_start", "qty"]), src
 
 
 def _load_inventory(conn) -> dict[str, dict]:
@@ -126,29 +129,23 @@ def _load_inventory(conn) -> dict[str, dict]:
       実質在庫 = jd_on_hand + on_order
     """
     inv: dict[str, dict] = {}
-    # location 列ありの本番スキーマ
+    # nst.inventory_snapshot 最新快照 → JAN 単位（旧 item_inventory_snapshot_v2 置換·2026-05-26）
+    # jd_on_hand は JD 仓のみ（弁天除外·実質在庫 = jd_on_hand + on_order の Boss 口径維持）
     try:
         rows = conn.execute(
-            "SELECT jan, "
-            "COALESCE(SUM(CASE WHEN location LIKE 'JD%' THEN qty_on_hand ELSE 0 END),0) AS jd_oh, "
-            "COALESCE(SUM(qty_on_hand),0) AS oh_all, "
-            "COALESCE(SUM(qty_committed),0) AS cm, "
-            "COALESCE(SUM(qty_on_order),0) AS oo "
-            "FROM item_inventory_snapshot_v2 WHERE jan IS NOT NULL GROUP BY jan"
+            "SELECT im.jan AS jan, "
+            "COALESCE(SUM(CASE WHEN inv.warehouse LIKE 'JD%' THEN inv.qty_on_hand ELSE 0 END),0) AS jd_oh, "
+            "COALESCE(SUM(inv.qty_on_hand),0) AS oh_all, "
+            "COALESCE(SUM(inv.qty_on_hand - COALESCE(inv.qty_available, inv.qty_on_hand)),0) AS cm, "
+            "COALESCE(SUM(inv.qty_on_order),0) AS oo "
+            "FROM nst.inventory_snapshot inv "
+            "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
+            "WHERE im.jan IS NOT NULL "
+            "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot) "
+            "GROUP BY im.jan"
         ).fetchall()
     except Exception:
-        # location 列なし (テスト fixture 等) → 全 on_hand を JD 扱い
-        try:
-            rows = conn.execute(
-                "SELECT jan, "
-                "COALESCE(SUM(qty_on_hand),0) AS jd_oh, "
-                "COALESCE(SUM(qty_on_hand),0) AS oh_all, "
-                "COALESCE(SUM(qty_committed),0) AS cm, "
-                "COALESCE(SUM(qty_on_order),0) AS oo "
-                "FROM item_inventory_snapshot_v2 WHERE jan IS NOT NULL GROUP BY jan"
-            ).fetchall()
-        except Exception:
-            return inv
+        return inv
     for r in rows:
         inv[r["jan"]] = {
             "jd_on_hand": float(r["jd_oh"] or 0),
@@ -179,12 +176,13 @@ def _load_sellthrough(conn) -> dict[str, float]:
     """
     try:
         rows = conn.execute(
-            "SELECT iv.jan AS jan, "
-            "mt.qty_sold / NULLIF(mt.open_qty + mt.qty_total_in, 0) AS rate "
-            "FROM item_monthly_turnover mt "
-            "JOIN item_v2 iv ON iv.item_code = mt.item_code "
-            "WHERE mt.year_month = (SELECT MAX(year_month) FROM item_monthly_turnover) "
-            "AND iv.jan IS NOT NULL"
+            "SELECT im.jan AS jan, "
+            "SUM(a.sold_qty) / NULLIF(SUM(a.opening_qty + a.received_qty), 0) AS rate "
+            "FROM nst.inventory_activity_monthly a "
+            "JOIN nst.item_master_raw im ON im.internal_id = a.item_internal_id "
+            "WHERE a.year_month = (SELECT MAX(year_month) FROM nst.inventory_activity_monthly) "
+            "  AND im.jan IS NOT NULL "
+            "GROUP BY im.jan"
         ).fetchall()
     except Exception:
         return {}
@@ -197,8 +195,10 @@ def _load_sellthrough(conn) -> dict[str, float]:
 
 def _load_items(conn) -> dict[str, dict]:
     out: dict[str, dict] = {}
+    # nst.item_master_raw（旧 item_v2 置換·2026-05-26）: item_rank→rank, handling_cd→handling_status
     for r in conn.execute(
-        "SELECT jan, display_name, maker, rank, handling_status FROM item_v2 WHERE jan IS NOT NULL"
+        "SELECT jan, display_name, maker, item_rank AS rank, handling_cd AS handling_status "
+        "FROM nst.item_master_raw WHERE jan IS NOT NULL"
     ).fetchall():
         hs = (r["handling_status"] or "").strip()
         rk = (r["rank"] or "").strip()
