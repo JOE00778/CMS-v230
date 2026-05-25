@@ -1684,7 +1684,7 @@ def lang_selector():
         "<style>"
         "[data-testid='stSidebarNav']{display:none!important;}"
         # 日期 + 语言选择：置顶·居中（Boss 2026-05-25）
-        "section[data-testid='stSidebar'] [data-testid='stSidebarUserContent']{padding-top:1rem;}"
+        "section[data-testid='stSidebar'] [data-testid='stSidebarUserContent']{padding-top:0.5rem;}"
         ".cms-date-big{text-align:center;line-height:1.25;margin:.1rem 0 .5rem;}"
         ".cms-date-big .num{display:block;font-size:1.5rem;font-weight:700;}"
         ".cms-date-big .meta{display:block;font-size:.82rem;color:#64748B;}"
@@ -1737,7 +1737,7 @@ def lang_selector():
         st.query_params["lang"] = new_code
 
     with st.sidebar:
-        st.markdown(date_html, unsafe_allow_html=True)  # 日期置顶·居中
+        # 语言选择置顶（Boss 2026-05-25：日期退到语言下方，不再抢最顶位）
         try:
             st.segmented_control(
                 "lang", options,
@@ -1751,6 +1751,7 @@ def lang_selector():
                 label_visibility="collapsed",
                 on_change=_on_lang_change,
             )
+        st.markdown(date_html, unsafe_allow_html=True)  # 日期在语言下方·居中
 
     # 同步本次 render 的 session_state.lang + query_params（即使没触发 on_change，保证一致）
     st.session_state["lang"] = cur_lang_code
