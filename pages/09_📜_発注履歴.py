@@ -1,12 +1,11 @@
 """模块 #9 発注履歴 · 発注書(PO)明細クエリ.
 
 数据源: nst.purchase_order_line（NetSuite PurchaseOrder 明細 · join item_master 出 JAN/品名）
-功能: JAN / 仕入先 / PO番号 / 発注日 / 在途 筛选 + CSV 导出
+功能: 発注月 / JAN / 仕入先 / PO番号 / 在途 筛选 + 当月概览 + CSV 导出
 旧 purchase_history 表已弃用（数据源切到 nst schema）。
 """
 from __future__ import annotations
 
-import datetime as dt
 import re
 
 import pandas as pd
@@ -26,6 +25,17 @@ conn = get_connection()
 st.title(t("📜 発注履歴"))
 st.caption(t("発注書(PO)明細クエリ · 数据源 NetSuite 発注書"))
 
+# 可选発注月（最新在前）
+try:
+    months = [r[0] for r in conn.execute(
+        "SELECT DISTINCT to_char(trandate, 'YYYY-MM') AS ym "
+        "FROM nst.purchase_order_line WHERE trandate IS NOT NULL ORDER BY ym DESC"
+    ).fetchall()]
+except Exception as e:
+    st.error(t("⚠️ nst.purchase_order_line 読取失败（PG 未接続 / schema 未部署？）") + f"\n\n{e}")
+    st.stop()
+
+ALL = t("全部")
 col1, col2, col3 = st.columns(3)
 with col1:
     jan_filter_multi = st.text_area(
@@ -37,13 +47,16 @@ with col2:
     vendor_filter = st.text_input(t("🔍 仕入先名（部分匹配）"), "")
     po_filter = st.text_input(t("🔍 PO 番号（部分匹配）"), "")
 with col3:
-    date_from = st.date_input(t("発注日 起（含当日）"), value=dt.date(2020, 1, 1))
+    sel_month = st.selectbox(t("発注月"), [ALL] + months, index=(1 if months else 0))
     only_open = st.checkbox(t("仅看未完了（在途）"), value=False)
 
 # --- 动态 WHERE（命名占位符 · 照 page28 PG 模式）---
 where = ["pol.item_internal_id IS NOT NULL"]
 params: dict = {}
 
+if sel_month != ALL:
+    where.append("to_char(pol.trandate, 'YYYY-MM') = %(ym)s")
+    params["ym"] = sel_month
 jan_list = [j.strip() for j in re.split(r"[,\n\r]+", jan_filter_multi) if j.strip()]
 if jan_list:
     where.append("im.jan = ANY(%(jans)s)")
@@ -54,14 +67,11 @@ if vendor_filter:
 if po_filter:
     where.append("pol.po_number ILIKE %(po)s")
     params["po"] = f"%{po_filter}%"
-if date_from:
-    where.append("pol.trandate >= %(dfrom)s")
-    params["dfrom"] = date_from
 if only_open:
     where.append("COALESCE(pol.closed, FALSE) = FALSE")
     where.append("(pol.quantity - COALESCE(pol.quantity_received, 0)) > 0")
 
-LIMIT = 3000
+LIMIT = 5000
 sql = f"""
 SELECT
     pol.po_number             AS "PO番号",
@@ -87,7 +97,7 @@ LIMIT {LIMIT}
 try:
     rows = conn.execute(sql, params).fetchall()
 except Exception as e:
-    st.error(t("⚠️ nst.purchase_order_line 読取失败（PG 未接続 / schema 未部署？）") + f"\n\n{e}")
+    st.error(t("⚠️ nst.purchase_order_line 読取失败") + f"\n\n{e}")
     st.stop()
 
 df = pd.DataFrame([dict(r) for r in rows])
@@ -95,7 +105,16 @@ if df.empty:
     st.info(t("条件に一致する発注明細なし。"))
     st.stop()
 
+# 选了具体月 → 当月概览 KPI（这个月做了哪些発注書）
 n = len(df)
+if sel_month != ALL:
+    amt = pd.to_numeric(df["金額"], errors="coerce").fillna(0).sum()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(t("発注書 件数"), f"{df['PO番号'].nunique():,}")
+    k2.metric(t("明细行"), f"{n:,}")
+    k3.metric(t("仕入先 数"), f"{df['仕入先'].nunique():,}")
+    k4.metric(t("金額 合计 (¥)"), f"¥{amt:,.0f}")
+
 msg = t(f"✅ 命中 {n} 件")
 if n >= LIMIT:
     msg += t(f"（已达上限 {LIMIT}，请缩小条件）")
