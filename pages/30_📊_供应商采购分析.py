@@ -39,7 +39,7 @@ tab1, tab2 = st.tabs([t("📊 采购分析"), t("🏢 输出供应商名单")])
 # ============================================================
 # tab1 · 采购分析（可按白名单过滤）
 # ============================================================
-with tab1:
+def _render_analysis():
     only_export = st.checkbox(
         t("仅输出供货商（白名单过滤）"), value=True,
         help=t("勾选则只统计「🏢 输出供应商名单」里确认的输出供货商，排除 CB/国内"),
@@ -54,14 +54,14 @@ with tab1:
         )
     except Exception as e:
         st.error(t("⚠️ nst.po_supplier_monthly 读取失败（PG 未接続 / schema 未部署？）") + f"\n\n{e}")
-        st.stop()
+        return
 
     if sm.empty:
         if only_export:
             st.info(t("白名单为空或无匹配。请到「🏢 输出供应商名单」tab 勾选确认输出供货商。"))
         else:
             st.info(t("暂无 PO 数据。请先在元川跑 daily_pull --domains po。"))
-        st.stop()
+        return
 
     sm["total_amount"] = pd.to_numeric(sm["total_amount"], errors="coerce").fillna(0.0)
     sm["qty_ordered"] = pd.to_numeric(sm["qty_ordered"], errors="coerce").fillna(0.0)
@@ -168,7 +168,7 @@ with tab1:
 # ============================================================
 # tab2 · 输出供应商白名单维护
 # ============================================================
-with tab2:
+def _render_whitelist():
     st.caption(t(
         "PO 采购数据无字段可自动区分 输出/CB（部门·子公司·仓库都试过不行）→ 人工白名单。"
         "下表列出「采购过输出主档商品(4/9)」的供货商，勾选「是否输出」剔除 CB/国内，保存后只有勾选的进白名单。"
@@ -186,7 +186,7 @@ with tab2:
         )
     except Exception as e:
         st.error(t("⚠️ 候选供货商读取失败（schema 未部署？）") + f"\n\n{e}")
-        st.stop()
+        return
 
     if cand.empty:
         st.info(t("暂无候选供货商（PO 数据空？）"))
@@ -244,3 +244,9 @@ with tab2:
                 st.rerun()
             else:
                 st.warning(t("请填供货商ID"))
+
+
+with tab1:
+    _render_analysis()
+with tab2:
+    _render_whitelist()
