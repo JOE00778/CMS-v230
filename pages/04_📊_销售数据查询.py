@@ -351,7 +351,8 @@ def _render_sales_delta(_period_kind, _key):
         "WHERE maker IS NOT NULL AND maker <> '' ORDER BY maker"
     ).fetchall()]
     _f1, _f2, _f3, _f4 = st.columns(4)
-    _f_market = _f1.selectbox(_L("市场", "市場"), [_ALL] + _markets, key=_key + "_tmarket")
+    _f_market = _f1.multiselect(_L("市场", "市場"), _markets, key=_key + "_tmarket",
+                                placeholder=_L("全部", "全件"))  # 空選＝不限
     _f_shop = _f2.selectbox(_L("店铺", "店舗"), [_ALL] + _all_shops, key=_key + "_tshop")
     _f_maker = _f3.selectbox(_L("品牌", "メーカー"), [_ALL] + _all_makers, key=_key + "_tmaker")
     _f_jan = _f4.text_input(
@@ -359,12 +360,12 @@ def _render_sales_delta(_period_kind, _key):
         placeholder=_L("JAN 部分一致（留空=不限）", "JAN 部分一致（空欄=指定なし）"),
     )
     _wc, _wp, _caps = [], [], []
-    if _f_market != _ALL:
-        _mshops = [_s for _s in _all_shops if _market_of.get(_s) == _f_market]
+    if _f_market:
+        _mshops = [_s for _s in _all_shops if _market_of.get(_s) in _f_market]
         if _mshops:
             _wc.append("s.shop IN (" + ",".join(["?"] * len(_mshops)) + ")")
             _wp.extend(_mshops)
-            _caps.append(_f_market)
+            _caps.append("/".join(_f_market))
     if _f_shop != _ALL:
         _wc.append("s.shop = ?"); _wp.append(_f_shop); _caps.append(_f_shop)
     if _f_maker != _ALL:
@@ -433,7 +434,7 @@ with _q_tab:
     _month_shops = _opts("shop")
     _market_opts = sorted({classify_market(_s) for _s in _month_shops})
     f1, f2, f3, f4 = st.columns(4)
-    market_filter = f1.selectbox(t("市场"), [_ALL] + _market_opts)
+    market_filter = f1.multiselect(t("市场"), _market_opts, placeholder=_ALL)  # 空選＝全部
     rank_filter = f2.selectbox(t("商品ランク"), [_ALL] + _opts("item_rank"))
     maker_filter = f3.selectbox(t("メーカー名"), [_ALL] + _opts("maker"))
     handling_filter = f4.selectbox(t("取扱区分"), [_ALL] + _opts("handling_cd"))
@@ -455,8 +456,8 @@ with _q_tab:
     # 月份以外の筛选（下方の推移図 = 全月集計で再利用するため分離）
     _filt: list = []
     _filtp: list = []
-    if market_filter != _ALL:
-        _mshops = [_s for _s in _month_shops if classify_market(_s) == market_filter]
+    if market_filter:
+        _mshops = [_s for _s in _month_shops if classify_market(_s) in market_filter]
         if _mshops:
             _filt.append("s.shop IN (" + ",".join(["?"] * len(_mshops)) + ")")
             _filtp.extend(_mshops)

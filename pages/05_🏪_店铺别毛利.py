@@ -182,8 +182,8 @@ def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31) -> pd.Data
     dfp["defined_cost"] = dfp["revenue"] - dfp["gross_profit"]
     dfp = add_market_column(dfp, store_col="shop")
     dfp = add_owner_column(dfp, shop_col="shop")
-    if mk_sel != t("全部市场"):
-        dfp = dfp[dfp["market"] == mk_sel]
+    if mk_sel:
+        dfp = dfp[dfp["market"].isin(mk_sel)]
     dfp = dfp[dfp["owner"] != OWNER_EXCLUDED]
     g = dfp.groupby(dim, as_index=False).agg(
         qty=("qty_sold", "sum"),
@@ -231,7 +231,7 @@ if months_df is None or months_df.empty:
 # ============================================================
 c1, c2 = st.columns([1, 2])
 ym = c1.selectbox(t("対象月"), months_df["ym"].tolist())
-mk = c2.selectbox(t("市場"), [t("全部市场")] + ALL_MARKETS)
+mk = c2.multiselect(t("市場"), ALL_MARKETS, placeholder=t("全部市场"))  # 空選＝全部市场
 
 # ============================================================
 # クエリ（当月の日次明細 + 商品マスタ join）
@@ -265,8 +265,8 @@ df = df[df["sale_date"] <= _cutoff]
 df = add_market_column(df, store_col="shop")
 df = add_owner_column(df, shop_col="shop")
 
-if mk != t("全部市场"):
-    df = df[df["market"] == mk]
+if mk:
+    df = df[df["market"].isin(mk)]
     if df.empty:
         st.info(t("この市場のデータがありません"))
         st.stop()
