@@ -573,7 +573,7 @@ with _q_tab:
             "FROM nst.inventory_snapshot inv "
             "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
             "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫') "
-            "  AND im.department LIKE '輸出%' "
+            "  AND im.department = '輸出事業' "
             "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
         )
         tot_sv = float(_invn.iloc[0]["sv"] or 0) if _invn is not None and not _invn.empty else 0
@@ -599,7 +599,7 @@ with _q_tab:
             "FROM nst.inventory_snapshot inv "
             "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
             "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫') "
-            "  AND im.department LIKE '輸出%' "
+            "  AND im.department = '輸出事業' "
             "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot "
             "      WHERE to_char(snapshot_date,'YYYY-MM') = ?)",
             (_pym,),
