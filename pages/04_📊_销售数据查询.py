@@ -566,10 +566,18 @@ with _q_tab:
         tot_q = df["qty_sold"].astype(float).sum()
         tot_r = df["revenue"].astype(float).sum()
         tot_g = df["arari"].astype(float).sum()
-        tot_soh = df["qty_on_hand"].astype(float).sum()       # 在庫数 計
-        tot_sv = df["stock_value"].astype(float).sum()         # 库存总金额
-        _turnover = (tot_q / tot_soh) if tot_soh else 0        # 平均月周转率(加权=总販売/总在庫)
-        _ssr = (tot_soh / tot_q) if tot_q else 0               # 整体库存销售比
+        # 库存总金额/数量 = 全库存（JD-物流-千葉·最新快照·全SKU，不限当月销售）
+        _invn, _ = _query(
+            "SELECT SUM(inv.qty_on_hand * im.cost_estimate) sv, SUM(inv.qty_on_hand) soh "
+            "FROM nst.inventory_snapshot inv "
+            "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
+            "WHERE inv.warehouse = 'JD-物流-千葉' "
+            "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
+        )
+        tot_sv = float(_invn.iloc[0]["sv"] or 0) if _invn is not None and not _invn.empty else 0
+        tot_soh = float(_invn.iloc[0]["soh"] or 0) if _invn is not None and not _invn.empty else 0
+        _turnover = (tot_r / tot_sv) if tot_sv else 0          # 月周转 = 销售额 / 库存金额
+        _ssr = (tot_sv / tot_r) if tot_r else 0                # 存销比 = 库存金额 / 销售额
         cur_margin = (tot_g / tot_r) if tot_r else 0
 
         # ── 上月同比（同筛选 _filt·销售=上月 sales_monthly·库存=上月末快照）──
@@ -585,15 +593,13 @@ with _q_tab:
             tuple([_pym] + _filtp),
         )
         _pinv, _ = _query(
-            "SELECT SUM(inv.qty_on_hand) soh, SUM(inv.qty_on_hand * im.cost_estimate) sv "
-            "FROM nst.sales_monthly s "
-            "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
-            "JOIN nst.inventory_snapshot inv ON inv.item_internal_id = s.item_internal_id "
-            "  AND inv.warehouse = 'JD-物流-千葉' "
+            "SELECT SUM(inv.qty_on_hand * im.cost_estimate) sv, SUM(inv.qty_on_hand) soh "
+            "FROM nst.inventory_snapshot inv "
+            "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
+            "WHERE inv.warehouse = 'JD-物流-千葉' "
             "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot "
-            "      WHERE to_char(snapshot_date,'YYYY-MM') = ?) "
-            f"WHERE {_pwhere}",
-            tuple([_pym, _pym] + _filtp),
+            "      WHERE to_char(snapshot_date,'YYYY-MM') = ?)",
+            (_pym,),
         )
 
         def _g0(_dfp, _c):
@@ -601,10 +607,10 @@ with _q_tab:
                 return None
             return float(_dfp.iloc[0][_c])
         prev_q, prev_r, prev_g = _g0(_pv, "q"), _g0(_pv, "r"), _g0(_pv, "g")
-        prev_soh, prev_sv = _g0(_pinv, "soh"), _g0(_pinv, "sv")
+        prev_sv, prev_soh = _g0(_pinv, "sv"), _g0(_pinv, "soh")
         prev_margin = (prev_g / prev_r) if (prev_g is not None and prev_r) else None
-        prev_turn = (prev_q / prev_soh) if (prev_q is not None and prev_soh) else None
-        prev_ssr = (prev_soh / prev_q) if (prev_soh is not None and prev_q) else None
+        prev_turn = (prev_r / prev_sv) if (prev_r is not None and prev_sv) else None   # 销售额/库存金额
+        prev_ssr = (prev_sv / prev_r) if (prev_sv is not None and prev_r) else None    # 库存金额/销售额
 
         def _dpct(cur, prev):
             if prev is None or prev == 0:
