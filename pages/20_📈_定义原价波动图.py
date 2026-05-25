@@ -37,13 +37,13 @@ def _load(sql: str) -> pd.DataFrame:
 
 
 def _pct_color(v):
-    """涨跌着色：正绿负红（Boss 口径 加绿减红）。"""
+    """进货价增幅着色：涨=红（成本上升·警示）/ 降=绿（成本下降·利好）。"""
     if pd.isna(v):
         return ""
     if v > 0:
-        return "color:#16A34A"
+        return "color:#DC2626"  # 涨价=红
     if v < 0:
-        return "color:#DC2626"
+        return "color:#16A34A"  # 降价=绿
     return ""
 
 
