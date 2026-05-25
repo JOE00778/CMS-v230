@@ -558,19 +558,22 @@ with top_v2:
             with cc3:
                 dept = st.selectbox(t("部門"), DEPARTMENTS)
                 memo = st.text_input(t("メモ"), value=f"自動発注 {date.today():%Y-%m}")
-            sub_sel = df_rec[df_rec["supplier_name"] == sel_sup]
-            # NST コードの推定 (報価の nst_supplier_code → 一致するものを default に)
-            guess_code = sub_sel["nst_supplier_code"].iloc[0]
-            nst_idx = NST_SUPPLIERS.index(guess_code) if guess_code in NST_SUPPLIERS else 0
-            nst_sup = st.selectbox(t("NST 仕入先コード"), NST_SUPPLIERS, index=nst_idx)
-            df_csv = _build_nst_csv(sub_sel, nst_supplier=nst_sup, order_date=od, employee=emp, department=dept, memo=memo)
-            st.dataframe(df_csv, use_container_width=True, hide_index=True, height=300)
-            st.download_button(
-                t(f"⬇️ {sel_sup} 発注 CSV ダウンロード"),
-                data=df_csv.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"発注書_{sel_sup}_{datetime.now():%Y%m%d}.csv",
-                mime="text/csv", type="primary",
-            )
+            sub_sel = df_rec[df_rec["supplier_name"] == sel_sup] if sel_sup else df_rec.iloc[0:0]
+            if sub_sel.empty:
+                st.info(t("推奨発注なし — 仕入先別 CSV は出力対象がありません。"))
+            else:
+                # NST コードの推定 (報価の nst_supplier_code → 一致するものを default に)
+                guess_code = sub_sel["nst_supplier_code"].iloc[0]
+                nst_idx = NST_SUPPLIERS.index(guess_code) if guess_code in NST_SUPPLIERS else 0
+                nst_sup = st.selectbox(t("NST 仕入先コード"), NST_SUPPLIERS, index=nst_idx)
+                df_csv = _build_nst_csv(sub_sel, nst_supplier=nst_sup, order_date=od, employee=emp, department=dept, memo=memo)
+                st.dataframe(df_csv, use_container_width=True, hide_index=True, height=300)
+                st.download_button(
+                    t(f"⬇️ {sel_sup} 発注 CSV ダウンロード"),
+                    data=df_csv.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"発注書_{sel_sup}_{datetime.now():%Y%m%d}.csv",
+                    mime="text/csv", type="primary",
+                )
             # 全件まとめ
             st.download_button(
                 t("⬇️ 全 SKU 推奨清单 CSV (全仕入先)"),
