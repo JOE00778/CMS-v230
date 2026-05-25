@@ -28,6 +28,12 @@ _THEME_CSS = """
 .cms-table tbody tr:last-child td { border-bottom:none; }
 .cms-table tbody tr:hover td { background:#F8FAFC; }
 .cms-table td.num, .cms-table th.num { text-align:right; }
+
+/* KPI 指标卡片化（Boss 2026-05-25）·组件级选择器，仅命中 st.metric，不影响 dataframe */
+[data-testid="stMetric"] {
+  background:#FFFFFF; border:1px solid #E2E8F0; border-radius:10px;
+  padding:14px 16px; box-shadow:0 1px 2px rgba(15,23,42,.04);
+}
 </style>
 """
 
