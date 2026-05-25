@@ -4,6 +4,9 @@ backgroundColor = "#F1F5F9"
 secondaryBackgroundColor = "#FFFFFF"
 textColor = "#0F172A"
 font = "sans serif"
+# 基础字号走原生配置（非 CSS html{21px}）。Streamlit 会把它直接喂给 st.dataframe 的
+# glide 网格 → 网格字号/列宽每次一致，不再与 CSS 抢挂载时机（修表格忽大忽小/填不满）。
+baseFontSize = 21
 
 [server]
 maxUploadSize = 200

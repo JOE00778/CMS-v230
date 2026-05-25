@@ -45,8 +45,10 @@ button, textarea, select {
 [class*="material-symbols"], [data-testid="stIconMaterial"], .material-icons {
   font-family: 'Material Symbols Rounded','Material Symbols Outlined','Material Symbols Sharp','Material Icons' !important;
 }
+/* 基础字号已移到 .streamlit/config.toml 的 [theme] baseFontSize=21（原生配置）。
+   不再用 CSS html{font-size:21px}——那条会与 st.dataframe canvas 网格抢挂载时机，
+   导致网格字号忽 18.375px 忽 14px、列宽忽满忽不满。原生配置喂给网格则每次一致。 */
 html, body {
-  font-size: 21px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
