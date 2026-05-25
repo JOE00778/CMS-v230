@@ -159,6 +159,42 @@ def _load_inventory(conn) -> dict[str, dict]:
     return inv
 
 
+def _sellthrough_factor(rate: float | None) -> float:
+    """月完売率 → 発注係数（page18 と同一閾値・Boss 2026-05-26 トレンド係数を置換）。
+    ≥0.9 断货风险→1.5 / 0.5-0.9 正常→1.0 / <0.5 压库存→0.5 / データ無し→1.0(中立)。
+    """
+    if rate is None:
+        return 1.0
+    if rate >= 0.9:
+        return 1.5
+    if rate >= 0.5:
+        return 1.0
+    return 0.5
+
+
+def _load_sellthrough(conn) -> dict[str, float]:
+    """item_monthly_turnover の最新月 月完売率を JAN 単位で返す（page18 と同一指標）。
+    完売率 = qty_sold / (open_qty + qty_total_in)。item_code→JAN は item_v2 経由。
+    表が無い/データ無し → 空 dict（→ 係数 1.0 で中立、テスト fixture も安全）。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT iv.jan AS jan, "
+            "mt.qty_sold / NULLIF(mt.open_qty + mt.qty_total_in, 0) AS rate "
+            "FROM item_monthly_turnover mt "
+            "JOIN item_v2 iv ON iv.item_code = mt.item_code "
+            "WHERE mt.year_month = (SELECT MAX(year_month) FROM item_monthly_turnover) "
+            "AND iv.jan IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    for r in rows:
+        if r["rate"] is not None:
+            out[r["jan"]] = float(r["rate"])
+    return out
+
+
 def _load_items(conn) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for r in conn.execute(
@@ -311,6 +347,7 @@ def compute_recommendations(
     item_map = _load_items(conn)
     inv_map = _load_inventory(conn) if use_inventory else {}
     inventory_loaded = bool(inv_map)
+    st_map = _load_sellthrough(conn)   # JAN → 月完売率（係数算出用·Boss 2026-05-26 取代趋势系数）
 
     quotes: dict[str, list[dict]] = {}
     for r in conn.execute(
@@ -355,9 +392,10 @@ def compute_recommendations(
         eff_stock = jd_on_hand + on_order
 
         base_monthly = max(avg_monthly, latest_monthly)
-        trend = _classify_trend(m_seq)
-        tfac = tf.get(trend, 1.0)
-        rec_monthly = base_monthly * tfac   # 推奨月販 (= Boss 公式の「実績(30日)」相当)
+        trend = _classify_trend(m_seq)              # 参考: 売上方向（数量計算には使わない）
+        st_rate = st_map.get(jan)
+        stfac = _sellthrough_factor(st_rate)        # 完売率係数（Boss 2026-05-26 トレンド係数を置換）
+        rec_monthly = base_monthly * stfac          # 推奨月販 = max(平均,直近) × 完売率係数
 
         def _est_line_cost(q: dict) -> int:
             """その仕入先で発注した場合の line_cost 見積り (Boss 2026-05-14 公式 + ケース丸め)。"""
@@ -378,7 +416,7 @@ def compute_recommendations(
             "candidates": candidates, "meta": meta, "m_seq": m_seq,
             "avg_monthly": avg_monthly, "latest_monthly": latest_monthly,
             "base_monthly": base_monthly, "rec_monthly": rec_monthly,
-            "trend": trend,
+            "trend": trend, "sellthrough": st_rate, "sellthrough_factor": stfac,
             "jd_on_hand": jd_on_hand, "on_hand_all": on_hand_all,
             "committed": committed, "on_order": on_order,
             "eff_stock": eff_stock,
@@ -440,6 +478,8 @@ def compute_recommendations(
             "latest_monthly": d["latest_monthly"],
             "trend": d["trend"],
             "trend_factor": tfac,
+            "sellthrough": d.get("sellthrough"),
+            "sellthrough_factor": d.get("sellthrough_factor"),
             "rec_monthly": round(rec_monthly, 1),
             "lead_time_text": best["lead_time_text"],
             "jd_on_hand": d["jd_on_hand"],

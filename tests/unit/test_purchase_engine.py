@@ -302,3 +302,55 @@ def test_no_lot_suppliers_ignore_lot():
     assert df_h.iloc[0]["suggested_qty"] == 25      # NO_LOT: pack=1 → ceil(25/1)*1 = 25
     assert df_h.iloc[0]["pack_size"] == 1
     assert df_h.iloc[0]["line_cost"] == 25 * 120
+
+
+# ---- 完売率系数取代趋势系数 (Boss 2026-05-26: 订货依据 × 发注AI 结合) ----
+
+def test_sellthrough_factor_replaces_trend():
+    """月完売率 ≥0.9(断货) → 系数 1.5 → 推奨月販 = base × 1.5（取代趋势系数）。"""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.executescript(
+        """
+        CREATE TABLE shop_sales (jan TEXT, period_start TEXT, period_end TEXT, qty_sold REAL, source TEXT, granularity TEXT);
+        CREATE TABLE item_v2 (jan TEXT, item_code TEXT, display_name TEXT, maker TEXT, rank TEXT, handling_status TEXT);
+        CREATE TABLE supplier_quote (supplier_name TEXT, jan TEXT, display_name TEXT, unit_price INTEGER,
+            lot_size INTEGER, case_qty INTEGER, min_order_amount INTEGER, order_condition TEXT,
+            lead_time_text TEXT, zone TEXT, zone_rank INTEGER, nst_supplier_code TEXT);
+        CREATE TABLE item_monthly_turnover (item_code TEXT, year_month TEXT, open_qty REAL, qty_total_in REAL, qty_sold REAL);
+        """
+    )
+    _seed_sales(c, "4900000080001", [100, 100, 100])   # base_monthly = 100
+    c.execute("INSERT INTO item_v2 VALUES ('4900000080001','IC-1','商品H','M','Aランク','取扱中')")
+    c.execute("INSERT INTO supplier_quote VALUES ('甲','4900000080001','商品H',100,1,NULL,0,'掛','2週間','JD_DIRECT',1,'NST1')")
+    c.execute("INSERT INTO item_monthly_turnover VALUES ('IC-1','202604',5,95,95)")  # 完売率 95/100 = 0.95
+    df = compute_recommendations(c, months=3, use_inventory=False, consolidate_by_brand=False)
+    r = df.iloc[0]
+    assert r["sellthrough"] == pytest.approx(0.95)
+    assert r["sellthrough_factor"] == pytest.approx(1.5)
+    assert r["rec_monthly"] == pytest.approx(150.0)              # 100 × 1.5
+    assert r["suggested_qty"] == math.ceil(150 * 2.5)            # rec × 2.5 = 375
+
+
+def test_sellthrough_low_shrinks_order():
+    """月完売率 <0.5(压库存) → 系数 0.5 → 推奨月販减半。"""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.executescript(
+        """
+        CREATE TABLE shop_sales (jan TEXT, period_start TEXT, period_end TEXT, qty_sold REAL, source TEXT, granularity TEXT);
+        CREATE TABLE item_v2 (jan TEXT, item_code TEXT, display_name TEXT, maker TEXT, rank TEXT, handling_status TEXT);
+        CREATE TABLE supplier_quote (supplier_name TEXT, jan TEXT, display_name TEXT, unit_price INTEGER,
+            lot_size INTEGER, case_qty INTEGER, min_order_amount INTEGER, order_condition TEXT,
+            lead_time_text TEXT, zone TEXT, zone_rank INTEGER, nst_supplier_code TEXT);
+        CREATE TABLE item_monthly_turnover (item_code TEXT, year_month TEXT, open_qty REAL, qty_total_in REAL, qty_sold REAL);
+        """
+    )
+    _seed_sales(c, "4900000080002", [100, 100, 100])
+    c.execute("INSERT INTO item_v2 VALUES ('4900000080002','IC-2','商品I','M','Aランク','取扱中')")
+    c.execute("INSERT INTO supplier_quote VALUES ('甲','4900000080002','商品I',100,1,NULL,0,'掛','2週間','JD_DIRECT',1,'NST1')")
+    c.execute("INSERT INTO item_monthly_turnover VALUES ('IC-2','202604',70,30,30)")  # 完売率 30/100 = 0.30
+    df = compute_recommendations(c, months=3, use_inventory=False, consolidate_by_brand=False)
+    r = df.iloc[0]
+    assert r["sellthrough_factor"] == pytest.approx(0.5)
+    assert r["rec_monthly"] == pytest.approx(50.0)               # 100 × 0.5

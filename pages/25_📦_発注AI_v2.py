@@ -380,7 +380,7 @@ with top_v2:
         st.divider()
         st.subheader(t("② パラメータ"))
         st.caption(t("📅 月販: 【輸出】アイテム別売上（概要）_JO (export_item) ｜ 在庫: 【輸出】在庫のスナップショット (手持 − 確保済 + 注文済)"))
-        st.caption(t("発注数 = max(0, 目標在庫 − 有効在庫) を ロット倍数に切り上げ ｜ 目標在庫 = max(平均月販,直近月販) × トレンド係数 × (納期カバー月数 + 安全在庫月数)"))
+        st.caption(t("推奨月販 = max(平均月販,直近月販) × 完売率係数 ｜ 目標在庫 = 推奨月販 × 2.5 ｜ 発注数 = max(0, 目標在庫 − 実質在庫) を ケース倍数に切り上げ"))
         st.caption(t("仕入先選定: zone優先(JD直送>弁天>応急>前払い)→同zoneは最安。各SKUに主力+備用1〜2。さらにメーカー単位で1〜3仕入先に集約(zone劣化なし)"))
         sales_source = "export_item"
     
@@ -392,9 +392,8 @@ with top_v2:
         with p2:
             incl_disc = st.checkbox(t("取扱中止品も含める"), value=False)
         with p3:
-            st.caption(t("トレンド係数 (Boss 2026-05-14 仕様で保持)"))
-            f_up = st.number_input("📈 up", 1.0, 3.0, DEFAULT_TREND_FACTORS["up"], 0.1, key="f_up")
-            f_dn = st.number_input("📉 down", 0.1, 1.0, DEFAULT_TREND_FACTORS["down"], 0.1, key="f_dn")
+            st.caption(t("完売率係数 (Boss 2026-05-26: 月完売率で発注量を調整・トレンド係数を置換)"))
+            st.caption(t("≥0.9 断货风险→×1.5 ｜ 0.5-0.9 正常→×1.0 ｜ <0.5 压库存→×0.5"))
     
         q0, q1, q2, q3 = st.columns([1.4, 1, 1, 1.3])
         with q0:
@@ -427,7 +426,6 @@ with top_v2:
             with st.spinner(t("計算中…")):
                 df = compute_recommendations(
                     conn, months=int(months),
-                    trend_factors={"up": f_up, "flat": 1.0, "down": f_dn},
                     sales_source=sales_source,
                     include_discontinued=bool(incl_disc),
                     use_inventory=bool(use_inv),
@@ -523,7 +521,7 @@ with top_v2:
                     st.dataframe(by_maker, use_container_width=True, hide_index=True)
                     st.dataframe(
                         sub[["jan", "display_name", "maker", "rank", "status", "avg_monthly", "latest_monthly",
-                             "trend", "trend_factor", "rec_monthly",
+                             "trend", "sellthrough", "sellthrough_factor", "rec_monthly",
                              "jd_on_hand", "on_order", "eff_stock", "target_stock", "shortfall",
                              "case_qty", "lot_size", "pack_size", "pack_source",
                              "boxes", "suggested_qty", "stock_months_after",
@@ -532,8 +530,8 @@ with top_v2:
                              "alt_suppliers", "reason"]]
                         .rename(columns={
                             "rank": "ランク", "status": "状態",
-                            "avg_monthly": "平均月販", "latest_monthly": "直近月販", "trend": "傾向",
-                            "trend_factor": "係数", "rec_monthly": "推奨月販",
+                            "avg_monthly": "平均月販", "latest_monthly": "直近月販", "trend": "傾向(参考)",
+                            "sellthrough": "完売率", "sellthrough_factor": "係数", "rec_monthly": "推奨月販",
                             "jd_on_hand": "JD在庫", "on_order": "注文済", "eff_stock": "実質在庫",
                             "target_stock": "目標(×1.5)", "shortfall": "必要数",
                             "case_qty": "ケース入数", "lot_size": "ロット",
