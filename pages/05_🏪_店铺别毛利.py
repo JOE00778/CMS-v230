@@ -140,7 +140,7 @@ def _hbar(g: pd.DataFrame, dim: str):
         alt.Chart(g)
         .mark_bar(color="#4F46E5")
         .encode(
-            x=alt.X("gross_profit:Q", title=gp_lbl, axis=alt.Axis(format=",.0f")),
+            x=alt.X("gross_profit:Q", title=None, axis=None),  # 底部数值刻度删除(表格/tooltip 已有精确值)
             y=alt.Y(f"{dim}:N", title=None, sort="-x"),
             tooltip=[
                 alt.Tooltip(f"{dim}:N", title=_col(dim)),
