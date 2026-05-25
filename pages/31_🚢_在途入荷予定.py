@@ -21,23 +21,33 @@ conn = get_connection()
 st.title(t("🚢 在途 / 入荷予定（未完了 PO）"))
 st.caption(t("数据源 NetSuite 発注書 · 未 close 且入荷残>0 的明细（= 订货引擎的精確在途）"))
 
+only_export = st.checkbox(
+    t("仅输出供货商（白名单过滤）"), value=True,
+    help=t("勾选则只看「📊 供应商采购分析 → 🏢 输出供应商名单」里确认的输出供货商"),
+)
+
 
 def _df(sql: str, params=None) -> pd.DataFrame:
     rs = conn.execute(sql, params or {}).fetchall()
     return pd.DataFrame([dict(r) for r in rs])
 
 
+wl = "JOIN nst.po_export_vendor ev ON ev.vendor_id = ol.vendor_id" if only_export else ""
 try:
     df = _df(
-        "SELECT item_internal_id, jan, po_number, vendor_name, location, "
-        "qty_outstanding, expected_receipt_date, status FROM nst.po_open_lines"
+        "SELECT ol.item_internal_id, ol.jan, ol.po_number, ol.vendor_name, ol.location, "
+        "ol.qty_outstanding, ol.expected_receipt_date, ol.status "
+        f"FROM nst.po_open_lines ol {wl}"
     )
 except Exception as e:
     st.error(t("⚠️ nst.po_open_lines 读取失败（PG 未接続 / schema 未部署？）") + f"\n\n{e}")
     st.stop()
 
 if df.empty:
-    st.info(t("当前无在途 PO（全部已入荷 / close）。"))
+    if only_export:
+        st.info(t("白名单为空或无匹配在途。请到「📊 供应商采购分析 → 🏢 输出供应商名单」维护，或取消勾选看全部。"))
+    else:
+        st.info(t("当前无在途 PO（全部已入荷 / close）。"))
     st.stop()
 
 df["qty_outstanding"] = pd.to_numeric(df["qty_outstanding"], errors="coerce").fillna(0.0)
