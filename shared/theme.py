@@ -21,7 +21,7 @@ _THEME_CSS = """
 
 /* 完全默认 Streamlit 主题（无自定义字体/颜色/字号/缩放）。
    仅保留 html_table 助手的表格样式——否则满宽 HTML 表格会变成无样式裸表。 */
-.cms-table-wrap { width:100% !important; overflow-x:auto; border:1px solid #E2E8F0; border-radius:8px; background:#FFFFFF; }
+.cms-table-wrap { width:100% !important; overflow-x:auto; border:1px solid #E2E8F0; border-radius:8px; background:#FFFFFF; margin-bottom:2rem; }
 .cms-table { width:100% !important; border-collapse:collapse; table-layout:auto; }
 .cms-table thead th { background:#F8FAFC; color:#64748B; font-weight:600; text-align:left; padding:10px 14px; border-bottom:1px solid #E2E8F0; white-space:nowrap; }
 .cms-table tbody td { padding:9px 14px; border-bottom:1px solid #F1F5F9; font-variant-numeric:tabular-nums; white-space:nowrap; }
