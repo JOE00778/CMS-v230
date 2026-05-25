@@ -1689,9 +1689,9 @@ def lang_selector():
         "[data-testid='stSidebarNav']{display:none!important;}"
         # 日期 + 语言选择：置顶·居中（Boss 2026-05-25）
         "section[data-testid='stSidebar'] [data-testid='stSidebarUserContent']{padding-top:0.5rem;}"
-        ".cms-date-big{text-align:center;line-height:1.2;margin:.1rem 0 .15rem;}"
-        ".cms-date-big .num{display:block;font-size:1.5rem;font-weight:700;}"
-        ".cms-date-big .meta{display:block;font-size:.82rem;color:#64748B;}"
+        ".cms-date-big{text-align:center;line-height:1.3;margin:.1rem 0 .15rem;font-size:1.5rem;}"
+        ".cms-date-big .num{font-weight:700;}"
+        ".cms-date-big .meta{font-size:.92em;color:#64748B;}"
         # 语言选择 segmented_control(testid=stButtonGroup·从容器JS确认) + radio fallback 居中。
         # 关键：button group 是 fit-content inline-flex，必须 width:100% 撑满父容器后 justify-center 才生效。
         "section[data-testid='stSidebar'] [data-testid='stButtonGroup'],"
@@ -1720,16 +1720,16 @@ def lang_selector():
         wd = ["月", "火", "水", "木", "金", "土", "日"][now.weekday()]
         date_html = (
             f'<div class="cms-date-big">'
+            f'<span class="meta">{now.year}年 · {wd}曜日</span> '
             f'<span class="num">{now.month}/{now.day}</span>'
-            f'<span class="meta">{now.year}年 · {wd}曜日</span>'
             f'</div>'
         )
     else:
         wd = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
         date_html = (
             f'<div class="cms-date-big">'
+            f'<span class="meta">{now.year}年 · {wd}</span> '
             f'<span class="num">{now.month}/{now.day}</span>'
-            f'<span class="meta">{now.year}年 · {wd}</span>'
             f'</div>'
         )
 
