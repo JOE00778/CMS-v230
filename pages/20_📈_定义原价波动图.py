@@ -279,12 +279,11 @@ _SQL_COST = (
     "ORDER BY ch.internal_id, ch.effective_date"
 )
 _SQL_PO = (
-    "SELECT pol.item_internal_id AS internal_id, "
-    "COALESCE(im.item_code, pol.item_internal_id) AS item_code, im.jan, "
-    "COALESCE(im.display_name, '(主档未収録 ID:' || pol.item_internal_id || ')') AS display_name, "
+    "SELECT pol.item_internal_id AS internal_id, im.item_code, im.jan, im.display_name, "
     "pol.trandate AS changed_at, pol.rate AS std_cost_new "
     "FROM nst.purchase_order_line pol "
-    "LEFT JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
+    # INNER JOIN：主档未収録（已停售/历史旧商品）直接忽略，只看有商品名的
+    "JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
     "WHERE pol.rate IS NOT NULL AND pol.rate > 0 AND pol.trandate IS NOT NULL "
     "ORDER BY pol.item_internal_id, pol.trandate"
 )
