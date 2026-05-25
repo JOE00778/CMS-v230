@@ -156,17 +156,20 @@ def _load_inventory(conn) -> dict[str, dict]:
     return inv
 
 
-def _sellthrough_factor(rate: float | None) -> float:
-    """月完売率 → 発注係数（page18 と同一閾値・Boss 2026-05-26 トレンド係数を置換）。
-    ≥0.9 断货风险→1.5 / 0.5-0.9 正常→1.0 / <0.5 压库存→0.5 / データ無し→1.0(中立)。
+def _sellthrough_factor(rate: float | None, p: dict | None = None) -> float:
+    """月完売率 → 発注係数（阈值/系数可在「⚙️ 系统参数设定」改·Boss 2026-05-26）。
+    ≥high→factor_high(加大) / ≥low→factor_mid(正常) / <low→factor_low(减少) / データ無し→factor_mid(中立)。
     """
+    if p is None:
+        from shared.order_settings import load_sellthrough_params
+        p = load_sellthrough_params()
     if rate is None:
-        return 1.0
-    if rate >= 0.9:
-        return 1.5
-    if rate >= 0.5:
-        return 1.0
-    return 0.5
+        return p["factor_mid"]
+    if rate >= p["high"]:
+        return p["factor_high"]
+    if rate >= p["low"]:
+        return p["factor_mid"]
+    return p["factor_low"]
 
 
 def _load_sellthrough(conn) -> dict[str, float]:
@@ -348,6 +351,8 @@ def compute_recommendations(
     inv_map = _load_inventory(conn) if use_inventory else {}
     inventory_loaded = bool(inv_map)
     st_map = _load_sellthrough(conn)   # JAN → 月完売率（係数算出用·Boss 2026-05-26 取代趋势系数）
+    from shared.order_settings import load_sellthrough_params
+    _stp = load_sellthrough_params()   # 完売率阈值/系数（系统参数设定可改·循环外 load 一次）
 
     quotes: dict[str, list[dict]] = {}
     for r in conn.execute(
@@ -394,7 +399,7 @@ def compute_recommendations(
         base_monthly = max(avg_monthly, latest_monthly)
         trend = _classify_trend(m_seq)              # 参考: 売上方向（数量計算には使わない）
         st_rate = st_map.get(jan)
-        stfac = _sellthrough_factor(st_rate)        # 完売率係数（Boss 2026-05-26 トレンド係数を置換）
+        stfac = _sellthrough_factor(st_rate, _stp)  # 完売率係数（阈值/系数 系统参数设定可改）
         rec_monthly = base_monthly * stfac          # 推奨月販 = max(平均,直近) × 完売率係数
 
         def _est_line_cost(q: dict) -> int:

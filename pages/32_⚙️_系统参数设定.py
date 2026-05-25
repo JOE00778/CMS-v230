@@ -46,3 +46,36 @@ st.caption(
     t("当前生效阈值") + f"：毛利 {_th['margin_low']:.0f}/{_th['margin_high']:.0f}% · "
     f"周转 {_th['turn_low']}/{_th['turn_high']}"
 )
+
+st.divider()
+st.subheader(t("发注 · 月完売率发注策略"))
+st.caption(t("月完売率分档调整发注量：≥高界→加大 / 中间→正常 / <低界→减少"))
+
+from shared.order_settings import load_sellthrough_params, save_sellthrough_params
+_sp = load_sellthrough_params()
+s1, s2 = st.columns(2)
+_sh = s1.number_input(t("完売率 高界（加大订货）"), value=float(_sp["high"]),
+                      step=0.05, min_value=0.0, max_value=5.0, format="%.2f")
+_sl = s2.number_input(t("完売率 低界（减少订货）"), value=float(_sp["low"]),
+                      step=0.05, min_value=0.0, max_value=5.0, format="%.2f")
+f1, f2, f3 = st.columns(3)
+_fh = f1.number_input(t("系数·加大（≥高界）"), value=float(_sp["factor_high"]),
+                      step=0.1, min_value=0.0, format="%.2f")
+_fm = f2.number_input(t("系数·正常（中间）"), value=float(_sp["factor_mid"]),
+                      step=0.1, min_value=0.0, format="%.2f")
+_fl = f3.number_input(t("系数·减少（<低界）"), value=float(_sp["factor_low"]),
+                      step=0.1, min_value=0.0, format="%.2f")
+
+if st.button(t("💾 保存发注策略"), type="primary", key="save_st"):
+    if _sl >= _sh:
+        st.error(t("完売率低界必须 < 高界"))
+    else:
+        save_sellthrough_params({"high": _sh, "low": _sl, "factor_high": _fh,
+                                 "factor_mid": _fm, "factor_low": _fl})
+        st.success(t("✅ 已保存。到「📦 发注AI v2」点【执行发注计算】生效。"))
+
+st.caption(
+    t("当前生效") + f"：完売率 ≥{_sp['high']:.2f}→×{_sp['factor_high']:.1f}（加大） · "
+    f"≥{_sp['low']:.2f}→×{_sp['factor_mid']:.1f}（正常） · "
+    f"<{_sp['low']:.2f}→×{_sp['factor_low']:.1f}（减少）"
+)
