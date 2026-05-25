@@ -76,24 +76,120 @@ _LBL = {
 _MONEY = {"revenue", "defined_cost", "gross_profit"}
 _PCT = {"gross_margin"}
 _INT = {"qty", "n_shop", "n_sku"}
+# 环比対象（相対%）。gross_margin は _PCT で百分点(pp)环比、n_shop/n_sku は構造カウントで环比なし。
+_MOM_VALUE_COLS = {"qty", "revenue", "defined_cost", "gross_profit"}
 
 
 def _col(key: str) -> str:
     return _LBL[key][1] if get_lang() == "ja" else _LBL[key][0]
 
 
-def _disp(g: pd.DataFrame, cols: tuple) -> pd.DataFrame:
-    """聚合 DataFrame → 双语列名 + 金额/比率/整数格式化（表示専用）。"""
+def _mom_suffix(cur, key, metric, prev_idx, *, pp: bool = False) -> str:
+    """整月环比サフィックス「 (±X.X%)」。上月データなし/0 は「 (—)」。pp=True は百分点(pp)差。"""
+    if prev_idx is None or key not in prev_idx.index:
+        return " (—)"
+    prev = prev_idx.loc[key, metric]
+    if pd.isna(prev) or prev == 0:
+        return " (—)"
+    if pp:
+        return f" ({cur - prev:+.1f}pp)"
+    return f" ({(cur - prev) / abs(prev) * 100:+.1f}%)"
+
+
+def _disp(g: pd.DataFrame, cols: tuple, *, mom_prev=None, dim: str = None) -> pd.DataFrame:
+    """聚合 DataFrame → 双语列名 + 金额/比率/整数格式化（表示専用）。
+
+    mom_prev(index=dim の上月 dim 别集計) を渡すと、各値指標に「 (±%)」整月环比を内嵌
+    （金额/数量=相対%、毛利率=百分点pp）。num 列右对齐は html_table 側で処理。
+    """
     d = g[list(cols)].copy()
+    keys = list(g[dim]) if (mom_prev is not None and dim) else None
     for c in cols:
         if c in _MONEY:
-            d[c] = d[c].apply(lambda x: f"¥{x:,.0f}")
+            if keys is not None and c in _MOM_VALUE_COLS:
+                d[c] = [f"¥{v:,.0f}{_mom_suffix(v, k, c, mom_prev)}"
+                        for v, k in zip(d[c], keys)]
+            else:
+                d[c] = d[c].apply(lambda x: f"¥{x:,.0f}")
         elif c in _PCT:
-            d[c] = d[c].apply(lambda x: f"{x:.2f}%")
+            if keys is not None:
+                d[c] = [f"{v:.2f}%{_mom_suffix(v, k, c, mom_prev, pp=True)}"
+                        for v, k in zip(d[c], keys)]
+            else:
+                d[c] = d[c].apply(lambda x: f"{x:.2f}%")
         elif c in _INT:
-            d[c] = d[c].apply(lambda x: f"{int(x):,}")
+            if keys is not None and c in _MOM_VALUE_COLS:
+                d[c] = [f"{int(v):,}{_mom_suffix(v, k, c, mom_prev)}"
+                        for v, k in zip(d[c], keys)]
+            else:
+                d[c] = d[c].apply(lambda x: f"{int(x):,}")
     d.columns = [_col(c) for c in cols]
     return d
+
+
+# 柱状图字号（全页统一·缩小）。st.bar_chart 不支持字号参数，横向粗利图改用 Altair 才能控字号。
+_CHART_LABEL_FS = 10
+_CHART_TITLE_FS = 11
+
+
+def _hbar(g: pd.DataFrame, dim: str):
+    """gross_profit 横向条形图（小字号·主题靛蓝·按值降序），替代 st.bar_chart 以控字号。"""
+    gp_lbl = _col("gross_profit")
+    h = max(160, len(g) * 24)
+    return (
+        alt.Chart(g)
+        .mark_bar(color="#4F46E5")
+        .encode(
+            x=alt.X("gross_profit:Q", title=gp_lbl, axis=alt.Axis(format=",.0f")),
+            y=alt.Y(f"{dim}:N", title=None, sort="-x"),
+            tooltip=[
+                alt.Tooltip(f"{dim}:N", title=_col(dim)),
+                alt.Tooltip("gross_profit:Q", title=gp_lbl, format=",.0f"),
+            ],
+        )
+        .properties(height=h)
+        .configure_axis(labelFontSize=_CHART_LABEL_FS, titleFontSize=_CHART_TITLE_FS)
+    )
+
+
+def _prev_month(ym: str) -> str:
+    """'YYYY-MM' → 上一个月 'YYYY-MM'。"""
+    cur = dt.datetime.strptime(ym, "%Y-%m")
+    prev = cur.replace(day=1) - dt.timedelta(days=1)
+    return prev.strftime("%Y-%m")
+
+
+def _agg_prev(prev_ym: str, mk_sel: str, dim: str) -> pd.DataFrame:
+    """上月(整月) dim别 集計（index=dim）。环比の分母用。dim∈{'owner','shop'}。空なら空DF。
+
+    「只环比月不环比日」(Boss 2026-05-25): 同日範囲フィルタなし、整月対整月。
+    """
+    dfp, _ = _query(
+        "SELECT s.shop, s.qty_sold, s.revenue, s.gross_profit "
+        "FROM nst.sales_daily s "
+        "WHERE to_char(s.sale_date,'YYYY-MM') = ?",
+        (prev_ym,),
+    )
+    if dfp is None or dfp.empty:
+        return pd.DataFrame()
+    for c in ("qty_sold", "revenue", "gross_profit"):
+        dfp[c] = dfp[c].astype(float)
+    dfp["defined_cost"] = dfp["revenue"] - dfp["gross_profit"]
+    dfp = add_market_column(dfp, store_col="shop")
+    dfp = add_owner_column(dfp, shop_col="shop")
+    if mk_sel != t("全部市场"):
+        dfp = dfp[dfp["market"] == mk_sel]
+    dfp = dfp[dfp["owner"] != OWNER_EXCLUDED]
+    g = dfp.groupby(dim, as_index=False).agg(
+        qty=("qty_sold", "sum"),
+        revenue=("revenue", "sum"),
+        defined_cost=("defined_cost", "sum"),
+        gross_profit=("gross_profit", "sum"),
+    )
+    g["gross_margin"] = (
+        g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
+    ).fillna(0) * 100
+    return g.set_index(dim)
 
 
 def _query(sql: str, params: tuple = ()):
@@ -169,6 +265,11 @@ if mk != t("全部市场"):
     if df.empty:
         st.info(t("この市場のデータがありません"))
         st.stop()
+
+# 上月(整月)集計（环比の分母）· 担当者別 / 店舗別 · 「只环比月不环比日」
+_prev_ym = _prev_month(ym)
+_prev_owner = _agg_prev(_prev_ym, mk, "owner")
+_prev_shop = _agg_prev(_prev_ym, mk, "shop")
 
 # ============================================================
 # KPI（総）
@@ -294,7 +395,9 @@ with tab_day:
         x=_x,
         y=alt.Y("qty:Q", title=qty_lbl),
         tooltip=[_date_tip, alt.Tooltip("qty:Q", title=qty_lbl, format=",.0f")],
-    ).properties(height=220)
+    ).properties(height=220).configure_axis(
+        labelFontSize=_CHART_LABEL_FS, titleFontSize=_CHART_TITLE_FS
+    )
     st.altair_chart(bar_chart, use_container_width=True)
 
     # 明细表
@@ -325,10 +428,8 @@ with tab_owner:
         g = g.sort_values("gross_profit", ascending=False)
         owner_cols = ("owner", "qty", "revenue", "defined_cost",
                       "gross_profit", "gross_margin", "n_shop", "n_sku")
-        html_table(_disp(g, owner_cols))
-        chart = g.set_index("owner")[["gross_profit"]].copy()
-        chart.columns = [_col("gross_profit")]
-        st.bar_chart(chart, horizontal=True, use_container_width=True)
+        html_table(_disp(g, owner_cols, mom_prev=_prev_owner, dim="owner"))
+        st.altair_chart(_hbar(g, "owner"), use_container_width=True)
 
         st.divider()
 
@@ -359,7 +460,7 @@ with tab_owner:
             sg = sg.sort_values("gross_profit", ascending=False)
             sg_cols = ("shop", "qty", "revenue", "defined_cost",
                        "gross_profit", "gross_margin", "n_sku")
-            html_table(_disp(sg, sg_cols))
+            html_table(_disp(sg, sg_cols, mom_prev=_prev_shop, dim="shop"))
 
 # ============================================================
 # Tab 1：店舗別
@@ -379,10 +480,8 @@ with tab_shop:
 
     shop_cols = ("shop", "owner", "qty", "revenue", "defined_cost",
                  "gross_profit", "gross_margin", "n_sku")
-    html_table(_disp(g, shop_cols))
-    chart = g.set_index("shop")[["gross_profit"]].copy()
-    chart.columns = [_col("gross_profit")]
-    st.bar_chart(chart, horizontal=True, use_container_width=True)
+    html_table(_disp(g, shop_cols, mom_prev=_prev_shop, dim="shop"))
+    st.altair_chart(_hbar(g, "shop"), use_container_width=True)
 
 # ============================================================
 # Tab 2：市場別
@@ -404,9 +503,7 @@ with tab_market:
     mkt_cols = ("market", "qty", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "n_shop", "n_sku")
     html_table(_disp(g, mkt_cols))
-    chart = g.set_index("market")[["gross_profit"]].copy()
-    chart.columns = [_col("gross_profit")]
-    st.bar_chart(chart, horizontal=True, use_container_width=True)
+    st.altair_chart(_hbar(g, "market"), use_container_width=True)
 
 # ============================================================
 # Tab 3：TOP SKU
