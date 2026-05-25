@@ -409,10 +409,10 @@ with tab_day:
     )
     st.altair_chart(bar_chart, use_container_width=True)
 
-    # 明细表
+    # 明细表（日付倒序·最近日在上。daily 本体は昇順維持＝前日指標/曲線図が依存）
     day_cols = ("sale_date", "qty", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "n_shop", "n_sku")
-    html_table(_disp(daily, day_cols))
+    html_table(_disp(daily.sort_values("sale_date", ascending=False), day_cols))
 
 # ============================================================
 # Tab：担当者別（日本店=対象外 は除外）
