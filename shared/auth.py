@@ -101,7 +101,7 @@ _COMPACT_LAYOUT_CSS = """
 [data-testid="stMainBlockContainer"],
 .main .block-container,
 [data-testid="block-container"] {
-    padding-top: 0.5rem !important;
+    padding-top: 0 !important;
     padding-bottom: 2rem !important;
 }
 /* Streamlit 顶部 header 高度压扁（保留 toolbar 但压紧）*/
