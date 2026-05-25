@@ -159,18 +159,23 @@ def _prev_month(ym: str) -> str:
     return prev.strftime("%Y-%m")
 
 
-def _agg_prev(prev_ym: str, mk_sel: str, dim: str) -> pd.DataFrame:
-    """上月(整月) dim别 集計（index=dim）。环比の分母用。dim∈{'owner','shop'}。空なら空DF。
+def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31) -> pd.DataFrame:
+    """上月 dim别 集計（index=dim）。环比の分母用。dim∈{'owner','shop'}。空なら空DF。
 
-    「只环比月不环比日」(Boss 2026-05-25): 同日範囲フィルタなし、整月対整月。
+    环比口径(Boss 2026-05-25):
+      - 完结の過去月 → max_day=31 で整月対整月。
+      - 当月(未完结) → max_day=当月の最終データ日(=前一日) で同日範囲対比。
     """
     dfp, _ = _query(
-        "SELECT s.shop, s.qty_sold, s.revenue, s.gross_profit "
+        "SELECT s.shop, s.sale_date, s.qty_sold, s.revenue, s.gross_profit "
         "FROM nst.sales_daily s "
         "WHERE to_char(s.sale_date,'YYYY-MM') = ?",
         (prev_ym,),
     )
     if dfp is None or dfp.empty:
+        return pd.DataFrame()
+    dfp = dfp[pd.to_datetime(dfp["sale_date"]).dt.day <= max_day]
+    if dfp.empty:
         return pd.DataFrame()
     for c in ("qty_sold", "revenue", "gross_profit"):
         dfp[c] = dfp[c].astype(float)
@@ -266,10 +271,14 @@ if mk != t("全部市场"):
         st.info(t("この市場のデータがありません"))
         st.stop()
 
-# 上月(整月)集計（环比の分母）· 担当者別 / 店舗別 · 「只环比月不环比日」
+# 上月集計（环比の分母）· 担当者別 / 店舗別
+# 当月(=今の暦月)は未完结 → 上月も「当月の最終データ日(前一日)」まで同日範囲で対比。
+# 完结の過去月は整月対整月(max_day=31)。
+_real_cur_ym = _today.strftime("%Y-%m")
+_max_day = int(pd.to_datetime(df["sale_date"]).dt.day.max()) if ym == _real_cur_ym else 31
 _prev_ym = _prev_month(ym)
-_prev_owner = _agg_prev(_prev_ym, mk, "owner")
-_prev_shop = _agg_prev(_prev_ym, mk, "shop")
+_prev_owner = _agg_prev(_prev_ym, mk, "owner", _max_day)
+_prev_shop = _agg_prev(_prev_ym, mk, "shop", _max_day)
 
 # ============================================================
 # KPI（総）
