@@ -124,7 +124,7 @@ _LOGIN_NARROW_CSS = """
 [data-testid="stMainBlockContainer"],
 .main .block-container,
 [data-testid="block-container"] {
-    max-width: 460px !important;
+    max-width: 1150px !important;
     margin-left: auto !important;
     margin-right: auto !important;
     padding-top: 8vh !important;
