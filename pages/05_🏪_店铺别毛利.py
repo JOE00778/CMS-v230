@@ -370,16 +370,17 @@ with tab_day:
     _nearest = alt.selection_point(nearest=True, on="pointerover",
                                    fields=["sale_date"], empty=False)
     _base = alt.Chart(chart_src).encode(x=_x)
-    # 金額（左軸）：総収益 / 粗利
+    _amt_lbl = "金額" if get_lang() == "ja" else "金额"
+    # 金額（左軸）：総収益 / 粗利（軸タイトルは layer 先頭の _l_rev が保持）
     _l_rev = _base.mark_line(point=True).encode(
-        y=alt.Y("revenue:Q", title=None), color=alt.datum(rev_lbl),
+        y=alt.Y("revenue:Q", title=_amt_lbl), color=alt.datum(rev_lbl),
     )
     _l_gp = _base.mark_line(point=True).encode(
         y=alt.Y("gross_profit:Q", title=None), color=alt.datum(gp_lbl),
     )
     # 粗利率（右軸・破線）
     _l_mg = _base.mark_line(point=True, strokeDash=[5, 3]).encode(
-        y=alt.Y("gross_margin:Q", title=None,
+        y=alt.Y("gross_margin:Q", title=mg_lbl,
                 scale=alt.Scale(domain=[50, 70]),
                 axis=alt.Axis(orient="right", format=".0f")),
         color=alt.datum(mg_lbl),

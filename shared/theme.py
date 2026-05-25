@@ -34,6 +34,10 @@ _THEME_CSS = """
   background:#F8FAFC; border:1px solid #E2E8F0; border-radius:10px;
   padding:14px 16px; box-shadow:0 1px 2px rgba(15,23,42,.04);
 }
+/* 卡片数字字号缩小（Boss 2026-05-26）·默认约 2.25rem → 1.6rem
+   用 !important + 连子元素一起命中，避免被 Streamlit emotion 类的高优先级盖掉 */
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] > div { font-size:1.6rem !important; }
 
 /* 分隔符 st.divider（=<hr>）上下间距压到 0（Boss 2026-05-26） */
 hr { margin-top:0 !important; margin-bottom:0 !important; }
