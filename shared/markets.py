@@ -12,7 +12,7 @@ import pandas as pd
 MARKET_SEA = "🌏 东南亚"
 MARKET_KOREA = "🇰🇷 韩国"
 MARKET_JAPAN = "🇯🇵 日本"
-MARKET_UNKNOWN = "❓ 未分类"
+MARKET_UNKNOWN = "smikiejapan-自建站"
 
 ALL_MARKETS = [MARKET_SEA, MARKET_KOREA, MARKET_JAPAN, MARKET_UNKNOWN]
 

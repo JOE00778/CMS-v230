@@ -130,16 +130,14 @@ if step == 1:
     ).fetchall() if r["handling_cd"]]
 
     loc_choices = [LOC_BOTH] + loc_all
-    handle_choices = [HANDLE_PRESET_ALL] + handle_all
-
     c1, c2 = st.columns(2)
     with c1:
         loc_pick = st.selectbox(t("場所（仓库）"), loc_choices, index=0)
     with c2:
-        handle_pick = st.selectbox(t("取扱区分"), handle_choices, index=0)
+        handle_pick = st.multiselect(t("取扱区分"), handle_all, placeholder=HANDLE_PRESET_ALL)
 
     sel_locs = loc_all if loc_pick == LOC_BOTH else [loc_pick]
-    sel_handle = handle_all if handle_pick == HANDLE_PRESET_ALL else [handle_pick]
+    sel_handle = handle_pick  # 空選＝全部（下方 if sel_handle 空则不加筛选）
 
     st.caption(
         f"📌 已选场所：{', '.join(sel_locs) or '（全部）'} ｜ "

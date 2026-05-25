@@ -162,9 +162,9 @@ def _opts(col: str) -> list:
 
 
 f1, f2, f3, f4 = st.columns(4)
-handle_pick = f1.selectbox(_L("经销状态", "取扱区分"), [_ALL] + _opts("handling_cd"))
-rank_pick = f2.selectbox(_L("商品等级", "商品ランク"), [_ALL] + _opts("item_rank"))
-maker_pick = f3.selectbox(_L("厂商", "メーカー名"), [_ALL] + _opts("maker"))
+handle_pick = f1.multiselect(_L("经销状态", "取扱区分"), _opts("handling_cd"), placeholder=_ALL)
+rank_pick = f2.multiselect(_L("商品等级", "商品ランク"), _opts("item_rank"), placeholder=_ALL)
+maker_pick = f3.multiselect(_L("厂商", "メーカー名"), _opts("maker"), placeholder=_ALL)
 with f4:
     st.write("")
     in_stock = st.checkbox(_L("仅有库存（>0）", "在庫あり（>0）"), value=False)
@@ -186,12 +186,12 @@ elif keyword_code.strip():
     ]
 if keyword_name.strip():
     v = v[v["display_name"].astype(str).str.contains(keyword_name.strip(), case=False, na=False)]
-if handle_pick != _ALL:
-    v = v[v["handling_cd"] == handle_pick]
-if rank_pick != _ALL:
-    v = v[v["item_rank"] == rank_pick]
-if maker_pick != _ALL:
-    v = v[v["maker"].astype(str) == maker_pick]
+if handle_pick:
+    v = v[v["handling_cd"].isin(handle_pick)]
+if rank_pick:
+    v = v[v["item_rank"].isin(rank_pick)]
+if maker_pick:
+    v = v[v["maker"].astype(str).isin(maker_pick)]
 if in_stock:
     v = v[v["qty_on_hand"].fillna(0) > 0]
 if hide_inactive:

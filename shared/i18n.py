@@ -1681,7 +1681,16 @@ def lang_selector():
     # 1) 仅隐藏 Streamlit 默认（文件名）sidebar 导航——必须保留，否则会和自定义导航重复。
     #    其余侧栏造型（日期大字/语言胶囊/顶栏浮动）已移除，回到 Streamlit 原生外观。
     st.markdown(
-        "<style>[data-testid='stSidebarNav']{display:none!important;}</style>",
+        "<style>"
+        "[data-testid='stSidebarNav']{display:none!important;}"
+        # 日期 + 语言选择：置顶·居中（Boss 2026-05-25）
+        "section[data-testid='stSidebar'] [data-testid='stSidebarUserContent']{padding-top:1rem;}"
+        ".cms-date-big{text-align:center;line-height:1.25;margin:.1rem 0 .5rem;}"
+        ".cms-date-big .num{display:block;font-size:1.5rem;font-weight:700;}"
+        ".cms-date-big .meta{display:block;font-size:.82rem;color:#64748B;}"
+        "section[data-testid='stSidebar'] div[data-testid='stButtonGroup']"
+        "{display:flex;justify-content:center;}"
+        "</style>",
         unsafe_allow_html=True,
     )
 
@@ -1725,6 +1734,7 @@ def lang_selector():
         st.query_params["lang"] = new_code
 
     with st.sidebar:
+        st.markdown(date_html, unsafe_allow_html=True)  # 日期置顶·居中
         try:
             st.segmented_control(
                 "lang", options,
@@ -1738,7 +1748,6 @@ def lang_selector():
                 label_visibility="collapsed",
                 on_change=_on_lang_change,
             )
-        st.markdown(date_html, unsafe_allow_html=True)
 
     # 同步本次 render 的 session_state.lang + query_params（即使没触发 on_change，保证一致）
     st.session_state["lang"] = cur_lang_code

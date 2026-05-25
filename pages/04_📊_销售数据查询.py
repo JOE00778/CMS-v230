@@ -354,7 +354,8 @@ def _render_sales_delta(_period_kind, _key):
     _f_market = _f1.multiselect(_L("市场", "市場"), _markets, key=_key + "_tmarket",
                                 placeholder=_L("全部", "全件"))  # 空選＝不限
     _f_shop = _f2.selectbox(_L("店铺", "店舗"), [_ALL] + _all_shops, key=_key + "_tshop")
-    _f_maker = _f3.selectbox(_L("品牌", "メーカー"), [_ALL] + _all_makers, key=_key + "_tmaker")
+    _f_maker = _f3.multiselect(_L("品牌", "メーカー"), _all_makers, key=_key + "_tmaker",
+                               placeholder=_L("全部", "全件"))  # 空選＝不限
     _f_jan = _f4.text_input(
         _L("SKU（JAN 搜索）", "SKU（JAN 検索）"), key=_key + "_tjan",
         placeholder=_L("JAN 部分一致（留空=不限）", "JAN 部分一致（空欄=指定なし）"),
@@ -368,8 +369,9 @@ def _render_sales_delta(_period_kind, _key):
             _caps.append("/".join(_f_market))
     if _f_shop != _ALL:
         _wc.append("s.shop = ?"); _wp.append(_f_shop); _caps.append(_f_shop)
-    if _f_maker != _ALL:
-        _wc.append("im.maker = ?"); _wp.append(_f_maker); _caps.append(_f_maker)
+    if _f_maker:
+        _wc.append("im.maker IN (" + ",".join(["?"] * len(_f_maker)) + ")")
+        _wp.extend(_f_maker); _caps.append("/".join(_f_maker))
     if _f_jan.strip():
         _wc.append("im.jan LIKE ?"); _wp.append(f"%{_f_jan.strip()}%")
         _caps.append("JAN:" + _f_jan.strip())
@@ -435,9 +437,9 @@ with _q_tab:
     _market_opts = sorted({classify_market(_s) for _s in _month_shops})
     f1, f2, f3, f4 = st.columns(4)
     market_filter = f1.multiselect(t("市场"), _market_opts, placeholder=_ALL)  # 空選＝全部
-    rank_filter = f2.selectbox(t("商品ランク"), [_ALL] + _opts("item_rank"))
-    maker_filter = f3.selectbox(t("メーカー名"), [_ALL] + _opts("maker"))
-    handling_filter = f4.selectbox(t("取扱区分"), [_ALL] + _opts("handling_cd"))
+    rank_filter = f2.multiselect(t("商品ランク"), _opts("item_rank"), placeholder=_ALL)
+    maker_filter = f3.multiselect(t("メーカー名"), _opts("maker"), placeholder=_ALL)
+    handling_filter = f4.multiselect(t("取扱区分"), _opts("handling_cd"), placeholder=_ALL)
 
     with st.expander(t("📋 複数 JAN / 商品名 一括検索（改行・カンマ区切り）")):
         multi_kw = st.text_area(
@@ -463,12 +465,12 @@ with _q_tab:
             _filtp.extend(_mshops)
         else:
             _filt.append("1=0")
-    if rank_filter != _ALL:
-        _filt.append("im.item_rank = ?"); _filtp.append(rank_filter)
-    if maker_filter != _ALL:
-        _filt.append("im.maker = ?"); _filtp.append(maker_filter)
-    if handling_filter != _ALL:
-        _filt.append("im.handling_cd = ?"); _filtp.append(handling_filter)
+    if rank_filter:
+        _filt.append("im.item_rank IN (" + ",".join(["?"] * len(rank_filter)) + ")"); _filtp.extend(rank_filter)
+    if maker_filter:
+        _filt.append("im.maker IN (" + ",".join(["?"] * len(maker_filter)) + ")"); _filtp.extend(maker_filter)
+    if handling_filter:
+        _filt.append("im.handling_cd IN (" + ",".join(["?"] * len(handling_filter)) + ")"); _filtp.extend(handling_filter)
     if kw.strip():
         _filt.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
         like = f"%{kw.strip()}%"; _filtp += [like, like]

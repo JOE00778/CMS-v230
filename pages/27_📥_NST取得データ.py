@@ -126,17 +126,17 @@ with tab1:
             "WHERE item_rank IS NOT NULL ORDER BY item_rank"
         )
         fc1, fc2, fc3 = st.columns([2, 2, 3])
-        maker_opts = [t("（全て）")] + (makers_df["maker"].tolist() if makers_df is not None else [])
-        rank_opts = [t("（全て）")] + (ranks_df["item_rank"].tolist() if ranks_df is not None else [])
-        sel_maker = fc1.selectbox(t("メーカー名"), maker_opts)
-        sel_rank = fc2.selectbox(t("ランク評価"), rank_opts)
+        maker_opts = makers_df["maker"].tolist() if makers_df is not None else []
+        rank_opts = ranks_df["item_rank"].tolist() if ranks_df is not None else []
+        sel_maker = fc1.multiselect(t("メーカー名"), maker_opts, placeholder=t("（全て）"))
+        sel_rank = fc2.multiselect(t("ランク評価"), rank_opts, placeholder=t("（全て）"))
         kw = fc3.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
 
         where, params = [], []
-        if sel_maker != t("（全て）"):
-            where.append("maker = ?"); params.append(sel_maker)
-        if sel_rank != t("（全て）"):
-            where.append("item_rank = ?"); params.append(sel_rank)
+        if sel_maker:
+            where.append("maker IN (" + ",".join(["?"] * len(sel_maker)) + ")"); params.extend(sel_maker)
+        if sel_rank:
+            where.append("item_rank IN (" + ",".join(["?"] * len(sel_rank)) + ")"); params.extend(sel_rank)
         if kw.strip():
             where.append("(jan LIKE ? OR display_name LIKE ? OR item_code LIKE ?)")
             like = f"%{kw.strip()}%"; params += [like, like, like]
