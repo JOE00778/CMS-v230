@@ -33,6 +33,8 @@ def generate_advice(year_month: str = "2026-04",
     - 等级取主档 item_rank（A/停售 跳过，仅 B/C 出建议）
     """
     from shared.db import get_connection
+    from .settings import load_thresholds
+    _th = load_thresholds()
     conn = get_connection()
 
     try:
@@ -69,7 +71,9 @@ def generate_advice(year_month: str = "2026-04",
             std_cost = float(r["std_cost"] or 0)
             margin_pct = (gp / revenue * 100) if revenue else 0
             m_turn = (qty_sold / qty) if qty else 0
-            adv = advise(rank, margin_pct, m_turn)
+            adv = advise(rank, margin_pct, m_turn,
+                         margin_low=_th["margin_low"], margin_high=_th["margin_high"],
+                         turn_low=_th["turn_low"], turn_high=_th["turn_high"])
             if adv["advice"] == "—":
                 continue
             results.append({

@@ -16,8 +16,9 @@ from shared.i18n import t, lang_selector
 from shared.db import get_connection
 
 st.set_page_config(page_title=t("数据库管理"), page_icon="🗄️", layout="wide")
-from shared.auth import require_admin
+from shared.auth import require_admin, require_extra_password
 require_admin()
+require_extra_password("sys", "SYS_SETTINGS_PW", default="1001")  # 系统设置二级密码
 from shared.theme import inject_theme
 inject_theme()
 lang_selector()

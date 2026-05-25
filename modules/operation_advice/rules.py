@@ -50,8 +50,10 @@ def turnover_level(monthly_turnover: float) -> str:
     return "高"
 
 
-def advise(rank: str, gross_margin_pct: float, monthly_turnover: float) -> dict:
-    """给单个 SKU 出运营调整建议"""
+def advise(rank: str, gross_margin_pct: float, monthly_turnover: float, *,
+           margin_low: float = MARGIN_LOW, margin_high: float = MARGIN_HIGH,
+           turn_low: float = TURNOVER_LOW, turn_high: float = TURNOVER_HIGH) -> dict:
+    """给单个 SKU 出运营调整建议（阈值可由系统设置覆盖·默认 v3）"""
     if rank in ("A", "停售"):
         return {"advice": "—", "margin_lv": "-", "turnover_lv": "-",
                 "reason": "A档已健康 / 停售已决策"}
@@ -61,21 +63,21 @@ def advise(rank: str, gross_margin_pct: float, monthly_turnover: float) -> dict:
         return {"advice": "—", "margin_lv": "-", "turnover_lv": "-",
                 "reason": "无销售或毛利数据"}
 
-    m = margin_level(gross_margin_pct)
-    t = turnover_level(monthly_turnover)
+    m = "低" if gross_margin_pct < margin_low else ("中" if gross_margin_pct < margin_high else "高")
+    t = "低" if monthly_turnover < turn_low else ("中" if monthly_turnover < turn_high else "高")
 
     # 5 档判定（3×3 矩阵）
     if t == "低" and m == "低":
         advice = "⬇️ 降级候选"
         # B 档 → C / C 档 → 停售
         next_rank = "C" if rank == "B" else "停售"
-        reason = f"周转<{TURNOVER_LOW} 且 毛利<{MARGIN_LOW}% — 双低，建议降到 {next_rank}"
+        reason = f"周转<{turn_low} 且 毛利<{margin_low}% — 双低，建议降到 {next_rank}"
     elif t == "低" and m == "高":
         advice = "🔥 重点降价"
-        reason = f"周转<{TURNOVER_LOW} 但 毛利>{MARGIN_HIGH}% — 降价加速周转"
+        reason = f"周转<{turn_low} 但 毛利>{margin_high}% — 降价加速周转"
     elif t == "高" and m == "低":
         advice = "🔥 重点提价"
-        reason = f"周转>{TURNOVER_HIGH} 但 毛利<{MARGIN_LOW}% — 提价不影响销量"
+        reason = f"周转>{turn_high} 但 毛利<{margin_low}% — 提价不影响销量"
     elif t == "低" and m == "中":
         advice = "⚠️ 降价候选"
         reason = "周转低 · 毛利中 — 适度降价试水"

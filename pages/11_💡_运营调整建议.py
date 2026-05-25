@@ -28,10 +28,14 @@ conn = get_connection()
 
 st.title(t("💡 运营调整建议（B/C 档）"))
 
-st.caption(t(
-    f"双轴矩阵：毛利率 × 月周转率 → 5 档建议 · "
-    f"阈值 毛利{MARGIN_LOW}/{MARGIN_HIGH}% · 周转{TURNOVER_LOW}/{TURNOVER_HIGH}"
-))
+from modules.operation_advice.settings import load_thresholds
+_thv = load_thresholds()
+st.caption(
+    t("双轴矩阵：毛利率 × 月周转率 → 5 档建议")
+    + f" · 阈值 毛利{_thv['margin_low']:.0f}/{_thv['margin_high']:.0f}% · "
+    + f"周转{_thv['turn_low']}/{_thv['turn_high']} · "
+    + t("（阈值在「⚙️ 系统参数设定」改）")
+)
 
 # 月度选择器（动态·从 nst.sales_monthly 读可用月份，最新在前）+ 重算
 _months = [r["ym"] for r in conn.execute(

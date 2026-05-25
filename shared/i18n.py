@@ -654,6 +654,7 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
         ("pages/26_🌐_图片翻译.py", "🌐 图片翻译"),
     ]),
     ("⚙️ 系统设置", [
+        ("pages/32_⚙️_系统参数设定.py", "⚙️ 系统参数设定"),
         ("pages/29_🚚_物流費用上传.py", "🚚 物流費用上传"),
         ("pages/27_📥_NST取得データ.py", "📥 NST 取得データ"),
         ("pages/22_🗄️_数据库管理.py", "🗄️ 数据库管理"),

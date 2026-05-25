@@ -201,7 +201,7 @@ def show_role_badge() -> None:
     return
 
 
-def require_extra_password(scope: str, env_var: str) -> None:
+def require_extra_password(scope: str, env_var: str, default: str = "") -> None:
     """页面级独立二级密码守门（page 99 数据导入用）。
 
     用例：page 99 涉及数据库写入，需要比一级密码更高权限。
@@ -211,7 +211,7 @@ def require_extra_password(scope: str, env_var: str) -> None:
         scope: 密码作用域名（如 "page99"），用于隔离不同 page 的 session 状态
         env_var: 环境变量名，存储该 page 的密码（如 "PAGE99_PASSWORD"）
     """
-    expected = _secret(env_var)
+    expected = _secret(env_var) or default
     if not expected:
         return  # 未配密码 = 不启用此层守门，直接放行
 

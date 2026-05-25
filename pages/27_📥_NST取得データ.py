@@ -51,8 +51,9 @@ def _cc(*keys) -> dict:
     return {k: (_COL_LABELS[k][1] if ja else _COL_LABELS[k][0]) for k in keys}
 
 st.set_page_config(page_title=t("NST 取得データ"), page_icon="📥", layout="wide")
-from shared.auth import require_admin
+from shared.auth import require_admin, require_extra_password
 require_admin()
+require_extra_password("sys", "SYS_SETTINGS_PW", default="1001")  # 系统设置二级密码
 from shared.theme import inject_theme
 inject_theme()
 lang_selector()

@@ -20,9 +20,10 @@ from shared.db import get_connection
 from shared.i18n import lang_selector, t
 
 st.set_page_config(page_title=t("物流费用上传"), page_icon="🚚", layout="wide")
-from shared.auth import require_password
+from shared.auth import require_password, require_extra_password
 from shared.theme import inject_theme
 require_password()
+require_extra_password("sys", "SYS_SETTINGS_PW", default="1001")  # 系统设置二级密码
 inject_theme()
 lang_selector()
 conn = get_connection()
