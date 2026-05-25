@@ -24,6 +24,7 @@ lang_selector()
 
 from shared.db import DB_PATH, get_connection
 DB = DB_PATH
+conn = get_connection()
 
 st.title(t("💡 运营调整建议（B/C 档）"))
 
@@ -32,10 +33,15 @@ st.caption(t(
     f"阈值 毛利{MARGIN_LOW}/{MARGIN_HIGH}% · 周转{TURNOVER_LOW}/{TURNOVER_HIGH}"
 ))
 
-# 月度选择器 + 重算
+# 月度选择器（动态·从 nst.sales_monthly 读可用月份，最新在前）+ 重算
+_months = [r["ym"] for r in conn.execute(
+    "SELECT DISTINCT year_month AS ym FROM nst.sales_monthly ORDER BY year_month DESC"
+).fetchall()]
+if not _months:
+    _months = ["2026-04"]
 col_ym, col_recalc = st.columns([2, 1])
 with col_ym:
-    ym = st.selectbox(t("月度"), ["2026-04"], index=0)
+    ym = st.selectbox(t("月度"), _months, index=0)
 with col_recalc:
     if st.button(t("🔄 重新计算")):
         with st.spinner(t("生成中...")):
@@ -43,11 +49,9 @@ with col_recalc:
         st.success(t("✅ 已更新"))
         st.rerun()
 
-# 数据加载 — 直接字符串拼接, 不用占位符 (ym 是 selectbox 固定值, 安全)
-# 仅保留只允许 [0-9-] 的白名单防御
+# 数据加载 — ym 白名单防御（仅 [0-9-]）
 import re as _re
 _safe_ym = _re.sub(r"[^0-9-]", "", str(ym))[:10]
-conn = get_connection()
 try:
     cur = conn.execute(
         f"SELECT * FROM operation_advice_monthly WHERE year_month = '{_safe_ym}'"
@@ -114,7 +118,7 @@ def _show(filtered_df: pd.DataFrame, top_n: int = 100):
     # join name from inventory (用 conn.execute 走 PG adapter, 不依赖 pandas)
     _inv_rows = conn.execute(
         "SELECT item_code AS sku, MIN(display_name) AS name "
-        "FROM nst_inventory_snapshot WHERE location='JD-物流-千葉' "
+        "FROM nst.item_master_raw WHERE item_code IS NOT NULL "
         "GROUP BY item_code"
     ).fetchall()
     inv = pd.DataFrame([dict(r) for r in _inv_rows])
@@ -141,7 +145,7 @@ with tabs[2]:
     _show(df[df["advice"] == "⬇️ 降级候选"])
 
 with tabs[3]:
-    st.markdown(t("**全部 1,681 条建议**"))
+    st.markdown(f"**{t('全部建议')}** · {len(df):,}")
     advice_filter = st.multiselect(
         t("建议筛选"),
         options=df["advice"].unique().tolist(),
