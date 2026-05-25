@@ -570,16 +570,60 @@ with _q_tab:
         tot_sv = df["stock_value"].astype(float).sum()         # 库存总金额
         _turnover = (tot_q / tot_soh) if tot_soh else 0        # 平均月周转率(加权=总販売/总在庫)
         _ssr = (tot_soh / tot_q) if tot_q else 0               # 整体库存销售比
+        cur_margin = (tot_g / tot_r) if tot_r else 0
+
+        # ── 上月同比（同筛选 _filt·销售=上月 sales_monthly·库存=上月末快照）──
+        import datetime as _dt
+        _pym = (_dt.datetime.strptime(ym, "%Y-%m").replace(day=1)
+                - _dt.timedelta(days=1)).strftime("%Y-%m")
+        _pwhere = " AND ".join(["s.year_month = ?"] + _filt)
+        _pv, _ = _query(
+            "SELECT SUM(s.qty_sold) q, SUM(s.revenue) r, SUM(s.gross_profit) g "
+            "FROM nst.sales_monthly s "
+            "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+            f"WHERE {_pwhere}",
+            tuple([_pym] + _filtp),
+        )
+        _pinv, _ = _query(
+            "SELECT SUM(inv.qty_on_hand) soh, SUM(inv.qty_on_hand * im.cost_estimate) sv "
+            "FROM nst.sales_monthly s "
+            "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+            "JOIN nst.inventory_snapshot inv ON inv.item_internal_id = s.item_internal_id "
+            "  AND inv.warehouse = 'JD-物流-千葉' "
+            "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot "
+            "      WHERE to_char(snapshot_date,'YYYY-MM') = ?) "
+            f"WHERE {_pwhere}",
+            tuple([_pym, _pym] + _filtp),
+        )
+
+        def _g0(_dfp, _c):
+            if _dfp is None or _dfp.empty or _dfp.iloc[0][_c] is None:
+                return None
+            return float(_dfp.iloc[0][_c])
+        prev_q, prev_r, prev_g = _g0(_pv, "q"), _g0(_pv, "r"), _g0(_pv, "g")
+        prev_soh, prev_sv = _g0(_pinv, "soh"), _g0(_pinv, "sv")
+        prev_margin = (prev_g / prev_r) if (prev_g is not None and prev_r) else None
+        prev_turn = (prev_q / prev_soh) if (prev_q is not None and prev_soh) else None
+        prev_ssr = (prev_soh / prev_q) if (prev_soh is not None and prev_q) else None
+
+        def _dpct(cur, prev):
+            if prev is None or prev == 0:
+                return None
+            return f"{(cur - prev) / abs(prev) * 100:+.1f}%"
+
+        def _dpp(cur, prev):  # 百分点差（粗利率用）
+            return None if prev is None else f"{(cur - prev) * 100:+.1f}pp"
+
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric(t("対象月"), ym)
-        m2.metric(t("販売数量 計"), f"{tot_q:,.0f}")
-        m3.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
-        m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}")
-        m5.metric(t("粗利率"), f"{(tot_g/tot_r if tot_r else 0):.1%}")
+        m2.metric(t("販売数量 計"), f"{tot_q:,.0f}", _dpct(tot_q, prev_q))
+        m3.metric(t("総収益 計"), f"¥{tot_r:,.0f}", _dpct(tot_r, prev_r))
+        m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}", _dpct(tot_g, prev_g))
+        m5.metric(t("粗利率"), f"{cur_margin:.1%}", _dpp(cur_margin, prev_margin))
         n1, n2, n3 = st.columns(3)
-        n1.metric(t("库存总金额"), f"¥{tot_sv:,.0f}")
-        n2.metric(t("平均月周转率"), f"{_turnover:.2f}")
-        n3.metric(t("整体库存销售比"), f"{_ssr:.2f}")
+        n1.metric(t("库存总金额"), f"¥{tot_sv:,.0f}", _dpct(tot_sv, prev_sv), delta_color="inverse")
+        n2.metric(t("平均月周转率"), f"{_turnover:.2f}", _dpct(_turnover, prev_turn))
+        n3.metric(t("整体库存销售比"), f"{_ssr:.2f}", _dpct(_ssr, prev_ssr), delta_color="inverse")
 
         st.caption(t("表示件数: ") + f"{len(df):,}" + t("（粗利率/利润贡献率=%, 回転率=月販売/当前在庫·近似）"))
         _colcfg = dict(_cc(*cols))
