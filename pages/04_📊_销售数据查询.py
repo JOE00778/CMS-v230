@@ -419,6 +419,9 @@ with _q_tab:
         st.warning(t("⚠️ 売上データ未取得。page 27「📥 NST 取得データ」で sales ジョブを実行してください。"))
         st.stop()
 
+    # KPI 卡片占位（视觉在搜索/筛选之上·数据在筛选+计算后填充·Boss 2026-05-26）
+    _kpi_box = st.container()
+
     # ============================================================
     # フィルタ
     # ============================================================
@@ -623,16 +626,17 @@ with _q_tab:
         def _dpp(cur, prev):  # 百分点差（粗利率用）
             return None if prev is None else f"{(cur - prev) * 100:+.1f}pp"
 
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric(t("対象月"), ym)
-        m2.metric(t("販売数量 計"), f"{tot_q:,.0f}", _dpct(tot_q, prev_q))
-        m3.metric(t("総収益 計"), f"¥{tot_r:,.0f}", _dpct(tot_r, prev_r))
-        m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}", _dpct(tot_g, prev_g))
-        m5.metric(t("粗利率"), f"{cur_margin:.1%}", _dpp(cur_margin, prev_margin))
-        n1, n2, n3 = st.columns(3)
-        n1.metric(t("库存总金额"), f"¥{tot_sv:,.0f}", _dpct(tot_sv, prev_sv), delta_color="inverse")
-        n2.metric(t("平均月周转率"), f"{_turnover:.2f}", _dpct(_turnover, prev_turn))
-        n3.metric(t("整体库存销售比"), f"{_ssr:.2f}", _dpct(_ssr, prev_ssr), delta_color="inverse")
+        with _kpi_box:
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric(t("対象月"), ym)
+            m2.metric(t("販売数量 計"), f"{tot_q:,.0f}", _dpct(tot_q, prev_q))
+            m3.metric(t("総収益 計"), f"¥{tot_r:,.0f}", _dpct(tot_r, prev_r))
+            m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}", _dpct(tot_g, prev_g))
+            m5.metric(t("粗利率"), f"{cur_margin:.1%}", _dpp(cur_margin, prev_margin))
+            n1, n2, n3 = st.columns(3)
+            n1.metric(t("库存总金额"), f"¥{tot_sv:,.0f}", _dpct(tot_sv, prev_sv), delta_color="inverse")
+            n2.metric(t("平均月周转率"), f"{_turnover:.2f}", _dpct(_turnover, prev_turn))
+            n3.metric(t("整体库存销售比"), f"{_ssr:.2f}", _dpct(_ssr, prev_ssr), delta_color="inverse")
 
         st.caption(t("表示件数: ") + f"{len(df):,}" + t("（粗利率/利润贡献率=%, 回転率=月販売/当前在庫·近似）"))
         _colcfg = dict(_cc(*cols))
