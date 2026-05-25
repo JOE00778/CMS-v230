@@ -12,6 +12,13 @@ import streamlit as st
 
 _THEME_CSS = """
 <style>
+/* 页面内容区固定最大宽 1600 居中（Boss 2026-05-25）。其余保持 Streamlit 默认。 */
+[data-testid="stMainBlockContainer"], .main .block-container {
+  max-width: 1600px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
 /* 完全默认 Streamlit 主题（无自定义字体/颜色/字号/缩放）。
    仅保留 html_table 助手的表格样式——否则满宽 HTML 表格会变成无样式裸表。 */
 .cms-table-wrap { width:100% !important; overflow-x:auto; border:1px solid #E2E8F0; border-radius:8px; background:#FFFFFF; }
