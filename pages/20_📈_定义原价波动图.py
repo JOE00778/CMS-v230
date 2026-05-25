@@ -48,7 +48,7 @@ def _pct_color(v):
 
 
 def _pct_fmt(v) -> str:
-    return f"{v:+.1f}%" if pd.notna(v) else "—"
+    return f"{v:+.0f}%" if pd.notna(v) else "—"
 
 
 def _render_volatility(df: pd.DataFrame, *, value_label: str, key_prefix: str,
@@ -134,21 +134,23 @@ def _render_volatility(df: pd.DataFrame, *, value_label: str, key_prefix: str,
     with right:
         st.subheader(t("🏆 波动 Top 20"))
         top = agg.sort_values("amp_pct", ascending=False).head(20).copy()
-        top["amp_pct_fmt"] = top["amp_pct"].map(lambda x: f"{x:.1f}%")
-        _cols = ["item_code", "display_name", grade_col, "n_changes",
-                 "cost_min", "cost_max", "cost_current"]
+        top["amp_pct_fmt"] = top["amp_pct"].map(lambda x: f"{x:.0f}%")
+        for _c in ("cost_min", "cost_max", "cost_current", "cost_prev"):
+            top[_c] = top[_c].round(0).astype("Int64")
+        _cols = ["item_code", "display_name", grade_col, "n_changes", "cost_current"]
         _ren = {
             "item_code": t("商品代码"), "display_name": t("商品名"),
-            "n_changes": t("变更次数"), "cost_min": t("历史最低"),
-            "cost_max": t("历史最高"), "cost_current": t("当前价"),
+            "n_changes": t("变更次数"), "cost_current": t("当前价"),
         }
         if show_latest:
             _cols += ["cost_prev", "latest_pct"]
             _ren["cost_current"] = t("最近进货价")
             _ren["cost_prev"] = t("上次进货价")
             _ren["latest_pct"] = t("最近增幅%")
-        _cols.append("amp_pct_fmt")
+        _cols += ["amp_pct_fmt", "cost_min", "cost_max"]
         _ren["amp_pct_fmt"] = t("波动率")
+        _ren["cost_min"] = t("历史最低")
+        _ren["cost_max"] = t("历史最高")
         top_show = top[_cols].rename(columns=_ren)
         if show_latest:
             st.dataframe(
@@ -182,23 +184,25 @@ def _render_volatility(df: pd.DataFrame, *, value_label: str, key_prefix: str,
         )
         view = view[cond]
 
-    view = view.sort_values("amp_pct", ascending=False)
-    _vcols = ["item_code", "display_name", grade_col,
-              "n_changes", "cost_min", "cost_max", "cost_current"]
+    view = view.sort_values("amp_pct", ascending=False).copy()
+    for _c in ("cost_min", "cost_max", "cost_current", "cost_prev"):
+        view[_c] = view[_c].round(0).astype("Int64")
+    _vcols = ["item_code", "display_name", grade_col, "n_changes", "cost_current"]
     _vren = {
         "item_code": t("商品代码"), "display_name": t("商品名"),
-        "n_changes": t("变更次数"), "cost_min": t("历史最低"),
-        "cost_max": t("历史最高"), "cost_current": t("当前价"),
+        "n_changes": t("变更次数"), "cost_current": t("当前价"),
     }
     if show_latest:
         _vcols += ["cost_prev", "latest_pct"]
         _vren["cost_current"] = t("最近进货价")
         _vren["cost_prev"] = t("上次进货价")
         _vren["latest_pct"] = t("最近增幅%")
-    _vcols.append("amp_pct")
+    _vcols += ["amp_pct", "cost_min", "cost_max"]
     _vren["amp_pct"] = t("波动率(%)")
+    _vren["cost_min"] = t("历史最低")
+    _vren["cost_max"] = t("历史最高")
     view_show = view[_vcols].rename(columns=_vren)
-    view_show[t("波动率(%)")] = view_show[t("波动率(%)")].map(lambda x: f"{x:.1f}")
+    view_show[t("波动率(%)")] = view_show[t("波动率(%)")].map(lambda x: f"{x:.0f}")
     if show_latest:
         st.dataframe(
             view_show.style.map(_pct_color, subset=[t("最近增幅%")])
@@ -243,6 +247,7 @@ def _render_volatility(df: pd.DataFrame, *, value_label: str, key_prefix: str,
             margin=dict(l=10, r=10, t=10, b=10),
             legend=dict(orientation="h", y=1.1),
         )
+        fig.update_yaxes(tickformat=",.0f")  # y 轴取整
         st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_line")
 
         sub = sub.copy()
@@ -251,8 +256,10 @@ def _render_volatility(df: pd.DataFrame, *, value_label: str, key_prefix: str,
         sub_show = sub[[
             "changed_at", "std_cost_old", "std_cost_new", "diff", "diff_pct",
         ]].copy()
+        for _c in ("std_cost_old", "std_cost_new", "diff"):
+            sub_show[_c] = sub_show[_c].round(0).astype("Int64")
         sub_show["diff_pct"] = sub_show["diff_pct"].map(
-            lambda x: f"{x:+.2%}" if pd.notna(x) else ""
+            lambda x: f"{x:+.0%}" if pd.notna(x) else ""
         )
         sub_show.columns = [
             t("变更时间"), t("旧价"), t("新价"), t("差额"), t("差额率"),
