@@ -1688,11 +1688,11 @@ def lang_selector():
         ".cms-date-big{text-align:center;line-height:1.25;margin:.1rem 0 .5rem;}"
         ".cms-date-big .num{display:block;font-size:1.5rem;font-weight:700;}"
         ".cms-date-big .meta{display:block;font-size:.82rem;color:#64748B;}"
-        # 语言选择 segmented_control（及 radio fallback）水平居中
-        "section[data-testid='stSidebar'] [data-testid='stSegmentedControl'],"
-        "section[data-testid='stSidebar'] [data-testid='stSegmentedControl']>div,"
+        # 语言选择 segmented_control(testid=stButtonGroup·从容器JS确认) + radio fallback 居中。
+        # 关键：button group 是 fit-content inline-flex，必须 width:100% 撑满父容器后 justify-center 才生效。
+        "section[data-testid='stSidebar'] [data-testid='stButtonGroup'],"
         "section[data-testid='stSidebar'] div[role='radiogroup']"
-        "{display:flex!important;justify-content:center!important;}"
+        "{display:flex!important;justify-content:center!important;width:100%!important;}"
         "</style>",
         unsafe_allow_html=True,
     )
