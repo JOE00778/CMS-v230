@@ -180,9 +180,8 @@ services:
   #   ⚠️ 初回のみ: docker compose build jdl_scheduler （= nst_scheduler とイメージ共有）
   # ------------------------------------------------------------
   jdl_scheduler:
-    build:
-      context: ../../../database
-      dockerfile: deploy/scheduler.Dockerfile
+    # 复用 nst_scheduler 已 build 好的镜像（同 Dockerfile · 避免 SSH 跑 build 的 wincred 问题）
+    image: windows-nst_scheduler
     container_name: cms_jdl_scheduler
     restart: unless-stopped
     depends_on:
