@@ -120,6 +120,72 @@ for col, cat in zip(cc, CATEGORIES):
                delta_color="off")
 
 st.caption(t("库存合計 ¥{a:,.0f} · 总数量 {q:,.0f}").format(a=tot_amt, q=tot_qty))
+
+# ----- 各 ランク 库存金额（A/B/C/NEW/取扱中止/未分类 等） -----
+st.markdown("##### " + t("📊 各等级 库存金额"))
+df_rank = df.copy()
+df_rank["rank_label"] = df_rank["item_rank"].astype(str).where(
+    df_rank["item_rank"].notna() & (df_rank["item_rank"].astype(str) != "nan"),
+    t("未分类"),
+)
+by_rank = (df_rank.groupby("rank_label", as_index=False)
+           .agg(qty=("qty_on_hand", "sum"), amt=("amt", "sum"))
+           .sort_values("amt", ascending=False))
+if not by_rank.empty:
+    rank_cols = st.columns(min(len(by_rank), 6))
+    for col, (_, r) in zip(rank_cols, by_rank.iterrows()):
+        pct_r = (float(r["amt"]) / tot_amt * 100) if tot_amt else 0.0
+        col.metric(f"{r['rank_label']} (¥)", f"¥{float(r['amt']):,.0f}",
+                   delta=f"{pct_r:.0f}% {t('占比')} · {float(r['qty']):,.0f} {t('数量')}",
+                   delta_color="off")
+
+# ----- 环状图（用途 + 等级 并排） -----
+import altair as alt
+st.markdown("##### " + t("🍩 构成 环状图"))
+g1, g2 = st.columns(2)
+
+# 用途 donut
+_donut_cat = pd.DataFrame([
+    {"category": _labels.get(c, c), "amt": float(cat_map[c]["amt"]) if c in cat_map else 0.0}
+    for c in CATEGORIES
+])
+_donut_cat = _donut_cat[_donut_cat["amt"] > 0]
+if not _donut_cat.empty:
+    chart_cat = (
+        alt.Chart(_donut_cat)
+        .mark_arc(innerRadius=60, outerRadius=110)
+        .encode(
+            theta=alt.Theta("amt:Q", stack=True),
+            color=alt.Color("category:N", title=t("用途"),
+                            scale=alt.Scale(scheme="tableau10")),
+            tooltip=[alt.Tooltip("category:N", title=t("用途")),
+                     alt.Tooltip("amt:Q", title=t("金额(¥)"), format=",.0f")],
+        )
+        .properties(height=300, title=t("用途构成"))
+    )
+    g1.altair_chart(chart_cat, use_container_width=True)
+else:
+    g1.info(t("无数据"))
+
+# 等级 donut
+_donut_rank = by_rank[by_rank["amt"] > 0].copy()
+if not _donut_rank.empty:
+    chart_rank = (
+        alt.Chart(_donut_rank)
+        .mark_arc(innerRadius=60, outerRadius=110)
+        .encode(
+            theta=alt.Theta("amt:Q", stack=True),
+            color=alt.Color("rank_label:N", title=t("等级"),
+                            scale=alt.Scale(scheme="set2")),
+            tooltip=[alt.Tooltip("rank_label:N", title=t("等级")),
+                     alt.Tooltip("amt:Q", title=t("金额(¥)"), format=",.0f")],
+        )
+        .properties(height=300, title=t("等级构成"))
+    )
+    g2.altair_chart(chart_rank, use_container_width=True)
+else:
+    g2.info(t("无数据"))
+
 st.divider()
 
 # ============================================================
