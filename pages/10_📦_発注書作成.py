@@ -183,14 +183,25 @@ with col3:
     department = st.selectbox(t("部門"), DEPARTMENTS)
     location = st.selectbox(t("場所"), LOCATIONS)
 memo = st.text_input(t("备注"), "")
-_tax_pct = st.selectbox(t("税率（一括指定）"), [10, 8, 0], format_func=lambda x: f"{x}%",
-                        help=t("仅用于 UI 预览税額/総額 · 一元管理 1.0 CSV 不包含税率列，"
-                               "导入 NetSuite 后按商品 tax schedule 自动算"))
+_tax_pct = st.selectbox(t("税率 fallback（DB 缺失时使用）"), [10, 8, 0],
+                        format_func=lambda x: f"{x}%",
+                        help=t("行级税率优先取 item_master_raw.tax_schedule 内的数字 "
+                               "（例 '標準税率 10%' → 10）；DB 为空时回退到此 fallback。"
+                               "一元管理 1.0 CSV 本身不带税率列，由 NetSuite 端导入算税。"))
+
+
+def _tax_rate_from_schedule(ts) -> int | None:
+    """tax_schedule 文本 → 税率整数（例 '標準税率 10%' → 10）。无法识别返回 None。"""
+    if not ts or pd.isna(ts):
+        return None
+    m = re.search(r"(\d+)\s*%", str(ts))
+    return int(m.group(1)) if m else None
 
 
 def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
                   ext_id: str, sup: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """订货行 + item master → 标准订货单 df_out + missing JAN df。"""
+    """订货行 + item master → 标准订货单 df_out + missing JAN df。
+    税率优先按 item.tax_schedule 行级匹配，DB 为空时回退 fallback。"""
     df_order = df_order.copy()
     df_order["jan"] = (df_order["jan"].astype(str).str.strip()
                        .str.replace(r"^0{5,}", "", regex=True))
@@ -202,7 +213,12 @@ def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
     df["数量"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int)
     df["単価"] = pd.to_numeric(df["単価"], errors="coerce").fillna(0).astype(int)
     df["金額"] = df["単価"] * df["数量"]
-    df["税額"] = np.floor(df["金額"] * (_tax_pct / 100)).fillna(0).astype(int)
+    # 行级税率：优先 DB tax_schedule，缺失走 fallback
+    if "tax_schedule" in df.columns:
+        df["_tax_rate"] = df["tax_schedule"].map(_tax_rate_from_schedule).fillna(_tax_pct)
+    else:
+        df["_tax_rate"] = _tax_pct
+    df["税額"] = np.floor(df["金額"] * df["_tax_rate"].astype(float) / 100).fillna(0).astype(int)
     df["総額"] = df["金額"] + df["税額"]
 
     df_out = pd.DataFrame({
@@ -228,7 +244,7 @@ def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
 if files_data or (df_order_text is not None and not df_order_text.empty):
     # 过滤掉 inactive items（防止 JAN 重复 → 同一 JAN 双 item record 都被 merge 带出）
     df_item = pd.DataFrame([dict(r) for r in conn.execute(
-        "SELECT jan, item_code, display_name, last_modified "
+        "SELECT jan, item_code, display_name, tax_schedule, last_modified "
         "FROM nst.item_master_raw "
         "WHERE is_inactive = FALSE AND jan IS NOT NULL AND jan <> ''"
     ).fetchall()])
