@@ -183,6 +183,8 @@ with col3:
     department = st.selectbox(t("部門"), DEPARTMENTS)
     location = st.selectbox(t("場所"), LOCATIONS)
 memo = st.text_input(t("备注"), "")
+_tax_pct = st.selectbox(t("税率"), [10, 8, 0], format_func=lambda x: f"{x}%",
+                        help=t("NST 商品マスタは税区分を持たないため一括指定"))
 
 
 def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
@@ -199,8 +201,8 @@ def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
     df["数量"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int)
     df["単価"] = pd.to_numeric(df["単価"], errors="coerce").fillna(0).astype(int)
     df["金額"] = df["単価"] * df["数量"]
-    df["税額"] = 0
-    df["総額"] = df["金額"]
+    df["税額"] = np.floor(df["金額"] * (_tax_pct / 100)).fillna(0).astype(int)
+    df["総額"] = df["金額"] + df["税額"]
 
     df_out = pd.DataFrame({
         "外部ID": ext_id,
@@ -214,6 +216,7 @@ def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
                   + df.get(name_col, "").astype(str)).str.strip(),
         "数量": df["数量"],
         "単価/率": df["単価"],
+        "税率": f"{_tax_pct}%",
         "金額": df["金額"],
         "税額": df["税額"],
         "総額": df["総額"],
