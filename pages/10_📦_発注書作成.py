@@ -183,8 +183,9 @@ with col3:
     department = st.selectbox(t("部門"), DEPARTMENTS)
     location = st.selectbox(t("場所"), LOCATIONS)
 memo = st.text_input(t("备注"), "")
-_tax_pct = st.selectbox(t("税率"), [10, 8, 0], format_func=lambda x: f"{x}%",
-                        help=t("NST 商品マスタは税区分を持たないため一括指定"))
+_tax_pct = st.selectbox(t("税率（一括指定）"), [10, 8, 0], format_func=lambda x: f"{x}%",
+                        help=t("仅用于 UI 预览税額/総額 · 一元管理 1.0 CSV 不包含税率列，"
+                               "导入 NetSuite 后按商品 tax schedule 自动算"))
 
 
 def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
@@ -216,7 +217,6 @@ def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
                   + df.get(name_col, "").astype(str)).str.strip(),
         "数量": df["数量"],
         "単価/率": df["単価"],
-        "税率": f"{_tax_pct}%",
         "金額": df["金額"],
         "税額": df["税額"],
         "総額": df["総額"],
@@ -226,8 +226,11 @@ def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
 
 # 输出阶段（item_master_raw 只取一次复用）
 if files_data or (df_order_text is not None and not df_order_text.empty):
+    # 过滤掉 inactive items（防止 JAN 重复 → 同一 JAN 双 item record 都被 merge 带出）
     df_item = pd.DataFrame([dict(r) for r in conn.execute(
-        "SELECT jan, item_code, display_name FROM nst.item_master_raw"
+        "SELECT jan, item_code, display_name, last_modified "
+        "FROM nst.item_master_raw "
+        "WHERE is_inactive = FALSE AND jan IS NOT NULL AND jan <> ''"
     ).fetchall()])
     if df_item.empty:
         st.error(t("❌ nst.item_master_raw 表为空。请到 page 27「📥 NST 取得数据」执行 items 取得。"))
@@ -235,6 +238,10 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
     df_item.columns = df_item.columns.str.strip().str.lower()
     df_item["jan"] = (df_item["jan"].astype(str).str.strip()
                       .str.replace(r"^0{5,}", "", regex=True))
+    # 同 JAN 仍可能多 active 行（极少 · 旧记录未及时停用）→ 保留 last_modified 最新一条
+    df_item = (df_item.sort_values("last_modified", ascending=False, na_position="last")
+               .drop_duplicates(subset=["jan"], keep="first")
+               .drop(columns=["last_modified"]))
 
     st.subheader(t("📑 訂货单预览"))
 
