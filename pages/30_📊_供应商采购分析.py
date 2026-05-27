@@ -196,11 +196,12 @@ def _render_analysis():
         p2.metric(t("预付款金额合计 (¥)"), f"¥{tot_pp:,.0f}")
         p3.metric(t("占当月总订货比"), f"{ratio:.1f}%")
 
-        disp = prepay_po.rename(columns={
-            "po_number": t("PO番号"), "vendor_name": t("仕入先"),
-            "trandate": t("発注日"), "amount": t("金额(¥)"),
-            "qty": t("数量"), "line_cnt": t("行数"),
+        disp = prepay_po[["trandate", "po_number", "vendor_name",
+                          "amount", "qty", "line_cnt"]].rename(columns={
+            "trandate": t("発注日"), "po_number": t("PO番号"), "vendor_name": t("仕入先"),
+            "amount": t("金额(¥)"), "qty": t("数量"), "line_cnt": t("行数"),
         })
+        disp = disp.sort_values(t("発注日"), na_position="last")
         st.dataframe(disp, hide_index=True, use_container_width=True, height=320,
                      column_config={t("金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
         st.download_button(t("📥 预付款 PO CSV 下载"),

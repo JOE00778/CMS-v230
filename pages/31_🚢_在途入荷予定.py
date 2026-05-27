@@ -126,14 +126,15 @@ elif pay_filter == t("预付款（現金払い）"):
     view = view[view["is_prepay"]]
 
 view["prepay_mark"] = view["is_prepay"].map(lambda b: "✓" if bool(b) else "")
-disp = view[["po_number", "vendor_name", "prepay_mark", "jan", "qty_outstanding",
-             "amt_outstanding", "trandate", "expected_receipt_date", "status"]].copy()
+disp = view[["trandate", "po_number", "vendor_name", "prepay_mark", "jan",
+             "qty_outstanding", "amt_outstanding", "expected_receipt_date", "status"]].copy()
 disp = disp.rename(columns={
-    "po_number": t("PO番号"), "vendor_name": t("仕入先"), "prepay_mark": t("预付款"),
-    "jan": t("JAN"), "qty_outstanding": t("在途残"), "amt_outstanding": t("在途金额(¥)"),
-    "trandate": t("発注日"), "expected_receipt_date": t("入荷予定日"), "status": t("状態"),
+    "trandate": t("発注日"), "po_number": t("PO番号"), "vendor_name": t("仕入先"),
+    "prepay_mark": t("预付款"), "jan": t("JAN"), "qty_outstanding": t("在途残"),
+    "amt_outstanding": t("在途金额(¥)"), "expected_receipt_date": t("入荷予定日"),
+    "status": t("状態"),
 })
-disp = disp.sort_values(t("入荷予定日"), na_position="last")
+disp = disp.sort_values(t("発注日"), na_position="last")
 st.dataframe(disp, hide_index=True, use_container_width=True, height=480,
              column_config={t("在途金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
 st.download_button(t("📥 CSV 下载"), disp.to_csv(index=False).encode("utf-8-sig"),
