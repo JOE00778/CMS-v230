@@ -159,13 +159,15 @@ def _render_analysis():
                     axis=alt.Axis(format=",.0f", grid=True, labels=True, ticks=True)),
             color=alt.Color("vendor_name:N", title=t("仕入先")),
         )
-        # hover 任意 x 位置 → 显示该月竖线 + 各 vendor 当月值（不用对准点）
+        # hover 任意 x 位置 → 竖线对齐该月 + tooltip 一次列出全部 5 家 vendor 当月金额
         nearest = alt.selection_point(nearest=True, on="mouseover",
                                       fields=["year_month"], empty=False)
-        selectors = base.mark_rule(opacity=0).encode(
-            tooltip=[alt.Tooltip("year_month:N", title=t("月份")),
-                     alt.Tooltip("vendor_name:N", title=t("仕入先")),
-                     alt.Tooltip("total_amount:Q", title=t("总订货金额"), format=",.0f")],
+        pivot_tooltip = ([alt.Tooltip("year_month:N", title=t("月份"))]
+                         + [alt.Tooltip(f"{v}:Q", format=",.0f") for v in top_vendors])
+        selectors = base.transform_pivot(
+            "vendor_name", value="total_amount", groupby=["year_month"],
+        ).mark_rule(opacity=0).encode(
+            tooltip=pivot_tooltip,
         ).add_params(nearest)
         rule = base.mark_rule(color="gray", strokeDash=[3, 3]).encode(
             opacity=alt.condition(nearest, alt.value(0.6), alt.value(0)),
