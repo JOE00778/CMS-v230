@@ -154,7 +154,7 @@ else:
                 c1, c2 = st.columns([2, 3])
                 with c1:
                     ext_one = st.text_input(
-                        t("外部 ID"), value=f"{_now_ts}_{idx + 1:02d}",
+                        t("外部 ID"), value=f"{_now_ts}_{idx + 1}",
                         key=f"ext_{idx}_{f.name}",
                     )
                 with c2:
