@@ -144,30 +144,38 @@ else:
         accept_multiple_files=True,
     )
     if uploaded_list:
+        _now_ts = datetime.now().strftime("%Y%m%d%H%M%S")
         for idx, f in enumerate(sorted(uploaded_list, key=lambda x: x.name)):
             with st.expander(f"📄 {f.name}", expanded=True):
                 df_one = _parse_uploaded(f)
                 if df_one is None:
                     st.error(t("❌ CSV / Excel 没有 'jan' 列"))
                     continue
-                default_idx = _guess_supplier(f.name)
-                sup_one = st.selectbox(
-                    t("仕入先"), SUPPLIERS, index=default_idx,
-                    key=f"sup_{idx}_{f.name}",
-                )
+                c1, c2 = st.columns([2, 3])
+                with c1:
+                    ext_one = st.text_input(
+                        t("外部 ID"), value=f"{_now_ts}_{idx + 1:02d}",
+                        key=f"ext_{idx}_{f.name}",
+                    )
+                with c2:
+                    default_idx = _guess_supplier(f.name)
+                    sup_one = st.selectbox(
+                        t("仕入先"), SUPPLIERS, index=default_idx,
+                        key=f"sup_{idx}_{f.name}",
+                    )
                 st.caption(t("{n} 行").format(n=len(df_one)))
                 files_data.append({"filename": f.name, "df_order": df_one,
-                                   "supplier": sup_one})
+                                   "supplier": sup_one, "external_id": ext_one})
 
 # 共通 meta
 col1, col2, col3 = st.columns(3)
 with col1:
     external_id = datetime.now().strftime("%Y%m%d%H%M%S")
-    st.text_input(t("外部 ID"), value=external_id, disabled=True)
     if option == t("文本粘贴"):
+        st.text_input(t("外部 ID"), value=external_id, disabled=True)
         supplier_text = st.selectbox(t("仕入先"), SUPPLIERS)
     else:
-        st.caption(t("仕入先 由各文件单独指定 ↑"))
+        st.caption(t("外部 ID / 仕入先 由各文件单独指定 ↑"))
 with col2:
     order_date = st.date_input(t("日付"), value=date.today())
     employee = st.selectbox(t("従業員"), EMPLOYEES)
@@ -244,10 +252,10 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
     # 多文件模式 → 每文件一段预览 + 合并为单 CSV 下载
     if files_data:
         outputs: list[pd.DataFrame] = []
-        for i, fd in enumerate(files_data):
-            ext_id_i = f"{external_id}_{i + 1:02d}"
+        for fd in files_data:
             df_out, missing = _build_output(fd["df_order"], df_item,
-                                            ext_id=ext_id_i, sup=fd["supplier"])
+                                            ext_id=fd["external_id"],
+                                            sup=fd["supplier"])
             with st.expander(
                 f"📄 {fd['filename']} → {fd['supplier']} "
                 f"({len(df_out)} {t('行')} · ¥{int(df_out['総額'].sum()):,})",
