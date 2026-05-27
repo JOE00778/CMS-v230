@@ -2,13 +2,16 @@
 
 输入两种:
   A. 粘贴文本（自由格式 JAN+数量+单价）
-  B. CSV/Excel 上传（含 jan, 数量, 単価 列）
+  B. CSV/Excel 上传（多文件 · 每文件单独选仕入先 · 2026-05-27 起）
 
 输出: 標準 NetSuite 订货单 CSV，包含 外部ID/仕入先/日付/従業員/部門/メモ/場所/アイテム/数量/単価/金額/税額/総額
+多文件时每个 CSV 单独下载 + 一括 ZIP。
 """
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from datetime import date, datetime
 
 import numpy as np
@@ -64,45 +67,32 @@ def _provide_template():
 
 _provide_template()
 
-option = st.radio(t("输入方式"), [t("文本粘贴"), t("CSV / Excel 上传")])
-df_order = None
 
-if option == t("文本粘贴"):
-    input_text = st.text_area(t("粘贴订货文本"), height=300)
-    if st.button(t("✏️ 文本转换")):
-        if not input_text.strip():
-            st.warning(t("⚠ 请先输入文本"))
+def _parse_uploaded(file) -> pd.DataFrame | None:
+    """单个 CSV/Excel → 规范列名（jan/数量/単価/...）。失败返回 None。"""
+    try:
+        if file.name.endswith(".xlsx"):
+            df = pd.read_excel(file)
         else:
-            df_order = _parse_items_text(input_text)
-            if df_order is None or df_order.empty:
-                st.warning(t("⚠ 没能从文本中识别出 JAN+数量"))
-                df_order = None
-else:
-    uploaded = st.file_uploader(t("上传订货 CSV / Excel"), type=["csv", "xlsx"])
-    if uploaded is not None:
-        try:
-            if uploaded.name.endswith(".xlsx"):
-                df_order = pd.read_excel(uploaded)
-            else:
-                df_order = pd.read_csv(uploaded, encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            df_order = pd.read_csv(uploaded, encoding="shift_jis")
-        df_order.columns = df_order.columns.str.strip().str.lower()
-        rename_map = {
-            "janコード": "jan", "ｊａｎ": "jan", "jan": "jan",
-            "数量": "数量", "数": "数量", "qty": "数量",
-            "ロット×数量": "ロット×数量",
-            "単価": "単価", "価格": "単価", "price": "単価",
-        }
-        df_order.rename(
-            columns={k.lower(): v for k, v in rename_map.items() if k.lower() in df_order.columns},
-            inplace=True,
-        )
-        if "jan" not in df_order.columns:
-            st.error(t("❌ CSV / Excel 没有 'jan' 列"))
-            df_order = None
+            df = pd.read_csv(file, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        file.seek(0)
+        df = pd.read_csv(file, encoding="shift_jis")
+    df.columns = df.columns.str.strip().str.lower()
+    rename_map = {
+        "janコード": "jan", "ｊａｎ": "jan", "jan": "jan",
+        "数量": "数量", "数": "数量", "qty": "数量",
+        "ロット×数量": "ロット×数量",
+        "単価": "単価", "価格": "単価", "price": "単価",
+    }
+    df.rename(columns={k.lower(): v for k, v in rename_map.items() if k.lower() in df.columns},
+              inplace=True)
+    if "jan" not in df.columns:
+        return None
+    return df
 
-# 订货单 meta（dropdown）
+
+# 订货单 meta（dropdown）— SUPPLIERS 定义提前供文件名预选用
 SUPPLIERS = [
     "0020 エンパイヤ自動車株式会社（KONNGU'S）", "0025 株式会社オンダ", "0029 K・BLUE株式会社",
     "0072 新富士バーナー株式会社", "0073 株式会社　エィチ・ケイ", "0077 大分共和株式会社",
@@ -122,11 +112,64 @@ EMPLOYEES = ["079 隋艶偉", "005 川崎里子", "037 米澤和敏", "043 徐�
 DEPARTMENTS = ["輸出事業", "輸出事業 : 輸出（中国）"]
 LOCATIONS = ["JD-物流-千葉", "弁天倉庫"]
 
+
+def _guess_supplier(filename: str) -> int:
+    """文件名 0XXX 前缀 → SUPPLIERS index（命中返回索引·没命中返回 0）。"""
+    m = re.search(r"(\d{4})", filename or "")
+    if not m:
+        return 0
+    prefix = m.group(1)
+    for i, s in enumerate(SUPPLIERS):
+        if s.startswith(prefix + " "):
+            return i
+    return 0
+
+
+option = st.radio(t("输入方式"), [t("文本粘贴"), t("CSV / Excel 上传（多文件）")])
+# 多文件模式: list of {filename, df_order, supplier}; 文本模式: 单 df_order
+files_data: list[dict] = []
+df_order_text = None
+
+if option == t("文本粘贴"):
+    input_text = st.text_area(t("粘贴订货文本"), height=300)
+    if st.button(t("✏️ 文本转换")):
+        if not input_text.strip():
+            st.warning(t("⚠ 请先输入文本"))
+        else:
+            df_order_text = _parse_items_text(input_text)
+            if df_order_text is None or df_order_text.empty:
+                st.warning(t("⚠ 没能从文本中识别出 JAN+数量"))
+                df_order_text = None
+else:
+    uploaded_list = st.file_uploader(
+        t("上传订货 CSV / Excel（可多选）"), type=["csv", "xlsx"],
+        accept_multiple_files=True,
+    )
+    if uploaded_list:
+        for idx, f in enumerate(sorted(uploaded_list, key=lambda x: x.name)):
+            with st.expander(f"📄 {f.name}", expanded=True):
+                df_one = _parse_uploaded(f)
+                if df_one is None:
+                    st.error(t("❌ CSV / Excel 没有 'jan' 列"))
+                    continue
+                default_idx = _guess_supplier(f.name)
+                sup_one = st.selectbox(
+                    t("仕入先"), SUPPLIERS, index=default_idx,
+                    key=f"sup_{idx}_{f.name}",
+                )
+                st.caption(t("{n} 行").format(n=len(df_one)))
+                files_data.append({"filename": f.name, "df_order": df_one,
+                                   "supplier": sup_one})
+
+# 共通 meta
 col1, col2, col3 = st.columns(3)
 with col1:
     external_id = datetime.now().strftime("%Y%m%d%H%M%S")
     st.text_input(t("外部 ID"), value=external_id, disabled=True)
-    supplier = st.selectbox(t("仕入先"), SUPPLIERS)
+    if option == t("文本粘贴"):
+        supplier_text = st.selectbox(t("仕入先"), SUPPLIERS)
+    else:
+        st.caption(t("仕入先 由各文件单独指定 ↑"))
 with col2:
     order_date = st.date_input(t("日付"), value=date.today())
     employee = st.selectbox(t("従業員"), EMPLOYEES)
@@ -137,26 +180,16 @@ memo = st.text_input(t("备注"), "")
 _tax_pct = st.selectbox(t("税率"), [10, 8, 0], format_func=lambda x: f"{x}%",
                         help=t("NST 商品マスタは税区分を持たないため一括指定"))
 
-if df_order is not None and not df_order.empty:
-    df_item = pd.DataFrame([dict(r) for r in conn.execute(
-        "SELECT jan, item_code, display_name FROM nst.item_master_raw"
-    ).fetchall()])
-    if df_item.empty:
-        st.error(t("❌ nst.item_master_raw 表为空。请到 page 27「📥 NST 取得数据」执行 items 取得。"))
-        st.stop()
-    df_item.columns = df_item.columns.str.strip().str.lower()
 
-    df_order["jan"] = df_order["jan"].astype(str).str.strip().str.replace(r"^0{5,}", "", regex=True)
-    df_item["jan"] = df_item["jan"].astype(str).str.strip().str.replace(r"^0{5,}", "", regex=True)
-
+def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
+                  ext_id: str, sup: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """订货行 + item master → 标准订货单 df_out + missing JAN df。"""
+    df_order = df_order.copy()
+    df_order["jan"] = (df_order["jan"].astype(str).str.strip()
+                       .str.replace(r"^0{5,}", "", regex=True))
     df = df_order.merge(df_item, on="jan", how="left")
-    name_col = "display_name"
-    code_col = "item_code"
-
+    name_col, code_col = "display_name", "item_code"
     missing = df[df[name_col].isna()] if name_col in df.columns else pd.DataFrame()
-    if len(missing) > 0:
-        st.warning(t(f"⚠ {len(missing)} 件 JAN 在 nst.item_master_raw 找不到"))
-        st.dataframe(localize_df(missing[["jan"]]))
 
     qty_col = "ロット×数量" if "ロット×数量" in df.columns else "数量"
     df["数量"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int)
@@ -166,28 +199,86 @@ if df_order is not None and not df_order.empty:
     df["総額"] = df["金額"] + df["税額"]
 
     df_out = pd.DataFrame({
-        "外部ID": external_id,
-        "仕入先": supplier,
+        "外部ID": ext_id,
+        "仕入先": sup,
         "日付": order_date.strftime("%Y/%m/%d"),
         "従業員": employee,
         "部門": department,
         "メモ": memo,
         "場所": location,
-        "アイテム": (df.get(code_col, "").astype(str) + " " + df.get(name_col, "").astype(str)).str.strip(),
+        "アイテム": (df.get(code_col, "").astype(str) + " "
+                  + df.get(name_col, "").astype(str)).str.strip(),
         "数量": df["数量"],
         "単価/率": df["単価"],
         "金額": df["金額"],
         "税額": df["税額"],
         "総額": df["総額"],
     })
+    return df_out, missing
+
+
+# 输出阶段（item_master_raw 只取一次复用）
+if files_data or (df_order_text is not None and not df_order_text.empty):
+    df_item = pd.DataFrame([dict(r) for r in conn.execute(
+        "SELECT jan, item_code, display_name FROM nst.item_master_raw"
+    ).fetchall()])
+    if df_item.empty:
+        st.error(t("❌ nst.item_master_raw 表为空。请到 page 27「📥 NST 取得数据」执行 items 取得。"))
+        st.stop()
+    df_item.columns = df_item.columns.str.strip().str.lower()
+    df_item["jan"] = (df_item["jan"].astype(str).str.strip()
+                      .str.replace(r"^0{5,}", "", regex=True))
 
     st.subheader(t("📑 訂货单预览"))
-    st.dataframe(df_out, use_container_width=True)
 
-    csv_out = df_out.to_csv(index=False, encoding="utf-8-sig")
-    st.download_button(
-        t("📥 订货单 CSV 下载"),
-        data=csv_out,
-        file_name=f"発注書_{external_id}.csv",
-        mime="text/csv",
-    )
+    # 文本模式 → 单 df_out（沿用旧逻辑）
+    if df_order_text is not None and not df_order_text.empty:
+        df_out, missing = _build_output(df_order_text, df_item,
+                                        ext_id=external_id, sup=supplier_text)
+        if len(missing) > 0:
+            st.warning(t("⚠ {n} 件 JAN 在 nst.item_master_raw 找不到").format(n=len(missing)))
+            st.dataframe(localize_df(missing[["jan"]]))
+        st.dataframe(df_out, use_container_width=True)
+        st.download_button(
+            t("📥 订货单 CSV 下载"),
+            data=df_out.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"発注書_{external_id}.csv", mime="text/csv",
+        )
+
+    # 多文件模式 → 每文件一段预览 + 一键 ZIP
+    if files_data:
+        outputs: list[tuple[str, pd.DataFrame]] = []  # (csv_filename, df_out)
+        for i, fd in enumerate(files_data):
+            ext_id_i = f"{external_id}_{i + 1:02d}"
+            df_out, missing = _build_output(fd["df_order"], df_item,
+                                            ext_id=ext_id_i, sup=fd["supplier"])
+            csv_name = f"発注書_{ext_id_i}_{fd['supplier'].split()[0]}.csv"
+            with st.expander(
+                f"📄 {fd['filename']} → {fd['supplier']} "
+                f"({len(df_out)} {t('行')} · ¥{int(df_out['総額'].sum()):,})",
+                expanded=(len(files_data) == 1),
+            ):
+                if len(missing) > 0:
+                    st.warning(t("⚠ {n} 件 JAN 在 nst.item_master_raw 找不到").format(n=len(missing)))
+                    st.dataframe(localize_df(missing[["jan"]]))
+                st.dataframe(df_out, use_container_width=True)
+                st.download_button(
+                    t("📥 下载 CSV"),
+                    data=df_out.to_csv(index=False, encoding="utf-8-sig"),
+                    file_name=csv_name, mime="text/csv",
+                    key=f"dl_{i}_{fd['filename']}",
+                )
+            outputs.append((csv_name, df_out))
+
+        # 一括 ZIP（>=2 个文件才显示）
+        if len(outputs) >= 2:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for csv_name, df_out in outputs:
+                    zf.writestr(csv_name, df_out.to_csv(index=False, encoding="utf-8-sig"))
+            buf.seek(0)
+            st.download_button(
+                t("📦 一括 ZIP 下载（{n} 個 CSV）").format(n=len(outputs)),
+                data=buf.getvalue(),
+                file_name=f"発注書_{external_id}.zip", mime="application/zip",
+            )
