@@ -91,12 +91,39 @@ def _render_analysis():
     tot_prev = float(prev["total_amount"].sum()) if not prev.empty else 0.0
     mom = (tot_cur / tot_prev - 1) * 100 if tot_prev else None
 
+    # 按支付方式拆分（vendor 级 is_prepay 标识·勾选=预付款/現金払い，未勾=挂账/掛け払い）
+    pp_mask_cur = cur["is_prepay"].astype(bool)
+    tot_pp_cur = float(cur.loc[pp_mask_cur, "total_amount"].sum())
+    tot_cr_cur = float(cur.loc[~pp_mask_cur, "total_amount"].sum())
+    if not prev.empty:
+        pp_mask_prev = prev["is_prepay"].astype(bool)
+        tot_pp_prev = float(prev.loc[pp_mask_prev, "total_amount"].sum())
+        tot_cr_prev = float(prev.loc[~pp_mask_prev, "total_amount"].sum())
+    else:
+        tot_pp_prev = tot_cr_prev = 0.0
+    mom_pp = (tot_pp_cur / tot_pp_prev - 1) * 100 if tot_pp_prev else None
+    mom_cr = (tot_cr_cur / tot_cr_prev - 1) * 100 if tot_cr_prev else None
+    pct_pp = (tot_pp_cur / tot_cur * 100) if tot_cur else 0.0
+    pct_cr = (tot_cr_cur / tot_cur * 100) if tot_cur else 0.0
+
     k1, k2, k3 = st.columns(3)
     k1.metric(t("总订货金额 合计 (¥)"), f"¥{tot_cur:,.0f}",
               delta=(f"{mom:+.1f}% {t('环比上月')}" if mom is not None else None),
               delta_color="off")  # 总订货金额升降好坏取决于备货策略，不强行着色
     k2.metric(t("PO 件数"), f"{int(cur['po_count'].sum()):,}")
     k3.metric(t("仕入先 数"), f"{cur['vendor_id'].nunique():,}")
+
+    p1, p2 = st.columns(2)
+    p1.metric(t("挂账（掛け払い）金额 (¥)"), f"¥{tot_cr_cur:,.0f}",
+              delta=(f"{mom_cr:+.1f}% {t('环比上月')} · {pct_cr:.0f}% {t('占比')}"
+                     if mom_cr is not None
+                     else f"{pct_cr:.0f}% {t('占比')}"),
+              delta_color="off")
+    p2.metric(t("预付款（現金払い）金额 (¥)"), f"¥{tot_pp_cur:,.0f}",
+              delta=(f"{mom_pp:+.1f}% {t('环比上月')} · {pct_pp:.0f}% {t('占比')}"
+                     if mom_pp is not None
+                     else f"{pct_pp:.0f}% {t('占比')}"),
+              delta_color="off")
 
     st.divider()
 
