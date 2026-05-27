@@ -5,7 +5,8 @@
   B. CSV/Excel 上传（多文件 · 每文件单独选仕入先 · 2026-05-27 起）
 
 输出: 標準 NetSuite 订货单 CSV，包含 外部ID/仕入先/日付/従業員/部門/メモ/場所/アイテム/数量/単価/金額/税額/総額
-多文件时合并为单 CSV（各文件 外部ID 加 _NN 后缀 · NetSuite 按 外部ID 自动分单）。
+多文件时合并为单 CSV（各文件 外部 ID 默认 timestamp 接编号 1/2/3，可单独编辑 ·
+NetSuite 按 外部 ID 自动分单）。
 """
 from __future__ import annotations
 
@@ -123,6 +124,9 @@ def _guess_supplier(filename: str) -> int:
     return 0
 
 
+# 全局唯一时间戳：用作文本模式外部 ID / 多文件外部 ID 前缀 / 下载文件名
+external_id = datetime.now().strftime("%Y%m%d%H%M%S")
+
 option = st.radio(t("输入方式"), [t("文本粘贴"), t("CSV / Excel 上传（多文件）")])
 # 多文件模式: list of {filename, df_order, supplier}; 文本模式: 单 df_order
 files_data: list[dict] = []
@@ -144,7 +148,6 @@ else:
         accept_multiple_files=True,
     )
     if uploaded_list:
-        _now_ts = datetime.now().strftime("%Y%m%d%H%M%S")
         for idx, f in enumerate(sorted(uploaded_list, key=lambda x: x.name)):
             with st.expander(f"📄 {f.name}", expanded=True):
                 df_one = _parse_uploaded(f)
@@ -154,7 +157,7 @@ else:
                 c1, c2 = st.columns([2, 3])
                 with c1:
                     ext_one = st.text_input(
-                        t("外部 ID"), value=f"{_now_ts}{idx + 1}",
+                        t("外部 ID"), value=f"{external_id}{idx + 1}",
                         key=f"ext_{idx}_{f.name}",
                     )
                 with c2:
@@ -170,7 +173,6 @@ else:
 # 共通 meta
 col1, col2, col3 = st.columns(3)
 with col1:
-    external_id = datetime.now().strftime("%Y%m%d%H%M%S")
     if option == t("文本粘贴"):
         st.text_input(t("外部 ID"), value=external_id, disabled=True)
         supplier_text = st.selectbox(t("仕入先"), SUPPLIERS)
@@ -216,7 +218,7 @@ def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
                        .str.replace(r"^0{5,}", "", regex=True))
     df = df_order.merge(df_item, on="jan", how="left")
     name_col, code_col = "display_name", "item_code"
-    missing = df[df[name_col].isna()] if name_col in df.columns else pd.DataFrame()
+    missing = df[df[name_col].isna()]
 
     qty_col = "ロット×数量" if "ロット×数量" in df.columns else "数量"
     df["数量"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int)
