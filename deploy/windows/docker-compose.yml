@@ -172,6 +172,38 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # ------------------------------------------------------------
+  # jdl_scheduler · JDL 京东物流海外仓在庫拉取ディスパッチャ（常駐）
+  #   毎分 jdl.pull_schedule を見て daily_pull を起動（自動 06:30 JST + 手動 run_now）
+  #   コード(database repo)は volume mount → git pull で更新（再 build 不要）
+  #   イメージは nst_scheduler と同一 (deploy/scheduler.Dockerfile)
+  #   ⚠️ 初回のみ: docker compose build jdl_scheduler （= nst_scheduler とイメージ共有）
+  # ------------------------------------------------------------
+  jdl_scheduler:
+    build:
+      context: ../../../database
+      dockerfile: deploy/scheduler.Dockerfile
+    container_name: cms_jdl_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../../../database/.env          # JDL_* 凭据
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cms}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cms}
+      TZ: Asia/Tokyo
+    command: ["python", "-m", "data_warehouse.jdl_api.dispatcher"]
+    volumes:
+      - ../../../database:/app:ro       # jdl_api コード（git pull で更新）
+    networks:
+      - cms_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
 networks:
   cms_net:
     driver: bridge

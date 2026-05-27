@@ -255,10 +255,11 @@ def _render_kpi_cards(d: pd.DataFrame, sel: list[str]) -> None:
 # tab1 按棚番号查商品（弁天）
 # tab2 按 SKU 查棚分布（JD + 弁天）
 # ============================================================
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     t("🔎 按棚番号查商品（弁天）"),
     t("🔍 按 SKU 查库存分布（全仓库）"),
     t("🏷️ 货架用途指定"),
+    t("📊 NST vs JDL 账实对账"),
 ])
 
 bn_df = df[df["warehouse"] == "弁天倉庫"].copy()
@@ -482,3 +483,144 @@ with tab3:
                 st.rerun()
             else:
                 st.warning(t("请填棚番号"))
+
+# ============================================================
+# tab4 NST vs JDL 账实对账（JD-物流-千葉 NST 账面 vs JDL 海外仓物理）
+#   数据源: jdl.v_inventory_reconciliation
+#   状态: OK / MINOR_DIFF (±1) / MAJOR_DIFF / NST_ONLY / JDL_ONLY
+#   手动同步: UPDATE jdl.pull_schedule SET run_now=TRUE → jdl_scheduler 检测后跑 daily_pull
+# ============================================================
+with tab4:
+    st.caption(t(
+        "NST 端 = NetSuite 账面（JD-物流-千葉 仓）· JDL 端 = 京东物流海外仓 OpenAPI 物理库存。"
+        "差异 = 账面与实物脱钩（漏出库登记 / 盘点差 / 发货未冲账）。"
+    ))
+
+    # ── 调度状态 + 手动同步按钮 ─────────────────────────────
+    try:
+        sched = _df(
+            "SELECT job_key, last_run_at, last_status, run_now "
+            "FROM jdl.pull_schedule WHERE job_key='jdl_inventory_daily'"
+        )
+    except Exception as e:
+        st.error(t("⚠️ jdl schema 未部署？跑一次 sql/000~020 migration") + f"\n\n{e}")
+        st.stop()
+
+    last_run = sched["last_run_at"].iloc[0] if not sched.empty else None
+    last_status = sched["last_status"].iloc[0] if not sched.empty else None
+    run_now_flag = bool(sched["run_now"].iloc[0]) if not sched.empty else False
+
+    c_a, c_b, c_c = st.columns([2, 2, 1])
+    c_a.metric(t("上次同步"), str(last_run)[:16] if last_run else t("—"))
+    c_b.metric(t("上次状态"), last_status or t("—"))
+    if run_now_flag:
+        c_c.info(t("⏳ 同步中…"))
+    else:
+        if c_c.button(t("🔄 手动同步"), type="primary", help=t("立即触发 JDL daily_pull")):
+            conn.execute(
+                "UPDATE jdl.pull_schedule SET run_now=TRUE, updated_at=NOW() "
+                "WHERE job_key='jdl_inventory_daily'"
+            )
+            conn.commit()
+            st.success(t("✅ 已触发 · jdl_scheduler 1 分钟内启动 daily_pull"))
+            st.rerun()
+
+    # ── 拉对账数据 ──────────────────────────────────────────
+    try:
+        rec = _df(
+            "SELECT jan, item_code, display_name, maker, item_rank, "
+            "       nst_qty_on_hand, jdl_qty_total, diff_total, "
+            "       nst_qty_available, jdl_qty_available, diff_available, "
+            "       jdl_qty_preoccupied, jdl_qty_inbound, "
+            "       status, nst_snapshot_date, jdl_snapshot_date "
+            "FROM jdl.v_inventory_reconciliation"
+        )
+    except Exception as e:
+        st.error(t("⚠️ 对账 view 读取失败") + f"\n\n{e}")
+        st.stop()
+
+    if rec.empty:
+        st.info(t("尚无对账数据。点上方「手动同步」拉一次 JDL 库存后再来看。"))
+        st.stop()
+
+    # ── 5 档状态分布卡 ─────────────────────────────────────
+    counts = rec["status"].value_counts().to_dict()
+    s1, s2, s3, s4, s5 = st.columns(5)
+    s1.metric(t("✅ OK"), counts.get("OK", 0))
+    s2.metric(t("🟡 MINOR_DIFF (±1)"), counts.get("MINOR_DIFF", 0))
+    s3.metric(t("🔴 MAJOR_DIFF"), counts.get("MAJOR_DIFF", 0),
+              delta=t("需调查") if counts.get("MAJOR_DIFF", 0) > 0 else None,
+              delta_color="inverse")
+    s4.metric(t("🟠 NST_ONLY"), counts.get("NST_ONLY", 0),
+              help=t("NST 账面有 · JDL 实物无（已停售或未报 JDL）"))
+    s5.metric(t("🟣 JDL_ONLY"), counts.get("JDL_ONLY", 0),
+              help=t("JDL 有 · NST 账面无（未登录商品 / item_master 缺失）"))
+
+    # ── 筛选 + 表格 ─────────────────────────────────────────
+    f1, f2, f3 = st.columns([2, 2, 3])
+    sel_status = f1.multiselect(
+        t("状态筛选"),
+        ["OK", "MINOR_DIFF", "MAJOR_DIFF", "NST_ONLY", "JDL_ONLY"],
+        default=["MAJOR_DIFF", "NST_ONLY", "JDL_ONLY"],
+        key="rec_status",
+    )
+    _maker_opts = sorted(rec["maker"].dropna().astype(str).unique().tolist())
+    sel_maker = f2.multiselect(t("メーカー"), _maker_opts, default=[], key="rec_maker")
+    search_jan = f3.text_input(t("🔍 JAN / 名称模糊搜索"), key="rec_search")
+
+    df_rec = rec.copy()
+    if sel_status:
+        df_rec = df_rec[df_rec["status"].isin(sel_status)]
+    if sel_maker:
+        df_rec = df_rec[df_rec["maker"].astype(str).isin(sel_maker)]
+    if search_jan.strip():
+        q = search_jan.strip()
+        df_rec = df_rec[
+            df_rec["jan"].astype(str).str.contains(q, case=False, na=False)
+            | df_rec["display_name"].astype(str).str.contains(q, case=False, na=False)
+        ]
+
+    # 按差异绝对值倒序
+    df_rec = df_rec.assign(_abs_diff=df_rec["diff_total"].abs().fillna(99999))
+    df_rec = df_rec.sort_values("_abs_diff", ascending=False).drop(columns=["_abs_diff"])
+
+    st.caption(t("命中 {n} 条").format(n=len(df_rec)))
+
+    show_cols = [
+        "status", "jan", "item_code", "display_name", "maker", "item_rank",
+        "nst_qty_on_hand", "jdl_qty_total", "diff_total",
+        "nst_qty_available", "jdl_qty_available",
+        "jdl_qty_preoccupied", "jdl_qty_inbound",
+        "nst_snapshot_date", "jdl_snapshot_date",
+    ]
+    st.dataframe(
+        df_rec[show_cols],
+        hide_index=True,
+        use_container_width=True,
+        height=560,
+        column_config={
+            "status": st.column_config.TextColumn(t("状态"), width="small"),
+            "jan": st.column_config.TextColumn("JAN", width="small"),
+            "item_code": st.column_config.TextColumn(t("商品コード"), width="small"),
+            "display_name": st.column_config.TextColumn(t("商品名"), width="large"),
+            "maker": st.column_config.TextColumn(t("メーカー"), width="small"),
+            "item_rank": st.column_config.TextColumn(t("等级"), width="small"),
+            "nst_qty_on_hand": st.column_config.NumberColumn(t("NST 账面"), format="%d"),
+            "jdl_qty_total": st.column_config.NumberColumn(t("JDL 实物"), format="%d"),
+            "diff_total": st.column_config.NumberColumn(t("差异 (NST-JDL)"), format="%+d"),
+            "nst_qty_available": st.column_config.NumberColumn(t("NST 可用"), format="%d"),
+            "jdl_qty_available": st.column_config.NumberColumn(t("JDL 可用"), format="%d"),
+            "jdl_qty_preoccupied": st.column_config.NumberColumn(t("JDL 预占"), format="%d"),
+            "jdl_qty_inbound": st.column_config.NumberColumn(t("JDL 在途"), format="%d"),
+            "nst_snapshot_date": st.column_config.DateColumn(t("NST 快照日")),
+            "jdl_snapshot_date": st.column_config.DateColumn(t("JDL 快照日")),
+        },
+    )
+
+    st.download_button(
+        t("📥 下载对账 CSV"),
+        df_rec[show_cols].to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"nst_jdl_reconciliation_{inv_date}.csv",
+        mime="text/csv",
+        key="rec_csv",
+    )
