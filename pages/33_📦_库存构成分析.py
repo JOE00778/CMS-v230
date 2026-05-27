@@ -188,15 +188,27 @@ bn_df = df[df["warehouse"] == "弁天倉庫"].copy()
 
 with tab1:
     _bin_opts_t1 = sorted(bn_df["bin_number"].dropna().astype(str).unique().tolist())
-    c1, c2 = st.columns([3, 2])
+    _maker_opts_t1 = sorted(bn_df["maker"].dropna().astype(str).unique().tolist())
+    _rank_opts_t1 = sorted(bn_df["item_rank"].dropna().astype(str).unique().tolist())
+    c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
     sel_bins_t1 = c1.multiselect(
         t("棚番号（多选 · 留空 = 全部棚）"), _bin_opts_t1, default=[], key="bin_filter_ms",
     )
-    show_zero = c2.checkbox(t("含 0 库存"), value=False)
+    sel_makers_t1 = c2.multiselect(
+        t("メーカー（多选 · 留空 = 全部）"), _maker_opts_t1, default=[], key="t1_maker",
+    )
+    sel_ranks_t1 = c3.multiselect(
+        t("等级（多选 · 留空 = 全部）"), _rank_opts_t1, default=[], key="t1_rank",
+    )
+    show_zero = c4.checkbox(t("含 0 库存"), value=False)
 
     sub = bn_df.copy()
     if sel_bins_t1:
         sub = sub[sub["bin_number"].astype(str).isin(sel_bins_t1)]
+    if sel_makers_t1:
+        sub = sub[sub["maker"].astype(str).isin(sel_makers_t1)]
+    if sel_ranks_t1:
+        sub = sub[sub["item_rank"].astype(str).isin(sel_ranks_t1)]
     if not show_zero:
         sub = sub[sub["qty_on_hand"] > 0]
 
@@ -228,7 +240,17 @@ with tab1:
                            file_name=f"bin_query_{bin_date}.csv", mime="text/csv")
 
 with tab2:
-    sku_in = st.text_input(t("商品コード / JAN（部分匹配 · 留空 = 全部）"), "", key="sku_filter")
+    _maker_opts_t2 = sorted(df["maker"].dropna().astype(str).unique().tolist())
+    _rank_opts_t2 = sorted(df["item_rank"].dropna().astype(str).unique().tolist())
+    c1, c2, c3 = st.columns([4, 3, 3])
+    sku_in = c1.text_input(t("商品コード / JAN（部分匹配 · 留空 = 全部）"), "", key="sku_filter")
+    sel_makers_t2 = c2.multiselect(
+        t("メーカー（多选 · 留空 = 全部）"), _maker_opts_t2, default=[], key="t2_maker",
+    )
+    sel_ranks_t2 = c3.multiselect(
+        t("等级（多选 · 留空 = 全部）"), _rank_opts_t2, default=[], key="t2_rank",
+    )
+
     if sku_in.strip():
         s = sku_in.strip().lower()
         sub2 = df[
@@ -237,6 +259,10 @@ with tab2:
         ].copy()
     else:
         sub2 = df.copy()
+    if sel_makers_t2:
+        sub2 = sub2[sub2["maker"].astype(str).isin(sel_makers_t2)]
+    if sel_ranks_t2:
+        sub2 = sub2[sub2["item_rank"].astype(str).isin(sel_ranks_t2)]
     sub2 = sub2[sub2["qty_on_hand"] > 0]
 
     # tab 内 构成 KPI（用途类别多选 · 联动）
