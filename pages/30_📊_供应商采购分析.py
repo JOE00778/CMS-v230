@@ -127,17 +127,34 @@ def _render_analysis():
 
     st.divider()
 
-    # --- 月度总订货金额趋势（Top 8 供应商）---
-    st.subheader(t("📈 仕入先 月度总订货金额推移（Top 8）"))
+    # --- 月度总订货金额合计（全体）---
+    st.subheader(t("📈 月度总订货金额推移（全体合计）"))
+    total_by_month = (sm.groupby("year_month", as_index=False)["total_amount"].sum()
+                      .sort_values("year_month"))
+    if not total_by_month.empty:
+        bar = alt.Chart(total_by_month).mark_bar().encode(
+            x=alt.X("year_month:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("total_amount:Q", title=t("总订货金额 (日元)"),
+                    axis=alt.Axis(format=",.0f", grid=True, labels=True, ticks=True)),
+            tooltip=[alt.Tooltip("year_month:N", title=t("月份")),
+                     alt.Tooltip("total_amount:Q", title=t("总订货金额"), format=",.0f")],
+        )
+        st.altair_chart(bar.properties(height=260), use_container_width=True)
+
+    st.divider()
+
+    # --- 月度总订货金额趋势（Top 5 供应商）---
+    st.subheader(t("📈 仕入先 月度总订货金额推移（Top 5）"))
     top_vendors = (sm.groupby("vendor_name")["total_amount"].sum()
-                   .sort_values(ascending=False).head(8).index.tolist())
+                   .sort_values(ascending=False).head(5).index.tolist())
     trend = sm[sm["vendor_name"].isin(top_vendors)]
     trend_piv = trend.groupby(["year_month", "vendor_name"])["total_amount"].sum().reset_index()
 
     if not trend_piv.empty:
         line = alt.Chart(trend_piv).mark_line(point=True).encode(
             x=alt.X("year_month:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("total_amount:Q", title=t("总订货金额 (日元)")),
+            y=alt.Y("total_amount:Q", title=t("总订货金额 (日元)"),
+                    axis=alt.Axis(format=",.0f", grid=True, labels=True, ticks=True)),
             color=alt.Color("vendor_name:N", title=t("仕入先")),
             tooltip=[alt.Tooltip("year_month:N", title=t("月份")),
                      alt.Tooltip("vendor_name:N", title=t("仕入先")),
