@@ -85,6 +85,48 @@ p1.metric(t("挂账（掛け払い）在途金额 (¥)"), f"¥{amt_cr:,.0f}",
 p2.metric(t("预付款（現金払い）在途金额 (¥)"), f"¥{amt_pp:,.0f}",
           delta=f"{pct_pp:.0f}% {t('占比')}", delta_color="off")
 
+# 用途分类卡（弁天 bin 分类：输出 / 输出中国 / 返品 / 不良品·item 级·按在途金额）
+from shared.bin_categories import category_cte, CATEGORY_CASE, CATEGORIES
+try:
+    cat_df = _df(
+        f"WITH bin_cat AS ({category_cte()}) "
+        f"SELECT {CATEGORY_CASE.strip()} AS category, "
+        "       SUM((pol.quantity - COALESCE(pol.quantity_received,0)) * pol.rate) AS amt, "
+        "       SUM(pol.quantity - COALESCE(pol.quantity_received,0)) AS qty, "
+        "       COUNT(*) AS line_cnt "
+        "FROM nst.purchase_order_line pol "
+        "LEFT JOIN bin_cat bc ON bc.item_internal_id = pol.item_internal_id "
+        "WHERE COALESCE(pol.closed, FALSE) = FALSE "
+        "  AND (pol.quantity - COALESCE(pol.quantity_received, 0)) > 0 "
+        "GROUP BY 1",
+    )
+except Exception as e:
+    st.warning(t("用途分类卡读取失败：") + str(e))
+    cat_df = pd.DataFrame()
+
+if not cat_df.empty:
+    cat_df["amt"] = pd.to_numeric(cat_df["amt"], errors="coerce").fillna(0.0)
+    cat_df["qty"] = pd.to_numeric(cat_df["qty"], errors="coerce").fillna(0.0)
+    cat_map = {r["category"]: r for _, r in cat_df.iterrows()}
+    tot_cat = float(cat_df["amt"].sum())
+
+    st.markdown("##### " + t("📦 用途分类（弁天 bin 分类·独立于白名单过滤）"))
+    cc = st.columns(4)
+    labels = {
+        "输出": t("通常输出 在途金额 (¥)"),
+        "输出中国": t("输出中国（CB）在途金额 (¥)"),
+        "返品": t("返品（HENPIN-EX）在途金额 (¥)"),
+        "不良品": t("不良品（FF-3）在途金额 (¥)"),
+    }
+    for col, cat in zip(cc, CATEGORIES):
+        r = cat_map.get(cat)
+        amt = float(r["amt"]) if r is not None else 0.0
+        qty = float(r["qty"]) if r is not None else 0.0
+        pct = (amt / tot_cat * 100) if tot_cat else 0.0
+        col.metric(labels[cat], f"¥{amt:,.0f}",
+                   delta=f"{pct:.0f}% {t('占比')} · {qty:,.0f} {t('数量')}",
+                   delta_color="off")
+
 st.divider()
 
 # --- 仕入先别 在途量 ---

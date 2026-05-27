@@ -125,6 +125,48 @@ def _render_analysis():
                      else f"{pct_pp:.0f}% {t('占比')}"),
               delta_color="off")
 
+    # 用途分类卡（弁天 bin 分类：输出 / 输出中国 / 返品 / 不良品·独立于 only_export 白名单）
+    from shared.bin_categories import category_cte, CATEGORY_CASE, CATEGORIES
+    try:
+        cat_df = _df(
+            f"WITH bin_cat AS ({category_cte()}) "
+            f"SELECT {CATEGORY_CASE.strip()} AS category, "
+            "       SUM(pol.amount) AS amt, "
+            "       COUNT(*) AS line_cnt, "
+            "       COUNT(DISTINCT pol.po_number) AS po_cnt "
+            "FROM nst.purchase_order_line pol "
+            "LEFT JOIN bin_cat bc ON bc.item_internal_id = pol.item_internal_id "
+            "WHERE to_char(pol.trandate, 'YYYY-MM') = %(ym)s "
+            "GROUP BY 1",
+            {"ym": sel_month},
+        )
+    except Exception as e:
+        st.warning(t("用途分类卡读取失败：") + str(e))
+        cat_df = pd.DataFrame()
+
+    if not cat_df.empty:
+        cat_df["amt"] = pd.to_numeric(cat_df["amt"], errors="coerce").fillna(0.0)
+        cat_df["po_cnt"] = pd.to_numeric(cat_df["po_cnt"], errors="coerce").fillna(0).astype(int)
+        cat_map = {r["category"]: r for _, r in cat_df.iterrows()}
+        tot_cat = float(cat_df["amt"].sum())
+
+        st.markdown("##### " + t("📦 用途分类（弁天 bin 分类·独立于白名单过滤）"))
+        cc = st.columns(4)
+        # 顺序固定: 通常输出 / 输出中国 / 返品 / 不良品
+        labels = {
+            "输出": t("通常输出 金额 (¥)"),
+            "输出中国": t("输出中国（CB）金额 (¥)"),
+            "返品": t("返品（HENPIN-EX）金额 (¥)"),
+            "不良品": t("不良品（FF-3）金额 (¥)"),
+        }
+        for col, cat in zip(cc, CATEGORIES):
+            r = cat_map.get(cat)
+            amt = float(r["amt"]) if r is not None else 0.0
+            po = int(r["po_cnt"]) if r is not None else 0
+            pct = (amt / tot_cat * 100) if tot_cat else 0.0
+            col.metric(labels[cat], f"¥{amt:,.0f}",
+                       delta=f"{pct:.0f}% {t('占比')} · {po} PO", delta_color="off")
+
     st.divider()
 
     # --- 月度总订货金额趋势（Top 8 供应商）---
