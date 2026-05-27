@@ -34,6 +34,15 @@ def _df(sql: str, params=None) -> pd.DataFrame:
     return pd.DataFrame([dict(r) for r in rs])
 
 
+# 预付款列幂等迁移（schema 文件: database/.../009_add_prepay_vendor.sql）
+try:
+    conn.execute("ALTER TABLE nst.po_export_vendor "
+                 "ADD COLUMN IF NOT EXISTS is_prepay BOOLEAN NOT NULL DEFAULT FALSE")
+    conn.commit()
+except Exception:
+    conn.rollback()
+
+
 tab1, tab2 = st.tabs([t("📊 采购分析"), t("🏢 输出供应商名单")])
 
 # ============================================================
@@ -49,8 +58,10 @@ def _render_analysis():
     try:
         sm = _df(
             "SELECT sm.vendor_id, sm.vendor_name, sm.year_month, sm.po_count, "
-            "sm.qty_ordered, sm.total_amount "
-            f"FROM nst.po_supplier_monthly sm {wl}"
+            "sm.qty_ordered, sm.total_amount, "
+            "COALESCE(ev2.is_prepay, FALSE) AS is_prepay "
+            f"FROM nst.po_supplier_monthly sm {wl} "
+            "LEFT JOIN nst.po_export_vendor ev2 ON ev2.vendor_id = sm.vendor_id"
         )
     except Exception as e:
         st.error(t("⚠️ nst.po_supplier_monthly 读取失败（PG 未接続 / schema 未部署？）") + f"\n\n{e}")
@@ -112,15 +123,63 @@ def _render_analysis():
 
     # --- 当月供应商排行 ---
     st.subheader(t("🏆 仕入先总订货金额排行（{ym}）").format(ym=sel_month))
-    rank = (cur.groupby("vendor_name")
+    rank = (cur.groupby(["vendor_name", "is_prepay"], as_index=False)
             .agg(amount=("total_amount", "sum"), po=("po_count", "sum"), qty=("qty_ordered", "sum"))
-            .reset_index().sort_values("amount", ascending=False))
-    rank = rank.rename(columns={"vendor_name": t("仕入先"), "amount": t("总订货金额(¥)"),
-                                "po": t("PO件数"), "qty": t("発注数")})
+            .sort_values("amount", ascending=False))
+    rank["prepay_mark"] = rank["is_prepay"].map(lambda b: "✓" if bool(b) else "")
+    rank = rank[["vendor_name", "prepay_mark", "amount", "po", "qty"]].rename(columns={
+        "vendor_name": t("仕入先"), "prepay_mark": t("预付款"),
+        "amount": t("总订货金额(¥)"), "po": t("PO件数"), "qty": t("発注数"),
+    })
     st.dataframe(rank, hide_index=True, use_container_width=True, height=400,
                  column_config={t("总订货金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
     st.download_button(t("📥 CSV 下载"), rank.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"po_supplier_{sel_month}.csv", mime="text/csv")
+
+    st.divider()
+
+    # --- 预付款 PO 明细（当月） ---
+    st.subheader(t("💰 预付款 PO 明细（{ym}）").format(ym=sel_month))
+    st.caption(t("仅列出「输出供应商名单」里勾了「预付款」的供货商 PO·按 PO 单聚合·用于现金流管理"))
+    try:
+        prepay_po = _df(
+            "SELECT pol.po_number, pol.vendor_name, MIN(pol.trandate) AS trandate, "
+            "       SUM(pol.amount) AS amount, SUM(pol.quantity) AS qty, COUNT(*) AS line_cnt "
+            "FROM nst.purchase_order_line pol "
+            "JOIN nst.po_export_vendor ev ON ev.vendor_id = pol.vendor_id "
+            "WHERE ev.is_prepay = TRUE "
+            "  AND to_char(pol.trandate, 'YYYY-MM') = %(ym)s "
+            "GROUP BY pol.po_number, pol.vendor_name "
+            "ORDER BY amount DESC NULLS LAST",
+            {"ym": sel_month},
+        )
+    except Exception as e:
+        st.error(t("⚠️ 预付款 PO 读取失败") + f"\n\n{e}")
+        prepay_po = pd.DataFrame()
+
+    if prepay_po.empty:
+        st.info(t("当月无预付款 PO（白名单里没勾「预付款」或当月没单）"))
+    else:
+        prepay_po["amount"] = pd.to_numeric(prepay_po["amount"], errors="coerce").fillna(0.0)
+        prepay_po["qty"] = pd.to_numeric(prepay_po["qty"], errors="coerce").fillna(0.0)
+        tot_pp = float(prepay_po["amount"].sum())
+        ratio = (tot_pp / tot_cur * 100) if tot_cur else 0.0
+        p1, p2, p3 = st.columns(3)
+        p1.metric(t("预付款 PO 件数"), f"{len(prepay_po):,}")
+        p2.metric(t("预付款金额合计 (¥)"), f"¥{tot_pp:,.0f}")
+        p3.metric(t("占当月总订货比"), f"{ratio:.1f}%")
+
+        disp = prepay_po.rename(columns={
+            "po_number": t("PO番号"), "vendor_name": t("仕入先"),
+            "trandate": t("発注日"), "amount": t("金额(¥)"),
+            "qty": t("数量"), "line_cnt": t("行数"),
+        })
+        st.dataframe(disp, hide_index=True, use_container_width=True, height=320,
+                     column_config={t("金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
+        st.download_button(t("📥 预付款 PO CSV 下载"),
+                           disp.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"po_prepay_{sel_month}.csv", mime="text/csv",
+                           key="prepay_csv")
 
     st.divider()
 
@@ -177,7 +236,8 @@ def _render_whitelist():
     try:
         cand = _df(
             "SELECT DISTINCT pol.vendor_id, pol.vendor_name, "
-            "       (ev.vendor_id IS NOT NULL) AS is_export "
+            "       (ev.vendor_id IS NOT NULL) AS is_export, "
+            "       COALESCE(ev.is_prepay, FALSE) AS is_prepay "
             "FROM nst.purchase_order_line pol "
             "JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
             "LEFT JOIN nst.po_export_vendor ev ON ev.vendor_id = pol.vendor_id "
@@ -192,8 +252,11 @@ def _render_whitelist():
         st.info(t("暂无候选供货商（PO 数据空？）"))
     else:
         cand["is_export"] = cand["is_export"].astype(bool)
+        cand["is_prepay"] = cand["is_prepay"].astype(bool)
         n_wl = int(cand["is_export"].sum())
-        st.write(t("候选 {n} 家 · 当前白名单 {w} 家").format(n=len(cand), w=n_wl))
+        n_pp = int((cand["is_export"] & cand["is_prepay"]).sum())
+        st.write(t("候选 {n} 家 · 当前白名单 {w} 家 · 其中预付款 {p} 家")
+                 .format(n=len(cand), w=n_wl, p=n_pp))
 
         edited = st.data_editor(
             cand, hide_index=True, use_container_width=True, height=520,
@@ -201,6 +264,10 @@ def _render_whitelist():
                 "vendor_id": st.column_config.TextColumn(t("供货商ID"), disabled=True),
                 "vendor_name": st.column_config.TextColumn(t("仕入先"), disabled=True),
                 "is_export": st.column_config.CheckboxColumn(t("是否输出"), default=False),
+                "is_prepay": st.column_config.CheckboxColumn(
+                    t("预付款"), default=False,
+                    help=t("勾选则该供货商所有 PO 视为预付款（采购分析页单独列出）"),
+                ),
             },
             key="wl_editor",
         )
@@ -211,11 +278,14 @@ def _render_whitelist():
                 vid = str(r["vendor_id"])
                 if bool(r["is_export"]):
                     conn.execute(
-                        "INSERT INTO nst.po_export_vendor (vendor_id, vendor_name, source, updated_at) "
-                        "VALUES (%(vid)s, %(vn)s, 'sku_confirm', NOW()) "
+                        "INSERT INTO nst.po_export_vendor "
+                        "(vendor_id, vendor_name, is_prepay, source, updated_at) "
+                        "VALUES (%(vid)s, %(vn)s, %(pp)s, 'sku_confirm', NOW()) "
                         "ON CONFLICT (vendor_id) DO UPDATE SET "
-                        "vendor_name = EXCLUDED.vendor_name, updated_at = NOW()",
-                        {"vid": vid, "vn": r["vendor_name"]},
+                        "vendor_name = EXCLUDED.vendor_name, "
+                        "is_prepay = EXCLUDED.is_prepay, "
+                        "updated_at = NOW()",
+                        {"vid": vid, "vn": r["vendor_name"], "pp": bool(r["is_prepay"])},
                     )
                     kept += 1
                 else:
@@ -227,17 +297,21 @@ def _render_whitelist():
 
     # 手动加候选外的新供货商
     with st.expander(t("➕ 手动加新供货商（候选列表里没有的）")):
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns([2, 2, 1])
         new_id = c1.text_input(t("供货商ID（NetSuite vendor internal id）"), key="new_vid")
         new_name = c2.text_input(t("仕入先名"), key="new_vname")
+        new_pp = c3.checkbox(t("预付款"), value=False, key="new_pp")
         if st.button(t("加入白名单"), key="add_manual"):
             if new_id.strip():
                 conn.execute(
-                    "INSERT INTO nst.po_export_vendor (vendor_id, vendor_name, source, updated_at) "
-                    "VALUES (%(vid)s, %(vn)s, 'manual', NOW()) "
+                    "INSERT INTO nst.po_export_vendor "
+                    "(vendor_id, vendor_name, is_prepay, source, updated_at) "
+                    "VALUES (%(vid)s, %(vn)s, %(pp)s, 'manual', NOW()) "
                     "ON CONFLICT (vendor_id) DO UPDATE SET "
-                    "vendor_name = EXCLUDED.vendor_name, updated_at = NOW()",
-                    {"vid": new_id.strip(), "vn": new_name.strip() or None},
+                    "vendor_name = EXCLUDED.vendor_name, "
+                    "is_prepay = EXCLUDED.is_prepay, "
+                    "updated_at = NOW()",
+                    {"vid": new_id.strip(), "vn": new_name.strip() or None, "pp": bool(new_pp)},
                 )
                 conn.commit()
                 st.success(t("✅ 已加入：{n}").format(n=new_name or new_id))
