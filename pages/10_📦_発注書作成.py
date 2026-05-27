@@ -191,11 +191,20 @@ _tax_pct = st.selectbox(t("税率 fallback（DB 缺失时使用）"), [10, 8, 0]
 
 
 def _tax_rate_from_schedule(ts) -> int | None:
-    """tax_schedule 文本 → 税率整数（例 '標準税率 10%' → 10）。无法识别返回 None。"""
+    """tax_schedule 文本 → 税率整数。
+    例: '仕入10%＆販売免税' / '消費税10%' → 10
+        '仕入8%＆販売免税' / '消費税8%' → 8
+        '免税' / '海外仕入' → 0
+        无法识别返回 None。"""
     if not ts or pd.isna(ts):
         return None
-    m = re.search(r"(\d+)\s*%", str(ts))
-    return int(m.group(1)) if m else None
+    s = str(ts)
+    m = re.search(r"(\d+)\s*%", s)
+    if m:
+        return int(m.group(1))
+    if "免税" in s or "海外" in s:
+        return 0
+    return None
 
 
 def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
