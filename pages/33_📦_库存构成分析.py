@@ -129,8 +129,12 @@ df_rank["rank_label"] = df_rank["item_rank"].astype(str).where(
     t("未分类"),
 )
 by_rank = (df_rank.groupby("rank_label", as_index=False)
-           .agg(qty=("qty_on_hand", "sum"), amt=("amt", "sum"))
-           .sort_values("amt", ascending=False))
+           .agg(qty=("qty_on_hand", "sum"), amt=("amt", "sum")))
+# 固定顺序: NEW / Aランク / Bランク / Cランク / 取扱中止 / 未分类 / 其他
+_RANK_ORDER = ["NEW", "Aランク", "Bランク", "Cランク", "取扱中止", t("未分类")]
+by_rank["_ord"] = by_rank["rank_label"].map(
+    lambda x: _RANK_ORDER.index(x) if x in _RANK_ORDER else len(_RANK_ORDER))
+by_rank = by_rank.sort_values(["_ord", "rank_label"]).drop(columns=["_ord"])
 if not by_rank.empty:
     rank_cols = st.columns(min(len(by_rank), 6))
     for col, (_, r) in zip(rank_cols, by_rank.iterrows()):
