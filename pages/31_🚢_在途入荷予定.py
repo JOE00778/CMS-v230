@@ -38,7 +38,7 @@ try:
     df = _df(
         "SELECT pol.item_internal_id, im.jan, pol.po_number, pol.vendor_name, pol.location, "
         "(pol.quantity - COALESCE(pol.quantity_received, 0)) AS qty_outstanding, "
-        "pol.expected_receipt_date, pol.status, pol.vendor_id, "
+        "pol.trandate, pol.expected_receipt_date, pol.status, pol.vendor_id, "
         "COALESCE(ev2.is_prepay, FALSE) AS is_prepay, "
         "((pol.quantity - COALESCE(pol.quantity_received, 0)) * pol.rate) AS amt_outstanding "
         "FROM nst.purchase_order_line pol "
@@ -62,6 +62,7 @@ if df.empty:
 df["qty_outstanding"] = pd.to_numeric(df["qty_outstanding"], errors="coerce").fillna(0.0)
 df["amt_outstanding"] = pd.to_numeric(df["amt_outstanding"], errors="coerce").fillna(0.0)
 df["is_prepay"] = df["is_prepay"].astype(bool)
+df["trandate"] = pd.to_datetime(df["trandate"], errors="coerce").dt.date
 df["expected_receipt_date"] = pd.to_datetime(df["expected_receipt_date"], errors="coerce").dt.date
 
 # --- KPI ---
@@ -126,11 +127,11 @@ elif pay_filter == t("预付款（現金払い）"):
 
 view["prepay_mark"] = view["is_prepay"].map(lambda b: "✓" if bool(b) else "")
 disp = view[["po_number", "vendor_name", "prepay_mark", "jan", "qty_outstanding",
-             "amt_outstanding", "expected_receipt_date", "status"]].copy()
+             "amt_outstanding", "trandate", "expected_receipt_date", "status"]].copy()
 disp = disp.rename(columns={
     "po_number": t("PO番号"), "vendor_name": t("仕入先"), "prepay_mark": t("预付款"),
     "jan": t("JAN"), "qty_outstanding": t("在途残"), "amt_outstanding": t("在途金额(¥)"),
-    "expected_receipt_date": t("入荷予定日"), "status": t("状態"),
+    "trandate": t("発注日"), "expected_receipt_date": t("入荷予定日"), "status": t("状態"),
 })
 disp = disp.sort_values(t("入荷予定日"), na_position="last")
 st.dataframe(disp, hide_index=True, use_container_width=True, height=480,
