@@ -150,6 +150,35 @@ st.dataframe(
 st.divider()
 
 # ============================================================
+# tab 内 构成 KPI 渲染辅助（用途类别多选 · 联动 tab 数据）
+# ============================================================
+def _render_tab_kpi(d: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+    sel = st.multiselect(
+        t("用途类别（多选 · 留空 = 全部）"), list(CATEGORIES),
+        default=[], format_func=lambda c: _labels.get(c, c),
+        key=f"{key_prefix}_kpi_cat",
+    )
+    d_show = d[d["category"].isin(sel)].copy() if sel else d.copy()
+    by_c = d_show.groupby("category", as_index=False).agg(
+        qty=("qty_on_hand", "sum"), amt=("amt", "sum"))
+    cmap = {r["category"]: r for _, r in by_c.iterrows()}
+    tot = float(by_c["amt"].sum())
+
+    cards = sel if sel else list(CATEGORIES)
+    if cards:
+        cols = st.columns(len(cards))
+        for col, cat in zip(cols, cards):
+            r = cmap.get(cat)
+            amt_v = float(r["amt"]) if r is not None else 0.0
+            qty_v = float(r["qty"]) if r is not None else 0.0
+            pct = (amt_v / tot * 100) if tot else 0.0
+            col.metric(f"{_labels[cat]} (¥)", f"¥{amt_v:,.0f}",
+                       delta=f"{pct:.0f}% {t('占比')} · {qty_v:,.0f} {t('数量')}",
+                       delta_color="off")
+    return d_show
+
+
+# ============================================================
 # tab1 按棚番号查商品（弁天）
 # tab2 按 SKU 查棚分布（JD + 弁天）
 # ============================================================
@@ -167,6 +196,10 @@ with tab1:
         sub = sub[sub["bin_number"].astype(str).str.contains(bin_in.strip(), case=False, na=False)]
     if not show_zero:
         sub = sub[sub["qty_on_hand"] > 0]
+
+    # tab 内 构成 KPI（用途类别多选 · 联动）
+    sub = _render_tab_kpi(sub, "t1")
+    st.divider()
 
     if sub.empty:
         st.info(t("无匹配数据"))
@@ -192,31 +225,37 @@ with tab1:
                            file_name=f"bin_query_{bin_date}.csv", mime="text/csv")
 
 with tab2:
-    sku_in = st.text_input(t("商品コード / JAN（部分匹配）"), "", key="sku_filter")
+    sku_in = st.text_input(t("商品コード / JAN（部分匹配 · 留空 = 全部）"), "", key="sku_filter")
     if sku_in.strip():
         s = sku_in.strip().lower()
         sub2 = df[
             df["item_code"].astype(str).str.lower().str.contains(s, na=False)
             | df["jan"].astype(str).str.lower().str.contains(s, na=False)
         ].copy()
-        sub2 = sub2[sub2["qty_on_hand"] > 0]
-
-        if sub2.empty:
-            st.info(t("无匹配 SKU（或该 SKU 全 0 库存）"))
-        else:
-            disp2 = sub2[["item_code", "jan", "display_name", "warehouse",
-                          "bin_number", "category", "qty_on_hand", "amt"]].rename(columns={
-                "item_code": t("商品コード"), "jan": t("JAN"),
-                "display_name": t("商品名"), "warehouse": t("仓库"),
-                "bin_number": t("棚番号"), "category": t("用途"),
-                "qty_on_hand": t("手持"), "amt": t("金额(¥)"),
-            }).sort_values([t("商品コード"), t("仓库"), t("棚番号")])
-            disp2[t("棚番号")] = disp2[t("棚番号")].fillna(t("（不分 bin）"))
-            st.dataframe(disp2, hide_index=True, use_container_width=True, height=480,
-                         column_config={t("金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
-            st.download_button(t("📥 CSV 下载"),
-                               disp2.to_csv(index=False).encode("utf-8-sig"),
-                               file_name=f"sku_inv_{inv_date}.csv", mime="text/csv",
-                               key="sku_csv")
     else:
-        st.info(t("输入商品コード或 JAN 查询该 SKU 在 JD/弁天 的库存分布"))
+        sub2 = df.copy()
+    sub2 = sub2[sub2["qty_on_hand"] > 0]
+
+    # tab 内 构成 KPI（用途类别多选 · 联动）
+    sub2 = _render_tab_kpi(sub2, "t2")
+    st.divider()
+
+    if sub2.empty:
+        st.info(t("无匹配数据"))
+    else:
+        if not sku_in.strip():
+            st.caption(t("提示：输入商品コード / JAN 可精确定位 · 当前展示全仓库筛选后明细"))
+        disp2 = sub2[["item_code", "jan", "display_name", "warehouse",
+                      "bin_number", "category", "qty_on_hand", "amt"]].rename(columns={
+            "item_code": t("商品コード"), "jan": t("JAN"),
+            "display_name": t("商品名"), "warehouse": t("仓库"),
+            "bin_number": t("棚番号"), "category": t("用途"),
+            "qty_on_hand": t("手持"), "amt": t("金额(¥)"),
+        }).sort_values([t("商品コード"), t("仓库"), t("棚番号")])
+        disp2[t("棚番号")] = disp2[t("棚番号")].fillna(t("（不分 bin）"))
+        st.dataframe(disp2, hide_index=True, use_container_width=True, height=480,
+                     column_config={t("金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
+        st.download_button(t("📥 CSV 下载"),
+                           disp2.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"sku_inv_{inv_date}.csv", mime="text/csv",
+                           key="sku_csv")
