@@ -187,13 +187,16 @@ tab1, tab2 = st.tabs([t("🔎 按棚番号查商品（弁天）"), t("🔍 按 S
 bn_df = df[df["warehouse"] == "弁天倉庫"].copy()
 
 with tab1:
+    _bin_opts_t1 = sorted(bn_df["bin_number"].dropna().astype(str).unique().tolist())
     c1, c2 = st.columns([3, 2])
-    bin_in = c1.text_input(t("棚番号（部分匹配·留空看全部棚）"), "", key="bin_filter")
+    sel_bins_t1 = c1.multiselect(
+        t("棚番号（多选 · 留空 = 全部棚）"), _bin_opts_t1, default=[], key="bin_filter_ms",
+    )
     show_zero = c2.checkbox(t("含 0 库存"), value=False)
 
     sub = bn_df.copy()
-    if bin_in.strip():
-        sub = sub[sub["bin_number"].astype(str).str.contains(bin_in.strip(), case=False, na=False)]
+    if sel_bins_t1:
+        sub = sub[sub["bin_number"].astype(str).isin(sel_bins_t1)]
     if not show_zero:
         sub = sub[sub["qty_on_hand"] > 0]
 
