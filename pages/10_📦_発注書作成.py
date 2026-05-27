@@ -5,13 +5,11 @@
   B. CSV/Excel 上传（多文件 · 每文件单独选仕入先 · 2026-05-27 起）
 
 输出: 標準 NetSuite 订货单 CSV，包含 外部ID/仕入先/日付/従業員/部門/メモ/場所/アイテム/数量/単価/金額/税額/総額
-多文件时每个 CSV 单独下载 + 一括 ZIP。
+多文件时合并为单 CSV（各文件 外部ID 加 _NN 后缀 · NetSuite 按 外部ID 自动分单）。
 """
 from __future__ import annotations
 
-import io
 import re
-import zipfile
 from datetime import date, datetime
 
 import numpy as np
@@ -177,8 +175,6 @@ with col3:
     department = st.selectbox(t("部門"), DEPARTMENTS)
     location = st.selectbox(t("場所"), LOCATIONS)
 memo = st.text_input(t("备注"), "")
-_tax_pct = st.selectbox(t("税率"), [10, 8, 0], format_func=lambda x: f"{x}%",
-                        help=t("NST 商品マスタは税区分を持たないため一括指定"))
 
 
 def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
@@ -195,8 +191,8 @@ def _build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *,
     df["数量"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int)
     df["単価"] = pd.to_numeric(df["単価"], errors="coerce").fillna(0).astype(int)
     df["金額"] = df["単価"] * df["数量"]
-    df["税額"] = np.floor(df["金額"] * (_tax_pct / 100)).fillna(0).astype(int)
-    df["総額"] = df["金額"] + df["税額"]
+    df["税額"] = 0
+    df["総額"] = df["金額"]
 
     df_out = pd.DataFrame({
         "外部ID": ext_id,
@@ -245,14 +241,13 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
             file_name=f"発注書_{external_id}.csv", mime="text/csv",
         )
 
-    # 多文件模式 → 每文件一段预览 + 一键 ZIP
+    # 多文件模式 → 每文件一段预览 + 合并为单 CSV 下载
     if files_data:
-        outputs: list[tuple[str, pd.DataFrame]] = []  # (csv_filename, df_out)
+        outputs: list[pd.DataFrame] = []
         for i, fd in enumerate(files_data):
             ext_id_i = f"{external_id}_{i + 1:02d}"
             df_out, missing = _build_output(fd["df_order"], df_item,
                                             ext_id=ext_id_i, sup=fd["supplier"])
-            csv_name = f"発注書_{ext_id_i}_{fd['supplier'].split()[0]}.csv"
             with st.expander(
                 f"📄 {fd['filename']} → {fd['supplier']} "
                 f"({len(df_out)} {t('行')} · ¥{int(df_out['総額'].sum()):,})",
@@ -262,23 +257,13 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
                     st.warning(t("⚠ {n} 件 JAN 在 nst.item_master_raw 找不到").format(n=len(missing)))
                     st.dataframe(localize_df(missing[["jan"]]))
                 st.dataframe(df_out, use_container_width=True)
-                st.download_button(
-                    t("📥 下载 CSV"),
-                    data=df_out.to_csv(index=False, encoding="utf-8-sig"),
-                    file_name=csv_name, mime="text/csv",
-                    key=f"dl_{i}_{fd['filename']}",
-                )
-            outputs.append((csv_name, df_out))
+            outputs.append(df_out)
 
-        # 一括 ZIP（>=2 个文件才显示）
-        if len(outputs) >= 2:
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for csv_name, df_out in outputs:
-                    zf.writestr(csv_name, df_out.to_csv(index=False, encoding="utf-8-sig"))
-            buf.seek(0)
-            st.download_button(
-                t("📦 一括 ZIP 下载（{n} 個 CSV）").format(n=len(outputs)),
-                data=buf.getvalue(),
-                file_name=f"発注書_{external_id}.zip", mime="application/zip",
-            )
+        # 合并所有文件为单 CSV（各文件用 外部ID _NN 区分 → NetSuite 自动分单）
+        df_merged = pd.concat(outputs, ignore_index=True)
+        st.download_button(
+            t("📥 订货单 CSV 下载（合并 {n} 个文件 · {rows} 行）").format(
+                n=len(outputs), rows=len(df_merged)),
+            data=df_merged.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"発注書_{external_id}.csv", mime="text/csv",
+        )
