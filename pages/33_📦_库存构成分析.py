@@ -150,32 +150,33 @@ st.dataframe(
 st.divider()
 
 # ============================================================
-# tab 内 构成 KPI 渲染辅助（用途类别多选 · 联动 tab 数据）
+# tab 内 构成 KPI 渲染辅助（拆 2 步：先 pick 类别 · 再 render KPI 卡）
 # ============================================================
-def _render_tab_kpi(d: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
-    sel = st.multiselect(
+def _pick_categories(key_prefix: str) -> list[str]:
+    return st.multiselect(
         t("用途类别（多选 · 留空 = 全部）"), list(CATEGORIES),
         default=[], format_func=lambda c: _labels.get(c, c),
         key=f"{key_prefix}_kpi_cat",
     )
-    d_show = d[d["category"].isin(sel)].copy() if sel else d.copy()
-    by_c = d_show.groupby("category", as_index=False).agg(
+
+
+def _render_kpi_cards(d: pd.DataFrame, sel: list[str]) -> None:
+    by_c = d.groupby("category", as_index=False).agg(
         qty=("qty_on_hand", "sum"), amt=("amt", "sum"))
     cmap = {r["category"]: r for _, r in by_c.iterrows()}
     tot = float(by_c["amt"].sum())
-
     cards = sel if sel else list(CATEGORIES)
-    if cards:
-        cols = st.columns(len(cards))
-        for col, cat in zip(cols, cards):
-            r = cmap.get(cat)
-            amt_v = float(r["amt"]) if r is not None else 0.0
-            qty_v = float(r["qty"]) if r is not None else 0.0
-            pct = (amt_v / tot * 100) if tot else 0.0
-            col.metric(f"{_labels[cat]} (¥)", f"¥{amt_v:,.0f}",
-                       delta=f"{pct:.0f}% {t('占比')} · {qty_v:,.0f} {t('数量')}",
-                       delta_color="off")
-    return d_show
+    if not cards:
+        return
+    cols = st.columns(len(cards))
+    for col, cat in zip(cols, cards):
+        r = cmap.get(cat)
+        amt_v = float(r["amt"]) if r is not None else 0.0
+        qty_v = float(r["qty"]) if r is not None else 0.0
+        pct = (amt_v / tot * 100) if tot else 0.0
+        col.metric(f"{_labels[cat]} (¥)", f"¥{amt_v:,.0f}",
+                   delta=f"{pct:.0f}% {t('占比')} · {qty_v:,.0f} {t('数量')}",
+                   delta_color="off")
 
 
 # ============================================================
@@ -187,22 +188,27 @@ tab1, tab2 = st.tabs([t("🔎 按棚番号查商品（弁天）"), t("🔍 按 S
 bn_df = df[df["warehouse"] == "弁天倉庫"].copy()
 
 with tab1:
+    # 用途类别 multi-select 置顶
+    sel_cats_t1 = _pick_categories("t1")
+
     _bin_opts_t1 = sorted(bn_df["bin_number"].dropna().astype(str).unique().tolist())
     _maker_opts_t1 = sorted(bn_df["maker"].dropna().astype(str).unique().tolist())
     _rank_opts_t1 = sorted(bn_df["item_rank"].dropna().astype(str).unique().tolist())
     c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
     sel_bins_t1 = c1.multiselect(
-        t("棚番号（多选 · 留空 = 全部棚）"), _bin_opts_t1, default=[], key="bin_filter_ms",
+        t("棚番号(多选 · 留空 = 全部棚)"), _bin_opts_t1, default=[], key="bin_filter_ms",
     )
     sel_makers_t1 = c2.multiselect(
-        t("メーカー（多选 · 留空 = 全部）"), _maker_opts_t1, default=[], key="t1_maker",
+        t("メーカー(多选 · 留空 = 全部)"), _maker_opts_t1, default=[], key="t1_maker",
     )
     sel_ranks_t1 = c3.multiselect(
-        t("等级（多选 · 留空 = 全部）"), _rank_opts_t1, default=[], key="t1_rank",
+        t("等级(多选 · 留空 = 全部)"), _rank_opts_t1, default=[], key="t1_rank",
     )
     show_zero = c4.checkbox(t("含 0 库存"), value=False)
 
     sub = bn_df.copy()
+    if sel_cats_t1:
+        sub = sub[sub["category"].isin(sel_cats_t1)]
     if sel_bins_t1:
         sub = sub[sub["bin_number"].astype(str).isin(sel_bins_t1)]
     if sel_makers_t1:
@@ -212,8 +218,8 @@ with tab1:
     if not show_zero:
         sub = sub[sub["qty_on_hand"] > 0]
 
-    # tab 内 构成 KPI（用途类别多选 · 联动）
-    sub = _render_tab_kpi(sub, "t1")
+    # KPI 卡（按上方筛选实时算）
+    _render_kpi_cards(sub, sel_cats_t1)
     st.divider()
 
     if sub.empty:
@@ -240,15 +246,18 @@ with tab1:
                            file_name=f"bin_query_{bin_date}.csv", mime="text/csv")
 
 with tab2:
+    # 用途类别 multi-select 置顶
+    sel_cats_t2 = _pick_categories("t2")
+
     _maker_opts_t2 = sorted(df["maker"].dropna().astype(str).unique().tolist())
     _rank_opts_t2 = sorted(df["item_rank"].dropna().astype(str).unique().tolist())
     c1, c2, c3 = st.columns([4, 3, 3])
     sku_in = c1.text_input(t("商品コード / JAN（部分匹配 · 留空 = 全部）"), "", key="sku_filter")
     sel_makers_t2 = c2.multiselect(
-        t("メーカー（多选 · 留空 = 全部）"), _maker_opts_t2, default=[], key="t2_maker",
+        t("メーカー(多选 · 留空 = 全部)"), _maker_opts_t2, default=[], key="t2_maker",
     )
     sel_ranks_t2 = c3.multiselect(
-        t("等级（多选 · 留空 = 全部）"), _rank_opts_t2, default=[], key="t2_rank",
+        t("等级(多选 · 留空 = 全部)"), _rank_opts_t2, default=[], key="t2_rank",
     )
 
     if sku_in.strip():
@@ -259,14 +268,16 @@ with tab2:
         ].copy()
     else:
         sub2 = df.copy()
+    if sel_cats_t2:
+        sub2 = sub2[sub2["category"].isin(sel_cats_t2)]
     if sel_makers_t2:
         sub2 = sub2[sub2["maker"].astype(str).isin(sel_makers_t2)]
     if sel_ranks_t2:
         sub2 = sub2[sub2["item_rank"].astype(str).isin(sel_ranks_t2)]
     sub2 = sub2[sub2["qty_on_hand"] > 0]
 
-    # tab 内 构成 KPI（用途类别多选 · 联动）
-    sub2 = _render_tab_kpi(sub2, "t2")
+    # KPI 卡（按上方筛选实时算）
+    _render_kpi_cards(sub2, sel_cats_t2)
     st.divider()
 
     if sub2.empty:
