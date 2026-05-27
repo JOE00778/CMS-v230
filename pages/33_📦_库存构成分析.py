@@ -106,7 +106,7 @@ tot_qty = float(by_cat["qty"].sum())
 cc = st.columns(4)
 _labels = {
     "输出": t("通常输出"),
-    "输出中国": t("输出中国（CB）"),
+    "输出中国": t("输出中国"),
     "返品": t("返品（HENPIN-EX）"),
     "不良品": t("不良品（FF-3）"),
 }
@@ -346,7 +346,7 @@ with tab3:
             cand_bins, hide_index=True, use_container_width=True, height=560,
             column_config={
                 "bin_number": st.column_config.TextColumn(t("棚番号"), disabled=True),
-                "is_cb": st.column_config.CheckboxColumn(t("输出中国（CB）"), default=False),
+                "is_cb": st.column_config.CheckboxColumn(t("输出中国"), default=False),
                 "is_return": st.column_config.CheckboxColumn(t("返品"), default=False),
                 "is_defect": st.column_config.CheckboxColumn(t("不良品"), default=False),
                 "note": st.column_config.TextColumn(t("备注"), required=False),
