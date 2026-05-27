@@ -151,16 +151,27 @@ def _render_analysis():
     trend_piv = trend.groupby(["year_month", "vendor_name"])["total_amount"].sum().reset_index()
 
     if not trend_piv.empty:
-        line = alt.Chart(trend_piv).mark_line(point=True).encode(
+        base = alt.Chart(trend_piv).encode(
             x=alt.X("year_month:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
+        )
+        line = base.mark_line(point=True).encode(
             y=alt.Y("total_amount:Q", title=t("总订货金额 (日元)"),
                     axis=alt.Axis(format=",.0f", grid=True, labels=True, ticks=True)),
             color=alt.Color("vendor_name:N", title=t("仕入先")),
+        )
+        # hover 任意 x 位置 → 显示该月竖线 + 各 vendor 当月值（不用对准点）
+        nearest = alt.selection_point(nearest=True, on="mouseover",
+                                      fields=["year_month"], empty=False)
+        selectors = base.mark_rule(opacity=0).encode(
             tooltip=[alt.Tooltip("year_month:N", title=t("月份")),
                      alt.Tooltip("vendor_name:N", title=t("仕入先")),
                      alt.Tooltip("total_amount:Q", title=t("总订货金额"), format=",.0f")],
+        ).add_params(nearest)
+        rule = base.mark_rule(color="gray", strokeDash=[3, 3]).encode(
+            opacity=alt.condition(nearest, alt.value(0.6), alt.value(0)),
         )
-        st.altair_chart(line.properties(height=320).configure_legend(orient="top"),
+        chart = alt.layer(line, selectors, rule).properties(height=320)
+        st.altair_chart(chart.configure_legend(orient="top"),
                         use_container_width=True)
 
     st.divider()
