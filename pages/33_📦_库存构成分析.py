@@ -123,7 +123,11 @@ st.caption(t("库存合計 ¥{a:,.0f} · 总数量 {q:,.0f}").format(a=tot_amt, 
 
 # ----- 各 ランク 库存金额（A/B/C/NEW/取扱中止/未分类 等） -----
 st.markdown("##### " + t("📊 各等级 库存金额"))
-df_rank = df.copy()
+_wh_opts_rank = [t("全部")] + sorted(df["warehouse"].dropna().unique().tolist())
+sel_wh_rank = st.radio(
+    t("仓库范围（等级构成）"), _wh_opts_rank, horizontal=True, index=0, key="rank_wh_sel",
+)
+df_rank = df.copy() if sel_wh_rank == t("全部") else df[df["warehouse"] == sel_wh_rank].copy()
 df_rank["rank_label"] = df_rank["item_rank"].astype(str).where(
     df_rank["item_rank"].notna() & (df_rank["item_rank"].astype(str) != "nan"),
     t("未分类"),
