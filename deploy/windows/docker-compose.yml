@@ -164,6 +164,7 @@ services:
       TZ: Asia/Tokyo
     volumes:
       - ../../../database:/app:ro       # nst_api コード（git pull で更新）
+      - ${DATA_DIR:-./data}/shopee:/data/shopee  # Shopee token 持久化（refresh_token 轮换保存）
     networks:
       - cms_net
     deploy:
