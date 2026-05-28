@@ -569,8 +569,17 @@ with _q_tab:
         tot_q = df["qty_sold"].astype(float).sum()
         tot_r = df["revenue"].astype(float).sum()
         tot_g = df["arari"].astype(float).sum()
-        # 库存总金额/数量 = 全库存（JD-物流-千葉·最新快照·全SKU，不限当月销售）
-        # 库存总金额 = 输出部门 · JD库存（+弁天·弁天数据待 database 拉取，现 inventory_snapshot 仅 JD）
+        # 库存总金额/数量 = 输出部门 · JD + 弁天 最新快照
+        # 应用 _filt 中 im.* 条件（等级/厂商/取扱区分/SKU 关键词），s.shop 库存无适用故剔除
+        _filt_im = [c for c in _filt if c.startswith("im.")]
+        _filtp_im: list = []
+        _pi = 0
+        for c in _filt:
+            n = c.count("?")
+            if c.startswith("im."):
+                _filtp_im.extend(_filtp[_pi:_pi + n])
+            _pi += n
+        _inv_extra = (" AND " + " AND ".join(_filt_im)) if _filt_im else ""
         _invn, _ = _query(
             "SELECT SUM(inv.qty_on_hand * im.cost_estimate) sv, SUM(inv.qty_on_hand) soh "
             "FROM nst.inventory_snapshot inv "
@@ -578,6 +587,8 @@ with _q_tab:
             "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫') "
             "  AND im.department = '輸出事業' "
             "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
+            + _inv_extra,
+            tuple(_filtp_im),
         )
         tot_sv = float(_invn.iloc[0]["sv"] or 0) if _invn is not None and not _invn.empty else 0
         tot_soh = float(_invn.iloc[0]["soh"] or 0) if _invn is not None and not _invn.empty else 0
@@ -604,8 +615,9 @@ with _q_tab:
             "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫') "
             "  AND im.department = '輸出事業' "
             "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot "
-            "      WHERE to_char(snapshot_date,'YYYY-MM') = ?)",
-            (_pym,),
+            "      WHERE to_char(snapshot_date,'YYYY-MM') = ?)"
+            + _inv_extra,
+            tuple([_pym] + _filtp_im),
         )
 
         def _g0(_dfp, _c):
