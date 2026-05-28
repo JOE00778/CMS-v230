@@ -56,6 +56,17 @@ code, kbd, samp {
   font-feature-settings: "tnum" 1, "zero" 1 !important;
 }
 /* PPVI P0 终止 */
+
+/* PPVI Pass 1 · P3 · 正文行高 1.5 → 1.75（呼吸感）。
+   仅命中段落/caption/expander 文本，不命中表格行（表格 cell 已 padding 9px 14px）。
+   规范来源：~/CC/.claude/skills/ppvi-web-design 自检清单第 9 条「行高 ≥ 1.7」。
+   回滚：删除从下一行 .main p 到本段终止符之间的所有内容。 */
+.main p, [data-testid="stMarkdown"] p,
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p,
+[data-testid="stExpander"] p {
+  line-height: 1.75 !important;
+}
+/* PPVI P3 终止 */
 </style>
 """
 
