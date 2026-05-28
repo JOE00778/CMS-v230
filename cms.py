@@ -212,19 +212,22 @@ def _spark(field: str, n: int = 6):
         pass
 
 
-k1, k2, k3, k4 = st.columns(4)
+# PPVI P2 · 不对称分栏（主 KPI 占 2 列，3 个次 KPI 各 1 列）
+# 结构主义：打破完美等分，用栏宽传达主次信息层级
+# 主 KPI 选「毛利率」——经营核心指标
+k1, k2, k3, k4 = st.columns([2, 1, 1, 1])
 with k1:
-    st.metric(t("商品 SKU"), f"{int(sku_total):,}", delta=_sku_delta_str)
-    _spark("sku_total")
-with k2:
-    st.metric(t("在库金额"), _fmt_jpy_short(inv_amount), delta=_stock_delta_str)
-    _spark("stock_value_jpy")
-with k3:
-    st.metric(t("本月销售"), _fmt_jpy_short(sales_amount), delta=_revenue_delta_str)
-    _spark("month_revenue_jpy")
-with k4:
     st.metric(t("毛利率"), f"{gp_rate * 100:.1f}%", delta=_margin_delta_str)
     _spark("gross_margin")
+with k2:
+    st.metric(t("商品 SKU"), f"{int(sku_total):,}", delta=_sku_delta_str)
+    _spark("sku_total")
+with k3:
+    st.metric(t("在库金额"), _fmt_jpy_short(inv_amount), delta=_stock_delta_str)
+    _spark("stock_value_jpy")
+with k4:
+    st.metric(t("本月销售"), _fmt_jpy_short(sales_amount), delta=_revenue_delta_str)
+    _spark("month_revenue_jpy")
 
 
 # ============================================================
@@ -265,7 +268,8 @@ hard_get_n = _safe_scalar(
     default=0,
 )
 
-r1, r2, r3, r4, r5 = st.columns(5)
+# PPVI P2 · 不对称分栏（断货风险作为主告警占 2 列，4 个次告警各 1 列）
+r1, r2, r3, r4, r5 = st.columns([2, 1, 1, 1, 1])
 # PPVI P1 · KPI 标签去 emoji（中文硬编码绕过 i18n.py 未提交改动）
 r1.metric("断货风险", int(risk_map.get("断货风险", 0)))
 r2.metric("正常", int(risk_map.get("正常", 0)))
