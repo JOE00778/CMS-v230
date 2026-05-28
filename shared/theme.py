@@ -41,6 +41,21 @@ _THEME_CSS = """
 
 /* 分隔符 st.divider（=<hr>）上下间距压到 0（Boss 2026-05-26） */
 hr { margin-top:0 !important; margin-bottom:0 !important; }
+
+/* PPVI Pass 1 · P0 · 等宽 mono 字体（IBM Plex Mono），仅命中数字/代码/JAN/SKU。
+   规范来源：~/CC/.claude/skills/ppvi-web-design（结构主义场景的瑞士设计灵魂）。
+   回滚：删除从下一行 @import 到本段注释终止符之间的所有内容。 */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] > div,
+[data-testid="stMetricDelta"],
+.cms-table td.num, .cms-table th.num,
+code, kbd, samp {
+  font-family: 'IBM Plex Mono', 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace !important;
+  font-variant-numeric: tabular-nums !important;
+  font-feature-settings: "tnum" 1, "zero" 1 !important;
+}
+/* PPVI P0 终止 */
 </style>
 """
 
