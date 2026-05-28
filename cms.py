@@ -107,7 +107,8 @@ def _safe_df(sql: str) -> pd.DataFrame:
 # ============================================================
 # 业务大盘 4 KPI
 # ============================================================
-st.markdown(f"##### 📈 {t('业务大盘')}")
+# PPVI P1 · 去 emoji 装饰前缀（结构主义：颜色/装饰仅用于编码信息）
+st.markdown(f"##### {t('业务大盘')}")
 
 # 1) 商品 SKU 数
 sku_total = _safe_scalar("SELECT COUNT(*) FROM item_v2", default=0)
@@ -229,7 +230,8 @@ with k4:
 # ============================================================
 # 风险预警 5 KPI
 # ============================================================
-st.markdown(f"##### ⚠️ {t('风险预警')}")
+# PPVI P1 · 去 emoji 装饰前缀
+st.markdown(f"##### {t('风险预警')}")
 
 # 当月 latest year_month 优先，找不到就用全部
 latest_ym_row = _safe_df(
@@ -264,11 +266,12 @@ hard_get_n = _safe_scalar(
 )
 
 r1, r2, r3, r4, r5 = st.columns(5)
-r1.metric(t("🔴 断货风险"), int(risk_map.get("断货风险", 0)))
-r2.metric(t("🟢 正常"), int(risk_map.get("正常", 0)))
-r3.metric(t("🟡 压库存"), int(risk_map.get("压库存", 0)))
-r4.metric(t("⚪ 数据不足"), int(risk_map.get("数据不足", 0) + risk_map.get("无数据", 0)))
-r5.metric(t("⚠️ 入荷困難"), int(hard_get_n))
+# PPVI P1 · KPI 标签去 emoji（中文硬编码绕过 i18n.py 未提交改动）
+r1.metric("断货风险", int(risk_map.get("断货风险", 0)))
+r2.metric("正常", int(risk_map.get("正常", 0)))
+r3.metric("压库存", int(risk_map.get("压库存", 0)))
+r4.metric("数据不足", int(risk_map.get("数据不足", 0) + risk_map.get("无数据", 0)))
+r5.metric("入荷困難", int(hard_get_n))
 
 st.divider()
 
