@@ -52,8 +52,15 @@ import re as _re
 _safe_q = [_re.sub(r"[^A-Za-z0-9_-]", "", str(q))[:20] for q in sel_q]
 _in_clause = ",".join(f"'{q}'" for q in _safe_q if q)
 _rows_df = conn.execute(
-    f"SELECT rh.*, im.display_name FROM rank_history rh "
+    f"SELECT rh.*, im.display_name, "
+    f"       COALESCE(inv.qty_on_hand, 0) AS qty_on_hand "
+    f"FROM rank_history rh "
     f"LEFT JOIN nst.item_master_raw im ON im.item_code = rh.sku "
+    f"LEFT JOIN ("
+    f"    SELECT item_internal_id, qty_on_hand "
+    f"    FROM nst.inventory_snapshot "
+    f"    WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
+    f") inv ON inv.item_internal_id = im.internal_id "
     f"WHERE rh.quarter IN ({_in_clause}) "
     f"ORDER BY rh.changed_at DESC"
 ).fetchall()
@@ -123,7 +130,9 @@ st.divider()
 
 # 历史变化表
 st.subheader(t("变更明细"))
-display_df = df[['sku', 'display_name', 'quarter', 'old_rank', 'new_rank', 'changed_at']].copy()
+display_df = df[['sku', 'display_name', 'quarter', 'old_rank', 'new_rank',
+                 'qty_on_hand', 'changed_at']].copy()
+display_df['qty_on_hand'] = display_df['qty_on_hand'].fillna(0).astype(int)
 display_df = display_df.sort_values('changed_at', ascending=False)
 
 st.dataframe(
