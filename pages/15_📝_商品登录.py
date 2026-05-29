@@ -1,15 +1,21 @@
-"""模块 #15 商品登录
+"""模块 #15 商品登录 · 新品首次推送 NetSuite/JD/BM
+
+定位：商品首次登录（NST/JD/BM 还都没有这个 SKU），不是已登录商品的修改。
+修改场景请走 page 03（定義原価編集）/ page 07（商品等级判定）等。
 
 两个 tab 并存：
-  🆕 原生版 (MVP · 2026-05-29)：贴 JAN → PG (nst.item_master_raw) 直拉 → NetSuite CSV
-  📜 旧 HTML 版：商品登録ツール iframe（保留过渡期使用）
+  🆕 原生版 (MVP · 2026-05-29 v2)：上传 NSTマスタ xlsx → 预览编辑 → NetSuite CSV
+  📜 旧 HTML 版：商品登録ツール iframe（JD/BM xlsx 输出仍走此处）
 
-原生版只生成 NetSuite【アイテム】マスタ登録-V260326EX 格式 CSV
-（JD/BM CSV 暂留旧 HTML 版做）。
-未命中 JAN 在顶部名单提示，仅命中 JAN 进 CSV。
+原生版流程：
+  Step 1 上传 NSTマスタ.xlsx（sheet: NetSuiteマスタ登録，与旧 HTML 工具同格式）
+  Step 2 自动解析：删 row1/3/4，row2=header，row5+ 数据；A 列空行剔除
+  Step 3 预览编辑（st.data_editor），自动用 nst.item_image_cache 补画像URL（仅参考）
+  Step 4 ⬇️ 生成 NetSuite【アイテム】マスタ登録-V260326EX CSV
 """
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pandas as pd
@@ -31,169 +37,177 @@ st.title(t("📝 商品登录"))
 
 tab_native, tab_legacy = st.tabs([t("🆕 原生版 (MVP)"), t("📜 旧 HTML 版")])
 
-# ───────────────────────── PG → NST 模板列映射 ─────────────────────────
+# ───────────────────────── NSTマスタ xlsx 解析 ─────────────────────────
 
-# PG 字段 → NST 模板列名（出现在最终 CSV header 中的列）
-PG_TO_NST_COL: dict[str, str] = {
-    "item_code":        "型番",
-    "display_name":     "アイテム名",
-    "jan":              "JANコード",
-    "maker":            "メーカー名",
-    "item_rank":        "商品ランク",
-    "handling_cd":      "取扱区分",
-    "department":       "部門",
-    "cost":             "商品原価",
-    "carton_qty":       "カートン入数",
-    "order_lot":        "発注ロット",
-    "tax_schedule":     "納税スケジュール",
-    "item_weight_g":    "商品重量(g)",
-    "package_weight_g": "パッケージ重量(g)",
-    "carton_weight_g":  "カートン重量(g)",
-}
-
-# 选择查询的 PG 列（含 internal_id 作为 ID）
-PG_SELECT_COLS = ["internal_id"] + list(PG_TO_NST_COL.keys())
+NST_SHEET_NAME = "NetSuiteマスタ登録"
+JAN_COL_NAME = "JANコード"
 
 
-def _parse_jans(raw: str) -> list[str]:
-    seen, out = set(), []
-    import re
-    for line in re.split(r"[\s,;]+", raw or ""):
-        j = line.strip()
-        if not j or not j.isdigit() or not (8 <= len(j) <= 14):
-            continue
-        if j not in seen:
-            seen.add(j)
-            out.append(j)
-    return out
+def _parse_nst_xlsx(file) -> tuple[pd.DataFrame, list[str]]:
+    """解析 NSTマスタ xlsx，删 row1/3/4，row2=header，A 列空行剔除。
 
-
-def _fetch_items(conn, jans: list[str]) -> pd.DataFrame:
-    if not jans:
-        return pd.DataFrame()
-    placeholder = ",".join(["%s"] * len(jans))
-    sql = f"""
-        SELECT {", ".join(PG_SELECT_COLS)},
-               img.image_url AS image_url,
-               img.status    AS image_status
-        FROM nst.item_master_raw m
-        LEFT JOIN nst.item_image_cache img ON img.jan_cd = m.jan
-        WHERE m.jan IN ({placeholder})
+    返回 (DataFrame, warnings)
     """
-    rows = conn.execute(sql, jans).fetchall()
-    return pd.DataFrame([dict(r) for r in rows])
+    warnings: list[str] = []
+    raw = pd.read_excel(file, sheet_name=NST_SHEET_NAME, header=None, dtype=str)
+    if len(raw) < 5:
+        return pd.DataFrame(), [f"sheet 行数不足 5（{len(raw)} 行）· 期待 row2=header / row5+=data"]
+
+    # 删除 row1(idx0)、row3(idx2)、row4(idx3)
+    filtered = raw.drop([0, 2, 3]).reset_index(drop=True)
+    header = filtered.iloc[0].fillna("").astype(str).str.strip().tolist()
+    body = filtered.iloc[1:].copy()
+    body.columns = header
+
+    # A 列（第一列：通常是 型番）空行剔除
+    first_col = body.iloc[:, 0]
+    valid_mask = first_col.notna() & (first_col.astype(str).str.strip() != "")
+    dropped = (~valid_mask).sum()
+    if dropped:
+        warnings.append(f"A 列空行剔除 {int(dropped)} 行")
+    body = body[valid_mask].reset_index(drop=True)
+
+    # 列名按模板白名单过滤（不在模板的列丢弃 + 警告）
+    valid_cols = [c for c in body.columns if c in TPL.VALID_COLUMNS]
+    unknown_cols = [c for c in body.columns if c and c not in TPL.VALID_COLUMNS]
+    if unknown_cols:
+        warnings.append(f"非模板列被忽略 ({len(unknown_cols)} 个): {', '.join(unknown_cols[:5])}{'...' if len(unknown_cols) > 5 else ''}")
+
+    body = body[valid_cols].copy()
+    return body, warnings
+
+
+def _augment_image_url(conn, df: pd.DataFrame) -> pd.DataFrame:
+    """从 nst.item_image_cache 按 JAN 取已有 image_url 作辅助参考列（不进 CSV）。"""
+    if df.empty or JAN_COL_NAME not in df.columns:
+        df["_画像URL（参考·来自 image cache）"] = ""
+        return df
+    jans = [str(j).strip() for j in df[JAN_COL_NAME] if pd.notna(j) and str(j).strip()]
+    if not jans:
+        df["_画像URL（参考·来自 image cache）"] = ""
+        return df
+    placeholder = ",".join(["%s"] * len(jans))
+    rows = conn.execute(
+        f"SELECT jan_cd, image_url FROM nst.item_image_cache "
+        f"WHERE jan_cd IN ({placeholder}) AND status='ok'",
+        jans,
+    ).fetchall()
+    url_map = {r["jan_cd"]: r["image_url"] for r in rows}
+    df["_画像URL（参考·来自 image cache）"] = df[JAN_COL_NAME].astype(str).str.strip().map(url_map).fillna("")
+    return df
 
 
 # ───────────────────────── tab 🆕 原生版 ─────────────────────────
 
 with tab_native:
     st.caption(t(
-        "贴 JAN → 从 nst.item_master_raw 直拉 Internal ID 等 15 个字段 → "
-        "生成 NetSuite【アイテム】マスタ登録-V260326EX CSV"
+        "新品首次推送 · 上传 NSTマスタ xlsx → 预览编辑 → 生成 NetSuite【アイテム】マスタ登録-V260326EX CSV"
     ))
 
-    with st.expander(t("📌 字段来源与限制"), expanded=False):
+    with st.expander(t("📌 使用说明"), expanded=False):
         st.markdown(t(
-            f"- **PG 直拉 {len(PG_TO_NST_COL)} 列**：Internal ID / 型番 / アイテム名 / JANコード / "
-            "メーカー名 / 商品ランク / 取扱区分 / 部門 / 商品原価 / カートン入数 / 発注ロット / "
-            "納税スケジュール / 商品重量(g) / パッケージ重量(g) / カートン重量(g)\n"
-            "- **预览表里可编辑**：补缺失值（必須列空会标红）· 直接生成 CSV\n"
-            "- **未命中 JAN**：顶部提示，仅命中行进 CSV\n"
-            "- **JD/BM CSV**：暂走「📜 旧 HTML 版」tab"
+            "- **场景**：新品首次推送到 NST（已登录商品的修改请走 page 03/07 等）\n"
+            f"- **上传 sheet**：`{NST_SHEET_NAME}`（与旧 HTML 工具同格式）· 自动删 row1/3/4, row2=header, A 列空行剔除\n"
+            "- **非模板列**：被自动忽略并提示（防止脏列污染 CSV）\n"
+            "- **画像 URL（参考）**：自动从 nst.item_image_cache 按 JAN 补一列，仅辅助核对，不进 CSV\n"
+            "- **JD/BM xlsx**：本 tab 暂不出，走「📜 旧 HTML 版」tab"
         ))
 
-    jan_text = st.text_area(
-        t("JAN 列表（每行一个，支持空格/逗号/分号分隔）"),
-        height=160,
-        placeholder="4901234567890\n4905678901234\n...",
-        key="page15_jan_text",
+    uploaded = st.file_uploader(
+        t(f"📤 上传 NSTマスタ xlsx（sheet 名 = {NST_SHEET_NAME}）"),
+        type=["xlsx"],
+        key="page15_upload",
     )
 
-    jans = _parse_jans(jan_text)
-    if jans:
-        st.caption(t(f"解析到 {len(jans)} 个有效 JAN（去重后）"))
-
-    col_btn1, col_btn2 = st.columns([1, 4])
-    btn_query = col_btn1.button(t("🔍 查询 PG"), type="primary", disabled=not jans)
-
-    if btn_query:
-        with get_connection() as conn:
-            df = _fetch_items(conn, jans)
-        st.session_state["page15_df"] = df
-        st.session_state["page15_jans"] = jans
-
-    df: pd.DataFrame | None = st.session_state.get("page15_df")
-    queried_jans: list[str] = st.session_state.get("page15_jans") or []
-
-    if df is not None and queried_jans:
-        hit_jans = set(df["jan"].astype(str).tolist()) if not df.empty else set()
-        miss_jans = [j for j in queried_jans if j not in hit_jans]
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric(t("贴入"), len(queried_jans))
-        c2.metric(t("命中"), len(hit_jans))
-        c3.metric(t("未命中"), len(miss_jans), delta_color="inverse")
-
-        if miss_jans:
-            with st.expander(t(f"⚠️ {len(miss_jans)} 个 JAN 在 PG 未命中（新品？）· 不进 CSV"),
-                             expanded=True):
-                st.code("\n".join(miss_jans), language="text")
-
-        if df.empty:
-            st.warning(t("命中 0 件 · 请确认 JAN 已在 nst.item_master_raw（pull_items.py 拉过）"))
+    if uploaded:
+        try:
+            df, warns = _parse_nst_xlsx(uploaded)
+        except ValueError as e:
+            st.error(t(f"❌ 解析失败：{e}（确认 sheet 名是 `{NST_SHEET_NAME}`）"))
+            st.stop()
+        except Exception as e:
+            st.error(t(f"❌ 解析失败：{type(e).__name__}: {e}"))
             st.stop()
 
-        # 重新排成 [internal_id, image_url, ...NST 模板列]
-        rename_map = {pg: nst for pg, nst in PG_TO_NST_COL.items()}
-        df_view = df.rename(columns=rename_map).copy()
-        # Internal ID 改名
-        df_view = df_view.rename(columns={"internal_id": "Internal ID"})
+        if df.empty:
+            st.warning(t("⚠️ 解析后无有效行（A 列全空？检查上传文件）"))
+            st.stop()
 
-        st.subheader(t("📋 预览（可直接在表里补缺）"))
+        with get_connection() as conn:
+            df = _augment_image_url(conn, df)
 
-        display_cols = ["Internal ID", "image_url"] + list(PG_TO_NST_COL.values())
-        df_show = df_view[display_cols].copy()
+        st.session_state["page15_df"] = df
+        st.session_state["page15_warns"] = warns
+
+    df: pd.DataFrame | None = st.session_state.get("page15_df")
+    warns: list[str] = st.session_state.get("page15_warns") or []
+
+    if df is not None and not df.empty:
+        c1, c2, c3 = st.columns(3)
+        c1.metric(t("解析行数"), len(df))
+        c2.metric(t("有效模板列"), sum(1 for c in df.columns if c in TPL.VALID_COLUMNS))
+        n_with_img = (df["_画像URL（参考·来自 image cache）"] != "").sum() if "_画像URL（参考·来自 image cache）" in df.columns else 0
+        c3.metric(t("画像已缓存"), int(n_with_img))
+
+        if warns:
+            with st.expander(t(f"⚠️ 解析警告 {len(warns)} 条"), expanded=False):
+                for w in warns:
+                    st.text(f"• {w}")
+
+        st.subheader(t("📋 预览（可直接在表里补缺/修改）"))
+
+        # 移到首列：型番、アイテム名、JANコード（如果存在），其余按原序
+        priority = ["型番", "アイテム名", "JANコード"]
+        cols_in_priority = [c for c in priority if c in df.columns]
+        rest = [c for c in df.columns if c not in cols_in_priority]
+        df_show = df[cols_in_priority + rest].copy()
+
+        col_config = {
+            "_画像URL（参考·来自 image cache）": st.column_config.ImageColumn(
+                t("画像（参考）"), width="small"
+            ),
+            "JANコード": st.column_config.TextColumn("JANコード", width="small"),
+        }
 
         edited = st.data_editor(
             df_show,
             use_container_width=True,
             height=480,
-            num_rows="fixed",
-            disabled=["Internal ID", "image_url"],
-            column_config={
-                "Internal ID": st.column_config.TextColumn("Internal ID", width="small", disabled=True),
-                "image_url": st.column_config.ImageColumn(t("缩略图"), width="small"),
-                "JANコード": st.column_config.TextColumn("JANコード", width="small", disabled=True),
-                "商品原価": st.column_config.NumberColumn("商品原価", format="%.2f"),
-                "カートン入数": st.column_config.NumberColumn("カートン入数", format="%d"),
-                "発注ロット": st.column_config.NumberColumn("発注ロット", format="%d"),
-                "商品重量(g)": st.column_config.NumberColumn("商品重量(g)", format="%.1f"),
-                "パッケージ重量(g)": st.column_config.NumberColumn("パッケージ重量(g)", format="%.1f"),
-                "カートン重量(g)": st.column_config.NumberColumn("カートン重量(g)", format="%.1f"),
-            },
+            num_rows="dynamic",
+            disabled=["_画像URL（参考·来自 image cache）"],
+            column_config=col_config,
             key="page15_editor",
         )
 
         st.divider()
         st.subheader(t("📦 生成 NetSuite CSV"))
 
-        col_g1, col_g2 = st.columns([1, 3])
+        col_g1, _ = st.columns([1, 3])
         with col_g1:
             btn_gen = st.button(t("⬇️ 生成 CSV"), type="primary")
         if btn_gen:
-            field_cols = list(PG_TO_NST_COL.values())
-            rows = []
+            # 仅保留有效模板列（剔除画像参考列）
+            field_cols = [c for c in edited.columns if c in TPL.VALID_COLUMNS]
+            rows: list[dict] = []
             for _, r in edited.iterrows():
-                row = {"Internal ID": r["Internal ID"]}
+                # 跳过整行空白（含 A 列空）
+                first_val = r.iloc[0] if len(r) else None
+                if pd.isna(first_val) or str(first_val).strip() == "":
+                    continue
+                # build_nst_master_csv 期待 id_label 字段，但新品时 Internal ID 留空
+                row: dict = {TPL.ID_LABEL: ""}
                 for col in field_cols:
                     v = r.get(col)
-                    if pd.notna(v) and v != "":
+                    if pd.notna(v) and str(v).strip() != "":
                         row[col] = v
                 rows.append(row)
 
-            csv_bytes = TPL.build_nst_master_csv(rows, field_cols)
-            st.session_state["page15_csv_bytes"] = csv_bytes
-            st.session_state["page15_csv_rows"] = len(rows)
+            if not rows:
+                st.error(t("❌ 无有效行可生成"))
+            else:
+                csv_bytes = TPL.build_nst_master_csv(rows, field_cols)
+                st.session_state["page15_csv_bytes"] = csv_bytes
+                st.session_state["page15_csv_rows"] = len(rows)
 
         csv_bytes = st.session_state.get("page15_csv_bytes")
         if csv_bytes:
@@ -204,7 +218,15 @@ with tab_native:
                 mime="text/csv",
                 type="primary",
             )
-            st.success(t("✅ CSV 已生成 · 上传到 NetSuite 即可"))
+            st.success(t("✅ NetSuite CSV 已生成 · 直接上传到 NetSuite 即可"))
+
+        st.info(t(
+            "💡 JD / BM 的专有字段（商品分类/销售价/SEO 等）和 xlsx 输出，"
+            "本 tab 暂不出。可继续在「📜 旧 HTML 版」生成 JD/BM xlsx —— "
+            "或把 JD/BM 模板发我，我把 JD/BM 字段填表 + xlsx 输出加进来。"
+        ))
+    elif uploaded is None:
+        st.info(t("📤 上传 NSTマスタ xlsx 开始（拖入或点击上方上传区）"))
 
 
 # ───────────────────────── tab 📜 旧 HTML 版 ─────────────────────────
