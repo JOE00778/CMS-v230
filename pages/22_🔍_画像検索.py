@@ -183,8 +183,13 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
         "imageFlag": "1",
     }
     api_url = f"{RAKUTEN_API_URL}?{urllib.parse.urlencode(params)}"
+    # 楽天 v2026-04 强制要求 Referer 在 app 的 allowed_websites 白名单内
+    api_headers = {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://smikie-cms.cc",
+    }
     try:
-        req = urllib.request.Request(api_url, headers={"User-Agent": USER_AGENT})
+        req = urllib.request.Request(api_url, headers=api_headers)
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             data = resp.read()
             j = json.loads(data.decode("utf-8"))
