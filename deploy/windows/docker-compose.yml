@@ -62,6 +62,8 @@ services:
       LARK_APP_SECRET: ${LARK_APP_SECRET:-}
       LARK_REDIRECT_URI: ${LARK_REDIRECT_URI:-}
       ADMIN_LARK_EMAILS: ${ADMIN_LARK_EMAILS:-}
+      # page 22 画像検索 · 楽天 ItemSearch API fallback (未设置则跳过 fallback)
+      RAKUTEN_APPLICATION_ID: ${RAKUTEN_APPLICATION_ID:-}
       TZ: Asia/Tokyo
     volumes:
       # 代码 bind mount（2026-05-19）: git pull 后立即生效，不需 --build
