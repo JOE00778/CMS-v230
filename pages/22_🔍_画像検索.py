@@ -135,6 +135,11 @@ def _fetch_kakaku(jan: str) -> tuple[str, bytes | None, int, str | None, str | N
     if not img_url:
         return ("not_found", None, 0, "no item img in kakaku search", None)
 
+    # 升级分辨率: kakaku 给的 ?fitin=300:300 太小, 改 800:800
+    # (楽天 tshop.r10s.jp CDN 支持任意 fitin 参数, 自动放大压缩)
+    if "tshop.r10s.jp" in img_url and "fitin=" in img_url:
+        img_url = re.sub(r"fitin=\d+:\d+", "fitin=800:800", img_url)
+
     img_headers = {
         "User-Agent": USER_AGENT,
         "Referer": search_url,
@@ -162,11 +167,18 @@ RAKUTEN_APP_ID_ENV = "RAKUTEN_APPLICATION_ID"
 RAKUTEN_ACCESS_KEY_ENV = "RAKUTEN_ACCESS_KEY"
 
 
+# 已知带水印 / 第三方加印的店铺关键词（shopCode 或 shopName 含这些字符串则跳过）
+_WATERMARK_SHOP_KEYWORDS = ["cosme", "luminous", "atcosme", "アットコスメ", "@cosme"]
+
+
 def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
-    """楽天 ItemSearch API fallback · 走新版 endpoint, 需 applicationId + accessKey 双参数。
+    """楽天 ItemSearch API · v2026-04 新 endpoint, 需 applicationId + accessKey + Origin。
+
+    hits=10 多候选, 跳过已知带水印的 shop（@cosme 等）, 选第一个干净的。
+    mediumImageUrls strip ?_ex 后拿原图（5-10x 缩略图大小）。
 
     返回 (status, bytes_or_None, size, error_msg, image_url)
-    status='disabled' 表示 ENV 未配齐（调用方应当 fallback 到 not_found 状态）。
+    status='disabled' 表示 ENV 未配齐。
     """
     app_id = os.environ.get(RAKUTEN_APP_ID_ENV, "").strip()
     access_key = os.environ.get(RAKUTEN_ACCESS_KEY_ENV, "").strip()
@@ -178,7 +190,7 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
         "applicationId": app_id,
         "accessKey": access_key,
         "keyword": jan,
-        "hits": "1",
+        "hits": "10",  # 多候选用于跳过水印店
         "format": "json",
         "imageFlag": "1",
     }
@@ -206,22 +218,47 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
     items = j.get("Items") or []
     if not items:
         return ("not_found", None, 0, "rakuten API no items", None)
-    item = items[0].get("Item") or {}
+
+    # 遍历多候选, 跳过带水印的店铺
     img_url = None
-    for k in ("mediumImageUrls", "smallImageUrls"):
-        imgs = item.get(k) or []
-        if imgs:
-            cand = imgs[0]
-            if isinstance(cand, dict):
-                img_url = cand.get("imageUrl") or cand.get("image_url")
-            else:
-                img_url = cand
-            if img_url:
+    chosen_shop = ""
+    skipped_shops = []
+    for entry in items:
+        item = entry.get("Item") or {}
+        shop_code = (item.get("shopCode") or "").lower()
+        shop_name = (item.get("shopName") or "").lower()
+        if any(kw in shop_code or kw in shop_name for kw in _WATERMARK_SHOP_KEYWORDS):
+            skipped_shops.append(item.get("shopCode") or "?")
+            continue
+        for k in ("mediumImageUrls", "smallImageUrls"):
+            imgs = item.get(k) or []
+            if imgs:
+                cand = imgs[0]
+                if isinstance(cand, dict):
+                    cand_url = cand.get("imageUrl") or cand.get("image_url")
+                else:
+                    cand_url = cand
+                if cand_url:
+                    img_url = cand_url
+                    chosen_shop = item.get("shopCode") or ""
+                    break
+        if img_url:
+            break
+
+    if not img_url:
+        # 都被过滤了 → 退回第一个 item (即使带水印, 也比无图强)
+        first = (items[0].get("Item") or {})
+        for k in ("mediumImageUrls", "smallImageUrls"):
+            imgs = first.get(k) or []
+            if imgs:
+                cand = imgs[0]
+                img_url = (cand.get("imageUrl") if isinstance(cand, dict) else cand)
+                chosen_shop = first.get("shopCode") or "fallback"
                 break
     if not img_url:
         return ("not_found", None, 0, "rakuten API item w/o image", None)
 
-    # 楽天 mediumImageUrls 默认带 ?_ex=128x128，去掉得原图
+    # mediumImageUrls 带 ?_ex=128x128, 去掉拿原图 (5-10x 大小)
     img_url_clean = img_url.split("?")[0]
     img_headers = {
         "User-Agent": USER_AGENT,
@@ -241,23 +278,22 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
 
 
 def _fetch_image_for_jan(jan: str) -> tuple[str, bytes | None, int, str | None, str | None, str]:
-    """双轨抓图：kakaku 主 → 失败时 rakuten API fallback。
+    """双轨抓图：楽天 API 主（原图质量高 + 跳水印店）→ kakaku 兜底。
 
     返回 (status, bytes_or_None, size, error_msg, image_url, source)
     """
-    st_, data, size, err, url = _fetch_kakaku(jan)
-    if st_ == "ok":
-        return (st_, data, size, err, url, "kakaku")
-    # kakaku 未命中或 error，试 rakuten
-    st2, data2, size2, err2, url2 = _fetch_rakuten_api(jan)
+    # 楽天 API 优先（已配 ENV 时）
+    st1, data1, size1, err1, url1 = _fetch_rakuten_api(jan)
+    if st1 == "ok":
+        return (st1, data1, size1, err1, url1, "rakuten_api")
+    # 楽天未配置 or 失败 → kakaku 兜底
+    st2, data2, size2, err2, url2 = _fetch_kakaku(jan)
     if st2 == "ok":
-        return (st2, data2, size2, err2, url2, "rakuten_api")
-    if st2 == "disabled":
-        # 楽天 API 未配置：保留 kakaku 结果
-        return (st_, data, size, err, url, "kakaku")
-    # 楽天 API 也失败：合并 error_msg，标 fallback 全失败
-    merged_err = f"kakaku:{err or st_} | rakuten:{err2 or st2}"
-    return (st2, None, 0, merged_err, url2 or url, "kakaku+rakuten")
+        return (st2, data2, size2, err2, url2, "kakaku")
+    if st1 == "disabled":
+        return (st2, data2, size2, err2, url2, "kakaku")
+    merged_err = f"rakuten:{err1 or st1} | kakaku:{err2 or st2}"
+    return (st2, None, 0, merged_err, url1 or url2, "rakuten+kakaku")
 
 
 # Backward aliases
@@ -390,12 +426,17 @@ if results:
     c3.metric(t("失败"), len(df_fail))
 
     st.subheader(t("📋 抓取结果"))
+    # 缩略图列复用 url（streamlit 用 column_config.ImageColumn 直接 render 远程图）
+    df_show = df[["jan", "status", "source", "size", "captured_at", "url"]].copy()
+    df_show["缩略图"] = df_show["url"]
+    df_show = df_show[["jan", "缩略图", "status", "source", "size", "captured_at", "url"]]
     st.dataframe(
-        df[["jan", "status", "source", "size", "captured_at", "url"]],
+        df_show,
         use_container_width=True,
-        height=400,
+        height=480,
         column_config={
             "jan": st.column_config.TextColumn("JAN", width="small"),
+            "缩略图": st.column_config.ImageColumn(t("缩略图"), width="small"),
             "status": t("状态"),
             "source": t("来源"),
             "size": st.column_config.NumberColumn(t("字节"), format="%d"),
