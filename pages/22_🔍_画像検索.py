@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import gzip
 import io
+import json
+import os
 import re
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 import zipfile
@@ -151,7 +154,98 @@ def _fetch_kakaku(jan: str) -> tuple[str, bytes | None, int, str | None, str | N
         return ("error", None, 0, f"img {str(e)[:160]}", img_url)
 
 
-# Backward alias (调用方仍用旧名)
+# ───────────────────────── Rakuten ItemSearch API (fallback) ─────────────────────────
+
+RAKUTEN_API_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601"
+RAKUTEN_APP_ID_ENV = "RAKUTEN_APPLICATION_ID"
+
+
+def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
+    """楽天 ItemSearch API fallback · 仅当 ENV RAKUTEN_APPLICATION_ID 设置时启用。
+
+    返回 (status, bytes_or_None, size, error_msg, image_url)
+    status='disabled' 表示未配 app id（调用方应当 fallback 到 not_found 状态）。
+    """
+    app_id = os.environ.get(RAKUTEN_APP_ID_ENV, "").strip()
+    if not app_id:
+        return ("disabled", None, 0, "RAKUTEN_APPLICATION_ID 未设置", None)
+
+    params = {
+        "applicationId": app_id,
+        "keyword": jan,
+        "hits": "1",
+        "format": "json",
+        "imageFlag": "1",
+    }
+    api_url = f"{RAKUTEN_API_URL}?{urllib.parse.urlencode(params)}"
+    try:
+        req = urllib.request.Request(api_url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            data = resp.read()
+            j = json.loads(data.decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return ("error", None, 0, f"rakuten API HTTP {e.code}", None)
+    except Exception as e:
+        return ("error", None, 0, f"rakuten API {str(e)[:160]}", None)
+
+    items = j.get("Items") or []
+    if not items:
+        return ("not_found", None, 0, "rakuten API no items", None)
+    item = items[0].get("Item") or {}
+    img_url = None
+    for k in ("mediumImageUrls", "smallImageUrls"):
+        imgs = item.get(k) or []
+        if imgs:
+            cand = imgs[0]
+            if isinstance(cand, dict):
+                img_url = cand.get("imageUrl") or cand.get("image_url")
+            else:
+                img_url = cand
+            if img_url:
+                break
+    if not img_url:
+        return ("not_found", None, 0, "rakuten API item w/o image", None)
+
+    # 楽天 mediumImageUrls 默认带 ?_ex=128x128，去掉得原图
+    img_url_clean = img_url.split("?")[0]
+    img_headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8",
+    }
+    try:
+        req2 = urllib.request.Request(img_url_clean, headers=img_headers)
+        with urllib.request.urlopen(req2, timeout=HTTP_TIMEOUT) as resp:
+            data = resp.read()
+            if len(data) < MIN_IMAGE_BYTES:
+                return ("not_found", None, len(data), f"size<{MIN_IMAGE_BYTES}", img_url_clean)
+            return ("ok", data, len(data), None, img_url_clean)
+    except urllib.error.HTTPError as e:
+        return ("error", None, 0, f"img HTTP {e.code}", img_url_clean)
+    except Exception as e:
+        return ("error", None, 0, f"img {str(e)[:160]}", img_url_clean)
+
+
+def _fetch_image_for_jan(jan: str) -> tuple[str, bytes | None, int, str | None, str | None, str]:
+    """双轨抓图：kakaku 主 → 失败时 rakuten API fallback。
+
+    返回 (status, bytes_or_None, size, error_msg, image_url, source)
+    """
+    st_, data, size, err, url = _fetch_kakaku(jan)
+    if st_ == "ok":
+        return (st_, data, size, err, url, "kakaku")
+    # kakaku 未命中或 error，试 rakuten
+    st2, data2, size2, err2, url2 = _fetch_rakuten_api(jan)
+    if st2 == "ok":
+        return (st2, data2, size2, err2, url2, "rakuten_api")
+    if st2 == "disabled":
+        # 楽天 API 未配置：保留 kakaku 结果
+        return (st_, data, size, err, url, "kakaku")
+    # 楽天 API 也失败：合并 error_msg，标 fallback 全失败
+    merged_err = f"kakaku:{err or st_} | rakuten:{err2 or st2}"
+    return (st2, None, 0, merged_err, url2 or url, "kakaku+rakuten")
+
+
+# Backward aliases
 _fetch_jancode = _fetch_kakaku
 
 
@@ -178,8 +272,9 @@ def _upsert_cache(conn, jan: str, url: str | None, source: str | None,
 
 with st.expander(t("📌 抓取规则与数据安全说明"), expanded=False):
     st.markdown(t(
-        "- **抓取源**：kakaku.com 搜索结果首图（实际图直链来自楽天/Amazon CDN · 公开非敏感）\n"
-        "- **旧源 jancode.xyz**：整站升级风控对 server-side 全 403，已切换\n"
+        "- **抓取源**：kakaku.com 搜索首图（实际图来自楽天/Amazon CDN）→ 失败时 fallback 楽天 ItemSearch API（若已配 ENV `RAKUTEN_APPLICATION_ID`）\n"
+        "- **旧源 jancode.xyz**：整站升级风控对 server-side 全 403，已弃\n"
+        "- **来源标记**：`kakaku` / `rakuten_api` · cache 区分两路径命中\n"
         "- **缓存**：命中过的 JAN 直接返回，不重复抓\n"
         "- **外发数据**：仅 JAN 13 位条码（公开非敏感）· 无 127.0.0.1 代理\n"
         "- **失败标记**：抓不到的标 `not_found`，后续可手动补 URL\n"
@@ -234,12 +329,12 @@ if btn_run:
                 })
                 n_cache += 1
             else:
-                status, data, size, err, img_url = _fetch_jancode(jan)
+                status, data, size, err, img_url, source = _fetch_image_for_jan(jan)
                 if status == "ok":
                     bytes_map[jan] = data
-                    _upsert_cache(conn, jan, img_url, "kakaku", "ok", size, None)
+                    _upsert_cache(conn, jan, img_url, source, "ok", size, None)
                     results.append({
-                        "jan": jan, "url": img_url, "source": "kakaku",
+                        "jan": jan, "url": img_url, "source": source,
                         "status": "ok", "size": size, "captured_at": datetime.now(),
                     })
                     n_new_ok += 1
@@ -250,7 +345,8 @@ if btn_run:
                         "status": status, "size": 0, "captured_at": datetime.now(),
                     })
                     n_new_fail += 1
-                time.sleep(0.25)  # 礼貌限速（两次 HTTP 一组）
+                # kakaku 走 2 个 HTTP, rakuten fallback 走 +2 个，礼貌限速
+                time.sleep(0.4)
 
             progress.progress(i / len(jans), text=t(f"抓取中 {i}/{len(jans)} · cache={n_cache} ok={n_new_ok} fail={n_new_fail}"))
             if i % 10 == 0:
