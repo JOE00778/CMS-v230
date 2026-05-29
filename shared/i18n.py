@@ -625,7 +625,6 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
         ("pages/04_📊_销售数据查询.py", "📊 销售数据查询"),
         ("pages/05_🏪_店铺别毛利.py", "🏪 店铺毛利"),
         ("pages/14_💱_財務.py", "💱 财务"),
-        ("pages/34_💱_Shopee财务API.py", "💱 Shopee 财务 (API)"),
         ("pages/17_💰_价格改善.py", "💰 价格改善"),
         ("pages/11_💡_运营调整建议.py", "💡 运营调整建议"),
         ("pages/21_🚀_Shopee上架.py", "🚀 Shopee 上架"),
@@ -690,7 +689,6 @@ for _zh, _ja in [
     ("🚫 入荷困难商品", "🚫 入荷困難商品"),
     ("⚠️ 改废确认", "⚠️ 改廃確認"),
     ("💱 Shopee 财务", "💱 Shopee 財務"),
-    ("💱 Shopee 财务 (API)", "💱 Shopee 財務 (API)"),
     ("🚀 Shopee 上架", "🚀 Shopee 出品"),
     # page 24 / 25 sidebar label
     ("📦 发注AI v2 (多供货商)", "📦 発注AI v2 (多仕入先)"),
