@@ -156,22 +156,27 @@ def _fetch_kakaku(jan: str) -> tuple[str, bytes | None, int, str | None, str | N
 
 # ───────────────────────── Rakuten ItemSearch API (fallback) ─────────────────────────
 
-RAKUTEN_API_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601"
+# 2026-04-01 新版 endpoint · 新 UUID app 必须走这个 + accessKey 双参数
+RAKUTEN_API_URL = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260401"
 RAKUTEN_APP_ID_ENV = "RAKUTEN_APPLICATION_ID"
+RAKUTEN_ACCESS_KEY_ENV = "RAKUTEN_ACCESS_KEY"
 
 
 def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
-    """楽天 ItemSearch API fallback · 仅当 ENV RAKUTEN_APPLICATION_ID 设置时启用。
+    """楽天 ItemSearch API fallback · 走新版 endpoint, 需 applicationId + accessKey 双参数。
 
     返回 (status, bytes_or_None, size, error_msg, image_url)
-    status='disabled' 表示未配 app id（调用方应当 fallback 到 not_found 状态）。
+    status='disabled' 表示 ENV 未配齐（调用方应当 fallback 到 not_found 状态）。
     """
     app_id = os.environ.get(RAKUTEN_APP_ID_ENV, "").strip()
-    if not app_id:
-        return ("disabled", None, 0, "RAKUTEN_APPLICATION_ID 未设置", None)
+    access_key = os.environ.get(RAKUTEN_ACCESS_KEY_ENV, "").strip()
+    if not app_id or not access_key:
+        return ("disabled", None, 0,
+                "RAKUTEN_APPLICATION_ID / RAKUTEN_ACCESS_KEY 未配齐", None)
 
     params = {
         "applicationId": app_id,
+        "accessKey": access_key,
         "keyword": jan,
         "hits": "1",
         "format": "json",
@@ -184,7 +189,11 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
             data = resp.read()
             j = json.loads(data.decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return ("error", None, 0, f"rakuten API HTTP {e.code}", None)
+        try:
+            body = e.read().decode("utf-8", errors="ignore")[:120]
+        except Exception:
+            body = ""
+        return ("error", None, 0, f"rakuten API HTTP {e.code} {body}", None)
     except Exception as e:
         return ("error", None, 0, f"rakuten API {str(e)[:160]}", None)
 
