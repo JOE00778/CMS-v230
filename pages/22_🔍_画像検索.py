@@ -168,7 +168,16 @@ RAKUTEN_ACCESS_KEY_ENV = "RAKUTEN_ACCESS_KEY"
 
 
 # 已知带水印 / 第三方加印的店铺关键词（shopCode 或 shopName 含这些字符串则跳过）
-_WATERMARK_SHOP_KEYWORDS = ["cosme", "luminous", "atcosme", "アットコスメ", "@cosme"]
+# 命名规律: 楽天直营大店 + @cosme 系列 + 其他常见 logo 店
+_WATERMARK_SHOP_KEYWORDS = [
+    "cosme", "luminous", "atcosme", "アットコスメ", "@cosme",
+    "rakuten24", "rakuten-24", "rakuten 24", "楽天24",
+    "soukai", "爽快",            # 爽快ドラッグ（有 logo）
+    "e-zaiko",                   # e-在庫
+    "kenkocom", "ケンコーコム",   # ケンコーコム
+    "rakuten-direct",            # 楽天 Direct
+    "lohaco",                    # Yahoo LOHACO 入楽天
+]
 
 
 def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
@@ -190,7 +199,7 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
         "applicationId": app_id,
         "accessKey": access_key,
         "keyword": jan,
-        "hits": "10",  # 多候选用于跳过水印店
+        "hits": "30",  # 多候选用于跳过水印店（楽天 API 上限 30）
         "format": "json",
         "imageFlag": "1",
     }
