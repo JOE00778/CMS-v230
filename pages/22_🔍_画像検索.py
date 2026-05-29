@@ -42,9 +42,14 @@ st.title(t("🔍 画像検索"))
 st.caption(t("JAN → 主图自动抓取（kakaku.com 搜索结果首图，取自楽天/Amazon CDN）· 结果缓存到 PG · ZIP 一键下载"))
 
 KAKAKU_SEARCH_FMT = "https://search.kakaku.com/{jan}/"
-# kakaku 商品卡内的主图：<img class="p-item_visual_entity" src="..."> 或 data-src="..."
-KAKAKU_IMG_RE = re.compile(
-    r'<img[^>]*class="p-item_visual_entity"[^>]*?(?:src|data-src)="(https?://[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+# kakaku 商品卡主图: <img ... class="p-item_visual_entity" ...>
+# 两步匹配 — src/data-src 与 class 顺序在实际 HTML 中是不固定的
+KAKAKU_IMG_TAG_RE = re.compile(
+    r'<img[^>]*p-item_visual_entity[^>]*>',
+    re.IGNORECASE,
+)
+KAKAKU_SRC_IN_TAG_RE = re.compile(
+    r'(?:src|data-src)="(https?://[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
     re.IGNORECASE,
 )
 # 兜底：第一张 data-src 楽天/Amazon 直链
@@ -105,13 +110,20 @@ def _fetch_kakaku(jan: str) -> tuple[str, bytes | None, int, str | None, str | N
     except Exception as e:
         return ("error", None, 0, f"search {str(e)[:160]}", None)
 
-    # 优先 p-item_visual_entity 主图（kakaku 商品卡）
-    m = KAKAKU_IMG_RE.search(html)
-    if not m:
-        m = KAKAKU_FALLBACK_RE.search(html)
-    if not m:
+    # 优先 p-item_visual_entity 主图（kakaku 商品卡）— 两步：找含 class 的 img tag，再从中提 src
+    img_url = None
+    tag_m = KAKAKU_IMG_TAG_RE.search(html)
+    if tag_m:
+        src_m = KAKAKU_SRC_IN_TAG_RE.search(tag_m.group(0))
+        if src_m:
+            img_url = src_m.group(1)
+    if not img_url:
+        # 兜底任意楽天/Amazon CDN data-src
+        fb_m = KAKAKU_FALLBACK_RE.search(html)
+        if fb_m:
+            img_url = fb_m.group(1)
+    if not img_url:
         return ("not_found", None, 0, "no item img in kakaku search", None)
-    img_url = m.group(1)
 
     img_headers = {
         "User-Agent": USER_AGENT,
