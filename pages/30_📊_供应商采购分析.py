@@ -43,7 +43,7 @@ except Exception:
     conn.rollback()
 
 
-tab1, tab2 = st.tabs([t("📊 采购分析"), t("🏢 输出供应商名单")])
+# 输出供应商名单 tab 已搬至「⚙️ 系统参数设定 → 🏢 输出供应商名单」(2026-05-27)
 
 # ============================================================
 # tab1 · 采购分析（可按白名单过滤）
@@ -378,7 +378,4 @@ def _render_whitelist():
                 st.warning(t("请填供货商ID"))
 
 
-with tab1:
-    _render_analysis()
-with tab2:
-    _render_whitelist()
+_render_analysis()

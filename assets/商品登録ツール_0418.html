@@ -96,8 +96,8 @@ table.results tr.status-loading{background:#fffbea}
   <div class="tab-bar">
     <button class="tab-btn active" data-tool="product">📋 商品登録 / 商品登録</button>
     <button class="tab-btn" data-tool="bundle">📦 组合品登録 / セット品登録</button>
-    <button class="tab-btn" data-tool="jansearch">🔍 JAN 画像検索・ダウンロード</button>
   </div>
+  <!-- 🔍 JAN 画像検索 已迁移至 Streamlit page 22 (2026-05-29) -->
 
   <!-- 工具1: 商品登録分割 -->
   <div id="tool-product" class="tool-panel active">
@@ -194,55 +194,7 @@ table.results tr.status-loading{background:#fffbea}
     </div>
   </div>
 
-  <!-- 工具3: JAN 画像一括ダウンロード -->
-  <div id="tool-jansearch" class="tool-panel">
-    <div class="note orange">
-      <div>📌 JAN リストを貼り付け → 画像を一括ダウンロード（ZIP）</div>
-      <div>📌 抓取顺序：jancode.xyz → Amazon → Rakuten（最初に命中したソースの画像を全て取得）</div>
-      <div>📌 ファイル名：1 枚のみ <code>JAN.jpg</code> / 複数 <code>JAN_1.jpg / JAN_2.jpg ...</code></div>
-    </div>
-
-    <div class="panel">
-      <h3>① JAN を貼り付け</h3>
-      <div class="input-group">
-        <label>各行 1 件（空白・カンマ混在 OK）</label>
-        <textarea id="janTextarea" placeholder="4901085661802&#10;4901305411033&#10;..."></textarea>
-      </div>
-      <div style="margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-          <input type="checkbox" id="janChkDetails" style="width:16px;height:16px">
-          詳細画像も取得（Amazon + Rakuten の商品ページから追加取得／処理時間が増えます）
-        </label>
-      </div>
-      <div class="btn-group">
-        <button class="btn btn-primary" id="janBtnDownload">🚀 画像を一括ダウンロード</button>
-        <button class="btn btn-ghost btn-small" id="janBtnStop" style="display:none">⏹️ 停止</button>
-        <button class="btn btn-all" id="janBtnClear">🗑️ 清空 / クリア</button>
-      </div>
-      <div class="hint" style="color:#888;font-size:11px;margin-top:4px">※ 主图：jancode.xyz 優先（無ければ Amazon/Rakuten 検索頁から 1 枚） / 詳細画像（オン時）：商品詳細ページを開いて全画像を追加取得</div>
-      <div class="progress" id="janProgress"><div class="progress-bar" id="janProgressBar"></div></div>
-      <div id="janLogPanel" class="log-panel" style="display:none;margin-top:12px"></div>
-    </div>
-
-    <div class="panel" id="janResultPanel" style="display:none">
-      <h3>② 結果一覧 / 结果</h3>
-      <div class="stats" id="janStats"></div>
-      <div class="table-wrap" style="margin-top:12px">
-        <table class="results" id="janResultsTable">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>JAN</th>
-              <th>状態</th>
-              <th>取得元</th>
-              <th>枚数</th>
-            </tr>
-          </thead>
-          <tbody id="janResultsBody"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
+  <!-- 工具3 (JAN 画像検索) 已迁移至 Streamlit page 22 · 2026-05-29 -->
 </div>
 
 <script>

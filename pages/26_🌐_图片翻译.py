@@ -241,7 +241,7 @@ run = st.button(
     disabled=not (uploaded and target_langs and consent),
 )
 if uploaded and target_langs and not consent:
-    st.caption("⛔ 需勾选合规确认后才能开始")
+    st.caption(t("⛔ 需勾选合规确认后才能开始"))
 
 
 # ============================================================

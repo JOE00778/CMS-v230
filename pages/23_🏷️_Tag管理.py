@@ -37,6 +37,7 @@ if _os.path.isdir(_shopify_lib) and _shopify_lib not in _sys.path:
 
 from shared.auth import require_admin
 from shared.db import get_connection
+from shared.i18n import t
 
 _SHOPIFY_CLASSIFIER_AVAILABLE = False
 try:
@@ -69,8 +70,8 @@ if not _SHOPIFY_CLASSIFIER_AVAILABLE:
     )
     st.stop()
 
-st.title("🏷️ Tag 管理")
-st.caption("基础属性（固化）+ 市场标签（打便签 · 不定期改）· Shopify 上架专用")
+st.title(t("🏷️ Tag 管理"))
+st.caption(t("基础属性（固化）+ 市场标签（打便签 · 不定期改）· Shopify 上架专用"))
 
 
 @st.cache_resource
@@ -100,7 +101,7 @@ tab_base, tab_market, tab_reclassify = st.tabs(
 # ║ Tab 1 · 基础属性浏览（只读）                                       ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_base:
-    st.subheader("📋 产品基础属性（固化层）")
+    st.subheader(t("📋 产品基础属性（固化层）"))
     conn = get_connection()
 
     total = conn.execute("SELECT COUNT(*) FROM item_shopify_tags").fetchone()[0]
@@ -170,8 +171,8 @@ with tab_base:
 # ║ Tab 2 · 市场标签管理（打便签 · 会变）                              ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_market:
-    st.subheader("🏷️ 给产品打市场便签")
-    st.caption("市场标签随市场波动 · 不定期改 · 命名空间：GEO 搜索词 / 季节 / 促销 / 热度 / 优先级")
+    st.subheader(t("🏷️ 给产品打市场便签"))
+    st.caption(t("市场标签随市场波动 · 不定期改 · 命名空间：GEO 搜索词 / 季节 / 促销 / 热度 / 优先级"))
     conn = get_connection()
 
     # ── 命名空间统计 ──
@@ -286,13 +287,13 @@ with tab_market:
                     conn.commit()
                     st.rerun()
         else:
-            st.caption("该 SKU 暂无市场标签")
+            st.caption(t("该 SKU 暂无市场标签"))
 
     st.divider()
 
     # ── C. 导出最终 Shopify CSV（基础内容 tag + 市场 tag 合并）──
     st.markdown("### 📥 导出 Shopify 上传 CSV（基础内容 tag + 市场 tag 合并）")
-    st.caption("Tags 列 = 内容性基础 tag + 当前所有 active 市场标签；Template Suffix 单独列；不含工程性 tag")
+    st.caption(t("Tags 列 = 内容性基础 tag + 当前所有 active 市场标签；Template Suffix 单独列；不含工程性 tag"))
     if st.button("🔧 生成合并 CSV"):
         base_df = pd.read_sql_query(
             "SELECT jan, display_name, handle, brand, template_suffix, content_tags_csv FROM item_shopify_tags", conn)
@@ -339,14 +340,14 @@ with tab_market:
     if token:
         st.caption(f"☁️ Shopify token 已就绪（store `{store}`）—— 直推按钮下一版接入")
     else:
-        st.caption("☁️ `~/.smikie-shopify-token` 未配置 —— 直推不可用")
+        st.caption(t("☁️ `~/.smikie-shopify-token` 未配置 —— 直推不可用"))
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║ Tab 3 · 重跑基础分类（管理员偶尔用）                               ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_reclassify:
-    st.subheader("🔄 重新跑基础属性分类并固化")
+    st.subheader(t("🔄 重新跑基础属性分类并固化"))
     st.warning("⚠️ 这会覆盖 item_shopify_tags 表里的基础属性。只在分类规则更新后才需要重跑。市场标签（item_market_tags）不受影响。")
     conn = get_connection()
 

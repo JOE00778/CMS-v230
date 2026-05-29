@@ -64,8 +64,8 @@ with st.sidebar:
     if en_on:
         st.session_state["lang"] = "en"
 
-st.title("🚀 Shopee 上架")
-st.caption("全自动管线 / 手工模式 / 参考图库 / 历史运行 一站式")
+st.title(t("🚀 Shopee 上架"))
+st.caption(t("全自动管线 / 手工模式 / 参考图库 / 历史运行 一站式"))
 
 conn = get_connection()
 
@@ -140,11 +140,11 @@ tab_auto, tab_refs, tab_history = st.tabs(
 # Tab 1 · 🤖 全自动管线
 # ============================================================
 with tab_auto:
-    st.subheader("一键完成：出图 + 上架 + 飞书通知")
-    st.caption(
+    st.subheader(t("一键完成：出图 + 上架 + 飞书通知"))
+    st.caption(t(
         "上传 SPU CSV → 自动按品类调 Nano Banana 2 出详情图（用 Tab 3 的参考图复刻风格）"
         " → 自动跑 Shopee mass-upload pipeline → N8N 调 Shopee API 上架 → 飞书群通知"
-    )
+    ))
 
     # --- Step 1: 选市场 + 上传 CSV ---
     col_left, col_right = st.columns([2, 1])
@@ -255,7 +255,7 @@ with tab_auto:
 # Tab 3 · 🎨 参考图库
 # ============================================================
 with tab_refs:
-    st.subheader("按品类一次性上传参考详情图（喂给 Nano Banana 2 复刻风格）")
+    st.subheader(t("按品类一次性上传参考详情图（喂给 Nano Banana 2 复刻风格）"))
     st.caption(
         f"存储位置：`{REFERENCE_DIR}` · 每个品类放 3-14 张 · "
         "Tab 1 触发自动管线时按 SPU 类目自动加载对应文件夹"
@@ -339,7 +339,7 @@ with tab_refs:
 # Tab 4 · 📜 历史运行
 # ============================================================
 with tab_history:
-    st.subheader("最近 50 次自动化运行（含 Shopee 上架 + 出图 + 改廃监控等）")
+    st.subheader(t("最近 50 次自动化运行（含 Shopee 上架 + 出图 + 改廃监控等）"))
 
     module_filter = st.selectbox(
         "按模块过滤",

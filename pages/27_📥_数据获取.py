@@ -1,9 +1,12 @@
-"""模块 #27 NST 取得データ · NetSuite API で日次取得した生データを確認.
+"""模块 #27 数据获取 · 外部 API 拉回的原始数据浏览 + 调度管理.
 
-NST API daily_pull（database リポジトリ）が PG に書き込んだ nst.* スキーマを表示:
-  - nst.item_master_raw     商品マスタ（メーカー/ランク/原価/カートン入数/発注ロット）
-  - nst.inventory_snapshot  JD-物流-千葉 在庫（手持/利用可能/注文済）
-  - nst._pull_runs          取得実行履歴（成否/件数/次回）
+两个数据源顶层 tab：
+  - NST  · NetSuite API（商品マスタ / 在庫 / 売上 / スケジュール / 手動更新 / 履歴）
+  - JDL  · 京东物流海外仓 OpenAPI（库存 / 调度+手动同步 / 拉取历史）
+
+PG schema：
+  - nst.item_master_raw / nst.inventory_snapshot / nst.sales_monthly / nst._pull_runs / nst.pull_schedule
+  - jdl.inventory_snapshot / jdl.pull_log / jdl.pull_schedule
 
 データは元川の PG に閉じる（原価含むため require_admin）。
 """
@@ -50,7 +53,7 @@ def _cc(*keys) -> dict:
     ja = get_lang() == "ja"
     return {k: (_COL_LABELS[k][1] if ja else _COL_LABELS[k][0]) for k in keys}
 
-st.set_page_config(page_title=t("NST 取得データ"), page_icon="📥", layout="wide")
+st.set_page_config(page_title=t("数据获取"), page_icon="📥", layout="wide")
 from shared.auth import require_admin, require_extra_password
 require_admin()
 require_extra_password("sys", "SYS_SETTINGS_PW", default="1001")  # 系统设置二级密码
@@ -59,8 +62,8 @@ inject_theme()
 lang_selector()
 conn = get_connection()
 
-st.title(t("📥 NST 取得データ"))
-st.caption(t("NetSuite API で日次取得した生データ（商品マスタ / 在庫 / 取得履歴）"))
+st.title(t("📥 数据获取"))
+st.caption(t("外部 API 拉回的原始数据 + 调度管理（NST NetSuite / JDL 京东物流海外仓）"))
 
 
 def _query(sql: str, params: tuple = ()):
@@ -89,302 +92,445 @@ def _job_title(category, frequency, run_time) -> str:
     return f"{cat}  ·  {freq} {str(run_time)[:5]} 自動取得"
 
 
-tab1, tab2, tab_sales, tab_sched, tab_manual, tab3 = st.tabs([
-    t("📦 商品マスタ"),
-    t("🏬 在庫 (JD-物流-千葉)"),
-    t("💰 売上"),
-    t("⏰ スケジュール設定"),
-    t("▶️ 手動更新"),
-    t("📜 取得履歴"),
+# ============================================================
+# 顶层 tab: NST / JDL 两个数据源
+# ============================================================
+top_nst, top_jdl = st.tabs([
+    t("🏬 NST（NetSuite）"),
+    t("🚚 JDL（京东物流海外仓）"),
 ])
+
+# ──────────────────────────────────────────────────────────────
+# NST 顶层下嵌套现有 6 个子 tab
+# ──────────────────────────────────────────────────────────────
+with top_nst:
+    tab1, tab2, tab_sales, tab_sched, tab_manual, tab3 = st.tabs([
+        t("📦 商品マスタ"),
+        t("🏬 在庫 (JD-物流-千葉)"),
+        t("💰 売上"),
+        t("⏰ スケジュール設定"),
+        t("▶️ 手動更新"),
+        t("📜 取得履歴"),
+    ])
 
 # ============================================================
 # Tab 1: 商品マスタ nst.item_master_raw
 # ============================================================
-with tab1:
-    cnt_df, err = _query(
-        "SELECT count(*) c, count(maker) m, count(item_rank) r, "
-        "count(carton_qty) ca, count(order_lot) lo FROM nst.item_master_raw"
-    )
-    if err:
-        st.error(t("テーブル未取得 or 接続エラー: ") + err)
-    else:
-        row = cnt_df.iloc[0]
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric(t("総件数"), f"{int(row['c']):,}")
-        c2.metric(t("メーカー名あり"), f"{int(row['m']):,}")
-        c3.metric(t("ランク評価あり"), f"{int(row['r']):,}")
-        c4.metric(t("カートン入数あり"), f"{int(row['ca']):,}")
-        c5.metric(t("発注ロットあり"), f"{int(row['lo']):,}")
-
-        # フィルタ
-        makers_df, _ = _query(
-            "SELECT DISTINCT maker FROM nst.item_master_raw "
-            "WHERE maker IS NOT NULL ORDER BY maker"
+    with tab1:
+        cnt_df, err = _query(
+            "SELECT count(*) c, count(maker) m, count(item_rank) r, "
+            "count(carton_qty) ca, count(order_lot) lo FROM nst.item_master_raw"
         )
-        ranks_df, _ = _query(
-            "SELECT DISTINCT item_rank FROM nst.item_master_raw "
-            "WHERE item_rank IS NOT NULL ORDER BY item_rank"
-        )
-        fc1, fc2, fc3 = st.columns([2, 2, 3])
-        maker_opts = makers_df["maker"].tolist() if makers_df is not None else []
-        rank_opts = ranks_df["item_rank"].tolist() if ranks_df is not None else []
-        sel_maker = fc1.multiselect(t("メーカー名"), maker_opts, placeholder=t("（全て）"))
-        sel_rank = fc2.multiselect(t("ランク評価"), rank_opts, placeholder=t("（全て）"))
-        kw = fc3.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
-
-        where, params = [], []
-        if sel_maker:
-            where.append("maker IN (" + ",".join(["?"] * len(sel_maker)) + ")"); params.extend(sel_maker)
-        if sel_rank:
-            where.append("item_rank IN (" + ",".join(["?"] * len(sel_rank)) + ")"); params.extend(sel_rank)
-        if kw.strip():
-            where.append("(jan LIKE ? OR display_name LIKE ? OR item_code LIKE ?)")
-            like = f"%{kw.strip()}%"; params += [like, like, like]
-        where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-
-        LIMIT = 2000
-        df, err2 = _query(
-            "SELECT internal_id, jan, item_code, display_name, maker, item_rank, "
-            "handling_cd, carton_qty, order_lot, cost, average_cost, "
-            "last_purchase_cost, cost_estimate, department, last_modified "
-            f"FROM nst.item_master_raw{where_sql} "
-            "ORDER BY display_name LIMIT ?",
-            tuple(params) + (LIMIT,),
-        )
-        if err2:
-            st.error(err2)
-        elif df is not None:
-            st.caption(t("表示件数（最大 {n} 件）: ").format(n=LIMIT) + f"{len(df):,}")
-            st.dataframe(
-                df, use_container_width=True, height=560,
-                column_config=_cc(
-                    "internal_id", "jan", "item_code", "display_name", "maker",
-                    "item_rank", "handling_cd", "carton_qty", "order_lot",
-                    "cost", "average_cost", "last_purchase_cost", "cost_estimate",
-                    "department", "last_modified",
-                ),
-            )
-
-# ============================================================
-# Tab 2: 在庫 nst.inventory_snapshot（最新日 × item マスタ join）
-# ============================================================
-with tab2:
-    meta_df, err = _query(
-        "SELECT max(snapshot_date) d, count(*) c FROM nst.inventory_snapshot "
-        "WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
-    )
-    if err:
-        st.error(t("テーブル未取得 or 接続エラー: ") + err)
-    else:
-        m = meta_df.iloc[0]
-        c1, c2 = st.columns(2)
-        c1.metric(t("最新スナップショット日"), str(m["d"]))
-        c2.metric(t("在庫行数"), f"{int(m['c']):,}")
-
-        kw = st.text_input(t("JAN / 商品名 検索 "), key="inv_kw",
-                           placeholder="JAN コード or 表示名の一部")
-        where, params = ["inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"], []
-        if kw.strip():
-            where.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
-            like = f"%{kw.strip()}%"; params += [like, like]
-        where_sql = " WHERE " + " AND ".join(where)
-
-        df, err2 = _query(
-            "SELECT im.jan, im.display_name, im.maker, im.item_rank, "
-            "inv.qty_on_hand, inv.qty_available, inv.qty_on_order, inv.warehouse "
-            "FROM nst.inventory_snapshot inv "
-            "LEFT JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
-            f"{where_sql} ORDER BY inv.qty_on_hand DESC LIMIT 2000",
-            tuple(params),
-        )
-        if err2:
-            st.error(err2)
-        elif df is not None:
-            st.caption(t("表示件数（最大 2000 件）: ") + f"{len(df):,}")
-            st.dataframe(
-                df, use_container_width=True, height=560,
-                column_config=_cc(
-                    "jan", "display_name", "maker", "item_rank",
-                    "qty_on_hand", "qty_available", "qty_on_order", "warehouse",
-                ),
-            )
-
-# ============================================================
-# Tab 売上 nst.sales_monthly（店舗別 / アイテム別）
-# ============================================================
-with tab_sales:
-    months_df, err = _query(
-        "SELECT DISTINCT year_month FROM nst.sales_monthly ORDER BY year_month DESC"
-    )
-    if err:
-        st.error(t("テーブル未取得 or 接続エラー: ") + err)
-    elif months_df is None or months_df.empty:
-        st.info(t("売上データ未取得（sales ジョブ実行後に表示）"))
-    else:
-        c1, c2 = st.columns([1.5, 3])
-        ym = c1.selectbox(t("対象月"), months_df["year_month"].tolist())
-        view = c2.radio(t("表示単位"), [t("店舗別"), t("アイテム別")],
-                        horizontal=True, key="sales_view")
-
-        if view == t("店舗別"):
-            df, e2 = _query(
-                "SELECT s.shop, im.jan, im.display_name, im.maker, im.item_rank, "
-                "s.qty_sold, s.revenue, "
-                "(COALESCE(im.cost_estimate,0) * s.qty_sold) AS teigi_genka "
-                "FROM nst.sales_monthly s "
-                "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
-                "WHERE s.year_month = ? ORDER BY s.revenue DESC LIMIT 5000",
-                (ym,),
-            )
-            cols = ("shop", "jan", "display_name", "maker", "item_rank",
-                    "qty_sold", "revenue", "teigi_genka", "arari", "arari_rate")
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
         else:
-            df, e2 = _query(
+            row = cnt_df.iloc[0]
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric(t("総件数"), f"{int(row['c']):,}")
+            c2.metric(t("メーカー名あり"), f"{int(row['m']):,}")
+            c3.metric(t("ランク評価あり"), f"{int(row['r']):,}")
+            c4.metric(t("カートン入数あり"), f"{int(row['ca']):,}")
+            c5.metric(t("発注ロットあり"), f"{int(row['lo']):,}")
+    
+            # フィルタ
+            makers_df, _ = _query(
+                "SELECT DISTINCT maker FROM nst.item_master_raw "
+                "WHERE maker IS NOT NULL ORDER BY maker"
+            )
+            ranks_df, _ = _query(
+                "SELECT DISTINCT item_rank FROM nst.item_master_raw "
+                "WHERE item_rank IS NOT NULL ORDER BY item_rank"
+            )
+            fc1, fc2, fc3 = st.columns([2, 2, 3])
+            maker_opts = makers_df["maker"].tolist() if makers_df is not None else []
+            rank_opts = ranks_df["item_rank"].tolist() if ranks_df is not None else []
+            sel_maker = fc1.multiselect(t("メーカー名"), maker_opts, placeholder=t("（全て）"))
+            sel_rank = fc2.multiselect(t("ランク評価"), rank_opts, placeholder=t("（全て）"))
+            kw = fc3.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
+    
+            where, params = [], []
+            if sel_maker:
+                where.append("maker IN (" + ",".join(["?"] * len(sel_maker)) + ")"); params.extend(sel_maker)
+            if sel_rank:
+                where.append("item_rank IN (" + ",".join(["?"] * len(sel_rank)) + ")"); params.extend(sel_rank)
+            if kw.strip():
+                where.append("(jan LIKE ? OR display_name LIKE ? OR item_code LIKE ?)")
+                like = f"%{kw.strip()}%"; params += [like, like, like]
+            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    
+            LIMIT = 2000
+            df, err2 = _query(
+                "SELECT internal_id, jan, item_code, display_name, maker, item_rank, "
+                "handling_cd, carton_qty, order_lot, cost, average_cost, "
+                "last_purchase_cost, cost_estimate, department, last_modified "
+                f"FROM nst.item_master_raw{where_sql} "
+                "ORDER BY display_name LIMIT ?",
+                tuple(params) + (LIMIT,),
+            )
+            if err2:
+                st.error(err2)
+            elif df is not None:
+                st.caption(t("表示件数（最大 {n} 件）: ").format(n=LIMIT) + f"{len(df):,}")
+                st.dataframe(
+                    df, use_container_width=True, height=560,
+                    column_config=_cc(
+                        "internal_id", "jan", "item_code", "display_name", "maker",
+                        "item_rank", "handling_cd", "carton_qty", "order_lot",
+                        "cost", "average_cost", "last_purchase_cost", "cost_estimate",
+                        "department", "last_modified",
+                    ),
+                )
+    
+    # ============================================================
+    # Tab 2: 在庫 nst.inventory_snapshot（最新日 × item マスタ join）
+    # ============================================================
+    with tab2:
+        meta_df, err = _query(
+            "SELECT max(snapshot_date) d, count(*) c FROM nst.inventory_snapshot "
+            "WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
+        )
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
+        else:
+            m = meta_df.iloc[0]
+            c1, c2 = st.columns(2)
+            c1.metric(t("最新スナップショット日"), str(m["d"]))
+            c2.metric(t("在庫行数"), f"{int(m['c']):,}")
+    
+            kw = st.text_input(t("JAN / 商品名 検索 "), key="inv_kw",
+                               placeholder="JAN コード or 表示名の一部")
+            where, params = ["inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"], []
+            if kw.strip():
+                where.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
+                like = f"%{kw.strip()}%"; params += [like, like]
+            where_sql = " WHERE " + " AND ".join(where)
+    
+            df, err2 = _query(
                 "SELECT im.jan, im.display_name, im.maker, im.item_rank, "
-                "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
-                "(MAX(COALESCE(im.cost_estimate,0)) * SUM(s.qty_sold)) AS teigi_genka "
-                "FROM nst.sales_monthly s "
-                "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
-                "WHERE s.year_month = ? "
-                "GROUP BY im.jan, im.display_name, im.maker, im.item_rank "
-                "ORDER BY revenue DESC LIMIT 5000",
-                (ym,),
+                "inv.qty_on_hand, inv.qty_available, inv.qty_on_order, inv.warehouse "
+                "FROM nst.inventory_snapshot inv "
+                "LEFT JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
+                f"{where_sql} ORDER BY inv.qty_on_hand DESC LIMIT 2000",
+                tuple(params),
             )
-            cols = ("jan", "display_name", "maker", "item_rank",
-                    "qty_sold", "revenue", "teigi_genka", "arari", "arari_rate")
-
-        if e2:
-            st.error(e2)
-        elif df is not None and not df.empty:
-            df["revenue"] = df["revenue"].astype(float)
-            df["teigi_genka"] = df["teigi_genka"].astype(float)
-            df["arari"] = df["revenue"] - df["teigi_genka"]
-            df["arari_rate"] = (df["arari"] / df["revenue"].where(df["revenue"] != 0)).round(4)
-            tot_q = df["qty_sold"].astype(float).sum()
-            tot_r = df["revenue"].sum()
-            tot_g = df["arari"].sum()
-            m1, m2, m3 = st.columns(3)
-            m1.metric(t("販売数量 計"), f"{tot_q:,.0f}")
-            m2.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
-            m3.metric(t("粗利 計"), f"¥{tot_g:,.0f}（{(tot_g/tot_r if tot_r else 0):.1%}）")
-            st.caption(t("表示件数（最大 5000 件）: ") + f"{len(df):,}")
-            st.dataframe(df[list(cols)], use_container_width=True, height=520,
-                         column_config=_cc(*cols))
+            if err2:
+                st.error(err2)
+            elif df is not None:
+                st.caption(t("表示件数（最大 2000 件）: ") + f"{len(df):,}")
+                st.dataframe(
+                    df, use_container_width=True, height=560,
+                    column_config=_cc(
+                        "jan", "display_name", "maker", "item_rank",
+                        "qty_on_hand", "qty_available", "qty_on_order", "warehouse",
+                    ),
+                )
+    
+    # ============================================================
+    # Tab 売上 nst.sales_monthly（店舗別 / アイテム別）
+    # ============================================================
+    with tab_sales:
+        months_df, err = _query(
+            "SELECT DISTINCT year_month FROM nst.sales_monthly ORDER BY year_month DESC"
+        )
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
+        elif months_df is None or months_df.empty:
+            st.info(t("売上データ未取得（sales ジョブ実行後に表示）"))
         else:
-            st.info(t("この月のデータがありません"))
-
-# ============================================================
-# Tab スケジュール設定 nst.pull_schedule（編集）
-# ============================================================
-with tab_sched:
-    st.subheader(t("定时取得スケジュール"))
-    st.caption(t("元川の常駐ディスパッチャが毎分この設定を見て daily_pull を起動します"))
-    sched_df, err = _query(
-        "SELECT job_key, category, frequency, domains, enabled, run_time, "
-        "run_day, last_status, last_run_at, description "
-        "FROM nst.pull_schedule ORDER BY job_key"
-    )
-    if err:
-        st.error(t("テーブル未取得 or 接続エラー: ") + err)
-    elif sched_df is None or sched_df.empty:
-        st.info(t("スケジュール未登録"))
-    else:
-        with st.form("sched_form"):
-            new_vals = {}
-            for _, r in sched_df.iterrows():
+            c1, c2 = st.columns([1.5, 3])
+            ym = c1.selectbox(t("対象月"), months_df["year_month"].tolist())
+            view = c2.radio(t("表示単位"), [t("店舗別"), t("アイテム別")],
+                            horizontal=True, key="sales_view")
+    
+            if view == t("店舗別"):
+                df, e2 = _query(
+                    "SELECT s.shop, im.jan, im.display_name, im.maker, im.item_rank, "
+                    "s.qty_sold, s.revenue, "
+                    "(COALESCE(im.cost_estimate,0) * s.qty_sold) AS teigi_genka "
+                    "FROM nst.sales_monthly s "
+                    "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+                    "WHERE s.year_month = ? ORDER BY s.revenue DESC LIMIT 5000",
+                    (ym,),
+                )
+                cols = ("shop", "jan", "display_name", "maker", "item_rank",
+                        "qty_sold", "revenue", "teigi_genka", "arari", "arari_rate")
+            else:
+                df, e2 = _query(
+                    "SELECT im.jan, im.display_name, im.maker, im.item_rank, "
+                    "SUM(s.qty_sold) AS qty_sold, SUM(s.revenue) AS revenue, "
+                    "(MAX(COALESCE(im.cost_estimate,0)) * SUM(s.qty_sold)) AS teigi_genka "
+                    "FROM nst.sales_monthly s "
+                    "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
+                    "WHERE s.year_month = ? "
+                    "GROUP BY im.jan, im.display_name, im.maker, im.item_rank "
+                    "ORDER BY revenue DESC LIMIT 5000",
+                    (ym,),
+                )
+                cols = ("jan", "display_name", "maker", "item_rank",
+                        "qty_sold", "revenue", "teigi_genka", "arari", "arari_rate")
+    
+            if e2:
+                st.error(e2)
+            elif df is not None and not df.empty:
+                df["revenue"] = df["revenue"].astype(float)
+                df["teigi_genka"] = df["teigi_genka"].astype(float)
+                df["arari"] = df["revenue"] - df["teigi_genka"]
+                df["arari_rate"] = (df["arari"] / df["revenue"].where(df["revenue"] != 0)).round(4)
+                tot_q = df["qty_sold"].astype(float).sum()
+                tot_r = df["revenue"].sum()
+                tot_g = df["arari"].sum()
+                m1, m2, m3 = st.columns(3)
+                m1.metric(t("販売数量 計"), f"{tot_q:,.0f}")
+                m2.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
+                m3.metric(t("粗利 計"), f"¥{tot_g:,.0f}（{(tot_g/tot_r if tot_r else 0):.1%}）")
+                st.caption(t("表示件数（最大 5000 件）: ") + f"{len(df):,}")
+                st.dataframe(df[list(cols)], use_container_width=True, height=520,
+                             column_config=_cc(*cols))
+            else:
+                st.info(t("この月のデータがありません"))
+    
+    # ============================================================
+    # Tab スケジュール設定 nst.pull_schedule（編集）
+    # ============================================================
+    with tab_sched:
+        st.subheader(t("定时取得スケジュール"))
+        st.caption(t("元川の常駐ディスパッチャが毎分この設定を見て daily_pull を起動します"))
+        sched_df, err = _query(
+            "SELECT job_key, category, frequency, domains, enabled, run_time, "
+            "run_day, last_status, last_run_at, description "
+            "FROM nst.pull_schedule ORDER BY job_key"
+        )
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
+        elif sched_df is None or sched_df.empty:
+            st.info(t("スケジュール未登録"))
+        else:
+            with st.form("sched_form"):
+                new_vals = {}
+                for _, r in sched_df.iterrows():
+                    jk = r["job_key"]
+                    st.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
+                    if r.get("description"):
+                        st.caption("📋 " + str(r["description"]))
+                    st.caption(f"🆔 ジョブID: {jk}　|　取得対象(domains): {r['domains']}")
+                    c1, c2, c3, c4 = st.columns([1.2, 1.5, 2, 2])
+                    en = c1.checkbox(t("有効"), value=bool(r["enabled"]), key=f"en_{jk}")
+                    rt = c2.text_input(t("起動時刻 HH:MM"), value=str(r["run_time"])[:5], key=f"rt_{jk}")
+                    rd = None
+                    if r["frequency"] == "monthly":
+                        rd = c3.number_input(t("実行日(1-28)"), 1, 28,
+                                             value=int(r["run_day"] or 1), key=f"rd_{jk}")
+                    else:
+                        c3.caption(t("（毎日）"))
+                    last = r["last_run_at"]
+                    c4.caption(t("最終: ") + (str(last)[:16] if last is not None else "-")
+                               + f" / {r['last_status'] or '-'}")
+                    new_vals[jk] = (en, rt, rd)
+                if st.form_submit_button(t("💾 保存"), type="primary"):
+                    ok = 0
+                    for jk, (en, rt, rd) in new_vals.items():
+                        try:
+                            conn.execute(
+                                "UPDATE nst.pull_schedule SET enabled=?, run_time=?, "
+                                "run_day=?, updated_at=now() WHERE job_key=?",
+                                (en, rt.strip(), rd, jk),
+                            )
+                            ok += 1
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"{jk}: {e}")
+                    conn.commit()
+                    st.success(t("保存しました（{n} 件）").format(n=ok))
+                    st.rerun()
+    
+    # ============================================================
+    # Tab 手動更新（run_now フラグを立てる）
+    # ============================================================
+    with tab_manual:
+        st.subheader(t("手動でデータ取得"))
+        st.caption(t("「今すぐ取得」を押すと、常駐ディスパッチャが1分以内に daily_pull を起動します"))
+        jobs_df, err = _query(
+            "SELECT job_key, category, frequency, run_time, domains, run_now, "
+            "last_status, description FROM nst.pull_schedule WHERE enabled ORDER BY job_key"
+        )
+        if err:
+            st.error(t("接続エラー: ") + err)
+        elif jobs_df is None or jobs_df.empty:
+            st.info(t("有効なジョブがありません"))
+        else:
+            for _, r in jobs_df.iterrows():
                 jk = r["job_key"]
-                st.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
+                c1, c2, c3 = st.columns([3.5, 1.5, 2])
+                c1.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
                 if r.get("description"):
-                    st.caption("📋 " + str(r["description"]))
-                st.caption(f"🆔 ジョブID: {jk}　|　取得対象(domains): {r['domains']}")
-                c1, c2, c3, c4 = st.columns([1.2, 1.5, 2, 2])
-                en = c1.checkbox(t("有効"), value=bool(r["enabled"]), key=f"en_{jk}")
-                rt = c2.text_input(t("起動時刻 HH:MM"), value=str(r["run_time"])[:5], key=f"rt_{jk}")
-                rd = None
-                if r["frequency"] == "monthly":
-                    rd = c3.number_input(t("実行日(1-28)"), 1, 28,
-                                         value=int(r["run_day"] or 1), key=f"rd_{jk}")
-                else:
-                    c3.caption(t("（毎日）"))
-                last = r["last_run_at"]
-                c4.caption(t("最終: ") + (str(last)[:16] if last is not None else "-")
-                           + f" / {r['last_status'] or '-'}")
-                new_vals[jk] = (en, rt, rd)
-            if st.form_submit_button(t("💾 保存"), type="primary"):
-                ok = 0
-                for jk, (en, rt, rd) in new_vals.items():
+                    c1.caption("📋 " + str(r["description"]))
+                c2.caption(f"前回: {r['last_status'] or '-'}")
+                if r["run_now"]:
+                    c3.info(t("⏳ 実行待ち…"))
+                elif c3.button(t("▶️ 今すぐ取得"), key=f"run_{jk}", type="primary"):
                     try:
                         conn.execute(
-                            "UPDATE nst.pull_schedule SET enabled=?, run_time=?, "
-                            "run_day=?, updated_at=now() WHERE job_key=?",
-                            (en, rt.strip(), rd, jk),
-                        )
-                        ok += 1
+                            "UPDATE nst.pull_schedule SET run_now=TRUE, updated_at=now() "
+                            "WHERE job_key=?", (jk,))
+                        conn.commit()
+                        st.success(t("{j} を予約しました（1分以内に実行）").format(j=jk))
+                        st.rerun()
                     except Exception as e:
                         conn.rollback()
-                        st.error(f"{jk}: {e}")
-                conn.commit()
-                st.success(t("保存しました（{n} 件）").format(n=ok))
-                st.rerun()
-
-# ============================================================
-# Tab 手動更新（run_now フラグを立てる）
-# ============================================================
-with tab_manual:
-    st.subheader(t("手動でデータ取得"))
-    st.caption(t("「今すぐ取得」を押すと、常駐ディスパッチャが1分以内に daily_pull を起動します"))
-    jobs_df, err = _query(
-        "SELECT job_key, category, frequency, run_time, domains, run_now, "
-        "last_status, description FROM nst.pull_schedule WHERE enabled ORDER BY job_key"
-    )
-    if err:
-        st.error(t("接続エラー: ") + err)
-    elif jobs_df is None or jobs_df.empty:
-        st.info(t("有効なジョブがありません"))
-    else:
-        for _, r in jobs_df.iterrows():
-            jk = r["job_key"]
-            c1, c2, c3 = st.columns([3.5, 1.5, 2])
-            c1.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
-            if r.get("description"):
-                c1.caption("📋 " + str(r["description"]))
-            c2.caption(f"前回: {r['last_status'] or '-'}")
-            if r["run_now"]:
-                c3.info(t("⏳ 実行待ち…"))
-            elif c3.button(t("▶️ 今すぐ取得"), key=f"run_{jk}", type="primary"):
-                try:
-                    conn.execute(
-                        "UPDATE nst.pull_schedule SET run_now=TRUE, updated_at=now() "
-                        "WHERE job_key=?", (jk,))
-                    conn.commit()
-                    st.success(t("{j} を予約しました（1分以内に実行）").format(j=jk))
-                    st.rerun()
-                except Exception as e:
-                    conn.rollback()
-                    st.error(str(e))
-
-# ============================================================
-# Tab 3: 取得履歴 nst._pull_runs
-# ============================================================
-with tab3:
-    df, err = _query(
-        "SELECT run_id, started_at, finished_at, domains, auth_mode, "
-        "overall_status, summary_json "
-        "FROM nst._pull_runs ORDER BY run_id DESC LIMIT 50"
-    )
-    if err:
-        st.error(t("テーブル未取得 or 接続エラー: ") + err)
-    elif df is not None:
-        st.caption(t("直近 50 回の取得実行"))
-        st.dataframe(
-            df, use_container_width=True, height=480,
-            column_config={
-                "run_id": "run_id",
-                "started_at": t("開始"),
-                "finished_at": t("終了"),
-                "domains": t("対象"),
-                "auth_mode": t("認証"),
-                "overall_status": t("結果"),
-            },
+                        st.error(str(e))
+    
+    # ============================================================
+    # Tab 3: 取得履歴 nst._pull_runs
+    # ============================================================
+    with tab3:
+        df, err = _query(
+            "SELECT run_id, started_at, finished_at, domains, auth_mode, "
+            "overall_status, summary_json "
+            "FROM nst._pull_runs ORDER BY run_id DESC LIMIT 50"
         )
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
+        elif df is not None:
+            st.caption(t("直近 50 回の取得実行"))
+            st.dataframe(
+                df, use_container_width=True, height=480,
+                column_config={
+                    "run_id": "run_id",
+                    "started_at": t("開始"),
+                    "finished_at": t("終了"),
+                    "domains": t("対象"),
+                    "auth_mode": t("認証"),
+                    "overall_status": t("結果"),
+                },
+            )
+
+
+# ============================================================
+# JDL 顶层 tab · 3 个子 tab（库存数据 / 调度+手动同步 / 拉取历史）
+# ============================================================
+with top_jdl:
+    j_inv, j_sched, j_log = st.tabs([
+        t("📦 库存数据"),
+        t("▶️ 调度 + 手动同步"),
+        t("📜 拉取历史"),
+    ])
+
+    # ── 库存数据：jdl.inventory_snapshot 最新快照 ─────────────
+    with j_inv:
+        meta_df, err = _query(
+            "SELECT max(snapshot_date) d, count(*) c FROM jdl.inventory_snapshot "
+            "WHERE snapshot_date = (SELECT max(snapshot_date) FROM jdl.inventory_snapshot)"
+        )
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
+        elif meta_df is None or meta_df.empty or meta_df["d"].iloc[0] is None:
+            st.info(t("尚无 JDL 库存数据。请到「调度 + 手动同步」tab 触发首次拉取。"))
+        else:
+            m = meta_df.iloc[0]
+            c1, c2 = st.columns(2)
+            c1.metric(t("最新快照日"), str(m["d"]))
+            c2.metric(t("库存行数"), f"{int(m['c']):,}")
+
+            kw = st.text_input(t("JAN / 商品名 模糊搜索"), key="jdl_inv_kw",
+                               placeholder="JAN コード or 商品名の一部")
+            where = ["snapshot_date = (SELECT max(snapshot_date) FROM jdl.inventory_snapshot)"]
+            params: list = []
+            if kw.strip():
+                where.append("(jan LIKE ? OR goods_name LIKE ?)")
+                like = f"%{kw.strip()}%"
+                params += [like, like]
+            df, err2 = _query(
+                "SELECT jan, jd_goods_id, goods_name, warehouse_code, warehouse_name, "
+                "       qty_total, qty_available, qty_preoccupied, qty_inbound, "
+                "       qty_operator_lock, qty_inventory_lock, stock_level_name "
+                "FROM jdl.inventory_snapshot WHERE " + " AND ".join(where) +
+                " ORDER BY qty_total DESC LIMIT 2000",
+                tuple(params),
+            )
+            if err2:
+                st.error(err2)
+            elif df is not None:
+                st.caption(t("表示件数（最大 2000 件）: ") + f"{len(df):,}")
+                st.dataframe(df, use_container_width=True, height=560,
+                             column_config={
+                                 "jan": "JAN (customerGoodsId)",
+                                 "jd_goods_id": t("JD商品ID"),
+                                 "goods_name": t("商品名"),
+                                 "warehouse_code": t("仓库代码"),
+                                 "warehouse_name": t("仓库名"),
+                                 "qty_total": t("总库存"),
+                                 "qty_available": t("可用"),
+                                 "qty_preoccupied": t("订单预占"),
+                                 "qty_inbound": t("在途"),
+                                 "qty_operator_lock": t("操作锁定"),
+                                 "qty_inventory_lock": t("库存锁定"),
+                                 "stock_level_name": t("等级"),
+                             })
+
+    # ── 调度 + 手动同步：jdl.pull_schedule ────────────────────
+    with j_sched:
+        st.subheader(t("JDL 库存定时拉取"))
+        st.caption(t(
+            "元川的常驻 jdl_scheduler 容器毎分检查此表，到时间或 run_now=TRUE 时启动 daily_pull。"
+        ))
+        jdl_sched_df, err = _query(
+            "SELECT job_key, frequency, enabled, run_time, run_now, "
+            "       last_run_at, last_status, description "
+            "FROM jdl.pull_schedule ORDER BY job_key"
+        )
+        if err:
+            st.error(t("接続エラー: ") + err)
+        elif jdl_sched_df is None or jdl_sched_df.empty:
+            st.info(t("スケジュール未登録（跑一次 sql/020_create_pull_schedule.sql）"))
+        else:
+            for _, r in jdl_sched_df.iterrows():
+                jk = r["job_key"]
+                st.markdown(f"**🚚 {jk}**  ·  {r['frequency']} {str(r['run_time'])[:5]} 自動")
+                if r.get("description"):
+                    st.caption("📋 " + str(r["description"]))
+                c1, c2, c3 = st.columns([2, 2, 1.5])
+                c1.caption(t("上次同步") + ": " +
+                           (str(r["last_run_at"])[:16] if r["last_run_at"] is not None else "-"))
+                c2.caption(t("上次状态") + ": " + (r["last_status"] or "-"))
+                if r["run_now"]:
+                    c3.info(t("⏳ 同步中…"))
+                else:
+                    if c3.button(t("▶️ 立即同步"), key=f"jdl_run_{jk}", type="primary"):
+                        try:
+                            conn.execute(
+                                "UPDATE jdl.pull_schedule SET run_now=TRUE, updated_at=now() "
+                                "WHERE job_key=?", (jk,))
+                            conn.commit()
+                            st.success(t("已触发 · 1 分钟内启动 daily_pull"))
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(str(e))
+                st.divider()
+
+    # ── 拉取历史：jdl.pull_log ───────────────────────────────
+    with j_log:
+        st.caption(t("直近 50 回の取得実行（jdl.pull_log）"))
+        df, err = _query(
+            "SELECT id, started_at, finished_at, status, trigger_source, "
+            "       pages_fetched, rows_written, rows_total, error_code, error_message "
+            "FROM jdl.pull_log ORDER BY id DESC LIMIT 50"
+        )
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
+        elif df is not None and not df.empty:
+            st.dataframe(df, use_container_width=True, height=480,
+                         column_config={
+                             "id": "ID",
+                             "started_at": t("開始"),
+                             "finished_at": t("終了"),
+                             "status": t("結果"),
+                             "trigger_source": t("触发"),
+                             "pages_fetched": t("拉页数"),
+                             "rows_written": t("写入行数"),
+                             "rows_total": t("总行数(JDL)"),
+                             "error_code": t("错误码"),
+                             "error_message": t("错误信息"),
+                         })
+        else:
+            st.info(t("尚无拉取记录"))

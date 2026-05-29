@@ -255,11 +255,11 @@ def _render_kpi_cards(d: pd.DataFrame, sel: list[str]) -> None:
 # tab1 按棚番号查商品（弁天）
 # tab2 按 SKU 查棚分布（JD + 弁天）
 # ============================================================
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab4, tab5 = st.tabs([
     t("🔎 按棚番号查商品（弁天）"),
     t("🔍 按 SKU 查库存分布（全仓库）"),
-    t("🏷️ 货架用途指定"),
     t("📊 NST vs JDL 账实对账"),
+    t("🚚 京东库存查询"),
 ])
 
 bn_df = df[df["warehouse"] == "弁天倉庫"].copy()
@@ -378,161 +378,37 @@ with tab2:
                            key="sku_csv")
 
 # ============================================================
-# tab3 货架用途指定（行=货架号·列=输出中国/返品/不良品）
-#   未勾任何 → 通常输出。优先级: 返品 > 不良品 > 输出中国 > 通常输出。
-# ============================================================
-with tab3:
-    st.caption(t(
-        "行=弁天棚番号·列=输出中国/返品/不良品。勾选保存后影响所有用途分类视图。"
-        "未勾任何 → 通常输出。优先级: 返品 > 不良品 > 输出中国 > 通常输出。"
-    ))
-
-    try:
-        cand_bins = _df(
-            "SELECT DISTINCT ibs.bin_number, "
-            "       COALESCE(bc.is_cb, FALSE) AS is_cb, "
-            "       COALESCE(bc.is_return, FALSE) AS is_return, "
-            "       COALESCE(bc.is_defect, FALSE) AS is_defect, "
-            "       bc.note AS note "
-            "FROM nst.inventory_bin_snapshot ibs "
-            "LEFT JOIN nst.bin_category bc ON bc.bin_number = ibs.bin_number "
-            "WHERE ibs.snapshot_date = %(d)s AND ibs.bin_number IS NOT NULL "
-            "ORDER BY ibs.bin_number",
-            {"d": bin_date or inv_date},
-        )
-    except Exception as e:
-        st.error(t("⚠️ 候选棚号读取失败") + f"\n\n{e}")
-        cand_bins = pd.DataFrame()
-
-    if cand_bins.empty:
-        st.info(t("暂无候选棚号（弁天 bin 快照为空？）"))
-    else:
-        cand_bins["is_cb"] = cand_bins["is_cb"].astype(bool)
-        cand_bins["is_return"] = cand_bins["is_return"].astype(bool)
-        cand_bins["is_defect"] = cand_bins["is_defect"].astype(bool)
-        n_total = len(cand_bins)
-        n_cb = int(cand_bins["is_cb"].sum())
-        n_ret = int(cand_bins["is_return"].sum())
-        n_def = int(cand_bins["is_defect"].sum())
-        st.write(t("候选 {n} 棚 · 已指定 输出中国 {c} · 返品 {r} · 不良品 {d}")
-                 .format(n=n_total, c=n_cb, r=n_ret, d=n_def))
-
-        edited = st.data_editor(
-            cand_bins, hide_index=True, use_container_width=True, height=560,
-            column_config={
-                "bin_number": st.column_config.TextColumn(t("棚番号"), disabled=True),
-                "is_cb": st.column_config.CheckboxColumn(t("输出中国"), default=False),
-                "is_return": st.column_config.CheckboxColumn(t("返品"), default=False),
-                "is_defect": st.column_config.CheckboxColumn(t("不良品"), default=False),
-                "note": st.column_config.TextColumn(t("备注"), required=False),
-            },
-            key="bin_cat_editor",
-        )
-
-        if st.button(t("💾 保存货架用途"), type="primary"):
-            kept = 0
-            removed = 0
-            for _, r in edited.iterrows():
-                bn = str(r["bin_number"])
-                any_flag = bool(r["is_cb"]) or bool(r["is_return"]) or bool(r["is_defect"])
-                note_v = str(r["note"]).strip() if pd.notna(r["note"]) else None
-                if any_flag or note_v:
-                    conn.execute(
-                        "INSERT INTO nst.bin_category "
-                        "(bin_number, is_cb, is_return, is_defect, note, updated_at) "
-                        "VALUES (%(b)s, %(c)s, %(r)s, %(d)s, %(n)s, NOW()) "
-                        "ON CONFLICT (bin_number) DO UPDATE SET "
-                        "is_cb=EXCLUDED.is_cb, is_return=EXCLUDED.is_return, "
-                        "is_defect=EXCLUDED.is_defect, note=EXCLUDED.note, "
-                        "updated_at=NOW()",
-                        {"b": bn, "c": bool(r["is_cb"]), "r": bool(r["is_return"]),
-                         "d": bool(r["is_defect"]), "n": note_v},
-                    )
-                    kept += 1
-                else:
-                    res = conn.execute(
-                        "DELETE FROM nst.bin_category WHERE bin_number = %(b)s",
-                        {"b": bn},
-                    )
-                    if getattr(res, "rowcount", 0):
-                        removed += 1
-            conn.commit()
-            st.success(t("✅ 已保存 · 有用途指定 {k} 棚 · 清除 {r} 棚").format(k=kept, r=removed))
-            st.rerun()
-
-    with st.expander(t("➕ 手动加棚号（候选列表里没有的，比如新建棚）")):
-        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-        new_bin = c1.text_input(t("棚番号"), key="new_bin")
-        new_cb = c2.checkbox(t("输出中国"), value=False, key="new_cb")
-        new_ret = c3.checkbox(t("返品"), value=False, key="new_ret")
-        new_def = c4.checkbox(t("不良品"), value=False, key="new_def")
-        if st.button(t("加入指定"), key="add_bin_cat"):
-            bn = new_bin.strip()
-            if bn:
-                conn.execute(
-                    "INSERT INTO nst.bin_category "
-                    "(bin_number, is_cb, is_return, is_defect, updated_at) "
-                    "VALUES (%(b)s, %(c)s, %(r)s, %(d)s, NOW()) "
-                    "ON CONFLICT (bin_number) DO UPDATE SET "
-                    "is_cb=EXCLUDED.is_cb, is_return=EXCLUDED.is_return, "
-                    "is_defect=EXCLUDED.is_defect, updated_at=NOW()",
-                    {"b": bn, "c": bool(new_cb), "r": bool(new_ret), "d": bool(new_def)},
-                )
-                conn.commit()
-                st.success(t("✅ 已加入：{b}").format(b=bn))
-                st.rerun()
-            else:
-                st.warning(t("请填棚番号"))
-
-# ============================================================
 # tab4 NST vs JDL 账实对账（JD-物流-千葉 NST 账面 vs JDL 海外仓物理）
-#   数据源: jdl.v_inventory_reconciliation
-#   状态: OK / MINOR_DIFF (±1) / MAJOR_DIFF / NST_ONLY / JDL_ONLY
+#   数据源: jdl.v_inventory_reconciliation（view 算 raw diff）
+#   状态分类: Python 端用 shared.jdl_recon_settings 的阈值动态算
 #   手动同步: UPDATE jdl.pull_schedule SET run_now=TRUE → jdl_scheduler 检测后跑 daily_pull
 # ============================================================
 with tab4:
-    st.caption(t(
-        "NST 端 = NetSuite 账面（JD-物流-千葉 仓）· JDL 端 = 京东物流海外仓 OpenAPI 物理库存。"
-        "差异 = 账面与实物脱钩（漏出库登记 / 盘点差 / 发货未冲账）。"
-    ))
+    from shared.jdl_recon_settings import load_recon_params, classify_status
 
-    # ── 调度状态 + 手动同步按钮 ─────────────────────────────
+    _recon_p = load_recon_params()
+
+    # 一行 caption 合并：来源说明 + 最新快照日期
     try:
-        sched = _df(
-            "SELECT job_key, last_run_at, last_status, run_now "
-            "FROM jdl.pull_schedule WHERE job_key='jdl_inventory_daily'"
+        meta_df = _df(
+            "SELECT MAX(snapshot_date) AS d FROM jdl.inventory_snapshot"
         )
     except Exception as e:
         st.error(t("⚠️ jdl schema 未部署？跑一次 sql/000~020 migration") + f"\n\n{e}")
         st.stop()
 
-    last_run = sched["last_run_at"].iloc[0] if not sched.empty else None
-    last_status = sched["last_status"].iloc[0] if not sched.empty else None
-    run_now_flag = bool(sched["run_now"].iloc[0]) if not sched.empty else False
-
-    c_a, c_b, c_c = st.columns([2, 2, 1])
-    c_a.metric(t("上次同步"), str(last_run)[:16] if last_run else t("—"))
-    c_b.metric(t("上次状态"), last_status or t("—"))
-    if run_now_flag:
-        c_c.info(t("⏳ 同步中…"))
-    else:
-        if c_c.button(t("🔄 手动同步"), type="primary", help=t("立即触发 JDL daily_pull")):
-            conn.execute(
-                "UPDATE jdl.pull_schedule SET run_now=TRUE, updated_at=NOW() "
-                "WHERE job_key='jdl_inventory_daily'"
-            )
-            conn.commit()
-            st.success(t("✅ 已触发 · jdl_scheduler 1 分钟内启动 daily_pull"))
-            st.rerun()
+    last_jdl_date = meta_df["d"].iloc[0] if not meta_df.empty else None
+    _jdl_d = str(last_jdl_date) if last_jdl_date else t("（无）")
 
     # ── 拉对账数据 ──────────────────────────────────────────
     try:
         rec = _df(
             "SELECT jan, item_code, display_name, maker, item_rank, "
-            "       nst_qty_on_hand, jdl_qty_total, diff_total, "
-            "       nst_qty_available, jdl_qty_available, diff_available, "
-            "       jdl_qty_preoccupied, jdl_qty_inbound, "
-            "       status, nst_snapshot_date, jdl_snapshot_date "
+            "       nst_qty_on_hand, jdl_qty_in_stock, diff_main, "
+            "       jdl_qty_available, jdl_qty_unavailable, "
+            "       jdl_qty_preoccupied, jdl_qty_operator_lock, jdl_qty_inventory_lock, "
+            "       jdl_qty_inbound, nst_qty_on_order, "
+            "       nst_snapshot_date, jdl_snapshot_date "
             "FROM jdl.v_inventory_reconciliation"
         )
     except Exception as e:
@@ -543,25 +419,88 @@ with tab4:
         st.info(t("尚无对账数据。点上方「手动同步」拉一次 JDL 库存后再来看。"))
         st.stop()
 
+    # ── Python 端用配置阈值动态算 status（先算后过滤） ──
+    rec["status"] = rec.apply(
+        lambda r: classify_status(
+            r["nst_qty_on_hand"] if pd.notna(r["nst_qty_on_hand"]) else None,
+            r["jdl_qty_in_stock"] if pd.notna(r["jdl_qty_in_stock"]) else None,
+            _recon_p,
+        ),
+        axis=1,
+    )
+
+    # ── 用 NST item_master 的 JAN 白名单过滤非输出业务 ─────
+    _filter_msg = ""
+    try:
+        nst_jans_df = _df(
+            "SELECT DISTINCT jan FROM nst.item_master_raw "
+            "WHERE jan IS NOT NULL AND jan <> ''"
+        )
+        nst_jan_set = set(nst_jans_df["jan"].astype(str))
+        before = len(rec)
+        keep_mask = (rec["status"] != "JDL_ONLY") | (rec["jan"].astype(str).isin(nst_jan_set))
+        rec = rec[keep_mask].reset_index(drop=True)
+        if before != len(rec):
+            _filter_msg = t(" · 已过滤非输出 {n}→{m}").format(n=before, m=len(rec))
+    except Exception as e:
+        st.warning(t("⚠️ 输出部门白名单过滤失败（继续显示全量）: ") + str(e))
+
+    # 顶部单行汇总 caption（合并：数据源说明 + 最新快照 + 过滤数）
+    st.caption(t(
+        "NST=NetSuite 账面 vs JDL=京东物流实物 · JDL 最新快照: {d}{f}"
+    ).format(d=_jdl_d, f=_filter_msg))
+
+    # ── 排除两端实际为 0 的 ONLY 项（默认勾上）──────────────
+    exclude_zero_only = st.checkbox(
+        t("排除 NST_ONLY / JDL_ONLY 中实际数量为 0 的项"),
+        value=True, key="rec_exclude_zero_only",
+        help=t("NST 账面 0 但残留记录 / JDL 实物 0 的 ONLY 行通常是历史垃圾，无需对账"),
+    )
+    if exclude_zero_only:
+        zero_nst_only = (rec["status"] == "NST_ONLY") & (rec["nst_qty_on_hand"].fillna(0) == 0)
+        zero_jdl_only = (rec["status"] == "JDL_ONLY") & (rec["jdl_qty_in_stock"].fillna(0) == 0)
+        rec = rec[~(zero_nst_only | zero_jdl_only)].copy()
+
+    # ── 状态 code → 双语 label（i18n 走 t()）──────────────
+    _abs = int(_recon_p["minor_abs_threshold"])
+    _pct = float(_recon_p["minor_pct_threshold"])
+
+    def _status_label(code: str) -> str:
+        """status code → 双语 label。MINOR 带阈值参数。"""
+        if code == "OK":
+            return t("✅ 一致")
+        if code == "MINOR_DIFF":
+            if _pct > 0:
+                return t("🟡 轻微差异 (≤{n} 或 {p:.1f}%)").format(n=_abs, p=_pct)
+            return t("🟡 轻微差异 (≤{n})").format(n=_abs)
+        if code == "MAJOR_DIFF":
+            return t("🔴 重大差异")
+        if code == "NST_ONLY":
+            return t("🟠 仅 NST 有")
+        if code == "JDL_ONLY":
+            return t("🟣 仅 JDL 有")
+        return code
+
     # ── 5 档状态分布卡 ─────────────────────────────────────
     counts = rec["status"].value_counts().to_dict()
     s1, s2, s3, s4, s5 = st.columns(5)
-    s1.metric(t("✅ OK"), counts.get("OK", 0))
-    s2.metric(t("🟡 MINOR_DIFF (±1)"), counts.get("MINOR_DIFF", 0))
-    s3.metric(t("🔴 MAJOR_DIFF"), counts.get("MAJOR_DIFF", 0),
+    s1.metric(_status_label("OK"), counts.get("OK", 0))
+    s2.metric(_status_label("MINOR_DIFF"), counts.get("MINOR_DIFF", 0))
+    s3.metric(_status_label("MAJOR_DIFF"), counts.get("MAJOR_DIFF", 0),
               delta=t("需调查") if counts.get("MAJOR_DIFF", 0) > 0 else None,
               delta_color="inverse")
-    s4.metric(t("🟠 NST_ONLY"), counts.get("NST_ONLY", 0),
+    s4.metric(_status_label("NST_ONLY"), counts.get("NST_ONLY", 0),
               help=t("NST 账面有 · JDL 实物无（已停售或未报 JDL）"))
-    s5.metric(t("🟣 JDL_ONLY"), counts.get("JDL_ONLY", 0),
+    s5.metric(_status_label("JDL_ONLY"), counts.get("JDL_ONLY", 0),
               help=t("JDL 有 · NST 账面无（未登录商品 / item_master 缺失）"))
 
-    # ── 筛选 + 表格 ─────────────────────────────────────────
+    # ── 筛选 + 表格（multiselect 内部 value 仍是英文 code）─
     f1, f2, f3 = st.columns([2, 2, 3])
     sel_status = f1.multiselect(
         t("状态筛选"),
         ["OK", "MINOR_DIFF", "MAJOR_DIFF", "NST_ONLY", "JDL_ONLY"],
         default=["MAJOR_DIFF", "NST_ONLY", "JDL_ONLY"],
+        format_func=_status_label,
         key="rec_status",
     )
     _maker_opts = sorted(rec["maker"].dropna().astype(str).unique().tolist())
@@ -581,16 +520,20 @@ with tab4:
         ]
 
     # 按差异绝对值倒序
-    df_rec = df_rec.assign(_abs_diff=df_rec["diff_total"].abs().fillna(99999))
+    df_rec = df_rec.assign(_abs_diff=df_rec["diff_main"].abs().fillna(99999))
     df_rec = df_rec.sort_values("_abs_diff", ascending=False).drop(columns=["_abs_diff"])
+
+    # 表格里 status 列改成双语 label（内部 code 仅用于筛选已经做完）
+    df_rec["status"] = df_rec["status"].map(_status_label)
 
     st.caption(t("命中 {n} 条").format(n=len(df_rec)))
 
     show_cols = [
         "status", "jan", "item_code", "display_name", "maker", "item_rank",
-        "nst_qty_on_hand", "jdl_qty_total", "diff_total",
-        "nst_qty_available", "jdl_qty_available",
-        "jdl_qty_preoccupied", "jdl_qty_inbound",
+        "nst_qty_on_hand",
+        "jdl_qty_available", "jdl_qty_unavailable", "jdl_qty_in_stock",
+        "diff_main",
+        "jdl_qty_inbound", "nst_qty_on_order",
         "nst_snapshot_date", "jdl_snapshot_date",
     ]
     st.dataframe(
@@ -606,12 +549,14 @@ with tab4:
             "maker": st.column_config.TextColumn(t("メーカー"), width="small"),
             "item_rank": st.column_config.TextColumn(t("等级"), width="small"),
             "nst_qty_on_hand": st.column_config.NumberColumn(t("NST 账面"), format="%d"),
-            "jdl_qty_total": st.column_config.NumberColumn(t("JDL 实物"), format="%d"),
-            "diff_total": st.column_config.NumberColumn(t("差异 (NST-JDL)"), format="%+d"),
-            "nst_qty_available": st.column_config.NumberColumn(t("NST 可用"), format="%d"),
             "jdl_qty_available": st.column_config.NumberColumn(t("JDL 可用"), format="%d"),
-            "jdl_qty_preoccupied": st.column_config.NumberColumn(t("JDL 预占"), format="%d"),
+            "jdl_qty_unavailable": st.column_config.NumberColumn(t("JDL 不可用"), format="%d",
+                                                                 help=t("预占 + 操作锁 + 库存锁")),
+            "jdl_qty_in_stock": st.column_config.NumberColumn(t("JDL 总库存"), format="%d",
+                                                              help=t("可用 + 不可用（不含在途）")),
+            "diff_main": st.column_config.NumberColumn(t("差异 (NST−JDL总库存)"), format="%+d"),
             "jdl_qty_inbound": st.column_config.NumberColumn(t("JDL 在途"), format="%d"),
+            "nst_qty_on_order": st.column_config.NumberColumn(t("NST 在途"), format="%d"),
             "nst_snapshot_date": st.column_config.DateColumn(t("NST 快照日")),
             "jdl_snapshot_date": st.column_config.DateColumn(t("JDL 快照日")),
         },
@@ -624,3 +569,154 @@ with tab4:
         mime="text/csv",
         key="rec_csv",
     )
+
+# ============================================================
+# tab5 京东库存查询（纯 JDL 数据浏览·jdl.inventory_snapshot 最新快照）
+#   字段公式：
+#     在库 = 可用 + 不可用（预占 + 操作锁 + 库存锁）
+#     总库存 = 在库 + 在途
+# ============================================================
+with tab5:
+    st.caption(t(
+        "JDL 京东物流海外仓物理库存查询。"
+        "总库存 = 可用 + 不可用（预占 + 操作锁 + 库存锁），在途独立显示。"
+    ))
+
+    try:
+        jdl_meta = _df(
+            "SELECT max(snapshot_date) AS d, count(*) AS c "
+            "FROM jdl.inventory_snapshot "
+            "WHERE snapshot_date = (SELECT max(snapshot_date) FROM jdl.inventory_snapshot)"
+        )
+    except Exception as e:
+        st.error(t("⚠️ jdl.inventory_snapshot 读取失败") + f"\n\n{e}")
+        st.stop()
+
+    if jdl_meta.empty or jdl_meta["d"].iloc[0] is None:
+        st.info(t("尚无 JDL 库存数据。请到「📥 数据获取 → 🚚 JDL → ▶️ 调度 + 手动同步」拉一次。"))
+        st.stop()
+
+    j_date = jdl_meta["d"].iloc[0]
+    j_rows = int(jdl_meta["c"].iloc[0])
+    cm1, cm2 = st.columns(2)
+    cm1.metric(t("最新快照日"), str(j_date))
+    cm2.metric(t("库存行数"), f"{j_rows:,}")
+
+    # 筛选：JAN/商品名 + 仓库 + 是否显示 0 库存
+    jf1, jf2, jf3 = st.columns([3, 2, 1.5])
+    j_kw = jf1.text_input(t("🔍 JAN / 商品名 模糊搜索"), key="jdl_q_kw")
+    try:
+        wh_df = _df(
+            "SELECT DISTINCT warehouse_code, warehouse_name "
+            "FROM jdl.inventory_snapshot "
+            "WHERE snapshot_date = (SELECT max(snapshot_date) FROM jdl.inventory_snapshot) "
+            "ORDER BY warehouse_code"
+        )
+        wh_opts = [
+            (r["warehouse_code"], f"{r['warehouse_code']} ({r['warehouse_name']})")
+            for _, r in wh_df.iterrows()
+        ]
+    except Exception:
+        wh_opts = []
+    sel_wh = jf2.multiselect(
+        t("仓库"),
+        [c for c, _ in wh_opts],
+        default=[],
+        format_func=lambda c: dict(wh_opts).get(c, c),
+        key="jdl_q_wh",
+    )
+    show_zero_jdl = jf3.checkbox(t("含 0 库存"), value=False, key="jdl_q_zero")
+
+    where = ["snapshot_date = (SELECT max(snapshot_date) FROM jdl.inventory_snapshot)"]
+    qparams: dict = {}
+    if j_kw.strip():
+        where.append("(jan LIKE %(kw)s OR goods_name LIKE %(kw)s)")
+        qparams["kw"] = f"%{j_kw.strip()}%"
+    if sel_wh:
+        wh_names = []
+        for i, wh in enumerate(sel_wh):
+            key = f"wh{i}"
+            wh_names.append(f"%({key})s")
+            qparams[key] = wh
+        where.append("warehouse_code IN (" + ",".join(wh_names) + ")")
+    if not show_zero_jdl:
+        where.append("(qty_total > 0 OR qty_inbound > 0)")
+
+    try:
+        j_df = _df(
+            "SELECT jan, jd_goods_id, goods_name, warehouse_code, warehouse_name, "
+            "       qty_available, "
+            "       (COALESCE(qty_preoccupied,0)+COALESCE(qty_operator_lock,0)"
+            "        +COALESCE(qty_inventory_lock,0)) AS qty_unavailable, "
+            # 在库 = 可用 + 不可用（JDL.totalQuantity 含在途，不可用）
+            "       (COALESCE(qty_available,0)+COALESCE(qty_preoccupied,0)"
+            "        +COALESCE(qty_operator_lock,0)+COALESCE(qty_inventory_lock,0))"
+            "         AS qty_grand_total, "
+            "       qty_inbound, "
+            "       qty_preoccupied, qty_operator_lock, qty_inventory_lock, "
+            "       stock_level_name "
+            "FROM jdl.inventory_snapshot WHERE " + " AND ".join(where) +
+            " ORDER BY qty_grand_total DESC LIMIT 5000",
+            qparams,
+        )
+    except Exception as e:
+        st.error(str(e))
+        st.stop()
+
+    # ── 用 NST item_master JAN 白名单过滤非输出业务 ─────
+    _j_filter_msg = ""
+    try:
+        _nst_jans = _df(
+            "SELECT DISTINCT jan FROM nst.item_master_raw "
+            "WHERE jan IS NOT NULL AND jan <> ''"
+        )
+        _nst_jan_set = set(_nst_jans["jan"].astype(str))
+        _before = len(j_df)
+        j_df = j_df[j_df["jan"].astype(str).isin(_nst_jan_set)].reset_index(drop=True)
+        if _before != len(j_df):
+            _j_filter_msg = t(" · 已过滤非输出 {n}→{m}").format(n=_before, m=len(j_df))
+    except Exception as e:
+        st.warning(t("⚠️ 输出部门白名单过滤失败（继续显示全量）: ") + str(e))
+
+    st.caption(t("命中 {n} 条（最大 5000）").format(n=len(j_df)) + _j_filter_msg)
+
+    # Boss 业务公式：总库存 = 可用 + 不可用（不含在途）· 在途独立列
+    j_show_cols = [
+        "jan", "jd_goods_id", "goods_name", "warehouse_code", "warehouse_name",
+        "qty_available", "qty_unavailable", "qty_grand_total",
+        "qty_inbound",
+        "qty_preoccupied", "qty_operator_lock", "qty_inventory_lock",
+        "stock_level_name",
+    ]
+    st.dataframe(
+        j_df[j_show_cols],
+        hide_index=True,
+        use_container_width=True,
+        height=560,
+        column_config={
+            "jan": st.column_config.TextColumn("JAN", width="small"),
+            "jd_goods_id": st.column_config.TextColumn(t("JD商品ID"), width="small"),
+            "goods_name": st.column_config.TextColumn(t("商品名"), width="large"),
+            "warehouse_code": st.column_config.TextColumn(t("仓库代码"), width="small"),
+            "warehouse_name": st.column_config.TextColumn(t("仓库名"), width="small"),
+            "qty_available": st.column_config.NumberColumn(t("可用"), format="%d"),
+            "qty_unavailable": st.column_config.NumberColumn(t("不可用"), format="%d",
+                                                             help=t("预占 + 操作锁 + 库存锁")),
+            "qty_grand_total": st.column_config.NumberColumn(t("总库存"), format="%d",
+                                                             help=t("可用 + 不可用（不含在途）")),
+            "qty_inbound": st.column_config.NumberColumn(t("在途"), format="%d"),
+            "qty_preoccupied": st.column_config.NumberColumn(t("预占"), format="%d"),
+            "qty_operator_lock": st.column_config.NumberColumn(t("操作锁"), format="%d"),
+            "qty_inventory_lock": st.column_config.NumberColumn(t("库存锁"), format="%d"),
+            "stock_level_name": st.column_config.TextColumn(t("等级"), width="small"),
+        },
+    )
+
+    st.download_button(
+        t("📥 下载 JDL 库存 CSV"),
+        j_df[j_show_cols].to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"jdl_inventory_{j_date}.csv",
+        mime="text/csv",
+        key="jdl_q_csv",
+    )
+
