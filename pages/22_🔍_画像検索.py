@@ -184,13 +184,20 @@ _WATERMARK_SHOP_KEYWORDS = [
 OCR_TEXT_RATIO_HARD_LIMIT = 0.20
 
 # OCR 文本中含这些关键词 → 判定为水印图（不区分大小写）
-# 涵盖楽天直营店 logo、@cosme 系列、第三方加印 logo
+# 注: OCR 可能简繁字符混杂识别, 关键词需 cover 多种变体
 _OCR_WATERMARK_TEXTS = [
+    # 楽天直营 / @cosme 系列
     "rakuten 24", "rakuten24", "楽天24", "rakuten",
     "@cosme", "cosme shopping", "コスメ", "アットコスメ", "@COSME",
+    # 其他常见水印店
     "soukai", "爽快", "ケンコーコム", "kenko.com",
     "lohaco", "ヨドバシ", "yodobashi",
-    "official", "公式", "正規品",  # 这些常作店铺水印 (但也可能是产品标签，权重低)
+    # 正規品 simp+trad 双形
+    "正規品", "正规品", "official", "公式",
+    # 楽天/Shop 常见促销文案 (店家额外加上的字样, 非品牌包装)
+    "最大", "ポイント", "倍",
+    "セール", "off", "%off", "％off", "クーポン",
+    "送料無料", "送料无料",
 ]
 
 
@@ -209,26 +216,24 @@ def _get_ocr():
         return None
 
 
-def _image_has_watermark(image_bytes: bytes) -> tuple[bool, str]:
-    """判断图是否含水印。返回 (is_watermark, reason)。
+def _image_watermark_score(image_bytes: bytes) -> tuple[bool, float, str]:
+    """评估图水印程度。返回 (is_watermark, text_ratio, reason)。
 
-    策略：
-      1. OCR 输出文本含 _OCR_WATERMARK_TEXTS 任一关键词 → watermark
-      2. 文字总面积 > OCR_TEXT_RATIO_HARD_LIMIT (20%) → watermark (兜底)
-      3. OCR 不可用 → (False, "ocr_disabled") 视为干净（避免误杀）
+    is_watermark=True 表示**确定**有水印（命中关键词或文字超阈值）
+    text_ratio 用于在 is_watermark=False 的候选中比较 (越小越干净)
     """
     ocr = _get_ocr()
     if ocr is None:
-        return (False, "ocr_disabled")
+        return (False, 0.0, "ocr_disabled")
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(image_bytes))
         w, h = img.size
         if w * h == 0:
-            return (False, "invalid_image")
+            return (False, 0.0, "invalid_image")
         result, _ = ocr(image_bytes)
         if not result:
-            return (False, "no_text")
+            return (False, 0.0, "no_text")
 
         total_area = 0.0
         all_texts = []
@@ -245,12 +250,18 @@ def _image_has_watermark(image_bytes: bytes) -> tuple[bool, str]:
         joined = " | ".join(all_texts).lower()
         for kw in _OCR_WATERMARK_TEXTS:
             if kw.lower() in joined:
-                return (True, f"keyword:{kw}")
+                return (True, ratio, f"keyword:{kw}")
         if ratio > OCR_TEXT_RATIO_HARD_LIMIT:
-            return (True, f"high_density:{ratio:.2f}")
-        return (False, f"clean ratio={ratio:.2f}")
+            return (True, ratio, f"high_density:{ratio:.2f}")
+        return (False, ratio, f"clean ratio={ratio:.2f}")
     except Exception as e:
-        return (False, f"ocr_error:{type(e).__name__}")
+        return (False, 1.0, f"ocr_error:{type(e).__name__}")
+
+
+# 向后兼容旧名（如果别处引用）
+def _image_has_watermark(image_bytes: bytes) -> tuple[bool, str]:
+    is_wm, _, reason = _image_watermark_score(image_bytes)
+    return (is_wm, reason)
 
 
 def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
@@ -318,23 +329,26 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
                     candidates.append((item, cand_url))
                     break
 
-    # 第二步: OCR 水印关键词检测（仅对前 8 个候选）
-    # 用 400x400 thumbnail (提升 OCR 准确率, 1.5KB → 10KB 但仍可控)
+    # 第二步: 对前 8 个候选跑 OCR 评分 → 选 ratio 最低的非水印图
     img_url = None
     ocr_available = _get_ocr() is not None
     if ocr_available and candidates:
+        scored = []
         for item, cand_url in candidates[:8]:
             try:
                 probe_url = cand_url.split("?")[0] + "?_ex=400x400"
                 req_p = urllib.request.Request(probe_url, headers={"User-Agent": USER_AGENT})
                 with urllib.request.urlopen(req_p, timeout=8) as r:
                     probe_bytes = r.read()
-                is_wm, _reason = _image_has_watermark(probe_bytes)
+                is_wm, ratio, _reason = _image_watermark_score(probe_bytes)
                 if not is_wm:
-                    img_url = cand_url
-                    break
+                    scored.append((ratio, cand_url))
             except Exception:
                 continue
+        if scored:
+            # 文字密度最低 = 最干净（接近 0 = 纯产品图）
+            scored.sort(key=lambda x: x[0])
+            img_url = scored[0][1]
 
     # 第三步: OCR 没找到干净的 → fallback 用第一个 shop 过滤后的候选
     if not img_url and candidates:
