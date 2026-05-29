@@ -696,6 +696,13 @@ for _zh, _ja in [
     # page 22 画像検索（JAN→主图抓取）
     ("🔍 画像検索", "🔍 画像検索"),
     ("画像検索", "画像検索"),
+    # page 15 商品登录 v2.5 (一键生 NST+JD+BM ZIP)
+    ("📦 一键生成 NST + JD + BM", "📦 一括生成 NST + JD + BM"),
+    ("⬇️ 生成 ZIP（NST.csv + JD.xlsx + BM.xlsx）", "⬇️ ZIP 生成（NST.csv + JD.xlsx + BM.xlsx）"),
+    ("JD *货主编码", "JD *貨主コード"),
+    ("JD *销售渠道编码", "JD *販売チャネルコード"),
+    ("JD 平台商品编码", "JD プラットフォーム商品コード"),
+    ("写入 JD xlsx 第 1 列，所有行同值", "JD xlsx 第 1 列に書込・全行同値"),
     # page 15 商品登录 (2026-05-29 原生版 MVP)
     ("🆕 原生版 (MVP)", "🆕 ネイティブ版 (MVP)"),
     ("📜 旧 HTML 版", "📜 旧 HTML 版"),
