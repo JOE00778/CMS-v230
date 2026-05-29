@@ -180,8 +180,18 @@ _WATERMARK_SHOP_KEYWORDS = [
     "lohaco",                    # Yahoo LOHACO 入楽天
 ]
 
-# OCR 文字密度阈值：文字框面积 / 图总面积 > 此值则视为带水印图
-OCR_TEXT_RATIO_THRESHOLD = 0.05
+# 极高文字密度阈值（兜底，超过此值即使无关键词也视为带水印）
+OCR_TEXT_RATIO_HARD_LIMIT = 0.20
+
+# OCR 文本中含这些关键词 → 判定为水印图（不区分大小写）
+# 涵盖楽天直营店 logo、@cosme 系列、第三方加印 logo
+_OCR_WATERMARK_TEXTS = [
+    "rakuten 24", "rakuten24", "楽天24", "rakuten",
+    "@cosme", "cosme shopping", "コスメ", "アットコスメ", "@COSME",
+    "soukai", "爽快", "ケンコーコム", "kenko.com",
+    "lohaco", "ヨドバシ", "yodobashi",
+    "official", "公式", "正規品",  # 这些常作店铺水印 (但也可能是产品标签，权重低)
+]
 
 
 @lru_cache(maxsize=1)
@@ -199,32 +209,48 @@ def _get_ocr():
         return None
 
 
-def _image_text_ratio(image_bytes: bytes) -> float | None:
-    """检测图中文字框面积占比。返回 0-1, None=OCR 不可用或图无效。"""
+def _image_has_watermark(image_bytes: bytes) -> tuple[bool, str]:
+    """判断图是否含水印。返回 (is_watermark, reason)。
+
+    策略：
+      1. OCR 输出文本含 _OCR_WATERMARK_TEXTS 任一关键词 → watermark
+      2. 文字总面积 > OCR_TEXT_RATIO_HARD_LIMIT (20%) → watermark (兜底)
+      3. OCR 不可用 → (False, "ocr_disabled") 视为干净（避免误杀）
+    """
     ocr = _get_ocr()
     if ocr is None:
-        return None
+        return (False, "ocr_disabled")
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(image_bytes))
         w, h = img.size
         if w * h == 0:
-            return None
+            return (False, "invalid_image")
         result, _ = ocr(image_bytes)
         if not result:
-            return 0.0
-        total = 0.0
+            return (False, "no_text")
+
+        total_area = 0.0
+        all_texts = []
         for entry in result:
-            # entry = [box(4 points), text, score]
             box = entry[0] if isinstance(entry, (list, tuple)) else None
+            text = entry[1] if len(entry) > 1 else ""
             if not box or len(box) < 4:
                 continue
-            xs = [p[0] for p in box]
-            ys = [p[1] for p in box]
-            total += (max(xs) - min(xs)) * (max(ys) - min(ys))
-        return total / (w * h)
-    except Exception:
-        return None
+            xs = [p[0] for p in box]; ys = [p[1] for p in box]
+            total_area += (max(xs) - min(xs)) * (max(ys) - min(ys))
+            all_texts.append(str(text))
+
+        ratio = total_area / (w * h)
+        joined = " | ".join(all_texts).lower()
+        for kw in _OCR_WATERMARK_TEXTS:
+            if kw.lower() in joined:
+                return (True, f"keyword:{kw}")
+        if ratio > OCR_TEXT_RATIO_HARD_LIMIT:
+            return (True, f"high_density:{ratio:.2f}")
+        return (False, f"clean ratio={ratio:.2f}")
+    except Exception as e:
+        return (False, f"ocr_error:{type(e).__name__}")
 
 
 def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
@@ -292,19 +318,19 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
                     candidates.append((item, cand_url))
                     break
 
-    # 第二步: OCR 文字面积检测（仅对前 5 个候选, 限制耗时）
+    # 第二步: OCR 水印关键词检测（仅对前 8 个候选）
+    # 用 400x400 thumbnail (提升 OCR 准确率, 1.5KB → 10KB 但仍可控)
     img_url = None
     ocr_available = _get_ocr() is not None
     if ocr_available and candidates:
-        for item, cand_url in candidates[:5]:
+        for item, cand_url in candidates[:8]:
             try:
-                # 用小 thumbnail (?_ex=128x128) 做 OCR 检测,省带宽
-                probe_url = cand_url.split("?")[0] + "?_ex=200x200"
+                probe_url = cand_url.split("?")[0] + "?_ex=400x400"
                 req_p = urllib.request.Request(probe_url, headers={"User-Agent": USER_AGENT})
                 with urllib.request.urlopen(req_p, timeout=8) as r:
                     probe_bytes = r.read()
-                ratio = _image_text_ratio(probe_bytes)
-                if ratio is not None and ratio < OCR_TEXT_RATIO_THRESHOLD:
+                is_wm, _reason = _image_has_watermark(probe_bytes)
+                if not is_wm:
                     img_url = cand_url
                     break
             except Exception:
