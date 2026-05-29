@@ -2,14 +2,18 @@
 
 由原 商品登録ツール HTML 中 tab3「JAN 画像検索・ダウンロード」原生化迁移而来。
 
-抓取策略（数据安全方案 A · 2026-05-29 Boss 拍板）：
+抓取策略 v2 (2026-05-29 切换源):
+  jancode.xyz 整站升级风控,所有 server-side 访问 403 → 切 kakaku.com
   1. PG cache hit (nst.item_image_cache) → 直接返回
-  2. urllib HEAD jancode.xyz/images/<JAN>.jpg → 200 + size > 8KB → ok
-  3. 都没 → status=not_found，用户后续可手动补 URL
-  ※ 容器内 urllib 直出，无 127.0.0.1 代理；公网仅访问公开图片站；
-     外发数据仅 JAN 13 位条码（公开非敏感）。
+  2. GET https://search.kakaku.com/<JAN>/  (shift_jis HTML)
+     → 解析 <img class="p-item_visual_entity"> 的 src/data-src
+     → 取第一张作主图(实际是楽天/Amazon CDN 直链, 不被 ban)
+  3. 抓图 → 入 cache + bytes_map
+  4. 都没 → status=not_found
+  ※ 容器内 urllib 直出, 无 127.0.0.1 代理; 仅访问公开图片站;
+     外发数据仅 JAN 13 位条码(公开非敏感)。
 
-输出：进度表 + ZIP 下载（仅成功项）。
+输出: 进度表 + ZIP 下载(仅成功项)。
 """
 from __future__ import annotations
 
@@ -35,13 +39,21 @@ inject_theme()
 lang_selector()
 
 st.title(t("🔍 画像検索"))
-st.caption(t("JAN → 主图自动抓取（jancode.xyz）· 结果缓存到 PG · ZIP 一键下载"))
+st.caption(t("JAN → 主图自动抓取（kakaku.com 搜索结果首图，取自楽天/Amazon CDN）· 结果缓存到 PG · ZIP 一键下载"))
 
-JANCODE_BASE = "https://www.jancode.xyz"
-JANCODE_SEARCH_FMT = "https://www.jancode.xyz/{jan}"
-JANCODE_IMG_RE = re.compile(r'src="(/images/[^"]+\.(?:jpg|jpeg|png|webp))"', re.IGNORECASE)
+KAKAKU_SEARCH_FMT = "https://search.kakaku.com/{jan}/"
+# kakaku 商品卡内的主图：<img class="p-item_visual_entity" src="..."> 或 data-src="..."
+KAKAKU_IMG_RE = re.compile(
+    r'<img[^>]*class="p-item_visual_entity"[^>]*?(?:src|data-src)="(https?://[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+    re.IGNORECASE,
+)
+# 兜底：第一张 data-src 楽天/Amazon 直链
+KAKAKU_FALLBACK_RE = re.compile(
+    r'data-src="(https?://(?:tshop\.r10s\.jp|m\.media-amazon\.com|img\.kakaku\.k-img\.com)[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+    re.IGNORECASE,
+)
 HTTP_TIMEOUT = 10
-MIN_IMAGE_BYTES = 4000
+MIN_IMAGE_BYTES = 2000
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 
@@ -70,34 +82,43 @@ def _load_cache(conn, jans: list[str]) -> dict[str, dict]:
     return {r["jan_cd"]: dict(r) for r in rows}
 
 
-def _fetch_jancode(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
-    """两步抓 jancode.xyz：搜索页解析 img path → 抓图。
+def _fetch_kakaku(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
+    """两步抓 kakaku.com：搜索页解析商品图直链(楽天/Amazon CDN) → 抓图。
 
     返回 (status, bytes_or_None, size, error_msg, image_url)
     """
-    search_url = JANCODE_SEARCH_FMT.format(jan=jan)
+    search_url = KAKAKU_SEARCH_FMT.format(jan=jan)
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+        "Accept-Encoding": "gzip, deflate",
     }
     try:
         req = urllib.request.Request(search_url, headers=headers)
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
+            raw = resp.read()
+            # kakaku 是 shift_jis
+            html = raw.decode("shift_jis", errors="ignore")
     except urllib.error.HTTPError as e:
         return ("error", None, 0, f"search HTTP {e.code}", None)
     except Exception as e:
         return ("error", None, 0, f"search {str(e)[:160]}", None)
 
-    m = JANCODE_IMG_RE.search(html)
+    # 优先 p-item_visual_entity 主图（kakaku 商品卡）
+    m = KAKAKU_IMG_RE.search(html)
     if not m:
-        return ("not_found", None, 0, "no img in search page", None)
-    img_path = m.group(1)
-    img_url = JANCODE_BASE + img_path
+        m = KAKAKU_FALLBACK_RE.search(html)
+    if not m:
+        return ("not_found", None, 0, "no item img in kakaku search", None)
+    img_url = m.group(1)
 
-    img_headers = {**headers, "Referer": search_url,
-                   "Accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8"}
+    img_headers = {
+        "User-Agent": USER_AGENT,
+        "Referer": search_url,
+        "Accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+    }
     try:
         req2 = urllib.request.Request(img_url, headers=img_headers)
         with urllib.request.urlopen(req2, timeout=HTTP_TIMEOUT) as resp:
@@ -109,6 +130,10 @@ def _fetch_jancode(jan: str) -> tuple[str, bytes | None, int, str | None, str | 
         return ("error", None, 0, f"img HTTP {e.code}", img_url)
     except Exception as e:
         return ("error", None, 0, f"img {str(e)[:160]}", img_url)
+
+
+# Backward alias (调用方仍用旧名)
+_fetch_jancode = _fetch_kakaku
 
 
 def _upsert_cache(conn, jan: str, url: str | None, source: str | None,
@@ -134,7 +159,8 @@ def _upsert_cache(conn, jan: str, url: str | None, source: str | None,
 
 with st.expander(t("📌 抓取规则与数据安全说明"), expanded=False):
     st.markdown(t(
-        "- **抓取源**：jancode.xyz（公开商品图直链）\n"
+        "- **抓取源**：kakaku.com 搜索结果首图（实际图直链来自楽天/Amazon CDN · 公开非敏感）\n"
+        "- **旧源 jancode.xyz**：整站升级风控对 server-side 全 403，已切换\n"
         "- **缓存**：命中过的 JAN 直接返回，不重复抓\n"
         "- **外发数据**：仅 JAN 13 位条码（公开非敏感）· 无 127.0.0.1 代理\n"
         "- **失败标记**：抓不到的标 `not_found`，后续可手动补 URL\n"
@@ -192,9 +218,9 @@ if btn_run:
                 status, data, size, err, img_url = _fetch_jancode(jan)
                 if status == "ok":
                     bytes_map[jan] = data
-                    _upsert_cache(conn, jan, img_url, "jancode", "ok", size, None)
+                    _upsert_cache(conn, jan, img_url, "kakaku", "ok", size, None)
                     results.append({
-                        "jan": jan, "url": img_url, "source": "jancode",
+                        "jan": jan, "url": img_url, "source": "kakaku",
                         "status": "ok", "size": size, "captured_at": datetime.now(),
                     })
                     n_new_ok += 1
@@ -267,7 +293,8 @@ if results:
                 try:
                     req = urllib.request.Request(url, headers={
                         "User-Agent": USER_AGENT,
-                        "Referer": JANCODE_SEARCH_FMT.format(jan=jan),
+                        "Referer": KAKAKU_SEARCH_FMT.format(jan=jan),
+                        "Accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8",
                     })
                     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
                         data = resp.read()
