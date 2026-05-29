@@ -37,10 +37,12 @@ lang_selector()
 st.title(t("🔍 画像検索"))
 st.caption(t("JAN → 主图自动抓取（jancode.xyz）· 结果缓存到 PG · ZIP 一键下载"))
 
-JANCODE_URL_FMT = "https://www.jancode.xyz/images/{jan}.jpg"
+JANCODE_BASE = "https://www.jancode.xyz"
+JANCODE_SEARCH_FMT = "https://www.jancode.xyz/{jan}"
+JANCODE_IMG_RE = re.compile(r'src="(/images/[^"]+\.(?:jpg|jpeg|png|webp))"', re.IGNORECASE)
 HTTP_TIMEOUT = 10
-MIN_IMAGE_BYTES = 8000
-USER_AGENT = "Mozilla/5.0 (compatible; CMS-image-fetch/1.0)"
+MIN_IMAGE_BYTES = 4000
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 
 def _parse_jans(raw: str) -> list[str]:
@@ -68,22 +70,45 @@ def _load_cache(conn, jans: list[str]) -> dict[str, dict]:
     return {r["jan_cd"]: dict(r) for r in rows}
 
 
-def _fetch_jancode(jan: str) -> tuple[str, bytes | None, int, str | None]:
-    """返回 (status, bytes_or_None, size, error_msg)."""
-    url = JANCODE_URL_FMT.format(jan=jan)
+def _fetch_jancode(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
+    """两步抓 jancode.xyz：搜索页解析 img path → 抓图。
+
+    返回 (status, bytes_or_None, size, error_msg, image_url)
+    """
+    search_url = JANCODE_SEARCH_FMT.format(jan=jan)
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+    }
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        req = urllib.request.Request(search_url, headers=headers)
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as e:
+        return ("error", None, 0, f"search HTTP {e.code}", None)
+    except Exception as e:
+        return ("error", None, 0, f"search {str(e)[:160]}", None)
+
+    m = JANCODE_IMG_RE.search(html)
+    if not m:
+        return ("not_found", None, 0, "no img in search page", None)
+    img_path = m.group(1)
+    img_url = JANCODE_BASE + img_path
+
+    img_headers = {**headers, "Referer": search_url,
+                   "Accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8"}
+    try:
+        req2 = urllib.request.Request(img_url, headers=img_headers)
+        with urllib.request.urlopen(req2, timeout=HTTP_TIMEOUT) as resp:
             data = resp.read()
             if len(data) < MIN_IMAGE_BYTES:
-                return ("not_found", None, len(data), f"size<{MIN_IMAGE_BYTES}")
-            return ("ok", data, len(data), None)
+                return ("not_found", None, len(data), f"size<{MIN_IMAGE_BYTES}", img_url)
+            return ("ok", data, len(data), None, img_url)
     except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return ("not_found", None, 0, "404")
-        return ("error", None, 0, f"HTTP {e.code}")
+        return ("error", None, 0, f"img HTTP {e.code}", img_url)
     except Exception as e:
-        return ("error", None, 0, str(e)[:200])
+        return ("error", None, 0, f"img {str(e)[:160]}", img_url)
 
 
 def _upsert_cache(conn, jan: str, url: str | None, source: str | None,
@@ -164,24 +189,23 @@ if btn_run:
                 })
                 n_cache += 1
             else:
-                status, data, size, err = _fetch_jancode(jan)
+                status, data, size, err, img_url = _fetch_jancode(jan)
                 if status == "ok":
-                    url = JANCODE_URL_FMT.format(jan=jan)
                     bytes_map[jan] = data
-                    _upsert_cache(conn, jan, url, "jancode", "ok", size, None)
+                    _upsert_cache(conn, jan, img_url, "jancode", "ok", size, None)
                     results.append({
-                        "jan": jan, "url": url, "source": "jancode",
+                        "jan": jan, "url": img_url, "source": "jancode",
                         "status": "ok", "size": size, "captured_at": datetime.now(),
                     })
                     n_new_ok += 1
                 else:
-                    _upsert_cache(conn, jan, None, None, status, 0, err)
+                    _upsert_cache(conn, jan, img_url, None, status, 0, err)
                     results.append({
-                        "jan": jan, "url": None, "source": None,
+                        "jan": jan, "url": img_url, "source": None,
                         "status": status, "size": 0, "captured_at": datetime.now(),
                     })
                     n_new_fail += 1
-                time.sleep(0.15)  # 礼貌限速
+                time.sleep(0.25)  # 礼貌限速（两次 HTTP 一组）
 
             progress.progress(i / len(jans), text=t(f"抓取中 {i}/{len(jans)} · cache={n_cache} ok={n_new_ok} fail={n_new_fail}"))
             if i % 10 == 0:
@@ -229,19 +253,22 @@ if results:
             st.dataframe(df_fail[["jan", "status"]], use_container_width=True, height=200)
 
     bytes_map = st.session_state.get("_image_search_bytes") or {}
-    cache_only_jans = [r["jan"] for r in results
-                        if r["status"] == "ok (cache)" and r["jan"] not in bytes_map]
+    cache_only = [r for r in results
+                  if r["status"] == "ok (cache)" and r["url"] and r["jan"] not in bytes_map]
 
     st.divider()
     st.subheader(t("📦 打包下载"))
 
     if st.button(t("⬇️ 重新下载缓存命中的图片并打包 ZIP"),
-                 disabled=not (bytes_map or cache_only_jans)):
+                 disabled=not (bytes_map or cache_only)):
         with st.spinner(t("下载并打包中...")):
-            for jan in cache_only_jans:
-                url = JANCODE_URL_FMT.format(jan=jan)
+            for r in cache_only:
+                jan, url = r["jan"], r["url"]
                 try:
-                    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                    req = urllib.request.Request(url, headers={
+                        "User-Agent": USER_AGENT,
+                        "Referer": JANCODE_SEARCH_FMT.format(jan=jan),
+                    })
                     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
                         data = resp.read()
                         if len(data) >= MIN_IMAGE_BYTES:
