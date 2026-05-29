@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -38,7 +39,12 @@ lang_selector()
 
 st.title(t("📝 商品登录"))
 
-tab_native, tab_legacy = st.tabs([t("🆕 原生版 (MVP)"), t("📜 旧 HTML 版")])
+tab_item, tab_bundle, tab_legacy = st.tabs([
+    t("🆕 商品登録 (原生)"),
+    t("📦 セット品登録 (原生)"),
+    t("📜 旧 HTML 版"),
+])
+tab_native = tab_item  # 保留旧变量名兼容下文
 
 # ───────────────────────── NSTマスタ xlsx 解析 ─────────────────────────
 
@@ -267,6 +273,168 @@ with tab_native:
             ))
     elif uploaded is None:
         st.info(t("📤 上传 NSTマスタ xlsx 开始（拖入或点击上方上传区）"))
+
+
+# ───────────────────────── tab 📦 セット品登録 (原生) ─────────────────────────
+
+_BUNDLE_LINE_RE = re.compile(r"^\s*(\d{8,14})\s*[_,\-\s]\s*(\d{1,2})\s*$")
+
+
+def _parse_bundle_lines(raw: str) -> tuple[list[dict], list[str]]:
+    """解析 JAN_数量 多行（如 `4901234567890_3`），返回 (items, errors)。"""
+    items: list[dict] = []
+    errors: list[str] = []
+    for i, line in enumerate((raw or "").splitlines(), 1):
+        if not line.strip():
+            continue
+        m = _BUNDLE_LINE_RE.match(line)
+        if not m:
+            errors.append(f"第 {i} 行格式错误：「{line}」(期望 JAN_数量)")
+            continue
+        jan, qty = m.group(1), int(m.group(2))
+        if qty < 1:
+            errors.append(f"第 {i} 行数量必须 ≥1：「{line}」")
+            continue
+        items.append({"line": i, "jan": jan, "qty": qty, "bundle_sku": f"{jan}_{qty}"})
+    return items, errors
+
+
+def _fetch_internal_ids(conn, jans: list[str]) -> dict[str, dict]:
+    if not jans:
+        return {}
+    placeholder = ",".join(["%s"] * len(jans))
+    rows = conn.execute(
+        f"SELECT jan, internal_id, display_name FROM nst.item_master_raw "
+        f"WHERE jan IN ({placeholder})",
+        jans,
+    ).fetchall()
+    return {r["jan"]: dict(r) for r in rows}
+
+
+with tab_bundle:
+    st.caption(t(
+        "セット品登録 · 输入 JAN_数量 多行 → 从 PG 自动拉 Internal ID → "
+        "生成 NST 父/子组合货品 CSV（NetSuite 上传）"
+    ))
+
+    with st.expander(t("📌 セット品登録 说明"), expanded=False):
+        st.markdown(t(
+            "- **输入格式**：每行一个 `JAN_数量`（例如 `4901234567890_3` 表示该 JAN 配 3 个）\n"
+            "- **数据源**：Internal ID + 日文品名 自动从 `nst.item_master_raw` 取（不再上传 NST item.xls）\n"
+            "- **输出**：NST 父组合货品 CSV + 子组合货品 CSV（ZIP 打包）\n"
+            "  - 父表：外部ID / 名称（`<JAN>_<qty>`）\n"
+            "  - 子表：外部ID / 父记录 / 内部ID / UPC Code / 价格\n"
+            "- **JD/BM 组合品 xlsx**：本 tab 暂不出（需中英文品名），仍走「📜 旧 HTML 版」tab"
+        ))
+
+    bundle_text = st.text_area(
+        t("セット品リスト（每行 `JAN_数量`）"),
+        height=200,
+        placeholder="4901234567890_3\n4905678901234_2\n...",
+        key="page15_bundle_text",
+    )
+
+    btn_bundle_query = st.button(t("🔍 查询 PG 并预览"), type="primary",
+                                  disabled=not bundle_text, key="page15_bundle_query")
+
+    if btn_bundle_query:
+        items, parse_errors = _parse_bundle_lines(bundle_text)
+        st.session_state["page15_bundle_items"] = items
+        st.session_state["page15_bundle_parse_errors"] = parse_errors
+
+        if items:
+            with get_connection() as conn:
+                pg_map = _fetch_internal_ids(conn, [it["jan"] for it in items])
+            st.session_state["page15_bundle_pg_map"] = pg_map
+
+    items: list[dict] = st.session_state.get("page15_bundle_items") or []
+    parse_errors: list[str] = st.session_state.get("page15_bundle_parse_errors") or []
+    pg_map: dict = st.session_state.get("page15_bundle_pg_map") or {}
+
+    if parse_errors:
+        with st.expander(t(f"⚠️ 解析错误 {len(parse_errors)} 条（这些行不进 CSV）"),
+                          expanded=True):
+            for e in parse_errors:
+                st.text(f"• {e}")
+
+    if items:
+        rows = []
+        for it in items:
+            pg = pg_map.get(it["jan"]) or {}
+            rows.append({
+                "JAN": it["jan"],
+                "数量": it["qty"],
+                "bundle_sku": it["bundle_sku"],
+                "Internal ID": pg.get("internal_id") or "",
+                "日文品名": pg.get("display_name") or "",
+                "状态": "✅ 命中" if pg.get("internal_id") else "❌ PG 未命中",
+            })
+        df_bundle = pd.DataFrame(rows)
+
+        n_hit = (df_bundle["Internal ID"] != "").sum()
+        n_miss = (df_bundle["Internal ID"] == "").sum()
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric(t("セット品数"), len(items))
+        c2.metric(t("PG 命中"), int(n_hit))
+        c3.metric(t("PG 未命中"), int(n_miss), delta_color="inverse")
+        c4.metric(t("子记录行数"), int(df_bundle["数量"].sum()))
+
+        st.subheader(t("📋 セット品预览（命中行才进 CSV）"))
+        st.dataframe(df_bundle, use_container_width=True, height=300)
+
+        st.divider()
+        st.subheader(t("📦 生成 NST 父/子 CSV"))
+
+        if st.button(t("⬇️ 生成 ZIP（父表 + 子表 CSV）"), type="primary",
+                     key="page15_bundle_gen"):
+            valid = [r for r in rows if r["Internal ID"]]
+            if not valid:
+                st.error(t("❌ 没有命中行可生成（请确认 JAN 已在 nst.item_master_raw）"))
+            else:
+                # 父表
+                parent_buf = io.StringIO()
+                pw = pd.DataFrame(
+                    [{"外部 ID": r["bundle_sku"], "名称": r["bundle_sku"]} for r in valid]
+                )
+                pw.to_csv(parent_buf, index=False, encoding=None)
+                parent_csv = parent_buf.getvalue().encode("utf-8-sig")
+
+                # 子表（每行展开 qty 次）
+                child_rows = []
+                for r in valid:
+                    for i in range(1, int(r["数量"]) + 1):
+                        child_rows.append({
+                            "外部 ID": f"{r['bundle_sku']}_{i}",
+                            "父记录": r["bundle_sku"],
+                            "内部 ID": r["Internal ID"],
+                            "UPC Code": r["JAN"],
+                            "价格": "",
+                        })
+                child_buf = io.StringIO()
+                pd.DataFrame(child_rows).to_csv(child_buf, index=False)
+                child_csv = child_buf.getvalue().encode("utf-8-sig")
+
+                date_str = datetime.now().strftime("%Y%m%d")
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr(f"NST_父组合货品SKU_{date_str}.csv", parent_csv)
+                    zf.writestr(f"NST_子组合货品_{date_str}.csv", child_csv)
+                buf.seek(0)
+                st.session_state["page15_bundle_zip"] = buf.getvalue()
+                st.session_state["page15_bundle_zip_n"] = (len(valid), len(child_rows))
+
+        zip_bytes = st.session_state.get("page15_bundle_zip")
+        if zip_bytes:
+            n_parent, n_child = st.session_state.get("page15_bundle_zip_n", (0, 0))
+            st.download_button(
+                t(f"⬇️ 下载 ZIP（父 {n_parent} 行 + 子 {n_child} 行）"),
+                data=zip_bytes,
+                file_name=f"セット品登録_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip",
+                type="primary",
+            )
+            st.success(t(f"✅ 已生成 · 解压含 2 份 CSV，直传 NetSuite"))
 
 
 # ───────────────────────── tab 📜 旧 HTML 版 ─────────────────────────
