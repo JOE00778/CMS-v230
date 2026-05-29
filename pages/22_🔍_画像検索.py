@@ -183,10 +183,11 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
         "imageFlag": "1",
     }
     api_url = f"{RAKUTEN_API_URL}?{urllib.parse.urlencode(params)}"
-    # 楽天 v2026-04 强制要求 Referer 在 app 的 allowed_websites 白名单内
+    # 楽天 v2026-04 Web Application 类 app 走 CORS 标准: Origin 必填且在 allowed_websites 白名单内
+    # 实测 Referer 不被识别, Origin 才被识别
     api_headers = {
         "User-Agent": USER_AGENT,
-        "Referer": "https://smikie-cms.cc",
+        "Origin": "https://smikie-cms.cc",
     }
     try:
         req = urllib.request.Request(api_url, headers=api_headers)
