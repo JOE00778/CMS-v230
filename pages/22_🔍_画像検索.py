@@ -17,12 +17,14 @@
 """
 from __future__ import annotations
 
+import gzip
 import io
 import re
 import time
 import urllib.request
 import urllib.error
 import zipfile
+import zlib
 from datetime import datetime
 
 import pandas as pd
@@ -103,6 +105,11 @@ def _fetch_kakaku(jan: str) -> tuple[str, bytes | None, int, str | None, str | N
         req = urllib.request.Request(search_url, headers=headers)
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             raw = resp.read()
+            enc = (resp.headers.get("Content-Encoding") or "").lower()
+            if enc == "gzip":
+                raw = gzip.decompress(raw)
+            elif enc == "deflate":
+                raw = zlib.decompress(raw)
             # kakaku 是 shift_jis
             html = raw.decode("shift_jis", errors="ignore")
     except urllib.error.HTTPError as e:
