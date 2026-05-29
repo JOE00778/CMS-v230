@@ -12,3 +12,6 @@ beautifulsoup4>=4.12
 google-generativeai>=0.8
 # Page 26 图片翻译（Gemini 2.5 Flash Image）— 新版 SDK，独立于 google-generativeai
 google-genai>=0.3
+# Page 22 画像検索 · OCR 检测带文字水印图 (~50MB 含 ONNX 模型)
+# 缺失时 page 22 优雅降级为仅 shop 黑名单过滤
+rapidocr-onnxruntime>=1.3

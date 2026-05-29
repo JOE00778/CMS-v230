@@ -29,6 +29,7 @@ import urllib.error
 import zipfile
 import zlib
 from datetime import datetime
+from functools import lru_cache
 
 import pandas as pd
 import streamlit as st
@@ -179,6 +180,52 @@ _WATERMARK_SHOP_KEYWORDS = [
     "lohaco",                    # Yahoo LOHACO 入楽天
 ]
 
+# OCR 文字密度阈值：文字框面积 / 图总面积 > 此值则视为带水印图
+OCR_TEXT_RATIO_THRESHOLD = 0.05
+
+
+@lru_cache(maxsize=1)
+def _get_ocr():
+    """懒加载 RapidOCR (rapidocr-onnxruntime, ~50MB 含 ONNX 模型)。
+
+    未安装时返回 None, 调用方应 fallback 到无 OCR 模式（仅靠 shop 黑名单过滤）。
+    """
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        return RapidOCR()
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
+def _image_text_ratio(image_bytes: bytes) -> float | None:
+    """检测图中文字框面积占比。返回 0-1, None=OCR 不可用或图无效。"""
+    ocr = _get_ocr()
+    if ocr is None:
+        return None
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes))
+        w, h = img.size
+        if w * h == 0:
+            return None
+        result, _ = ocr(image_bytes)
+        if not result:
+            return 0.0
+        total = 0.0
+        for entry in result:
+            # entry = [box(4 points), text, score]
+            box = entry[0] if isinstance(entry, (list, tuple)) else None
+            if not box or len(box) < 4:
+                continue
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            total += (max(xs) - min(xs)) * (max(ys) - min(ys))
+        return total / (w * h)
+    except Exception:
+        return None
+
 
 def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, str | None]:
     """楽天 ItemSearch API · v2026-04 新 endpoint, 需 applicationId + accessKey + Origin。
@@ -228,42 +275,54 @@ def _fetch_rakuten_api(jan: str) -> tuple[str, bytes | None, int, str | None, st
     if not items:
         return ("not_found", None, 0, "rakuten API no items", None)
 
-    # 遍历多候选, 跳过带水印的店铺
-    img_url = None
-    chosen_shop = ""
-    skipped_shops = []
+    # 第一步: shop 黑名单过滤
+    candidates = []  # list of (item_dict, raw_url)
     for entry in items:
         item = entry.get("Item") or {}
         shop_code = (item.get("shopCode") or "").lower()
         shop_name = (item.get("shopName") or "").lower()
         if any(kw in shop_code or kw in shop_name for kw in _WATERMARK_SHOP_KEYWORDS):
-            skipped_shops.append(item.get("shopCode") or "?")
             continue
         for k in ("mediumImageUrls", "smallImageUrls"):
             imgs = item.get(k) or []
             if imgs:
                 cand = imgs[0]
-                if isinstance(cand, dict):
-                    cand_url = cand.get("imageUrl") or cand.get("image_url")
-                else:
-                    cand_url = cand
+                cand_url = cand.get("imageUrl") if isinstance(cand, dict) else cand
                 if cand_url:
-                    img_url = cand_url
-                    chosen_shop = item.get("shopCode") or ""
+                    candidates.append((item, cand_url))
                     break
-        if img_url:
-            break
 
-    if not img_url:
-        # 都被过滤了 → 退回第一个 item (即使带水印, 也比无图强)
-        first = (items[0].get("Item") or {})
+    # 第二步: OCR 文字面积检测（仅对前 5 个候选, 限制耗时）
+    img_url = None
+    ocr_available = _get_ocr() is not None
+    if ocr_available and candidates:
+        for item, cand_url in candidates[:5]:
+            try:
+                # 用小 thumbnail (?_ex=128x128) 做 OCR 检测,省带宽
+                probe_url = cand_url.split("?")[0] + "?_ex=200x200"
+                req_p = urllib.request.Request(probe_url, headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(req_p, timeout=8) as r:
+                    probe_bytes = r.read()
+                ratio = _image_text_ratio(probe_bytes)
+                if ratio is not None and ratio < OCR_TEXT_RATIO_THRESHOLD:
+                    img_url = cand_url
+                    break
+            except Exception:
+                continue
+
+    # 第三步: OCR 没找到干净的 → fallback 用第一个 shop 过滤后的候选
+    if not img_url and candidates:
+        img_url = candidates[0][1]
+    # 第四步: shop 全被黑名单过滤 → 退回第一个原始 item
+    if not img_url and items:
+        first = items[0].get("Item") or {}
         for k in ("mediumImageUrls", "smallImageUrls"):
             imgs = first.get(k) or []
             if imgs:
                 cand = imgs[0]
-                img_url = (cand.get("imageUrl") if isinstance(cand, dict) else cand)
-                chosen_shop = first.get("shopCode") or "fallback"
-                break
+                img_url = cand.get("imageUrl") if isinstance(cand, dict) else cand
+                if img_url:
+                    break
     if not img_url:
         return ("not_found", None, 0, "rakuten API item w/o image", None)
 
