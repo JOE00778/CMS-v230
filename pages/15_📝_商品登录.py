@@ -124,13 +124,31 @@ with tab_native:
             "- **BM 规则**：SPU=JAN · ERP 类目留空 · 英文名称留空（用户后填）"
         ))
 
-    uploaded = st.file_uploader(
-        t(f"📤 上传 NSTマスタ xlsx（sheet 名 = {NST_SHEET_NAME}）"),
-        type=["xlsx"],
-        key="page15_upload",
-    )
+    _ITEM_RESULT_KEYS = [
+        "page15_df", "page15_warns", "page15_zip_bytes", "page15_zip_rows",
+    ]
+
+    col_u1, col_u2 = st.columns([4, 1])
+    with col_u1:
+        uploaded = st.file_uploader(
+            t(f"📤 上传 NSTマスタ xlsx（sheet 名 = {NST_SHEET_NAME}）"),
+            type=["xlsx"],
+            key="page15_upload",
+        )
+    with col_u2:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        if st.button(t("🗑️ 清除结果"), key="page15_item_clear",
+                     use_container_width=True,
+                     help=t("清除上次解析结果，准备下一份")):
+            for k in _ITEM_RESULT_KEYS:
+                st.session_state.pop(k, None)
+            st.session_state.pop("page15_upload", None)
+            st.rerun()
 
     if uploaded:
+        # 修「第二次没法操作」：每次上传都重置旧 df 残留（uploaded 内容变了就以新为准）
+        for k in _ITEM_RESULT_KEYS:
+            st.session_state.pop(k, None)
         try:
             df, warns = _parse_nst_xlsx(uploaded)
         except ValueError as e:
@@ -334,10 +352,29 @@ with tab_bundle:
         key="page15_bundle_text",
     )
 
-    btn_bundle_query = st.button(t("🔍 查询 PG 并预览"), type="primary",
-                                  disabled=not bundle_text, key="page15_bundle_query")
+    _BUNDLE_RESULT_KEYS = [
+        "page15_bundle_items", "page15_bundle_parse_errors", "page15_bundle_pg_map",
+        "page15_bundle_zip", "page15_bundle_zip_n",
+    ]
+
+    col_b1, col_b2 = st.columns([1, 1])
+    with col_b1:
+        btn_bundle_query = st.button(t("🔍 查询 PG 并预览"), type="primary",
+                                     disabled=not bundle_text, key="page15_bundle_query",
+                                     use_container_width=True)
+    with col_b2:
+        if st.button(t("🗑️ 清除结果"), key="page15_bundle_clear",
+                     use_container_width=True,
+                     help=t("清除上次查询结果和 セット品 输入，准备下一批")):
+            for k in _BUNDLE_RESULT_KEYS:
+                st.session_state.pop(k, None)
+            st.session_state.pop("page15_bundle_text", None)
+            st.rerun()
 
     if btn_bundle_query:
+        # 修「第二次没法操作」：开新查询前清旧残留
+        for k in _BUNDLE_RESULT_KEYS:
+            st.session_state.pop(k, None)
         items, parse_errors = _parse_bundle_lines(bundle_text)
         st.session_state["page15_bundle_items"] = items
         st.session_state["page15_bundle_parse_errors"] = parse_errors

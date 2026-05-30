@@ -440,17 +440,34 @@ with st.expander(t("📌 抓取规则与数据安全说明"), expanded=False):
         "- **下载产物**：ZIP 仅包含成功抓取的 JPG"
     ))
 
+_PAGE22_RESULT_KEYS = [
+    "_image_search_results", "_image_search_bytes",
+    "_image_search_zip", "_image_search_zip_count",
+]
+
+
+def _clear_page22_state():
+    for k in _PAGE22_RESULT_KEYS:
+        st.session_state.pop(k, None)
+    st.session_state.pop("page22_jan_text", None)
+
+
 col_input, col_opt = st.columns([3, 1])
 with col_input:
     jan_text = st.text_area(
         t("JAN 列表（每行一个，支持空格/逗号/分号分隔 · ≤ 1000 件）"),
         height=180,
         placeholder="4901234567890\n4905678901234\n...",
+        key="page22_jan_text",
     )
 with col_opt:
     force_refetch = st.checkbox(t("强制重新抓取（忽略缓存）"), value=False)
     max_items = st.number_input(t("单次最多"), min_value=10, max_value=1000, value=200, step=50)
     btn_run = st.button(t("🚀 开始抓取"), type="primary", use_container_width=True)
+    if st.button(t("🗑️ 清除结果"), use_container_width=True,
+                 help=t("清除上次抓取结果和 JAN 输入，准备下一批")):
+        _clear_page22_state()
+        st.rerun()
 
 jans_all = _parse_jans(jan_text)
 if jans_all:
@@ -460,6 +477,10 @@ if btn_run:
     if not jans_all:
         st.warning(t("请先贴 JAN 列表"))
         st.stop()
+
+    # 修「第二次没法操作」：开新抓取前清掉旧结果残留
+    for k in _PAGE22_RESULT_KEYS:
+        st.session_state.pop(k, None)
 
     jans = jans_all[: int(max_items)]
     if len(jans_all) > len(jans):
