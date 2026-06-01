@@ -262,6 +262,10 @@ df["defined_cost"] = df["revenue"] - df["gross_profit"]  # NetSuite 口径の原
 _today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
 _cutoff = _today - dt.timedelta(days=1)
 df = df[df["sale_date"] <= _cutoff]
+if df.empty:
+    # 当月初日など、確定データ（前日分まで）がまだ無いケース
+    st.info(t("確定済みの売上データがまだありません（前日分は翌07:00に取得）"))
+    st.stop()
 df = add_market_column(df, store_col="shop")
 df = add_owner_column(df, shop_col="shop")
 
