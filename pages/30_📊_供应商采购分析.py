@@ -195,6 +195,84 @@ def _render_analysis():
 
     st.divider()
 
+    # --- 🔎 供货商采购数据搜索（多选月份 / 多选供货商）Boss 2026-06-02 ---
+    st.subheader(t("🔎 供货商采购数据搜索"))
+    st.caption(t("选月份 + 选供货商（均可多选 · 留空 = 全部）→ SKU 级采购明细 + 供货商×月 金额汇总"))
+    _fc1, _fc2 = st.columns(2)
+    sel_months = _fc1.multiselect(
+        t("月份（多选 · 留空 = 全部）"), months, default=[], key="po_search_months")
+    _vendor_opts = sorted(sm["vendor_name"].dropna().astype(str).unique().tolist())
+    sel_vendors = _fc2.multiselect(
+        t("供货商（多选 · 留空 = 全部）"), _vendor_opts, default=[], key="po_search_vendors")
+
+    _conds, _p = [], {}
+    if sel_months:
+        _ph = []
+        for _i, _m in enumerate(sel_months):
+            _k = f"psm{_i}"; _ph.append(f"%({_k})s"); _p[_k] = _m
+        _conds.append("q.year_month IN (" + ",".join(_ph) + ")")
+    if sel_vendors:
+        _ph = []
+        for _i, _v in enumerate(sel_vendors):
+            _k = f"psv{_i}"; _ph.append(f"%({_k})s"); _p[_k] = _v
+        _conds.append("q.vendor_name IN (" + ",".join(_ph) + ")")
+    _where = (" WHERE " + " AND ".join(_conds)) if _conds else ""
+    _iwl = "JOIN nst.po_export_vendor ev ON ev.vendor_id = q.vendor_id" if only_export else ""
+    try:
+        det = _df(
+            "SELECT q.year_month, q.vendor_name, q.jan, q.display_name, "
+            "q.qty_ordered, q.amount, q.avg_unit_price "
+            f"FROM nst.po_item_supplier_monthly q {_iwl}{_where} "
+            "ORDER BY q.year_month DESC, q.vendor_name, q.amount DESC NULLS LAST",
+            _p,
+        )
+    except Exception as e:
+        st.error(t("⚠️ 采购明细读取失败") + f"\n\n{e}")
+        det = pd.DataFrame()
+
+    if det.empty:
+        st.info(t("无匹配采购数据（调整月份 / 供货商筛选）"))
+    else:
+        det["qty_ordered"] = pd.to_numeric(det["qty_ordered"], errors="coerce").fillna(0.0)
+        det["amount"] = pd.to_numeric(det["amount"], errors="coerce").fillna(0.0)
+        det["avg_unit_price"] = pd.to_numeric(det["avg_unit_price"], errors="coerce")
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric(t("SKU 明细行"), f"{len(det):,}")
+        s2.metric(t("总订货金额 (¥)"), f"¥{det['amount'].sum():,.0f}")
+        s3.metric(t("涉及供货商"), f"{det['vendor_name'].nunique():,}")
+        s4.metric(t("涉及月份"), f"{det['year_month'].nunique():,}")
+
+        # 供货商 × 月 金额 透视汇总
+        st.markdown("##### " + t("📊 供货商 × 月 金额汇总"))
+        piv = det.pivot_table(index="vendor_name", columns="year_month",
+                              values="amount", aggfunc="sum", fill_value=0.0)
+        piv = piv.reindex(sorted(piv.columns), axis=1)
+        piv[t("合計")] = piv.sum(axis=1)
+        piv = (piv.sort_values(t("合計"), ascending=False).reset_index()
+               .rename(columns={"vendor_name": t("仕入先")}))
+        st.dataframe(piv, hide_index=True, use_container_width=True, height=300,
+                     column_config={c: st.column_config.NumberColumn(format="¥%,.0f")
+                                    for c in piv.columns if c != t("仕入先")})
+
+        # SKU 采购明细
+        st.markdown("##### " + t("📋 SKU 采购明细"))
+        disp = det[["year_month", "vendor_name", "jan", "display_name",
+                    "qty_ordered", "avg_unit_price", "amount"]].rename(columns={
+            "year_month": t("月份"), "vendor_name": t("仕入先"), "jan": t("JAN"),
+            "display_name": t("商品名"), "qty_ordered": t("発注数"),
+            "avg_unit_price": t("加重平均単価"), "amount": t("金额"),
+        })
+        st.dataframe(disp, hide_index=True, use_container_width=True, height=420,
+                     column_config={
+                         t("加重平均単価"): st.column_config.NumberColumn(format="¥%,.2f"),
+                         t("金额"): st.column_config.NumberColumn(format="¥%,.0f")})
+        st.download_button(t("📥 采购明细 CSV 下载"),
+                           disp.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="po_search.csv", mime="text/csv", key="po_search_csv")
+
+    st.divider()
+
     # --- 预付款 PO 明细（当月） ---
     st.subheader(t("💰 预付款 PO 明细（{ym}）").format(ym=sel_month))
     st.caption(t("仅列出「输出供应商名单」里勾了「预付款」的供货商 PO·按 PO 单聚合·用于现金流管理"))
