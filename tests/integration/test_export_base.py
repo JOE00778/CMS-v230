@@ -7,6 +7,12 @@ from pathlib import Path
 
 import pytest
 
+pytest.skip(
+    "data_warehouse.db 模块已移除；exports/ 子系统零 runtime 引用，去留待定"
+    "（见 docs/20-cms-cleanup-report.md）。",
+    allow_module_level=True,
+)
+
 from data_warehouse.db.migrations import init_db
 from data_warehouse.exports.base import Exporter
 

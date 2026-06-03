@@ -1,5 +1,15 @@
 # 商品信息管理 Backlog v2
 
+> **⚠️ 2026-06-03 现状校正（v2 已严重过时）**：下方 v2 描述停留在 2026-05-05，与现状差距很大——
+> - modules/ 现有 **5 个**（cost_sync / image_translate / inventory_health / operation_advice / rank_classifier），非 v2 说的「只有 cost_sync」
+> - Streamlit 页现有 **29 个**（pages/02~32），非 v2 说的「6 页」
+> - 数据源已从本地 SQLite 迁移到 **PostgreSQL**（database 仓库为单一事实源），下方「NetSuite→CSV→SQLite」链路 + T-101~T-103 ingest 任务多已被 database 仓库的 ingester 取代
+> - **死代码 / 代码质量 / 测试健康的完整清单与整理路线图见 [docs/20-cms-cleanup-report.md](docs/20-cms-cleanup-report.md)**（新单一事实源）
+> - 当前测试套件 35 failed（SQLite→PG 迁移腐烂），重构前须先修
+>
+> 下方 v2 原文保留作历史参考。
+
+
 > **2026-05-05 v2 更新**：标记已完成项 + 在 PORTFOLIO v2 里降级到 Tier P1（让位 shopify 上线冲刺）。
 >
 > 数据源 = NetSuite Saved Search → CSV → 本地 SQLite。
