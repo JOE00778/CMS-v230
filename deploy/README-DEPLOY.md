@@ -154,10 +154,8 @@ shouhin-jouhou-kanri-v3/
 │   ├── rank_classifier/
 │   └── operation_advice/
 ├── data_warehouse/
-│   ├── db/schema.sql              # 16 张表 schema
-│   ├── db/migrations.py
-│   ├── ingest/                    # 5 个 ingestor
-│   └── exports/
+│   ├── templates/                # NST/JD item master 模板（page 03/07/15 用）
+│   └── warehouse.db              # 本地缓存（gitignore）
 ├── shared/
 │   ├── db.py
 │   ├── supabase_client.py

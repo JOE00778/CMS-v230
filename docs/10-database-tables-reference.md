@@ -550,11 +550,11 @@ UNIQUE：自增 id（无业务唯一约束 — DELETE+INSERT 模式）
 
 ---
 
-### `_export_runs` — NetSuite CSV 回写记录
+### `_export_runs` — NetSuite CSV 回写记录（⚠️ 已废弃 2026-06-03）
 
 **实测行数**：0
 
-写：`data_warehouse/exports/cost_update.py`
+~~写：`data_warehouse/exports/cost_update.py`~~ — `exports/` 孤儿子系统已删除（见 docs/20）；成本更新 CSV 现由 page 03 定義原価編集 + `templates/nst_item_master` 生成
 
 ---
 
