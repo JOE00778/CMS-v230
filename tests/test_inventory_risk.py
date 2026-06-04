@@ -126,3 +126,42 @@ def test_inventory_turnover_zero_or_negative_stock():
 def test_inventory_turnover_no_sales():
     assert ir.inventory_turnover(0, 100) == 0.0
     assert ir.inventory_turnover(None, 100) == 0.0
+
+
+# ---- 断货判定 is_stockout ----
+
+def test_is_stockout_true_when_prev_sold_and_zero_stock():
+    assert ir.is_stockout(89, 0) is True
+    assert ir.is_stockout(1, 0) is True
+
+
+def test_is_stockout_false():
+    assert ir.is_stockout(89, 5) is False     # 有库存
+    assert ir.is_stockout(0, 0) is False       # 上月无销量
+    assert ir.is_stockout(None, 0) is False
+    assert ir.is_stockout(10, None) is True    # 库存 None → 0 → 断货
+
+
+# ---- 断货率 stockout_rate_by_rank ----
+
+def test_stockout_rate_by_rank():
+    df = pd.DataFrame([
+        {"rank": "Aランク", "is_stockout": True},
+        {"rank": "Aランク", "is_stockout": True},
+        *[{"rank": "Aランク", "is_stockout": False} for _ in range(8)],   # A: 10 个, 2 断货 → 20%
+        {"rank": "Bランク", "is_stockout": True},
+        {"rank": "Bランク", "is_stockout": False},                         # B: 2 个, 1 断货 → 50%
+        {"rank": "", "is_stockout": True},                                # 无等级 → 不计
+        {"rank": None, "is_stockout": True},
+    ])
+    g = ir.stockout_rate_by_rank(df)
+    a = g[g["rank"] == "Aランク"].iloc[0]
+    assert int(a["total"]) == 10 and int(a["stockout"]) == 2
+    assert a["rate"] == pytest.approx(0.2)
+    b = g[g["rank"] == "Bランク"].iloc[0]
+    assert b["rate"] == pytest.approx(0.5)
+    assert set(g["rank"]) == {"Aランク", "Bランク"}   # 无等级被排除
+
+
+def test_stockout_rate_empty_or_missing_cols():
+    assert ir.stockout_rate_by_rank(pd.DataFrame({"x": [1]})).empty

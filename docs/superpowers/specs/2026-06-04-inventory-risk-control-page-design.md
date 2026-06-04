@@ -121,3 +121,15 @@ Boss 纠正：**风控分档不该用完売率**（那是「每月订货量合�
 - `classify_risk(stock, monthly_sold, *, reorder_months, overstock_months)` 重写为库存月数判断；阈值 key 改 `reorder_months/overstock_months`；新增 `stock_months()` 纯函数；`enrich` 改用 `current_stock`，资金占用=当前库存×cost_estimate。单测同步重写（16 passed）。
 - **新增数据依赖** `nst.inventory_snapshot`（当前JD库存）；该表无数据时页面 warn（有销量者会全判断为断货）。
 - 三档清单加列：当前库存(JD) / 库存月数；断货档按库存月数升序（最急在前）。SKU 360 加库存月数列。
+
+---
+
+## 增补 v4（2026-06-04）：断货标记 / 断货率 + 去掉「我的看板」预设
+
+- **去掉「我的看板」预设**（全部SKU/断货+压库存/A/B商品/仅NEW）—— 筛选默认不限风险/等级。
+- **断货标记**：`is_stockout = 上月(选中月前一月)有销量>0 且 当前库存(月末在库)=0`（有需求但无货）。
+  三档清单 + SKU 列设置加「断货」列（🚫断货）。纯函数 `inventory_risk.is_stockout` + 单测。
+- **库存状态筛选**：全部 / 有货(当前库存>0) / 断货(is_stockout)。
+- **断货率（按商品等级）**：`stockout_rate_by_rank` 纯函数（仅有等级产品为母数）→ 该等级断货数/总数。
+  以**选中月全量**为基数（不受风险/搜索筛选影响），expander 展示 等级×总数×断货数×断货率。单测覆盖 A 级 10/2→20%。
+- 全量 137 passed。

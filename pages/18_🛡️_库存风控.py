@@ -20,6 +20,7 @@ from shared.i18n import lang_selector, t
 from shared.inventory_risk import (
     RISK_STOCKOUT, RISK_NORMAL, RISK_OVERSTOCK, RISK_NO_DATA, RISK_LABELS,
     enrich, load_risk_thresholds, save_risk_thresholds,
+    is_stockout, stockout_rate_by_rank,
 )
 
 st.set_page_config(page_title=t("库存风控"), page_icon="🛡️", layout="wide")
@@ -118,41 +119,13 @@ df_all = enrich(df_all, _th)
 
 
 # ============================================================
-# 我的看板（预设视图）
+# 筛选基础数据
 # ============================================================
 months = sorted(df_all["year_month"].dropna().unique().tolist(), reverse=True)
 locations_all = sorted([x for x in df_all["location"].dropna().unique().tolist() if str(x).strip()])
 
-PRESETS = {
-    "全部 SKU": {"risks": [], "rank": []},
-    "断货 + 压库存": {"risks": [RISK_STOCKOUT, RISK_OVERSTOCK], "rank": []},
-    "A/B 商品": {"risks": [], "rank": ["A", "B"]},
-    "仅 NEW": {"risks": [], "rank": ["NEW"]},
-}
-
-st.markdown(f"##### 🗂️ {t('我的看板')}")
-preset_options = list(PRESETS.keys())
-try:
-    sel_preset = st.segmented_control(
-        t("预设视图"), options=preset_options, default="全部 SKU", label_visibility="collapsed")
-except (AttributeError, TypeError):
-    sel_preset = st.radio(
-        t("预设视图"), options=preset_options, index=0, horizontal=True, label_visibility="collapsed")
-if not sel_preset:
-    sel_preset = "全部 SKU"
-preset = PRESETS[sel_preset]
-
-_default_risks = preset["risks"] if preset["risks"] else [RISK_STOCKOUT, RISK_OVERSTOCK]
-_default_ranks = preset["rank"]
-
-# 预设变化时清掉旧 multiselect 状态, 让 default 生效
-_preset_state_key = "page18_last_preset"
-if st.session_state.get(_preset_state_key) != sel_preset:
-    for k in ("page18_risks", "page18_locs", "page18_ranks"):
-        st.session_state.pop(k, None)
-    st.session_state[_preset_state_key] = sel_preset
-
-st.divider()
+_default_risks = []   # 默认不限风险 / 等级（全部）
+_default_ranks = []
 
 
 # ============================================================
@@ -162,7 +135,7 @@ st.divider()
 rank_opts = (sorted([x for x in df_all["rank"].dropna().unique().tolist() if str(x).strip()])
              if "rank" in df_all.columns else [])
 
-f1, f2, f3, f4, f5 = st.columns([1.1, 1.7, 1.7, 1.7, 1.3])
+f1, f2, f3, f4, f5, f6 = st.columns([1.1, 1.6, 1.6, 1.6, 1.2, 1.2])
 with f1:
     sel_month = st.selectbox(t("月份"), months, index=0)
 with f2:
@@ -178,6 +151,10 @@ with f4:
 with f5:
     sel_intransit = st.selectbox(
         t("在途状态"), [t("全部"), t("有在途"), t("没在途")], index=0, key="page18_intransit")
+with f6:
+    sel_instock = st.selectbox(
+        t("库存状态"), [t("全部"), t("有货"), t("断货")], index=0, key="page18_instock",
+        help=t("断货 = 上月有销量 但 当前库存=0"))
 
 search_kw = st.text_area(
     t("JAN / item_code 搜索（多个用 空格 / 逗号 / 换行 分隔）"),
@@ -186,6 +163,20 @@ search_kw = st.text_area(
 
 # 应用筛选
 df = df_all[df_all["year_month"] == sel_month].copy()
+
+# 上月销量 + 断货标记（上月有销量 且 当前库存=0）→ 断货列 / 筛选 / 断货率
+_prev_ym = (months[months.index(sel_month) + 1]
+            if (sel_month in months and months.index(sel_month) + 1 < len(months)) else None)
+if _prev_ym:
+    _prevm = (df_all[df_all["year_month"] == _prev_ym][["internal_id", "qty_sold"]]
+              .drop_duplicates("internal_id").rename(columns={"qty_sold": "prev_month_sold"}))
+    df = df.merge(_prevm, how="left", on="internal_id")
+if "prev_month_sold" not in df.columns:
+    df["prev_month_sold"] = 0
+df["prev_month_sold"] = pd.to_numeric(df["prev_month_sold"], errors="coerce").fillna(0)
+df["is_stockout"] = [is_stockout(p, s) for p, s in zip(df["prev_month_sold"], df["current_stock"])]
+df_month_full = df.copy()   # 断货率基数（选中月全量·不受下方筛选影响）
+
 if sel_locations:
     df = df[df["location"].isin(sel_locations)]
 if sel_risks:
@@ -196,6 +187,10 @@ if sel_intransit == t("有在途"):
     df = df[df["in_transit_qty"] > 0]
 elif sel_intransit == t("没在途"):
     df = df[df["in_transit_qty"] <= 0]
+if sel_instock == t("有货"):
+    df = df[df["current_stock"] > 0]
+elif sel_instock == t("断货"):
+    df = df[df["is_stockout"]]
 if search_kw and search_kw.strip():
     import re as _re
     _tokens = [tk for tk in _re.split(r"[\s,，、;；]+", search_kw.strip()) if tk]
@@ -226,6 +221,15 @@ k5.metric(t("🟢 正常"), int(risk_counts.get(RISK_NORMAL, 0)))
 k6.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
 
 st.caption(t(f"当前筛选结果: {len(df)} 行 · 补货线<{reorder:g}月 / 压库存线>{overstock:g}月 · 当前库存=月末在库"))
+
+# 断货率（按商品等级·选中月全量·仅有等级产品·断货=上月有销量且当前库存0）
+_so = stockout_rate_by_rank(df_month_full)
+if not _so.empty:
+    with st.expander(f"📊 {t('断货率（按商品等级 · 上月有销量+当前库存0）')}", expanded=False):
+        _sod = _so.copy()
+        _sod["rate"] = (pd.to_numeric(_sod["rate"], errors="coerce").fillna(0) * 100).round(1).astype(str) + "%"
+        _sod.columns = [t("商品等级"), t("总数"), t("断货数"), t("断货率")]
+        st.dataframe(_sod, use_container_width=True, hide_index=True)
 st.divider()
 
 
@@ -240,6 +244,7 @@ ALL_COLS = [
     ("qty_sold", t("月销量")),
     ("current_stock", t("当前库存(月末)")),
     ("stock_months", t("库存月数")),
+    ("is_stockout", t("断货")),
     ("sell_through_rate", t("完売率(参考)")),
     ("capital_exposure", t("资金占用(¥)")),
 ]
@@ -262,6 +267,9 @@ def _render_df_with_csv(d: pd.DataFrame, csv_name: str):
     available = [c for c in DISPLAY_COLS if c in d.columns] or list(d.columns)
     show = d[available].copy()
     show.columns = [dict(ALL_COLS).get(c, c) for c in available]
+    so_col = t("断货")
+    if so_col in show.columns:
+        show[so_col] = show[so_col].map(lambda v: "🚫断货" if bool(v) else "")
     show_disp = show.copy()
     rate_col = t("完売率(参考)")
     if rate_col in show_disp.columns:

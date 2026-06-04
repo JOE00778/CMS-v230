@@ -135,3 +135,35 @@ def enrich(df, thresholds: dict | None = None):
     # 资金占用 = 当前库存 × 定義原価（压库存 = 圧迫資金）
     out["capital_exposure"] = out["current_stock"] * out["cost_estimate"]
     return out
+
+
+def is_stockout(prev_month_sold, current_stock) -> bool:
+    """断货 = 上月有销量（有需求）但 当前库存=0（无法满足）。純関数。"""
+    try:
+        ps = float(prev_month_sold) if prev_month_sold is not None else 0.0
+        st = float(current_stock) if current_stock is not None else 0.0
+    except (TypeError, ValueError):
+        return False
+    return ps > 0 and st <= 0
+
+
+def stockout_rate_by_rank(df, *, rank_col: str = "rank", flag_col: str = "is_stockout"):
+    """等级别 断货率。**有等级（非空）の商品のみ**を母数とする。
+
+    返回 DataFrame[rank, total, stockout, rate]（rate = stockout/total）。純 pandas。
+    """
+    import pandas as pd
+
+    if rank_col not in df.columns or flag_col not in df.columns:
+        return pd.DataFrame(columns=["rank", "total", "stockout", "rate"])
+    rk = df[rank_col].astype(str).str.strip()
+    d = df[df[rank_col].notna() & rk.ne("") & rk.ne("None")].copy()
+    if d.empty:
+        return pd.DataFrame(columns=["rank", "total", "stockout", "rate"])
+    d["_rk"] = d[rank_col].astype(str)
+    d["_flag"] = d[flag_col].astype(bool)
+    g = d.groupby("_rk").agg(total=("_flag", "size"), stockout=("_flag", "sum")).reset_index()
+    g.columns = ["rank", "total", "stockout"]
+    g["stockout"] = g["stockout"].astype(int)
+    g["rate"] = (g["stockout"] / g["total"]).fillna(0.0)
+    return g.sort_values("rank").reset_index(drop=True)
