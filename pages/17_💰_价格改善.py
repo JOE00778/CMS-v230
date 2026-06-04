@@ -37,8 +37,8 @@ def _normalize_jan(x):
 
 
 def _df(sql: str, params: tuple = ()) -> pd.DataFrame:
-    cur = conn.execute(sql, params) if params else conn.execute(sql)
-    return pd.DataFrame([dict(r) for r in cur.fetchall()])
+    from shared.db_helpers import df
+    return df(conn, sql, params)
 
 
 with st.spinner(t("📊 数据加载中...")):

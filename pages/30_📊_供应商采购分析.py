@@ -30,8 +30,8 @@ st.caption(t("数据源 NetSuite 発注書 · 仕入先月度总订货金额 + S
 
 
 def _df(sql: str, params=None) -> pd.DataFrame:
-    rs = conn.execute(sql, params or {}).fetchall()
-    return pd.DataFrame([dict(r) for r in rs])
+    from shared.db_helpers import df
+    return df(conn, sql, params)
 
 
 # 预付款列幂等迁移（schema 文件: database/.../009_add_prepay_vendor.sql）

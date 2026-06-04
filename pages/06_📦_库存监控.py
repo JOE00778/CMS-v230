@@ -35,8 +35,8 @@ def _render_composition():
 
 
     def _df(sql: str, params=None) -> pd.DataFrame:
-        rs = conn.execute(sql, params or {}).fetchall()
-        return pd.DataFrame([dict(r) for r in rs])
+        from shared.db_helpers import df
+        return df(conn, sql, params)
 
 
     # 最新 snapshot_date

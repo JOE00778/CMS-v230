@@ -85,7 +85,8 @@ def _normalize_rank_base(rank: str) -> str:
 
 
 def _df(sql: str) -> pd.DataFrame:
-    return pd.DataFrame([dict(r) for r in conn.execute(sql).fetchall()])
+    from shared.db_helpers import df
+    return df(conn, sql)
 
 
 # ============================================================

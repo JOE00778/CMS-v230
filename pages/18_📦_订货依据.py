@@ -40,8 +40,8 @@ st.caption(t(
 # helpers
 # ============================================================
 def _df(sql: str, params=None) -> pd.DataFrame:
-    rs = conn.execute(sql, params or {}).fetchall()
-    return pd.DataFrame([dict(r) for r in rs])
+    from shared.db_helpers import df
+    return df(conn, sql, params)
 
 
 def _ceil_int(x) -> int:
