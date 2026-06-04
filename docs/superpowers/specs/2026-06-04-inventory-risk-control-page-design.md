@@ -133,3 +133,17 @@ Boss 纠正：**风控分档不该用完売率**（那是「每月订货量合�
 - **断货率（按商品等级）**：`stockout_rate_by_rank` 纯函数（仅有等级产品为母数）→ 该等级断货数/总数。
   以**选中月全量**为基数（不受风险/搜索筛选影响），expander 展示 等级×总数×断货数×断货率。单测覆盖 A 级 10/2→20%。
 - 全量 137 passed。
+
+---
+
+## 增补 v5（2026-06-04）：去月份 · 前30天销售 + JDL实物库存 · current-snapshot 模型
+
+Boss: 这里不需要月份，只需要前30天的销售数据 + 库存数据(JDL)。页面从「月度模型」重构为「当前快照模型」：
+- **去掉**：月份选择、月度活动表(inventory_activity_monthly)依赖、完売率、月末在库、上月销量、仓库筛选、跨月趋势图。
+- **销售 = 前30天**：`nst.sales_daily` 直近30日 SUM（qty_sold）。
+- **库存 = JDL实物**：`jdl.v_inventory_reconciliation.jdl_qty_in_stock`（按 jan）。
+- **可售天数 = JDL库存 ÷ 日均销量(前30天/30)** → 阈值(天)分 3 档（断货线<30天 / 压库存线>90天·页内可调）。
+- **断货标记** is_stockout 重定义：前30天有销量 且 当前JDL库存=0。断货率(按等级)保留。
+- 只取有等级（item_rank 非空）。资金占用 = JDL库存 × cost_estimate。
+- 列：item_code/jan/名/厂家/等级/断货/前30天销量/JDL库存/可售天数/在途残/采购价/资金占用。SKU360 加在途供应商/最近PO。
+- enrich/classify_risk 复用（喂 qty_sold=前30天, current_stock=JDL）。PG 实测主查询 7965 有等级/2334 近30天有销。全量 157 passed。

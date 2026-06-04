@@ -36,7 +36,7 @@ def _thresholds_path() -> Path:
 
 
 def load_risk_thresholds() -> dict:
-    """{reorder_months, overstock_months} を返す。欠如/壊れは既定（1.0 / 3.0）。"""
+    """{reorder_days, overstock_days} を返す。欠如/壊れは既定（30 / 90）。"""
     try:
         with open(_thresholds_path(), encoding="utf-8") as f:
             return {**_DEFAULT_THRESHOLDS, **json.load(f)}
