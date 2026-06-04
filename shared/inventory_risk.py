@@ -27,7 +27,8 @@ RISK_NO_DATA = "数据不足"
 RISK_LABELS = (RISK_STOCKOUT, RISK_NORMAL, RISK_OVERSTOCK, RISK_NO_DATA)
 
 # 可售天数の閾値（销售天数·Boss が随時調整·page18 の expander）
-_DEFAULT_THRESHOLDS = {"reorder_days": 30.0, "overstock_days": 90.0}
+# target_days = 标准可售天数（压库存释放の基準·これを超える分が可释放库存金额）
+_DEFAULT_THRESHOLDS = {"reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0}
 
 
 def _thresholds_path() -> Path:
@@ -90,6 +91,23 @@ def classify_risk(stock, monthly_sold, *,
     if d > overstock_days:
         return RISK_OVERSTOCK
     return RISK_NORMAL
+
+
+def releasable_value(current_stock, monthly_sold, avg_unit_price, *,
+                     target_days: float = 60.0) -> float:
+    """标准可售天数下 可释放库存金额 = max(0, 当前库存 − 标准库存量) × 平均单价。純関数。
+
+    标准库存量 = target_days × 日均销量(月销量/30)。月销 ≤ 0 → 标准库存 0（全部可释放·死货）。
+    """
+    try:
+        stock = max(float(current_stock or 0), 0.0)
+        price = float(avg_unit_price or 0)
+        sold = float(monthly_sold or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    target_stock = (target_days * sold / 30.0) if sold > 0 else 0.0
+    excess = max(0.0, stock - target_stock)
+    return excess * price
 
 
 def inventory_turnover(monthly_sold, current_stock) -> float:

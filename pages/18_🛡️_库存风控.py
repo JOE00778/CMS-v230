@@ -21,7 +21,7 @@ from shared.i18n import lang_selector, t
 from shared.inventory_risk import (
     RISK_STOCKOUT, RISK_NORMAL, RISK_OVERSTOCK, RISK_NO_DATA, RISK_LABELS,
     enrich, load_risk_thresholds, save_risk_thresholds,
-    is_stockout, stockout_rate_by_rank,
+    is_stockout, stockout_rate_by_rank, releasable_value,
 )
 
 st.set_page_config(page_title=t("库存风控"), page_icon="🛡️", layout="wide")
@@ -46,7 +46,7 @@ def _df(sql, params=None):
 # ============================================================
 _saved = load_risk_thresholds()
 with st.expander(f"⚙️ {t('风险阈值设定 (可售天数·随时可调)')}", expanded=False):
-    tcol1, tcol2, tcol3 = st.columns([1.6, 1.6, 1])
+    tcol1, tcol2, tcol3, tcol4 = st.columns([1.4, 1.4, 1.4, 1])
     reorder = tcol1.number_input(
         t("🔴 断货线 (可售天数 <)"),
         min_value=0.0, max_value=365.0, value=float(_saved["reorder_days"]), step=5.0,
@@ -57,15 +57,21 @@ with st.expander(f"⚙️ {t('风险阈值设定 (可售天数·随时可调)')}
         min_value=0.0, max_value=999.0, value=float(_saved["overstock_days"]), step=5.0,
         key="risk_th_overstock",
         help=t("高于此线 = 压库存, 减少订货 / 优先消化"))
-    with tcol3:
+    target = tcol3.number_input(
+        t("🎯 标准可售天数"),
+        min_value=0.0, max_value=999.0, value=float(_saved["target_days"]), step=5.0,
+        key="risk_th_target",
+        help=t("理想库存水位(天)。压库存中超出此水位的部分 = 可释放库存金额"))
+    with tcol4:
         st.write("")
         st.write("")
         if st.button(t("💾 保存阈值"), use_container_width=True):
-            save_risk_thresholds({"reorder_days": reorder, "overstock_days": overstock})
+            save_risk_thresholds({"reorder_days": reorder, "overstock_days": overstock,
+                                  "target_days": target})
             st.success(t("✓ 已保存"))
     if reorder > overstock:
         st.warning(t("⚠️ 断货线应 < 压库存线"))
-_th = {"reorder_days": reorder, "overstock_days": overstock}
+_th = {"reorder_days": reorder, "overstock_days": overstock, "target_days": target}
 
 
 # ============================================================
@@ -76,7 +82,8 @@ try:
     df_all = _df(
         """
         WITH s30 AS (
-            SELECT item_internal_id, SUM(qty_sold) AS qty_sold
+            SELECT item_internal_id, SUM(qty_sold) AS qty_sold,
+                   SUM(revenue) AS revenue_30d, SUM(gross_profit) AS gp_30d
             FROM nst.sales_daily
             WHERE sale_date >= CURRENT_DATE - INTERVAL '30 days'
             GROUP BY item_internal_id
@@ -85,7 +92,10 @@ try:
                COALESCE(im.display_name, '') AS display_name,
                im.item_rank AS rank, im.maker AS maker,
                im.cost_estimate AS cost_estimate, im.last_purchase_cost AS last_purchase_cost,
-               COALESCE(s30.qty_sold, 0) AS qty_sold
+               COALESCE(im.average_cost, im.cost_estimate) AS avg_unit_price,
+               COALESCE(s30.qty_sold, 0) AS qty_sold,
+               COALESCE(s30.revenue_30d, 0) AS revenue_30d,
+               COALESCE(s30.gp_30d, 0) AS gp_30d
         FROM nst.item_master_raw im
         LEFT JOIN s30 ON s30.item_internal_id = im.internal_id
         WHERE im.item_rank IS NOT NULL AND btrim(im.item_rank) <> ''
@@ -128,8 +138,20 @@ if "in_transit_qty" not in df_all.columns:
     df_all["in_transit_qty"] = 0
 df_all["in_transit_qty"] = pd.to_numeric(df_all["in_transit_qty"], errors="coerce").fillna(0)
 
-# 派生列（可售天数 / risk_label / capital_exposure）
+# 派生列（可售天数 / risk_label）
 df_all = enrich(df_all, _th)
+# 资金占用 = 平均单价(COALESCE average_cost, 定義原価) × JDL库存
+df_all["avg_unit_price"] = pd.to_numeric(df_all.get("avg_unit_price", 0), errors="coerce").fillna(0)
+df_all["capital_exposure"] = df_all["current_stock"] * df_all["avg_unit_price"]
+# 毛利率 = 前30天 gross_profit / revenue
+_rev = pd.to_numeric(df_all.get("revenue_30d", 0), errors="coerce").fillna(0)
+_gp = pd.to_numeric(df_all.get("gp_30d", 0), errors="coerce").fillna(0)
+df_all["gross_margin"] = (_gp / _rev.replace(0, pd.NA)).fillna(0).astype(float)
+# 可释放库存金额 = 标准可售天数下超出部分 × 平均单价
+df_all["releasable"] = [
+    releasable_value(stk, sld, prc, target_days=_th["target_days"])
+    for stk, sld, prc in zip(df_all["current_stock"], df_all["qty_sold"], df_all["avg_unit_price"])
+]
 # 断货标记：前30天有销量 且 当前 JDL 库存 = 0
 df_all["is_stockout"] = [is_stockout(s, k) for s, k in zip(df_all["qty_sold"], df_all["current_stock"])]
 
@@ -191,12 +213,14 @@ if search_kw and search_kw.strip():
 risk_counts = df["risk_label"].value_counts()
 overstock_capital = float(df.loc[df["risk_label"] == RISK_OVERSTOCK, "capital_exposure"].sum())
 
-k1, k2, k3, k4, k5 = st.columns(5)
+releasable_total = float(df.loc[df["risk_label"] == RISK_OVERSTOCK, "releasable"].sum())
+k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric(t("SKU 总数"), int(df["item_code"].nunique()))
 k2.metric(t("🔴 断货风险"), int(risk_counts.get(RISK_STOCKOUT, 0)))
 k3.metric(t("🟡 压库存"), int(risk_counts.get(RISK_OVERSTOCK, 0)))
 k4.metric(t("🟢 正常"), int(risk_counts.get(RISK_NORMAL, 0)))
 k5.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
+k6.metric(t(f"♻️ 可释放库存金额(标准{target:g}天)"), f"¥{releasable_total:,.0f}")
 
 st.caption(t(f"前30天销售 + JDL实物库存 · 断货线<{reorder:g}天 / 压库存线>{overstock:g}天 · "
              f"仅有等级商品 · 当前筛选 {len(df)} 行"))
@@ -235,8 +259,9 @@ else:
     except Exception:
         sup = pd.DataFrame(columns=["item_internal_id", "in_transit_suppliers", "latest_po"])
     wide = df[["internal_id", "item_code", "jan", "display_name", "maker", "rank",
-               "risk_label", "is_stockout", "qty_sold", "current_stock", "days_of_supply",
-               "in_transit_qty", "last_purchase_cost", "capital_exposure"]].drop_duplicates("internal_id").copy()
+               "risk_label", "is_stockout", "qty_sold", "gross_margin", "current_stock",
+               "days_of_supply", "in_transit_qty", "last_purchase_cost", "avg_unit_price",
+               "capital_exposure", "releasable"]].drop_duplicates("internal_id").copy()
     if not sup.empty:
         wide = wide.merge(sup, how="left", left_on="internal_id", right_on="item_internal_id")
         if "item_internal_id" in wide.columns:
@@ -250,10 +275,12 @@ else:
         ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
         ("maker", t("厂家")), ("rank", t("商品等级")), ("risk_label", t("风险")),
         ("is_stockout", t("断货")), ("qty_sold", t("前30天销量")),
+        ("gross_margin", t("毛利率")),
         ("current_stock", t("JDL库存")), ("days_of_supply", t("可售天数")),
         ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
         ("latest_po", t("最近PO")), ("last_purchase_cost", t("最近采购价")),
-        ("capital_exposure", t("资金占用(¥)")),
+        ("avg_unit_price", t("平均单价")), ("capital_exposure", t("资金占用(¥)")),
+        ("releasable", t("可释放库存金额")),
     ]
     order = [k for k, _ in COLS360 if k in wide.columns]
     show360 = wide[order].copy()
@@ -263,7 +290,9 @@ else:
         disp[t("断货")] = disp[t("断货")].map(lambda v: "🚫断货" if bool(v) else "")
     if t("可售天数") in disp.columns:
         disp[t("可售天数")] = pd.to_numeric(disp[t("可售天数")], errors="coerce").round(0)
-    for _c in (t("资金占用(¥)"), t("最近采购价")):
+    if t("毛利率") in disp.columns:
+        disp[t("毛利率")] = (pd.to_numeric(disp[t("毛利率")], errors="coerce").fillna(0) * 100).round(1).astype(str) + "%"
+    for _c in (t("资金占用(¥)"), t("最近采购价"), t("平均单价"), t("可释放库存金额")):
         if _c in disp.columns:
             disp[_c] = pd.to_numeric(disp[_c], errors="coerce").fillna(0).map(lambda v: f"¥{v:,.0f}")
     st.caption(t(f"{len(show360)} 个 SKU"))

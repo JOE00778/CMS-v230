@@ -69,16 +69,16 @@ def test_stock_months_negative_stock_floored():
 
 def test_thresholds_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("INVENTORY_RISK_THRESHOLDS", str(tmp_path / "th.json"))
-    assert ir.load_risk_thresholds() == {"reorder_days": 30.0, "overstock_days": 90.0}
-    ir.save_risk_thresholds({"reorder_days": 15.0, "overstock_days": 60.0, "ignored": 9})
-    assert ir.load_risk_thresholds() == {"reorder_days": 15.0, "overstock_days": 60.0}
+    assert ir.load_risk_thresholds() == {"reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0}
+    ir.save_risk_thresholds({"reorder_days": 15.0, "overstock_days": 60.0, "target_days": 45.0, "ignored": 9})
+    assert ir.load_risk_thresholds() == {"reorder_days": 15.0, "overstock_days": 60.0, "target_days": 45.0}
 
 
 def test_load_thresholds_broken_file_falls_back(tmp_path, monkeypatch):
     p = tmp_path / "th.json"
     p.write_text("{ not json", encoding="utf-8")
     monkeypatch.setenv("INVENTORY_RISK_THRESHOLDS", str(p))
-    assert ir.load_risk_thresholds() == {"reorder_days": 30.0, "overstock_days": 90.0}
+    assert ir.load_risk_thresholds() == {"reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0}
 
 
 # ---- enrich ----
@@ -133,6 +133,25 @@ def test_inventory_turnover_zero_or_negative_stock():
 def test_inventory_turnover_no_sales():
     assert ir.inventory_turnover(0, 100) == 0.0
     assert ir.inventory_turnover(None, 100) == 0.0
+
+
+# ---- releasable_value（标准可售天数下可释放库存金额）----
+
+def test_releasable_value_overstock():
+    # 库存100·月销30(日均1)·标准60天→标准库存60·超40·单价10 → 400
+    assert ir.releasable_value(100, 30, 10, target_days=60) == 400.0
+
+
+def test_releasable_value_within_standard_is_zero():
+    assert ir.releasable_value(20, 30, 10, target_days=60) == 0.0   # 标准60 > 库存20
+
+
+def test_releasable_value_no_sales_releases_all():
+    assert ir.releasable_value(50, 0, 10) == 500.0   # 月销0 → 标准0 → 全部可释放
+
+
+def test_releasable_value_zero_price():
+    assert ir.releasable_value(100, 30, 0, target_days=60) == 0.0
 
 
 # ---- 断货判定 is_stockout ----
