@@ -346,15 +346,11 @@ with tab_360:
             "FROM nst.sales_daily WHERE sale_date >= CURRENT_DATE - INTERVAL '30 days' "
             "GROUP BY item_internal_id",
             ["item_internal_id", "sales_30d"])
-        # 当天库存 by 仓（最新快照·JD / 弁天）
-        invc = _aux(
-            "SELECT item_internal_id, "
-            "SUM(CASE WHEN warehouse LIKE 'JD%' THEN qty_on_hand ELSE 0 END) AS stock_jd, "
-            "SUM(CASE WHEN warehouse LIKE '弁天%' THEN qty_on_hand ELSE 0 END) AS stock_benten "
-            "FROM nst.inventory_snapshot "
-            "WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot) "
-            "GROUP BY item_internal_id",
-            ["item_internal_id", "stock_jd", "stock_benten"])
+        # NST账面库存(JD) vs JDL实物在仓 · 按 jan 对账（jdl.v_inventory_reconciliation）
+        recon = _aux(
+            "SELECT jan, nst_qty_on_hand AS nst_stock, jdl_qty_in_stock AS jdl_stock, "
+            "diff_main AS recon_diff FROM jdl.v_inventory_reconciliation",
+            ["jan", "nst_stock", "jdl_stock", "recon_diff"])
         # 在途（未关闭 PO 的入荷残）+ 供应商列表 + 最近 PO
         itx = _aux(
             "SELECT item_internal_id, "
@@ -378,16 +374,18 @@ with tab_360:
         wide = df[["internal_id", "item_code", "jan", "display_name", "maker", "rank",
                    "risk_label", "qty_sold", "stock_months", "sell_through_rate", "close_qty",
                    "capital_exposure", "last_purchase_cost"]].drop_duplicates("internal_id").copy()
-        for aux in (s30, invc, itx):
+        for aux in (s30, itx):
             if not aux.empty:
                 wide = wide.merge(aux, how="left", left_on="internal_id", right_on="item_internal_id")
                 if "item_internal_id" in wide.columns:
                     wide = wide.drop(columns=["item_internal_id"])
+        if not recon.empty:
+            wide = wide.merge(recon, how="left", on="jan")
         if not prevm.empty:
             wide = wide.merge(prevm, how="left", on="internal_id")
 
-        for c in ("sales_30d", "prev_month_sold", "stock_jd", "stock_benten", "in_transit_qty",
-                  "last_purchase_cost"):
+        for c in ("sales_30d", "prev_month_sold", "nst_stock", "jdl_stock", "recon_diff",
+                  "in_transit_qty", "last_purchase_cost"):
             if c not in wide.columns:
                 wide[c] = 0
             wide[c] = pd.to_numeric(wide[c], errors="coerce").fillna(0)
@@ -396,7 +394,7 @@ with tab_360:
                 wide[c] = ""
             wide[c] = wide[c].fillna("")
         wide["inv_turnover"] = [inventory_turnover(s, j)
-                                for s, j in zip(wide["qty_sold"], wide["stock_jd"])]
+                                for s, j in zip(wide["qty_sold"], wide["nst_stock"])]
 
         COLS360 = [
             ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
@@ -405,7 +403,7 @@ with tab_360:
             ("prev_month_sold", t("上月销量")),
             ("stock_months", t("库存月数")), ("inv_turnover", t("库存周转率")),
             ("sell_through_rate", t("完売率(参考)")),
-            ("stock_jd", t("当天库存(JD)")), ("stock_benten", t("当天库存(弁天)")),
+            ("nst_stock", t("NST库存")), ("jdl_stock", t("JDL库存")), ("recon_diff", t("对账差(NST−JDL)")),
             ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
             ("latest_po", t("最近PO")), ("last_purchase_cost", t("最近采购价")),
             ("capital_exposure", t("资金占用(¥)")),
