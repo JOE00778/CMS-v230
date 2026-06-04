@@ -1,8 +1,8 @@
 """模块 #18 库存风控 · 库存月数（当前库存/月销量）による在庫リスク監視盘。
 
-データ源: nst.inventory_activity_monthly（月销量 sold）+ nst.inventory_snapshot（当前JD库存）
+データ源: nst.inventory_activity_monthly（月销量 sold + 月末在库 closing_qty）
   + nst.item_master_raw（旧 item_monthly_turnover / item_v2 を置換·page25 発注AI と同一源）。
-  · 库存月数 = 当前JD库存 / 直近月 sold → 阈値で 3 档:
+  · 库存月数 = 月末在库 / 直近月 sold → 阈値で 3 档:
         < 补货线 → 断货风险(要补货) / > 压库存线 → 压库存 / 中间 → 正常（Boss 随时可调·下記 expander）
   · 完売率 = sold/(opening+received) は **発注結果の参考指标**·分档には使わない（Boss 2026-06-04 訂正）
   · 资金占用 = 当前库存 × cost_estimate（压库存 = 圧迫資金）
@@ -31,7 +31,7 @@ lang_selector()
 conn = get_connection()
 
 st.title(t("🛡️ 库存风控"))
-st.caption(t("按库存月数(当前JD库存/月销量)识别断货 / 压库存风险 · 完売率仅作发注结果参考 · 🛒 精确补货量请用「📦 発注AI v2」"))
+st.caption(t("按库存月数(月末在库/月销量)识别断货 / 压库存风险 · 完売率仅作发注结果参考 · 🛒 精确补货量请用「📦 発注AI v2」"))
 
 
 def _df(sql, params=None):
@@ -93,24 +93,9 @@ if df_all.empty:
     st.warning(t("⚠️ 暂无月度库存活动数据（nst.inventory_activity_monthly 为空）· 等待 NST 受領 daily pull 落数。"))
     st.stop()
 
-# 当前库存（JD 当天手持·最新快照）→ 风险分档分子（库存月数 = 当前库存/月销量）
-try:
-    _cur = _df(
-        "SELECT item_internal_id, SUM(qty_on_hand) AS current_stock "
-        "FROM nst.inventory_snapshot "
-        "WHERE warehouse LIKE 'JD%' "
-        "  AND snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot) "
-        "GROUP BY item_internal_id")
-except Exception:
-    _cur = pd.DataFrame(columns=["item_internal_id", "current_stock"])
-if _cur.empty:
-    st.warning(t("⚠️ 当前库存(nst.inventory_snapshot)无数据 → 风险分档不可靠（有销量者都会判为断货）。等待 NST 库存 pull 落数。"))
-    df_all["current_stock"] = 0
-else:
-    df_all = df_all.merge(_cur, how="left", left_on="internal_id", right_on="item_internal_id")
-    if "item_internal_id" in df_all.columns:
-        df_all = df_all.drop(columns=["item_internal_id"])
-df_all["current_stock"] = pd.to_numeric(df_all["current_stock"], errors="coerce").fillna(0)
+# 当前库存 = 月度活动表的月末在库(closing_qty)·现成数据 → 库存月数 = 当前库存/月销量
+# （旧版读 nst.inventory_snapshot 但该表未喂数；月末在库已够用·Boss 2026-06-04）
+df_all["current_stock"] = pd.to_numeric(df_all["close_qty"], errors="coerce").fillna(0)
 
 # 在途残（未关闭 PO 的入荷残）→ 用于「有/无在途」筛选
 try:
@@ -240,7 +225,7 @@ k4.metric(t("🟡 压库存"), int(risk_counts.get(RISK_OVERSTOCK, 0)))
 k5.metric(t("🟢 正常"), int(risk_counts.get(RISK_NORMAL, 0)))
 k6.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
 
-st.caption(t(f"当前筛选结果: {len(df)} 行 · 补货线<{reorder:g}月 / 压库存线>{overstock:g}月 · 当前库存=JD当天手持"))
+st.caption(t(f"当前筛选结果: {len(df)} 行 · 补货线<{reorder:g}月 / 压库存线>{overstock:g}月 · 当前库存=月末在库"))
 st.divider()
 
 
@@ -253,7 +238,7 @@ ALL_COLS = [
     ("display_name", t("商品名")),
     ("location", t("仓库")),
     ("qty_sold", t("月销量")),
-    ("current_stock", t("当前库存(JD)")),
+    ("current_stock", t("当前库存(月末)")),
     ("stock_months", t("库存月数")),
     ("sell_through_rate", t("完売率(参考)")),
     ("capital_exposure", t("资金占用(¥)")),
