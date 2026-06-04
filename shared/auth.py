@@ -22,7 +22,7 @@ import os
 import streamlit as st
 
 # 每次重要修复 push 时 bump，Cloud 部署后一眼能看出是不是新版
-APP_VERSION = "2.4.0 · nst-master-template"
+APP_VERSION = "2.7.0 · inventory-risk-i18n"
 
 
 def _secret(name: str, default: str = "") -> str:
@@ -59,7 +59,7 @@ def _login_form() -> None:
         return
 
     st.markdown(_LOGIN_NARROW_CSS, unsafe_allow_html=True)  # 登录页收窄居中
-    st.title("🔒 一元管理系统V2.4")
+    st.title("🔒 一元管理系统V2.7")
     st.caption(f"build {APP_VERSION}")
 
     with st.form("login", clear_on_submit=False):

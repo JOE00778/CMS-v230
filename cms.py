@@ -1,4 +1,4 @@
-"""一元管理系统V2.4 · Streamlit 主入口（仪表盘）。
+"""一元管理系统V2.7 · Streamlit 主入口（仪表盘）。
 
 UI Phase 1 mockup 落地（docs/14-ui-redesign-mockup.html）：
 - 顶部 inject_theme() 全局 CSS
@@ -22,7 +22,7 @@ from shared.supabase_client import is_configured
 
 # 页面配置
 st.set_page_config(
-    page_title=t("一元管理系统V2.4"),
+    page_title=t("一元管理系统V2.7"),
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
