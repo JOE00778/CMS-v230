@@ -36,11 +36,6 @@ st.title(t("🛡️ 库存风控"))
 st.caption(t("按可售天数(JDL库存/日均销量)识别断货 / 压库存风险 · 仅有等级商品 · "
              "🛒 精确补货量请用「📦 発注AI v2」"))
 
-# 销量统计窗口（前30/60/90天 · 影响 qty_sold / 可售天数 / 可释放金额）
-_window_label = st.radio(t("销量统计窗口"), [t("前30天"), t("前60天"), t("前90天")],
-                         index=0, horizontal=True, key="page18_window")
-window_days = {t("前30天"): 30, t("前60天"): 60, t("前90天"): 90}[_window_label]
-
 
 def _df(sql, params=None):
     return _df_conn(conn, sql, params)
@@ -51,6 +46,10 @@ def _df(sql, params=None):
 # ============================================================
 _saved = load_risk_thresholds()
 with st.expander(f"⚙️ {t('风险阈值设定 (可售天数·随时可调)')}", expanded=False):
+    _window_label = st.radio(
+        t("销量统计窗口"), [t("前30天"), t("前60天"), t("前90天")],
+        index=0, horizontal=True, key="page18_window",
+        help=t("前N天销量 → 日均销量 → 可售天数 / 可释放金额"))
     tcol1, tcol2, tcol3, tcol4 = st.columns([1.4, 1.4, 1.4, 1])
     reorder = tcol1.number_input(
         t("🔴 断货线 (可售天数 <)"),
@@ -76,6 +75,7 @@ with st.expander(f"⚙️ {t('风险阈值设定 (可售天数·随时可调)')}
             st.success(t("✓ 已保存"))
     if reorder > overstock:
         st.warning(t("⚠️ 断货线应 < 压库存线"))
+window_days = {t("前30天"): 30, t("前60天"): 60, t("前90天"): 90}[_window_label]
 _th = {"reorder_days": reorder, "overstock_days": overstock, "target_days": target}
 
 
