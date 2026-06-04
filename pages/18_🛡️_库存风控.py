@@ -348,9 +348,9 @@ with tab_360:
             ["item_internal_id", "sales_30d"])
         # NST账面库存(JD) vs JDL实物在仓 · 按 jan 对账（jdl.v_inventory_reconciliation）
         recon = _aux(
-            "SELECT jan, nst_qty_on_hand AS nst_stock, jdl_qty_in_stock AS jdl_stock, "
-            "diff_main AS recon_diff FROM jdl.v_inventory_reconciliation",
-            ["jan", "nst_stock", "jdl_stock", "recon_diff"])
+            "SELECT jan, nst_qty_on_hand AS nst_stock, jdl_qty_in_stock AS jdl_stock "
+            "FROM jdl.v_inventory_reconciliation",
+            ["jan", "nst_stock", "jdl_stock"])
         # 在途（未关闭 PO 的入荷残）+ 供应商列表 + 最近 PO
         itx = _aux(
             "SELECT item_internal_id, "
@@ -384,7 +384,7 @@ with tab_360:
         if not prevm.empty:
             wide = wide.merge(prevm, how="left", on="internal_id")
 
-        for c in ("sales_30d", "prev_month_sold", "nst_stock", "jdl_stock", "recon_diff",
+        for c in ("sales_30d", "prev_month_sold", "nst_stock", "jdl_stock",
                   "in_transit_qty", "last_purchase_cost"):
             if c not in wide.columns:
                 wide[c] = 0
@@ -403,7 +403,7 @@ with tab_360:
             ("prev_month_sold", t("上月销量")),
             ("stock_months", t("库存月数")), ("inv_turnover", t("库存周转率")),
             ("sell_through_rate", t("完売率(参考)")),
-            ("nst_stock", t("NST库存")), ("jdl_stock", t("JDL库存")), ("recon_diff", t("对账差(NST−JDL)")),
+            ("nst_stock", t("NST库存")), ("jdl_stock", t("JDL库存")),
             ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
             ("latest_po", t("最近PO")), ("last_purchase_cost", t("最近采购价")),
             ("capital_exposure", t("资金占用(¥)")),
