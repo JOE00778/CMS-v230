@@ -70,10 +70,12 @@ _th = {"high": high, "low": low}
 try:
     df_all = _df(
         """
-        SELECT im.item_code AS item_code, im.jan AS jan,
+        SELECT im.internal_id AS internal_id,
+               im.item_code AS item_code, im.jan AS jan,
                COALESCE(im.display_name, '') AS display_name,
                im.item_rank AS rank, im.maker AS maker,
                im.cost_estimate AS cost_estimate,
+               im.last_purchase_cost AS last_purchase_cost,
                a.location AS location, a.year_month AS year_month,
                a.opening_qty AS opening_qty, a.received_qty AS received_qty,
                a.sold_qty AS qty_sold, a.closing_qty AS close_qty
@@ -242,10 +244,11 @@ def _render_df_with_csv(d: pd.DataFrame, csv_name: str):
 # ============================================================
 # 3 风险清单 Tab
 # ============================================================
-tab_red, tab_yellow, tab_green = st.tabs([
+tab_red, tab_yellow, tab_green, tab_360 = st.tabs([
     t("🔴 断货风险"),
     t("🟡 压库存"),
     t("🟢 正常"),
+    t("📋 SKU 360"),
 ])
 
 with tab_red:
@@ -271,6 +274,115 @@ with tab_green:
     st.subheader(t(f"🟢 正常 SKU ({low:.0%} ≤ 完売率 < {high:.0%})"))
     st.caption(t("健康区间 · 参考"))
     _render_df_with_csv(green, f"inv_risk_normal_{sel_month}.csv")
+
+
+# ----- 📋 SKU 360（决策上下文宽表）-----
+with tab_360:
+    st.subheader(t("📋 SKU 360 · 决策上下文宽表"))
+    st.caption(t("当前筛选范围 · 销量 / 库存 / 在途PO / 采购价 / 等级一览 · 缺数据列显 0"))
+    if df.empty:
+        st.info(t("当前筛选无数据"))
+    else:
+        from shared.inventory_risk import inventory_turnover
+
+        def _aux(sql, cols):
+            try:
+                return _df(sql)
+            except Exception:
+                return pd.DataFrame(columns=cols)
+
+        # 前30天销量（滚动·sales_daily）
+        s30 = _aux(
+            "SELECT item_internal_id, SUM(qty_sold) AS sales_30d "
+            "FROM nst.sales_daily WHERE sale_date >= CURRENT_DATE - INTERVAL '30 days' "
+            "GROUP BY item_internal_id",
+            ["item_internal_id", "sales_30d"])
+        # 当天库存 by 仓（最新快照·JD / 弁天）
+        invc = _aux(
+            "SELECT item_internal_id, "
+            "SUM(CASE WHEN warehouse LIKE 'JD%' THEN qty_on_hand ELSE 0 END) AS stock_jd, "
+            "SUM(CASE WHEN warehouse LIKE '弁天%' THEN qty_on_hand ELSE 0 END) AS stock_benten "
+            "FROM nst.inventory_snapshot "
+            "WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot) "
+            "GROUP BY item_internal_id",
+            ["item_internal_id", "stock_jd", "stock_benten"])
+        # 在途（未关闭 PO 的入荷残）+ 供应商列表 + 最近 PO
+        itx = _aux(
+            "SELECT item_internal_id, "
+            "SUM(quantity - COALESCE(quantity_received,0)) AS in_transit_qty, "
+            "string_agg(DISTINCT vendor_name, ', ') AS in_transit_suppliers, "
+            "MAX(po_number) AS latest_po "
+            "FROM nst.purchase_order_line "
+            "WHERE closed = FALSE AND (quantity - COALESCE(quantity_received,0)) > 0 "
+            "GROUP BY item_internal_id",
+            ["item_internal_id", "in_transit_qty", "in_transit_suppliers", "latest_po"])
+        # 上月销量（复用 df_all · months 为 reverse=True，后一个即更早月）
+        prev_ym = None
+        if sel_month in months:
+            _i = months.index(sel_month)
+            if _i + 1 < len(months):
+                prev_ym = months[_i + 1]
+        prevm = (df_all[df_all["year_month"] == prev_ym][["internal_id", "qty_sold"]]
+                 .rename(columns={"qty_sold": "prev_month_sold"})
+                 if prev_ym else pd.DataFrame(columns=["internal_id", "prev_month_sold"]))
+
+        wide = df[["internal_id", "item_code", "jan", "display_name", "maker", "rank",
+                   "risk_label", "qty_sold", "sell_through_rate", "close_qty",
+                   "capital_exposure", "last_purchase_cost"]].drop_duplicates("internal_id").copy()
+        for aux in (s30, invc, itx):
+            if not aux.empty:
+                wide = wide.merge(aux, how="left", left_on="internal_id", right_on="item_internal_id")
+                if "item_internal_id" in wide.columns:
+                    wide = wide.drop(columns=["item_internal_id"])
+        if not prevm.empty:
+            wide = wide.merge(prevm, how="left", on="internal_id")
+
+        for c in ("sales_30d", "prev_month_sold", "stock_jd", "stock_benten", "in_transit_qty",
+                  "last_purchase_cost"):
+            if c not in wide.columns:
+                wide[c] = 0
+            wide[c] = pd.to_numeric(wide[c], errors="coerce").fillna(0)
+        for c in ("in_transit_suppliers", "latest_po"):
+            if c not in wide.columns:
+                wide[c] = ""
+            wide[c] = wide[c].fillna("")
+        wide["inv_turnover"] = [inventory_turnover(s, j)
+                                for s, j in zip(wide["qty_sold"], wide["stock_jd"])]
+
+        COLS360 = [
+            ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
+            ("maker", t("厂家")), ("rank", t("商品等级")), ("risk_label", t("风险")),
+            ("qty_sold", t("当月销量")), ("sales_30d", t("前30天销量")),
+            ("prev_month_sold", t("上月销量")), ("sell_through_rate", t("完売率")),
+            ("inv_turnover", t("库存周转率")),
+            ("stock_jd", t("当天库存(JD)")), ("stock_benten", t("当天库存(弁天)")),
+            ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
+            ("latest_po", t("最近PO")), ("last_purchase_cost", t("最近采购价")),
+            ("capital_exposure", t("资金占用(¥)")),
+        ]
+        order = [k for k, _ in COLS360 if k in wide.columns]
+        show360 = wide[order].copy()
+        disp = show360.copy()
+        disp.columns = [dict(COLS360)[k] for k in order]
+        rc = t("完売率")
+        if rc in disp.columns:
+            disp[rc] = (pd.to_numeric(disp[rc], errors="coerce").fillna(0) * 100).round(1).astype(str) + "%"
+        tcv = t("库存周转率")
+        if tcv in disp.columns:
+            disp[tcv] = pd.to_numeric(disp[tcv], errors="coerce").fillna(0).round(2)
+        cap = t("资金占用(¥)")
+        if cap in disp.columns:
+            disp[cap] = pd.to_numeric(disp[cap], errors="coerce").fillna(0).map(lambda v: f"¥{v:,.0f}")
+        lpc = t("最近采购价")
+        if lpc in disp.columns:
+            disp[lpc] = pd.to_numeric(disp[lpc], errors="coerce").fillna(0).map(lambda v: f"¥{v:,.0f}")
+
+        st.caption(t(f"{len(show360)} 个 SKU · 月份 {sel_month}"))
+        st.dataframe(disp, use_container_width=True, height=520)
+        st.download_button(
+            t("📥 下载 SKU 360 CSV"),
+            data=show360.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"sku360_{sel_month}.csv", mime="text/csv", key="dl_sku360")
 
 
 st.divider()

@@ -91,3 +91,18 @@ def enrich(df, thresholds: dict | None = None):
     ]
     out["capital_exposure"] = out["close_qty"] * out["cost_estimate"]
     return out
+
+
+def inventory_turnover(monthly_sold, current_stock) -> float:
+    """库存周转率 = 月销量 / 当天库存（SKU 360 用）。純関数。
+
+    库存 ≤ 0（在庫なし）→ 0.0（周転すべき在庫が無い）。
+    """
+    try:
+        stock = float(current_stock)
+    except (TypeError, ValueError):
+        return 0.0
+    if stock <= 0:
+        return 0.0
+    sold = float(monthly_sold) if monthly_sold is not None else 0.0
+    return sold / stock

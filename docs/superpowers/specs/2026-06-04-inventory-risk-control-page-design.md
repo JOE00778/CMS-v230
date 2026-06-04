@@ -96,3 +96,14 @@ JOIN nst.item_master_raw im ON im.internal_id = a.item_internal_id
 - page25 発注AI v2 / page06 库存健康度 / purchase_engine：不碰。
 - 订货量 / 仕入先选择逻辑：全部留在 page25。
 - `nst.inventory_activity_monthly` 的 ingest 管道（database 仓 NST API）：本次不改。
+
+---
+
+## 增补 v2（2026-06-04）：SKU 360 决策上下文 tab
+
+Boss 追加：风控盘上叠加决策上下文。决策（brainstorming）：回转率=**库存周转率**(月销量/当天JD库存，新列，区别于完売率)；在途PO一对多→**合计在途残 + 供应商distinct列表 + 最近PO号**；呈现=**独立「📋 SKU 360」tab**（三档风控清单保持精简不变）。
+
+- 新 tab 宽表列：item_code/jan/商品名/厂家/商品等级/风险/当月销量/前30天销量/上月销量/完売率/库存周转率/当天库存(JD)/当天库存(弁天)/在途残/在途供应商/最近PO/最近采购价/资金占用 + CSV。
+- 数据源：`nst.sales_daily`(前30天滚动) · `nst.inventory_snapshot`(当天库存按 warehouse 拆 JD/弁天) · `nst.purchase_order_line`(closed=FALSE 入荷残) · `nst.item_master_raw.last_purchase_cost`(最近采购价) · 上月销量复用 df_all。各 aux 查询 try/except 兜底，缺数据列显 0。
+- 纯函数 `inventory_risk.inventory_turnover(sold, stock)` + 单测（库存≤0→0）。
+- SKU 360 尊重上方筛选（月/风险/搜索/预设）。依赖 sales_daily / inventory_snapshot / purchase_order_line 被各自 NST pull 喂数。

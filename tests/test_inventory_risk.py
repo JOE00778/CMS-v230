@@ -84,3 +84,21 @@ def test_enrich_missing_columns_safe():
     out = ir.enrich(df)
     assert out.loc[0, "risk_label"] == ir.RISK_STOCKOUT
     assert out.loc[0, "capital_exposure"] == 0
+
+
+# ---- inventory_turnover（SKU 360）----
+
+def test_inventory_turnover_normal():
+    assert ir.inventory_turnover(50, 100) == 0.5
+    assert ir.inventory_turnover(120, 60) == 2.0
+
+
+def test_inventory_turnover_zero_or_negative_stock():
+    assert ir.inventory_turnover(50, 0) == 0.0
+    assert ir.inventory_turnover(50, -5) == 0.0
+    assert ir.inventory_turnover(50, None) == 0.0
+
+
+def test_inventory_turnover_no_sales():
+    assert ir.inventory_turnover(0, 100) == 0.0
+    assert ir.inventory_turnover(None, 100) == 0.0
