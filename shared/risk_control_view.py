@@ -171,7 +171,7 @@ def render(conn) -> None:
     with f4:
         sel_instock = st.selectbox(
             t("库存状态"), [t("全部"), t("有货"), t("断货")], index=0, key="page18_instock",
-            help=t(f"断货 = 前{window_days}天有销量 但 当前JDL库存=0"))
+            help=t("断货 = 前{d}天有销量 但 当前JDL库存=0").format(d=window_days))
 
     search_kw = st.text_area(
         t("JAN / item_code 搜索（多个用 空格 / 逗号 / 换行 分隔）"),
@@ -217,22 +217,23 @@ def render(conn) -> None:
     k3.metric(t("🟡 压库存"), int(risk_counts.get(RISK_OVERSTOCK, 0)))
     k4.metric(t("🟢 正常"), int(risk_counts.get(RISK_NORMAL, 0)))
     k5.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
-    k6.metric(t(f"♻️ 可释放库存金额(标准{target:g}天)"), f"¥{releasable_total:,.0f}")
+    k6.metric(t("♻️ 可释放库存金额(标准{d}天)").format(d=f"{target:g}"), f"¥{releasable_total:,.0f}")
 
-    st.caption(t(f"前{window_days}天销售 + JDL实物库存 · 断货线<{reorder:g}天 / 压库存线>{overstock:g}天 · "
-                 f"仅有等级商品 · 当前筛选 {len(df)} 行"))
+    st.caption(t("前{w}天销售 + JDL实物库存 · 断货线<{r}天 / 压库存线>{o}天 · "
+                 "仅有等级商品 · 当前筛选 {n} 行").format(
+                     w=window_days, r=f"{reorder:g}", o=f"{overstock:g}", n=len(df)))
 
     # 断货率卡片（按商品等级·有等级全量·断货=前N天有销量+JDL库存0）
     _so = stockout_rate_by_rank(df_all)
     if not _so.empty:
-        _so_title = t(f"各等级断货率（前{window_days}天有销量 + 当前JDL库存=0）")
+        _so_title = t("各等级断货率（前{d}天有销量 + 当前JDL库存=0）").format(d=window_days)
         st.markdown(f"##### 📊 {_so_title}")
         _rows = list(_so.itertuples(index=False))
         for _start in range(0, len(_rows), 6):
             _chunk = _rows[_start:_start + 6]
             _cards = st.columns(len(_chunk))
             for _c, _r in zip(_cards, _chunk):
-                _c.metric(t(f"{_r.rank} 断货率"),
+                _c.metric(f"{_r.rank} " + t("断货率"),
                           f"{float(_r.rate) * 100:.1f}%",
                           f"{int(_r.stockout)}/{int(_r.total)}",
                           delta_color="off")
@@ -271,7 +272,7 @@ def render(conn) -> None:
     COLS360 = [
         ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
         ("maker", t("厂家")), ("rank", t("商品等级")), ("risk_label", t("风险")),
-        ("is_stockout", t("断货")), ("qty_sold", t(f"前{window_days}天销量")),
+        ("is_stockout", t("断货")), ("qty_sold", t("前{d}天销量").format(d=window_days)),
         ("gross_margin", t("毛利率")),
         ("current_stock", t("JDL库存")), ("days_of_supply", t("可售天数")),
         ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
@@ -292,7 +293,7 @@ def render(conn) -> None:
     for _c in (t("资金占用(¥)"), t("最近采购价"), t("平均单价"), t("可释放库存金额")):
         if _c in disp.columns:
             disp[_c] = pd.to_numeric(disp[_c], errors="coerce").fillna(0).map(lambda v: f"¥{v:,.0f}")
-    st.caption(t(f"{len(show360)} 个 SKU"))
+    st.caption(f"{len(show360)} " + t("个 SKU"))
     st.dataframe(disp, use_container_width=True, height=560, hide_index=True)
     st.download_button(
         t("📥 下载 SKU 360 CSV"),
