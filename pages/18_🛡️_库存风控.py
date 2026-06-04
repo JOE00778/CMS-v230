@@ -112,6 +112,23 @@ else:
         df_all = df_all.drop(columns=["item_internal_id"])
 df_all["current_stock"] = pd.to_numeric(df_all["current_stock"], errors="coerce").fillna(0)
 
+# 在途残（未关闭 PO 的入荷残）→ 用于「有/无在途」筛选
+try:
+    _itx_all = _df(
+        "SELECT item_internal_id, SUM(quantity - COALESCE(quantity_received,0)) AS in_transit_qty "
+        "FROM nst.purchase_order_line "
+        "WHERE closed = FALSE AND (quantity - COALESCE(quantity_received,0)) > 0 "
+        "GROUP BY item_internal_id")
+except Exception:
+    _itx_all = pd.DataFrame(columns=["item_internal_id", "in_transit_qty"])
+if not _itx_all.empty:
+    df_all = df_all.merge(_itx_all, how="left", left_on="internal_id", right_on="item_internal_id")
+    if "item_internal_id" in df_all.columns:
+        df_all = df_all.drop(columns=["item_internal_id"])
+if "in_transit_qty" not in df_all.columns:
+    df_all["in_transit_qty"] = 0
+df_all["in_transit_qty"] = pd.to_numeric(df_all["in_transit_qty"], errors="coerce").fillna(0)
+
 df_all = enrich(df_all, _th)
 
 
@@ -160,7 +177,7 @@ st.divider()
 rank_opts = (sorted([x for x in df_all["rank"].dropna().unique().tolist() if str(x).strip()])
              if "rank" in df_all.columns else [])
 
-f1, f2, f3, f4 = st.columns([1.2, 2, 2, 2])
+f1, f2, f3, f4, f5 = st.columns([1.1, 1.7, 1.7, 1.7, 1.3])
 with f1:
     sel_month = st.selectbox(t("月份"), months, index=0)
 with f2:
@@ -173,6 +190,9 @@ with f3:
 with f4:
     sel_locations = st.multiselect(
         t("仓库 (location)"), options=locations_all, default=locations_all, key="page18_locs")
+with f5:
+    sel_intransit = st.selectbox(
+        t("在途状态"), [t("全部"), t("有在途"), t("没在途")], index=0, key="page18_intransit")
 
 search_kw = st.text_area(
     t("JAN / item_code 搜索（多个用 空格 / 逗号 / 换行 分隔）"),
@@ -187,6 +207,10 @@ if sel_risks:
     df = df[df["risk_label"].isin(sel_risks)]
 if sel_ranks and "rank" in df.columns:
     df = df[df["rank"].astype(str).isin(sel_ranks)]
+if sel_intransit == t("有在途"):
+    df = df[df["in_transit_qty"] > 0]
+elif sel_intransit == t("没在途"):
+    df = df[df["in_transit_qty"] <= 0]
 if search_kw and search_kw.strip():
     import re as _re
     _tokens = [tk for tk in _re.split(r"[\s,，、;；]+", search_kw.strip()) if tk]
