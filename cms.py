@@ -411,7 +411,7 @@ with st.expander(f"🗂️ {t('功能模块速查')}"):
         ("📝 商品登录", "Phase 5", "新品工作流 → NetSuite Item Create CSV"),
         ("📈 等级历史趋势", "Phase 3", "Sankey 图跨季度等级流向"),
         ("🚀 Shopee上架", "Phase 5", "SPU+SKU CSV → AI 文案 → 店小秘 / Shopee mass upload xlsx"),
-        ("📦 订货依据", "Phase 4", "月完売率 → 红 / 黄 / 绿 三档订货策略"),
+        ("🛡️ 库存风控", "Phase 4", "月完売率 → 断货 / 压库存 风险监控（不出订货量）"),
     ]
 
     for i in range(0, len(modules), 2):
