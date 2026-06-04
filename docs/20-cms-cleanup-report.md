@@ -34,21 +34,21 @@ data_warehouse/
 
 ---
 
-## 3. 🚨 测试健康警报（系统性腐烂）
+## 3. ✅ 测试健康警报（系统性腐烂）— 已修复 2026-06-04
 
-修复 collection 中断后，套件真实状态浮现：**35 failed / 85 passed / 1 skipped**。
+修复 collection 中断后，套件真实状态浮现：**35 failed / 85 passed**。
 
-| 测试文件 | 失败数 | 根因 |
-|---|---|---|
-| `tests/test_health_metrics.py` | 16 | 同下 |
-| `tests/unit/test_purchase_engine.py` | 15 | `sqlite3.OperationalError: no such table: nst.sales_monthly` |
-| `tests/test_rank_classifier.py` | 4 | 同下 |
+| 测试文件 | 失败数 | 根因 | 修复 |
+|---|---|---|---|
+| `tests/test_health_metrics.py` | 16 | `location` 过滤未 seed + 健康度判定由 bucket×阈值改 `ratio_months` + CrossRatio 字段改名 | 补 location；按 `ratio_months`（0.7/2.0/6.0 月）重写 4 档 + 特殊情形；字段改 `gross_margin_pct`/`monthly_turnover` |
+| `tests/unit/test_purchase_engine.py` | 15 | `sqlite3.OperationalError: no such table: nst.sales_monthly` | 改用 `tests/nstdb.py` ATTACH shim，fixture 从 JAN 键改 internal_id 键；**业务断言不变** |
+| `tests/test_rank_classifier.py` | 4 | `generate_proposal` 内部 `get_connection()` 走 `nst.*` 限定表 | monkeypatch `get_connection` → ATTACH-nst seed 连接；断言改实际 rank 标签 |
 
-**根因统一**：业务代码已迁移到 **PostgreSQL**（表名带 `nst.` schema 前缀），但测试 fixture 仍是 **SQLite**（不识别 schema.table）。这是 SQLite→PG 迁移没跟上的测试腐烂，**不是本轮整理引入的**（之前 collection error 一直掩盖着它）。
+**根因统一**：业务代码已迁 **PostgreSQL**（表名带 `nst.` schema 前缀 + 数据模型由 JAN 键改 internal_id 键 + 健康度/CrossRatio 业务规则更新），但测试 fixture 仍是旧 **SQLite** 旧 schema。SQLite→PG 迁移没跟上的测试腐烂，**非本轮整理引入**。
 
-**影响**：当前没有可信的回归安全网。任何代码重构（§4–5）在测试修复前都缺乏 verify 基础。
+**修复方式**：新增 `tests/nstdb.py` — `ATTACH DATABASE ':memory:' AS nst` 在 SQLite 内再现 PG 的 `nst` schema 命名空间，集中放 4 张 `nst.*` 表 DDL + 按 JAN 透明播种的 helper（零外部依赖、不需 Docker/PG）。purchase_engine 纯管线重写（断言不变）；health_metrics / rank_classifier 因业务规则已变，断言同步更新到**当前 Boss 规则**（见上表）。
 
-**建议**：作为独立任务「T-CMS-test-pg-fixture：测试套件适配 PG schema」立项，优先级高于代码重构。
+**结果**：全量 **117 passed / 0 failed**。回归安全网恢复，§4–5 代码重构有了 verify 基础。
 
 ---
 

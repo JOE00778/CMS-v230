@@ -9,12 +9,9 @@
 """
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
-from tempfile import TemporaryDirectory
-
 import pytest
 
+import shared.db as shared_db
 from modules.rank_classifier.rules import (
     classify_rank,
     calc_sales_rank,
@@ -24,6 +21,7 @@ from modules.rank_classifier.proposal import (
     generate_proposal,
     export_csv,
 )
+from tests.nstdb import new_conn, seed_item, seed_sales, seed_inventory
 
 
 class TestClassifyRank:
@@ -197,156 +195,83 @@ class TestCalcSalesRank:
 
 
 class TestGenerateProposal:
-    """generate_proposal 集成测试"""
+    """generate_proposal 集成测试。
+
+    generate_proposal は内部で shared.db.get_connection() を呼び、PG 移行後の
+    nst.* schema 限定表（sales_monthly / item_master_raw / inventory_snapshot）を
+    クエリする。SQLite では tests/nstdb.py の ATTACH shim で再現し、get_connection を
+    monkeypatch で seed 済み接続に差し替える（渡した db_path は本番コードでは無視される）。
+    """
+
+    # (item_code, display_name, total_revenue, margin, netsuite_status)
+    _DATA = [
+        ('SKU001', '商品001', 1000.0, 0.65, '取扱中'),
+        ('SKU002', '商品002', 800.0, 0.60, '取扱中'),
+        ('SKU003', '商品003', 600.0, 0.55, '取扱中'),
+        ('SKU004', '商品004', 400.0, 0.50, '取扱中'),
+        ('SKU005', '商品005', 300.0, 0.65, '取扱中'),
+        ('SKU006', '商品006', 200.0, 0.60, '取扱中'),
+        ('SKU007', '商品007', 100.0, 0.40, '取扱中'),
+        ('SKU008', '商品008', 50.0, 0.35, '取扱中'),
+        ('SKU009', '商品009', 30.0, 0.50, '取扱中'),
+        ('SKU010', '商品010', 20.0, 0.45, '取扱中'),
+        ('SKU011', '商品011', 10.0, 0.55, '取扱中'),
+        ('SKU012', '商品012', 5.0, 0.45, '取扱中止'),
+    ]
 
     @pytest.fixture
-    def test_db(self):
-        """创建临时测试数据库，包含 nst_store_sales 和 nst_inventory_snapshot"""
-        with TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
+    def patched_conn(self, monkeypatch):
+        """get_connection を、毎回 seed 済み in-memory(nst ATTACH) 接続を返すよう差し替える。"""
+        data = self._DATA
 
-            conn = sqlite3.connect(str(db_path), check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON")
+        def _make():
+            c = new_conn()
+            for code, name, rev, margin, status in data:
+                seed_item(c, code, item_code=code, display_name=name,
+                          item_rank="Bランク", handling_cd=status)
+                seed_sales(c, code, "2026-04", 10, revenue=rev, gross_profit=margin * rev)
+                seed_inventory(c, code, qty_on_hand=0)
+            c.commit()
+            return c
 
-            # 创建必要的表
-            conn.executescript("""
-                CREATE TABLE nst_store_sales (
-                    id INTEGER PRIMARY KEY,
-                    fb_store TEXT,
-                    item_code TEXT NOT NULL,
-                    upc TEXT,
-                    handling_status TEXT,
-                    display_name TEXT,
-                    qty_sold REAL,
-                    unit_price REAL,
-                    revenue REAL,
-                    defined_cost REAL,
-                    gross_profit REAL,
-                    gross_margin REAL,
-                    rank TEXT,
-                    ingested_at TIMESTAMP
-                );
+        monkeypatch.setattr(shared_db, "get_connection", _make)
+        return _make
 
-                CREATE TABLE nst_inventory_snapshot (
-                    id INTEGER PRIMARY KEY,
-                    internal_id TEXT,
-                    item_code TEXT,
-                    upc TEXT,
-                    display_name TEXT,
-                    status TEXT,
-                    bin_number TEXT,
-                    location TEXT,
-                    handling_status TEXT,
-                    qty_on_hand REAL,
-                    qty_committed REAL,
-                    qty_backorder REAL,
-                    std_cost REAL,
-                    total_amount REAL,
-                    avg_cost REAL,
-                    owner TEXT,
-                    department TEXT,
-                    ingested_at TIMESTAMP
-                );
-
-                CREATE TABLE item_master_netsuite (
-                    internal_id TEXT PRIMARY KEY,
-                    upc TEXT,
-                    display_name TEXT,
-                    avg_cost REAL,
-                    std_cost REAL,
-                    last_purchase REAL,
-                    on_hand REAL,
-                    available REAL,
-                    on_order REAL,
-                    department TEXT,
-                    rank TEXT,
-                    sku_id TEXT,
-                    created_at TEXT,
-                    maker TEXT,
-                    source_file TEXT,
-                    imported_at TEXT
-                );
-            """)
-
-            # 插入测试数据：12 个 SKU，销售额分布为 top 80% 约 6-7 个
-            test_data = [
-                ('SKU001', '商品001', 1000.0, 0.65, '取扱中'),      # A档
-                ('SKU002', '商品002', 800.0, 0.60, '取扱中'),       # A档
-                ('SKU003', '商品003', 600.0, 0.55, '取扱中'),       # A档
-                ('SKU004', '商品004', 400.0, 0.50, '取扱中'),       # B档
-                ('SKU005', '商品005', 300.0, 0.65, '取扱中'),       # B档
-                ('SKU006', '商品006', 200.0, 0.60, '取扱中'),       # B档
-                ('SKU007', '商品007', 100.0, 0.40, '取扱中'),       # C档
-                ('SKU008', '商品008', 50.0, 0.35, '取扱中'),        # C档
-                ('SKU009', '商品009', 30.0, 0.50, '取扱中'),        # C档
-                ('SKU010', '商品010', 20.0, 0.45, '取扱中'),        # C档
-                ('SKU011', '商品011', 10.0, 0.55, '取扱中'),        # C档
-                ('SKU012', '商品012', 5.0, 0.45, '取扱中止'),       # 停售
-            ]
-
-            for item_code, name, revenue, margin, status in test_data:
-                conn.execute("""
-                    INSERT INTO nst_store_sales
-                    (fb_store, item_code, display_name, qty_sold, unit_price, revenue, gross_margin, handling_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, ('store01', item_code, name, 10, 100, revenue, margin, status))
-
-                conn.execute("""
-                    INSERT INTO nst_inventory_snapshot
-                    (item_code, display_name, handling_status, location)
-                    VALUES (?, ?, ?, ?)
-                """, (item_code, name, status, 'MAIN'))
-
-                # 插入 old rank（模拟现有的 item_master_netsuite）
-                old_rank = 'A' if item_code in ['SKU001', 'SKU002'] else 'B' if item_code in ['SKU003', 'SKU004'] else 'C'
-                conn.execute("""
-                    INSERT INTO item_master_netsuite
-                    (internal_id, upc, display_name, rank)
-                    VALUES (?, ?, ?, ?)
-                """, (f'id_{item_code}', item_code, name, old_rank))
-
-            conn.commit()
-            yield str(db_path)
-            conn.close()
-
-    def test_generate_proposal_returns_list(self, test_db):
-        """generate_proposal 返回列表"""
-        result = generate_proposal(db_path=test_db)
+    def test_generate_proposal_returns_list(self, patched_conn):
+        result = generate_proposal()
         assert isinstance(result, list)
         assert len(result) == 12
 
-    def test_generate_proposal_fields(self, test_db):
-        """生成的每条 proposal 包含必要字段"""
-        result = generate_proposal(db_path=test_db)
+    def test_generate_proposal_fields(self, patched_conn):
+        result = generate_proposal()
         required_fields = ['sku', 'name', 'old_rank', 'new_rank', 'sales', 'margin', 'rank_pct']
         for p in result:
             for field in required_fields:
                 assert field in p, f"Missing field: {field}"
 
-    def test_generate_proposal_rank_distribution(self, test_db):
-        """验证生成的 rank 分布合理"""
-        result = generate_proposal(db_path=test_db)
-        ranks = [p['new_rank'] for p in result]
+    def test_generate_proposal_rank_distribution(self, patched_conn):
+        """新等级分布（classify_rank の戻り値ラベルで集計）。
 
+        revenue 累計で top80% = SKU001-004（4 件）。うち margin≥0.59 → Aランク
+        (SKU001/002)、それ以外 → Bランク(SKU003/004)。残り 7 件は top80 外 → Cランク。
+        SKU012 は netsuite 取扱中止。
+        """
+        result = generate_proposal()
         from collections import Counter
-        rank_counts = Counter(ranks)
+        rank_counts = Counter(p['new_rank'] for p in result)
 
-        # 预期分布：A ~3, B ~3, C ~5, 停售 ~1
-        assert rank_counts['A'] >= 2
-        assert rank_counts['B'] >= 2
-        assert rank_counts['C'] >= 4
-        assert rank_counts['停售'] >= 1
+        assert rank_counts['Aランク'] >= 2
+        assert rank_counts['Bランク'] >= 2
+        assert rank_counts['Cランク'] >= 4
+        assert rank_counts['取扱中止'] >= 1
 
-    def test_export_csv(self, test_db, tmp_path):
-        """export_csv 生成 CSV 文件"""
-        proposals = generate_proposal(db_path=test_db)
+    def test_export_csv(self, patched_conn, tmp_path):
+        proposals = generate_proposal()
         csv_path = tmp_path / "rank_proposal.csv"
 
         export_csv(proposals, csv_path)
         assert csv_path.exists()
 
-        # 验证 CSV 内容
         with open(csv_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             assert len(lines) == 13  # 头 + 12 条数据
