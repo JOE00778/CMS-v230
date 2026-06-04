@@ -17,13 +17,16 @@ import sqlite3
 # 本番クエリが参照する列のみを持つ最小スキーマ
 _NST_DDL = """
 CREATE TABLE nst.item_master_raw (
-    internal_id  TEXT,
-    jan          TEXT,
-    item_code    TEXT,
-    display_name TEXT,
-    maker        TEXT,
-    item_rank    TEXT,
-    handling_cd  TEXT
+    internal_id   TEXT,
+    jan           TEXT,
+    item_code     TEXT,
+    display_name  TEXT,
+    maker         TEXT,
+    item_rank     TEXT,
+    handling_cd   TEXT,
+    is_inactive   INTEGER DEFAULT 0,
+    cost_estimate REAL,
+    last_modified TEXT
 );
 CREATE TABLE nst.sales_monthly (
     item_internal_id TEXT,
@@ -66,14 +69,17 @@ def new_conn() -> sqlite3.Connection:
 
 def seed_item(c, jan, *, display_name="商品", maker="メーカーX",
               item_rank=None, handling_cd="取扱中", item_code=None,
-              internal_id=None) -> str:
+              internal_id=None, is_inactive=0, cost_estimate=None,
+              last_modified=None) -> str:
     """nst.item_master_raw に 1 行入れて internal_id を返す。"""
     iid_ = internal_id or iid(jan)
     c.execute(
         "INSERT INTO nst.item_master_raw "
-        "(internal_id, jan, item_code, display_name, maker, item_rank, handling_cd) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (iid_, jan, item_code or jan, display_name, maker, item_rank, handling_cd),
+        "(internal_id, jan, item_code, display_name, maker, item_rank, handling_cd, "
+        " is_inactive, cost_estimate, last_modified) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (iid_, jan, item_code or jan, display_name, maker, item_rank, handling_cd,
+         1 if is_inactive else 0, cost_estimate, last_modified),
     )
     return iid_
 
