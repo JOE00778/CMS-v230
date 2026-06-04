@@ -156,26 +156,28 @@ st.divider()
 # ============================================================
 # 筛选器
 # ============================================================
+# 商品等级 选项（常驻筛选·item_rank 全量）
+rank_opts = (sorted([x for x in df_all["rank"].dropna().unique().tolist() if str(x).strip()])
+             if "rank" in df_all.columns else [])
+
 f1, f2, f3, f4 = st.columns([1.2, 2, 2, 2])
 with f1:
     sel_month = st.selectbox(t("月份"), months, index=0)
 with f2:
-    sel_locations = st.multiselect(
-        t("仓库 (location)"), options=locations_all, default=locations_all, key="page18_locs")
-with f3:
     sel_risks = st.multiselect(
         t("风险等级"), options=list(RISK_LABELS), default=_default_risks, key="page18_risks")
+with f3:
+    sel_ranks = st.multiselect(
+        t("商品等级"), options=rank_opts,
+        default=[r for r in _default_ranks if r in rank_opts], key="page18_ranks")
 with f4:
-    search_kw = st.text_input(t("JAN / item_code 搜索"), placeholder=t("例: 4901111... 或 01-0641-134"))
+    sel_locations = st.multiselect(
+        t("仓库 (location)"), options=locations_all, default=locations_all, key="page18_locs")
 
-# Rank 筛选（仅当预设需要时）
-sel_ranks = []
-if _default_ranks and "rank" in df_all.columns:
-    rank_opts = sorted([x for x in df_all["rank"].dropna().unique().tolist() if str(x).strip()])
-    if rank_opts:
-        sel_ranks = st.multiselect(
-            t("Rank 筛选 (来自预设)"), options=rank_opts,
-            default=[r for r in _default_ranks if r in rank_opts], key="page18_ranks")
+search_kw = st.text_area(
+    t("JAN / item_code 搜索（多个用 空格 / 逗号 / 换行 分隔）"),
+    placeholder="4901111  4902222\n01-0641-134",
+    height=72, key="page18_search")
 
 # 应用筛选
 df = df_all[df_all["year_month"] == sel_month].copy()
@@ -185,12 +187,19 @@ if sel_risks:
     df = df[df["risk_label"].isin(sel_risks)]
 if sel_ranks and "rank" in df.columns:
     df = df[df["rank"].astype(str).isin(sel_ranks)]
-if search_kw:
-    kw = search_kw.strip()
-    df = df[
-        df["item_code"].astype(str).str.contains(kw, case=False, na=False)
-        | df["jan"].astype(str).str.contains(kw, case=False, na=False)
-    ]
+if search_kw and search_kw.strip():
+    import re as _re
+    _tokens = [tk for tk in _re.split(r"[\s,，、;；]+", search_kw.strip()) if tk]
+    if _tokens:
+        _ic = df["item_code"].astype(str)
+        _jn = df["jan"].astype(str)
+        _mask = pd.Series(False, index=df.index)
+        for _tk in _tokens:
+            _mask = (_mask
+                     | _ic.str.contains(_tk, case=False, na=False, regex=False)
+                     | _jn.str.contains(_tk, case=False, na=False, regex=False))
+        df = df[_mask]
+        st.caption(t(f"🔎 多关键词搜索: {len(_tokens)} 个 → 命中 {len(df)} 行"))
 
 
 # ============================================================
