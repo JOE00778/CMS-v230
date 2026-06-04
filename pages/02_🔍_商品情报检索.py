@@ -44,10 +44,24 @@ _tab_search, _tab_compare = st.tabs([
 with _tab_search:
     st.caption(t("按多维度筛选 SKU，看完整商品信息"))
 
+    # 下拉选项依赖 nst.item_master_raw（PG 本番表）。DB 未连 / schema 未部署时
+    # 优雅降级为空选项 + 提示，不让 traceback 打挂整页（仿 page06 库存监控）。
+    try:
+        maker_opts = distinct_values(conn, "maker")
+        rank_opts = distinct_values(conn, "item_rank")
+    except Exception:  # noqa: BLE001
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        maker_opts, rank_opts = [], []
+        st.info(_L("暂无数据 / 数据库未连接", "データなし / DB 未接続"))
+        st.stop()
+
     kw = st.text_input(t("全文搜索"), placeholder=t("商品名 / 厂商"))
     c1, c2, c3 = st.columns(3)
-    brands = c1.multiselect(t("品牌"), distinct_values(conn, "maker"))
-    cats = c2.multiselect(t("商品等级"), distinct_values(conn, "item_rank"))
+    brands = c1.multiselect(t("品牌"), maker_opts)
+    cats = c2.multiselect(t("商品等级"), rank_opts)
     stock = c3.selectbox(t("库存状态"), [STOCK_ALL, STOCK_IN, STOCK_OUT],
                          format_func=lambda s: {STOCK_ALL: t("全部"), STOCK_IN: t("有库存"),
                                                 STOCK_OUT: t("无库存")}[s])
@@ -60,9 +74,17 @@ with _tab_search:
         f = SearchFilters(keyword=kw, brands=brands, categories=cats, price_min=pmin,
                           price_max=pmax, stock_status=stock, created_from=cfrom,
                           created_to=cto).validate()
-        df = search_items(conn, f)
     except ValueError as e:
         st.error(t("筛选条件非法") + f"：{e}")
+        st.stop()
+    try:
+        df = search_items(conn, f)
+    except Exception:  # noqa: BLE001
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        st.info(_L("暂无数据 / 数据库未连接", "データなし / DB 未接続"))
         st.stop()
 
     st.markdown(f"**{len(df):,}** {t('件')}")
