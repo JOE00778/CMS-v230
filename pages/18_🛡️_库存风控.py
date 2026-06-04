@@ -33,8 +33,13 @@ lang_selector()
 conn = get_connection()
 
 st.title(t("🛡️ 库存风控"))
-st.caption(t("按可售天数(JDL库存/前30天日均销量)识别断货 / 压库存风险 · 仅有等级商品 · "
+st.caption(t("按可售天数(JDL库存/日均销量)识别断货 / 压库存风险 · 仅有等级商品 · "
              "🛒 精确补货量请用「📦 発注AI v2」"))
+
+# 销量统计窗口（前30/60/90天 · 影响 qty_sold / 可售天数 / 可释放金额）
+_window_label = st.radio(t("销量统计窗口"), [t("前30天"), t("前60天"), t("前90天")],
+                         index=0, horizontal=True, key="page18_window")
+window_days = {t("前30天"): 30, t("前60天"): 60, t("前90天"): 90}[_window_label]
 
 
 def _df(sql, params=None):
@@ -51,7 +56,7 @@ with st.expander(f"⚙️ {t('风险阈值设定 (可售天数·随时可调)')}
         t("🔴 断货线 (可售天数 <)"),
         min_value=0.0, max_value=365.0, value=float(_saved["reorder_days"]), step=5.0,
         key="risk_th_reorder",
-        help=t("可售天数 = JDL库存 / 日均销量(前30天/30)。低于此线 = 断货风险, 要补货"))
+        help=t("可售天数 = JDL库存 / 日均销量(窗口销量/窗口天数)。低于此线 = 断货风险, 要补货"))
     overstock = tcol2.number_input(
         t("🟡 压库存线 (可售天数 >)"),
         min_value=0.0, max_value=999.0, value=float(_saved["overstock_days"]), step=5.0,
@@ -80,12 +85,12 @@ _th = {"reorder_days": reorder, "overstock_days": overstock, "target_days": targ
 # ============================================================
 try:
     df_all = _df(
-        """
+        f"""
         WITH s30 AS (
             SELECT item_internal_id, SUM(qty_sold) AS qty_sold,
                    SUM(revenue) AS revenue_30d, SUM(gross_profit) AS gp_30d
             FROM nst.sales_daily
-            WHERE sale_date >= CURRENT_DATE - INTERVAL '30 days'
+            WHERE sale_date >= CURRENT_DATE - INTERVAL '{window_days} days'
             GROUP BY item_internal_id
         )
         SELECT im.internal_id AS internal_id, im.item_code AS item_code, im.jan AS jan,
@@ -138,8 +143,8 @@ if "in_transit_qty" not in df_all.columns:
     df_all["in_transit_qty"] = 0
 df_all["in_transit_qty"] = pd.to_numeric(df_all["in_transit_qty"], errors="coerce").fillna(0)
 
-# 派生列（可售天数 / risk_label）
-df_all = enrich(df_all, _th)
+# 派生列（可售天数 / risk_label）· 销量窗口 = window_days
+df_all = enrich(df_all, _th, days_in_period=window_days)
 # 资金占用 = 平均单价(COALESCE average_cost, 定義原価) × JDL库存
 df_all["avg_unit_price"] = pd.to_numeric(df_all.get("avg_unit_price", 0), errors="coerce").fillna(0)
 df_all["capital_exposure"] = df_all["current_stock"] * df_all["avg_unit_price"]
@@ -149,7 +154,7 @@ _gp = pd.to_numeric(df_all.get("gp_30d", 0), errors="coerce").fillna(0)
 df_all["gross_margin"] = (_gp / _rev.replace(0, pd.NA)).fillna(0).astype(float)
 # 可释放库存金额 = 标准可售天数下超出部分 × 平均单价
 df_all["releasable"] = [
-    releasable_value(stk, sld, prc, target_days=_th["target_days"])
+    releasable_value(stk, sld, prc, target_days=_th["target_days"], days_in_period=window_days)
     for stk, sld, prc in zip(df_all["current_stock"], df_all["qty_sold"], df_all["avg_unit_price"])
 ]
 # 断货标记：前30天有销量 且 当前 JDL 库存 = 0
@@ -173,7 +178,7 @@ with f3:
 with f4:
     sel_instock = st.selectbox(
         t("库存状态"), [t("全部"), t("有货"), t("断货")], index=0, key="page18_instock",
-        help=t("断货 = 前30天有销量 但 当前JDL库存=0"))
+        help=t(f"断货 = 前{window_days}天有销量 但 当前JDL库存=0"))
 
 search_kw = st.text_area(
     t("JAN / item_code 搜索（多个用 空格 / 逗号 / 换行 分隔）"),
@@ -222,13 +227,13 @@ k4.metric(t("🟢 正常"), int(risk_counts.get(RISK_NORMAL, 0)))
 k5.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
 k6.metric(t(f"♻️ 可释放库存金额(标准{target:g}天)"), f"¥{releasable_total:,.0f}")
 
-st.caption(t(f"前30天销售 + JDL实物库存 · 断货线<{reorder:g}天 / 压库存线>{overstock:g}天 · "
+st.caption(t(f"前{window_days}天销售 + JDL实物库存 · 断货线<{reorder:g}天 / 压库存线>{overstock:g}天 · "
              f"仅有等级商品 · 当前筛选 {len(df)} 行"))
 
 # 断货率卡片（按商品等级·有等级全量·断货=前30天有销量+JDL库存0）
 _so = stockout_rate_by_rank(df_all)
 if not _so.empty:
-    st.markdown(f"##### 📊 {t('各等级断货率（前30天有销量 + 当前JDL库存=0）')}")
+    st.markdown(f"##### 📊 {t(f"各等级断货率（前{window_days}天有销量 + 当前JDL库存=0）")}")
     _rows = list(_so.itertuples(index=False))
     for _start in range(0, len(_rows), 6):
         _chunk = _rows[_start:_start + 6]
@@ -274,7 +279,7 @@ else:
     COLS360 = [
         ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
         ("maker", t("厂家")), ("rank", t("商品等级")), ("risk_label", t("风险")),
-        ("is_stockout", t("断货")), ("qty_sold", t("前30天销量")),
+        ("is_stockout", t("断货")), ("qty_sold", t(f"前{window_days}天销量")),
         ("gross_margin", t("毛利率")),
         ("current_stock", t("JDL库存")), ("days_of_supply", t("可售天数")),
         ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),

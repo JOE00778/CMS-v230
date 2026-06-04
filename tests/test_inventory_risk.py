@@ -56,6 +56,23 @@ def test_days_of_supply_zero_sales_is_none():
     assert ir.days_of_supply(50, None) is None
 
 
+def test_days_of_supply_window():
+    # 同库存同销量·窗口越长 → 日均越小 → 可售天数越大
+    assert ir.days_of_supply(20, 10, days_in_period=30) == 60.0    # 日均 10/30
+    assert ir.days_of_supply(20, 10, days_in_period=60) == 120.0   # 日均 10/60
+
+
+def test_classify_risk_window_shifts_band():
+    # 库存20·窗口销量10: 30天窗→60天(正常) / 60天窗→120天(压库存)
+    assert ir.classify_risk(20, 10, days_in_period=30) == ir.RISK_NORMAL
+    assert ir.classify_risk(20, 10, days_in_period=60) == ir.RISK_OVERSTOCK
+
+
+def test_releasable_value_window():
+    # 库存100·90天窗销量90(日均1)·标准60天→标准60·超40·单价10 → 400
+    assert ir.releasable_value(100, 90, 10, target_days=60, days_in_period=90) == 400.0
+
+
 def test_stock_months_basic():
     assert ir.stock_months(20, 10) == 2.0
     assert ir.stock_months(5, 10) == 0.5

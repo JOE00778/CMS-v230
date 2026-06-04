@@ -66,21 +66,25 @@ def stock_months(stock, monthly_sold):
         return None
 
 
-def days_of_supply(stock, monthly_sold, *, days_in_month: float = 30.0):
-    """可售天数 = 当前库存 / 日均销量（= 当前库存 × 30 / 月销量）。月销 ≤ 0 → None。純関数。"""
-    m = stock_months(stock, monthly_sold)
-    return None if m is None else m * days_in_month
+def days_of_supply(stock, period_sold, *, days_in_period: float = 30.0):
+    """可售天数 = 当前库存 / 日均销量（= 当前库存 × 周期天数 / 周期销量）。周期销量 ≤ 0 → None。純関数。
+
+    days_in_period = 销量统计窗口（前30/60/90天）。日均 = period_sold / days_in_period。
+    """
+    m = stock_months(stock, period_sold)
+    return None if m is None else m * days_in_period
 
 
-def classify_risk(stock, monthly_sold, *,
-                  reorder_days: float = 30.0, overstock_days: float = 90.0) -> str:
+def classify_risk(stock, period_sold, *,
+                  reorder_days: float = 30.0, overstock_days: float = 90.0,
+                  days_in_period: float = 30.0) -> str:
     """可售天数を閾値（销售天数）と比較してリスクラベル。純関数。
 
     可售天数 < 断货线 → 断货风险（要补货）/ > 压库存线 → 压库存 / 中间 → 正常。
-    月销 = 0: 在庫あり → 压库存（売れ残り）/ 在庫 0 → 数据不足。
-    境界は「正常」側に含める。
+    周期销量 = 0: 在庫あり → 压库存（売れ残り）/ 在庫 0 → 数据不足。
+    境界は「正常」側に含める。days_in_period = 销量窗口（前30/60/90天）。
     """
-    d = days_of_supply(stock, monthly_sold)
+    d = days_of_supply(stock, period_sold, days_in_period=days_in_period)
     if d is None:   # 月销 = 0
         try:
             return RISK_OVERSTOCK if float(stock) > 0 else RISK_NO_DATA
@@ -93,19 +97,19 @@ def classify_risk(stock, monthly_sold, *,
     return RISK_NORMAL
 
 
-def releasable_value(current_stock, monthly_sold, avg_unit_price, *,
-                     target_days: float = 60.0) -> float:
+def releasable_value(current_stock, period_sold, avg_unit_price, *,
+                     target_days: float = 60.0, days_in_period: float = 30.0) -> float:
     """标准可售天数下 可释放库存金额 = max(0, 当前库存 − 标准库存量) × 平均单价。純関数。
 
-    标准库存量 = target_days × 日均销量(月销量/30)。月销 ≤ 0 → 标准库存 0（全部可释放·死货）。
+    标准库存量 = target_days × 日均销量(period_sold/days_in_period)。周期销量 ≤ 0 → 标准库存 0（全部可释放·死货）。
     """
     try:
         stock = max(float(current_stock or 0), 0.0)
         price = float(avg_unit_price or 0)
-        sold = float(monthly_sold or 0)
+        sold = float(period_sold or 0)
     except (TypeError, ValueError):
         return 0.0
-    target_stock = (target_days * sold / 30.0) if sold > 0 else 0.0
+    target_stock = (target_days * sold / days_in_period) if sold > 0 else 0.0
     excess = max(0.0, stock - target_stock)
     return excess * price
 
@@ -125,11 +129,12 @@ def inventory_turnover(monthly_sold, current_stock) -> float:
     return sold / stock
 
 
-def enrich(df, thresholds: dict | None = None):
+def enrich(df, thresholds: dict | None = None, *, days_in_period: float = 30.0):
     """DataFrame に派生列を付与して返す（page18 はこれだけ呼ぶ）。
 
     入力列: opening_qty / received_qty / qty_sold / current_stock / cost_estimate
     付与列: available_qty / sell_through_rate(参考) / days_of_supply / risk_label / capital_exposure
+    days_in_period = 销量统计窗口（前30/60/90天·qty_sold が何日間の合計か）。
     """
     import pandas as pd
 
@@ -150,10 +155,11 @@ def enrich(df, thresholds: dict | None = None):
 
     # 可售天数 + リスク分档（当前库存 vs 月销量·月销0 は NaN）
     out["days_of_supply"] = pd.Series(
-        [days_of_supply(s, q) for s, q in zip(out["current_stock"], out["qty_sold"])],
+        [days_of_supply(s, q, days_in_period=days_in_period)
+         for s, q in zip(out["current_stock"], out["qty_sold"])],
         index=out.index, dtype="float64")
     out["risk_label"] = [
-        classify_risk(s, q, reorder_days=ro, overstock_days=ov)
+        classify_risk(s, q, reorder_days=ro, overstock_days=ov, days_in_period=days_in_period)
         for s, q in zip(out["current_stock"], out["qty_sold"])
     ]
     # 资金占用 = 当前库存 × 定義原価（压库存 = 圧迫資金）
