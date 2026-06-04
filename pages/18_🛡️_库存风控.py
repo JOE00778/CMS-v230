@@ -141,8 +141,8 @@ rank_opts = sorted([x for x in df_all["rank"].dropna().unique().tolist() if str(
 
 f1, f2, f3, f4 = st.columns([2, 2, 1.4, 1.4])
 with f1:
-    sel_risks = st.multiselect(
-        t("风险等级"), options=list(RISK_LABELS), default=[], key="page18_risks")
+    sel_risk = st.selectbox(
+        t("风险等级"), options=[t("全部"), *RISK_LABELS], index=0, key="page18_risk")
 with f2:
     sel_ranks = st.multiselect(t("商品等级"), options=rank_opts, default=[], key="page18_ranks")
 with f3:
@@ -159,8 +159,8 @@ search_kw = st.text_area(
 
 # 应用筛选
 df = df_all.copy()
-if sel_risks:
-    df = df[df["risk_label"].isin(sel_risks)]
+if sel_risk != t("全部"):
+    df = df[df["risk_label"] == sel_risk]
 if sel_ranks:
     df = df[df["rank"].astype(str).isin(sel_ranks)]
 if sel_intransit == t("有在途"):
@@ -201,150 +201,74 @@ k5.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
 st.caption(t(f"前30天销售 + JDL实物库存 · 断货线<{reorder:g}天 / 压库存线>{overstock:g}天 · "
              f"仅有等级商品 · 当前筛选 {len(df)} 行"))
 
-# 断货率（按商品等级·有等级全量·断货=前30天有销量+JDL库存0）
+# 断货率卡片（按商品等级·有等级全量·断货=前30天有销量+JDL库存0）
 _so = stockout_rate_by_rank(df_all)
 if not _so.empty:
-    with st.expander(f"📊 {t('断货率（按商品等级 · 前30天有销量+JDL库存0）')}", expanded=False):
-        _sod = _so.copy()
-        _sod["rate"] = (pd.to_numeric(_sod["rate"], errors="coerce").fillna(0) * 100).round(1).astype(str) + "%"
-        _sod.columns = [t("商品等级"), t("总数"), t("断货数"), t("断货率")]
-        st.dataframe(_sod, use_container_width=True, hide_index=True)
+    st.markdown(f"##### 📊 {t('各等级断货率（前30天有销量 + 当前JDL库存=0）')}")
+    _rows = list(_so.itertuples(index=False))
+    for _start in range(0, len(_rows), 6):
+        _chunk = _rows[_start:_start + 6]
+        _cards = st.columns(len(_chunk))
+        for _c, _r in zip(_cards, _chunk):
+            _c.metric(t(f"{_r.rank} 断货率"),
+                      f"{float(_r.rate) * 100:.1f}%",
+                      f"{int(_r.stockout)}/{int(_r.total)}",
+                      delta_color="off")
 st.divider()
 
 
 # ============================================================
-# 列显示 toggle
+# 📋 SKU 360（决策上下文宽表·唯一视图）
 # ============================================================
-ALL_COLS = [
-    ("item_code", t("item_code")),
-    ("jan", t("JAN")),
-    ("display_name", t("商品名")),
-    ("maker", t("厂家")),
-    ("rank", t("商品等级")),
-    ("is_stockout", t("断货")),
-    ("qty_sold", t("前30天销量")),
-    ("current_stock", t("JDL库存")),
-    ("days_of_supply", t("可售天数")),
-    ("in_transit_qty", t("在途残")),
-    ("last_purchase_cost", t("最近采购价")),
-    ("capital_exposure", t("资金占用(¥)")),
-]
-with st.expander(f"⚙️ {t('显示列设置')}"):
-    cols_grid = st.columns(4)
-    selected_keys = []
-    for i, (key, label) in enumerate(ALL_COLS):
-        with cols_grid[i % 4]:
-            if st.checkbox(label, value=True, key=f"page18_col_{key}"):
-                selected_keys.append(key)
-if not selected_keys:
-    selected_keys = [k for k, _ in ALL_COLS]
-DISPLAY_COLS = selected_keys
+st.markdown(f"### 📋 {t('SKU 360 · 决策上下文宽表')}")
+st.caption(t("当前筛选范围 · 销量 / 库存 / 在途PO / 采购价 / 等级一览"))
+if df.empty:
+    st.info(t("当前筛选无数据"))
+else:
+    # 在途供应商 + 最近 PO（按 item_internal_id）
+    try:
+        sup = _df(
+            "SELECT item_internal_id, string_agg(DISTINCT vendor_name, ', ') AS in_transit_suppliers, "
+            "MAX(po_number) AS latest_po FROM nst.purchase_order_line "
+            "WHERE closed = FALSE AND (quantity - COALESCE(quantity_received,0)) > 0 "
+            "GROUP BY item_internal_id")
+    except Exception:
+        sup = pd.DataFrame(columns=["item_internal_id", "in_transit_suppliers", "latest_po"])
+    wide = df[["internal_id", "item_code", "jan", "display_name", "maker", "rank",
+               "risk_label", "is_stockout", "qty_sold", "current_stock", "days_of_supply",
+               "in_transit_qty", "last_purchase_cost", "capital_exposure"]].drop_duplicates("internal_id").copy()
+    if not sup.empty:
+        wide = wide.merge(sup, how="left", left_on="internal_id", right_on="item_internal_id")
+        if "item_internal_id" in wide.columns:
+            wide = wide.drop(columns=["item_internal_id"])
+    for c in ("in_transit_suppliers", "latest_po"):
+        if c not in wide.columns:
+            wide[c] = ""
+        wide[c] = wide[c].fillna("")
 
-
-def _render_df_with_csv(d: pd.DataFrame, csv_name: str):
-    if d.empty:
-        st.info(t("当前 Tab 无数据"))
-        return
-    available = [c for c in DISPLAY_COLS if c in d.columns] or list(d.columns)
-    show = d[available].copy()
-    show.columns = [dict(ALL_COLS).get(c, c) for c in available]
-    so_col = t("断货")
-    if so_col in show.columns:
-        show[so_col] = show[so_col].map(lambda v: "🚫断货" if bool(v) else "")
-    show_disp = show.copy()
-    dos_col = t("可售天数")
-    if dos_col in show_disp.columns:
-        show_disp[dos_col] = pd.to_numeric(show_disp[dos_col], errors="coerce").round(0)
+    COLS360 = [
+        ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
+        ("maker", t("厂家")), ("rank", t("商品等级")), ("risk_label", t("风险")),
+        ("is_stockout", t("断货")), ("qty_sold", t("前30天销量")),
+        ("current_stock", t("JDL库存")), ("days_of_supply", t("可售天数")),
+        ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
+        ("latest_po", t("最近PO")), ("last_purchase_cost", t("最近采购价")),
+        ("capital_exposure", t("资金占用(¥)")),
+    ]
+    order = [k for k, _ in COLS360 if k in wide.columns]
+    show360 = wide[order].copy()
+    disp = show360.copy()
+    disp.columns = [dict(COLS360)[k] for k in order]
+    if t("断货") in disp.columns:
+        disp[t("断货")] = disp[t("断货")].map(lambda v: "🚫断货" if bool(v) else "")
+    if t("可售天数") in disp.columns:
+        disp[t("可售天数")] = pd.to_numeric(disp[t("可售天数")], errors="coerce").round(0)
     for _c in (t("资金占用(¥)"), t("最近采购价")):
-        if _c in show_disp.columns:
-            show_disp[_c] = pd.to_numeric(show_disp[_c], errors="coerce").fillna(0).map(lambda v: f"¥{v:,.0f}")
-    st.dataframe(show_disp, use_container_width=True, height=460)
+        if _c in disp.columns:
+            disp[_c] = pd.to_numeric(disp[_c], errors="coerce").fillna(0).map(lambda v: f"¥{v:,.0f}")
+    st.caption(t(f"{len(show360)} 个 SKU"))
+    st.dataframe(disp, use_container_width=True, height=560, hide_index=True)
     st.download_button(
-        t("📥 下载 CSV"),
-        data=show.to_csv(index=False).encode("utf-8-sig"),
-        file_name=csv_name, mime="text/csv", key=f"dl_{csv_name}")
-
-
-# ============================================================
-# 3 风险清单 Tab + SKU 360
-# ============================================================
-tab_red, tab_yellow, tab_green, tab_360 = st.tabs([
-    t("🔴 断货风险"), t("🟡 压库存"), t("🟢 正常"), t("📋 SKU 360"),
-])
-
-with tab_red:
-    red = df[df["risk_label"] == RISK_STOCKOUT].sort_values(
-        "days_of_supply", ascending=True, na_position="last")   # 可售天数最少 = 最急
-    st.subheader(t(f"🔴 断货风险清单 (可售天数 < {reorder:g}天 · 要补货)"))
-    st.caption(t("库存薄 / 快断货 · 可售天数升序(最急在前) · 🛒 下单去発注AI"))
-    _render_df_with_csv(red, "inv_risk_stockout.csv")
-
-with tab_yellow:
-    yellow = df[df["risk_label"] == RISK_OVERSTOCK].sort_values(
-        "capital_exposure", ascending=False, na_position="last")
-    st.subheader(t(f"🟡 压库存清单 (可售天数 > {overstock:g}天 · 按资金占用降序)"))
-    st.caption(t("卖得慢 / 压资金 · 减少订货, 优先消化资金占用最高者"))
-    _render_df_with_csv(yellow, "inv_risk_overstock.csv")
-    if not yellow.empty:
-        st.metric(t("本档资金占用合计 (¥)"), f"¥{float(yellow['capital_exposure'].sum()):,.0f}")
-
-with tab_green:
-    green = df[df["risk_label"] == RISK_NORMAL].sort_values(
-        "days_of_supply", ascending=True, na_position="last")
-    st.subheader(t(f"🟢 正常 SKU ({reorder:g} ≤ 可售天数 ≤ {overstock:g}天)"))
-    st.caption(t("库存健康区间 · 参考"))
-    _render_df_with_csv(green, "inv_risk_normal.csv")
-
-with tab_360:
-    st.subheader(t("📋 SKU 360 · 决策上下文宽表"))
-    st.caption(t("当前筛选范围 · 销量 / 库存 / 在途PO / 采购价 / 等级一览"))
-    if df.empty:
-        st.info(t("当前筛选无数据"))
-    else:
-        # 在途供应商 + 最近 PO（按 item_internal_id）
-        try:
-            sup = _df(
-                "SELECT item_internal_id, string_agg(DISTINCT vendor_name, ', ') AS in_transit_suppliers, "
-                "MAX(po_number) AS latest_po FROM nst.purchase_order_line "
-                "WHERE closed = FALSE AND (quantity - COALESCE(quantity_received,0)) > 0 "
-                "GROUP BY item_internal_id")
-        except Exception:
-            sup = pd.DataFrame(columns=["item_internal_id", "in_transit_suppliers", "latest_po"])
-        wide = df[["internal_id", "item_code", "jan", "display_name", "maker", "rank",
-                   "risk_label", "is_stockout", "qty_sold", "current_stock", "days_of_supply",
-                   "in_transit_qty", "last_purchase_cost", "capital_exposure"]].drop_duplicates("internal_id").copy()
-        if not sup.empty:
-            wide = wide.merge(sup, how="left", left_on="internal_id", right_on="item_internal_id")
-            if "item_internal_id" in wide.columns:
-                wide = wide.drop(columns=["item_internal_id"])
-        for c in ("in_transit_suppliers", "latest_po"):
-            if c not in wide.columns:
-                wide[c] = ""
-            wide[c] = wide[c].fillna("")
-
-        COLS360 = [
-            ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
-            ("maker", t("厂家")), ("rank", t("商品等级")), ("risk_label", t("风险")),
-            ("is_stockout", t("断货")), ("qty_sold", t("前30天销量")),
-            ("current_stock", t("JDL库存")), ("days_of_supply", t("可售天数")),
-            ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
-            ("latest_po", t("最近PO")), ("last_purchase_cost", t("最近采购价")),
-            ("capital_exposure", t("资金占用(¥)")),
-        ]
-        order = [k for k, _ in COLS360 if k in wide.columns]
-        show360 = wide[order].copy()
-        disp = show360.copy()
-        disp.columns = [dict(COLS360)[k] for k in order]
-        if t("断货") in disp.columns:
-            disp[t("断货")] = disp[t("断货")].map(lambda v: "🚫断货" if bool(v) else "")
-        if t("可售天数") in disp.columns:
-            disp[t("可售天数")] = pd.to_numeric(disp[t("可售天数")], errors="coerce").round(0)
-        for _c in (t("资金占用(¥)"), t("最近采购价")):
-            if _c in disp.columns:
-                disp[_c] = pd.to_numeric(disp[_c], errors="coerce").fillna(0).map(lambda v: f"¥{v:,.0f}")
-        st.caption(t(f"{len(show360)} 个 SKU"))
-        st.dataframe(disp, use_container_width=True, height=520)
-        st.download_button(
-            t("📥 下载 SKU 360 CSV"),
-            data=show360.to_csv(index=False).encode("utf-8-sig"),
-            file_name="sku360.csv", mime="text/csv", key="dl_sku360")
+        t("📥 下载 SKU 360 CSV"),
+        data=show360.to_csv(index=False).encode("utf-8-sig"),
+        file_name="sku360.csv", mime="text/csv", key="dl_sku360")
