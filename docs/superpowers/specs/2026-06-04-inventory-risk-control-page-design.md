@@ -107,3 +107,17 @@ Boss 追加：风控盘上叠加决策上下文。决策（brainstorming）：�
 - 数据源：`nst.sales_daily`(前30天滚动) · `nst.inventory_snapshot`(当天库存按 warehouse 拆 JD/弁天) · `nst.purchase_order_line`(closed=FALSE 入荷残) · `nst.item_master_raw.last_purchase_cost`(最近采购价) · 上月销量复用 df_all。各 aux 查询 try/except 兜底，缺数据列显 0。
 - 纯函数 `inventory_risk.inventory_turnover(sold, stock)` + 单测（库存≤0→0）。
 - SKU 360 尊重上方筛选（月/风险/搜索/预设）。依赖 sales_daily / inventory_snapshot / purchase_order_line 被各自 NST pull 喂数。
+
+---
+
+## 增补 v3（2026-06-04 修正）：风控判断基准 完売率 → 库存月数
+
+Boss 纠正：**风控分档不该用完売率**（那是「每月订货量合不合适」的结果指标），应用**周转率/库存月数**判断补货。
+
+- **库存月数 = 仅 JD 当天库存(`nst.inventory_snapshot` 最新·弁天/在途不算) / 直近月 sold**。
+- 阈值改**库存月数**单位（页内可调，默认 补货线=1月 / 压库存线=3月）：
+  `< 补货线 → 🔴 断货风险(要补货) / > 压库存线 → 🟡 压库存 / 中间 → 🟢 正常`；月销0+有库存→压库存、月销0+无库存→数据不足。
+- **完売率降为参考列**（`完売率(参考)`），不参与分档。
+- `classify_risk(stock, monthly_sold, *, reorder_months, overstock_months)` 重写为库存月数判断；阈值 key 改 `reorder_months/overstock_months`；新增 `stock_months()` 纯函数；`enrich` 改用 `current_stock`，资金占用=当前库存×cost_estimate。单测同步重写（16 passed）。
+- **新增数据依赖** `nst.inventory_snapshot`（当前JD库存）；该表无数据时页面 warn（有销量者会全判断为断货）。
+- 三档清单加列：当前库存(JD) / 库存月数；断货档按库存月数升序（最急在前）。SKU 360 加库存月数列。

@@ -1,13 +1,17 @@
-"""库存风控 · 月完売率による在庫リスク分档（page18 库存风控の純ロジック）。
+"""库存风控 · 周转率（库存月数）による在庫リスク分档。
 
-完売率 = sold / (opening + received)（全て数量）。閾値で 3 档に分ける：
-  ≥high → 🔴 断货风险（売れ切れ気味·補充対象）/ ≥low → 🟢 正常 / <low → 🟡 压库存。
-available=0（基準なし）→ 数据不足。
+リスク判定 = **当前库存 ÷ 月销量 = 库存月数**（何ヶ月で売り切れるか）を閾値と比較し補货要否を判断:
+  库存月数 < 补货线   → 🔴 断货风险（要补货·在庫が薄い）
+  库存月数 > 压库存线 → 🟡 压库存（卖得慢·在庫が厚い）
+  中间               → 🟢 正常
+  月销 = 0: 在庫あり → 压库存（売れ残り）/ 在庫 0 → 数据不足。
 
-閾値は Boss が随時調整（page18 の「⚙️ 阈值设定」tab）。発注AI の系数閾値
-（shared/order_settings.py）とは**独立**に持久化する（風控視点の調整が発注量に波及しないため）。
+完売率（= sold/(opening+received)）は **発注結果の参考指標** であり分档には使わない。
+Boss 2026-06-04 訂正: 風控は周転率（库存月数）で判断する。完売率は「今月の発注量が妥当
+だったか」を見る結果指標にすぎない。
 
-注: 発注量・仕入先選択は本モジュールの責務外（→ shared/purchase_engine.py / page25）。
+当前库存 = JD 当天手持（inventory_snapshot 最新 · 弁天 / 在途は含めない）· 月销量 = 直近月 sold。
+発注量・仕入先選択は責務外 → 発注AI v2（page25·唯一の下单引擎）。
 """
 from __future__ import annotations
 
@@ -22,7 +26,8 @@ RISK_OVERSTOCK = "压库存"
 RISK_NO_DATA = "数据不足"
 RISK_LABELS = (RISK_STOCKOUT, RISK_NORMAL, RISK_OVERSTOCK, RISK_NO_DATA)
 
-_DEFAULT_THRESHOLDS = {"high": 0.9, "low": 0.5}
+# 库存月数の閾値（Boss が随時調整·page18 の expander）
+_DEFAULT_THRESHOLDS = {"reorder_months": 1.0, "overstock_months": 3.0}
 
 
 def _thresholds_path() -> Path:
@@ -31,7 +36,7 @@ def _thresholds_path() -> Path:
 
 
 def load_risk_thresholds() -> dict:
-    """{high, low} を返す。ファイル欠如/壊れは既定（0.9 / 0.5）にフォールバック。"""
+    """{reorder_months, overstock_months} を返す。欠如/壊れは既定（1.0 / 3.0）。"""
     try:
         with open(_thresholds_path(), encoding="utf-8") as f:
             return {**_DEFAULT_THRESHOLDS, **json.load(f)}
@@ -46,57 +51,44 @@ def save_risk_thresholds(d: dict) -> None:
         json.dump({k: float(d[k]) for k in _DEFAULT_THRESHOLDS if k in d}, f)
 
 
-def classify_risk(sold, available, *, high: float = 0.9, low: float = 0.5) -> str:
-    """1 SKU・1 月のリスクラベル。純関数。
-
-    available（= opening + received）が無ければ判定基準が無い → 数据不足。
-    """
+def stock_months(stock, monthly_sold):
+    """库存月数 = 当前库存 / 月销量。月销 ≤ 0 → None（無限·別扱い）。純関数。"""
     try:
-        avail = float(available)
+        sold = float(monthly_sold)
     except (TypeError, ValueError):
-        return RISK_NO_DATA
-    if avail <= 0:
-        return RISK_NO_DATA
-    rate = (float(sold) if sold is not None else 0.0) / avail
-    if rate >= high:
-        return RISK_STOCKOUT
-    if rate >= low:
-        return RISK_NORMAL
-    return RISK_OVERSTOCK
+        return None
+    if sold <= 0:
+        return None
+    try:
+        return max(float(stock), 0.0) / sold
+    except (TypeError, ValueError):
+        return None
 
 
-def enrich(df, thresholds: dict | None = None):
-    """DataFrame に派生列を付与して返す（page18 はこれだけ呼ぶ）。
+def classify_risk(stock, monthly_sold, *,
+                  reorder_months: float = 1.0, overstock_months: float = 3.0) -> str:
+    """库存月数を閾値と比較してリスクラベル。純関数。
 
-    入力列: opening_qty / received_qty / qty_sold / close_qty / cost_estimate
-    付与列: available_qty / sell_through_rate / risk_label / capital_exposure
+    月销 = 0: 在庫あり → 压库存（売れ残り）/ 在庫 0 → 数据不足。
+    境界は「正常」側に含める（= reorder / = overstock は 正常）。
     """
-    import pandas as pd
-
-    th = {**_DEFAULT_THRESHOLDS, **(thresholds or {})}
-    high, low = th["high"], th["low"]
-    out = df.copy()
-    for col in ("opening_qty", "received_qty", "qty_sold", "close_qty", "cost_estimate"):
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
-        else:
-            out[col] = 0.0
-
-    out["available_qty"] = out["opening_qty"] + out["received_qty"]
-    denom = out["available_qty"].replace(0, pd.NA)
-    out["sell_through_rate"] = (out["qty_sold"] / denom).fillna(0).astype(float)
-    out["risk_label"] = [
-        classify_risk(s, a, high=high, low=low)
-        for s, a in zip(out["qty_sold"], out["available_qty"])
-    ]
-    out["capital_exposure"] = out["close_qty"] * out["cost_estimate"]
-    return out
+    m = stock_months(stock, monthly_sold)
+    if m is None:   # 月销 = 0
+        try:
+            return RISK_OVERSTOCK if float(stock) > 0 else RISK_NO_DATA
+        except (TypeError, ValueError):
+            return RISK_NO_DATA
+    if m < reorder_months:
+        return RISK_STOCKOUT
+    if m > overstock_months:
+        return RISK_OVERSTOCK
+    return RISK_NORMAL
 
 
 def inventory_turnover(monthly_sold, current_stock) -> float:
-    """库存周转率 = 月销量 / 当天库存（SKU 360 用）。純関数。
+    """库存周转率 = 月销量 / 当前库存（库存月数の逆数·SKU 360 用）。純関数。
 
-    库存 ≤ 0（在庫なし）→ 0.0（周転すべき在庫が無い）。
+    库存 ≤ 0（在庫なし）→ 0.0。
     """
     try:
         stock = float(current_stock)
@@ -106,3 +98,40 @@ def inventory_turnover(monthly_sold, current_stock) -> float:
         return 0.0
     sold = float(monthly_sold) if monthly_sold is not None else 0.0
     return sold / stock
+
+
+def enrich(df, thresholds: dict | None = None):
+    """DataFrame に派生列を付与して返す（page18 はこれだけ呼ぶ）。
+
+    入力列: opening_qty / received_qty / qty_sold / current_stock / cost_estimate
+    付与列: available_qty / sell_through_rate(参考) / stock_months / risk_label / capital_exposure
+    """
+    import pandas as pd
+
+    th = {**_DEFAULT_THRESHOLDS, **(thresholds or {})}
+    ro, ov = th["reorder_months"], th["overstock_months"]
+    out = df.copy()
+    for col in ("opening_qty", "received_qty", "qty_sold", "current_stock",
+                "cost_estimate", "close_qty"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
+        else:
+            out[col] = 0.0
+
+    # 完売率（参考指标·分档には使わない）
+    out["available_qty"] = out["opening_qty"] + out["received_qty"]
+    denom = out["available_qty"].replace(0, pd.NA)
+    out["sell_through_rate"] = (out["qty_sold"] / denom).fillna(0).astype(float)
+
+    # 库存月数 + リスク分档（当前库存 vs 月销量）
+    out["stock_months"] = [
+        (lambda m: m if m is not None else 0.0)(stock_months(s, q))
+        for s, q in zip(out["current_stock"], out["qty_sold"])
+    ]
+    out["risk_label"] = [
+        classify_risk(s, q, reorder_months=ro, overstock_months=ov)
+        for s, q in zip(out["current_stock"], out["qty_sold"])
+    ]
+    # 资金占用 = 当前库存 × 定義原価（压库存 = 圧迫資金）
+    out["capital_exposure"] = out["current_stock"] * out["cost_estimate"]
+    return out
