@@ -1,9 +1,9 @@
-"""模块 #18 库存风控 · 库存月数（当前库存/月销量）による在庫リスク監視盘。
+"""模块 #18 库存风控 · 可售天数（当前库存/日均销量）による在庫リスク監視盘。
 
 データ源: nst.inventory_activity_monthly（月销量 sold + 月末在库 closing_qty）
   + nst.item_master_raw（旧 item_monthly_turnover / item_v2 を置換·page25 発注AI と同一源）。
-  · 库存月数 = 月末在库 / 直近月 sold → 阈値で 3 档:
-        < 补货线 → 断货风险(要补货) / > 压库存线 → 压库存 / 中间 → 正常（Boss 随时可调·下記 expander）
+  · 可售天数 = 月末在库 / 日均销量(直近月 sold/30) → 阈値(天)で 3 档:
+        < 断货线 → 断货风险(要补货) / > 压库存线 → 压库存 / 中间 → 正常（Boss 随时可调·下記 expander）
   · 完売率 = sold/(opening+received) は **発注結果の参考指标**·分档には使わない（Boss 2026-06-04 訂正）
   · 资金占用 = 当前库存 × cost_estimate（压库存 = 圧迫資金）
 
@@ -32,7 +32,7 @@ lang_selector()
 conn = get_connection()
 
 st.title(t("🛡️ 库存风控"))
-st.caption(t("按库存月数(月末在库/月销量)识别断货 / 压库存风险 · 完売率仅作发注结果参考 · 🛒 精确补货量请用「📦 発注AI v2」"))
+st.caption(t("按可售天数(当前库存/日均销量)识别断货 / 压库存风险 · 仅有等级商品 · 完売率仅作发注结果参考 · 🛒 精确补货量请用「📦 発注AI v2」"))
 
 
 def _df(sql, params=None):
@@ -43,27 +43,27 @@ def _df(sql, params=None):
 # ⚙️ 风险阈值（Boss 随时可调·独立持久化, 不影响発注AI 系数阈值）
 # ============================================================
 _saved = load_risk_thresholds()
-with st.expander(f"⚙️ {t('风险阈值设定 (库存月数·随时可调)')}", expanded=False):
+with st.expander(f"⚙️ {t('风险阈值设定 (可售天数·随时可调)')}", expanded=False):
     tcol1, tcol2, tcol3 = st.columns([1.6, 1.6, 1])
     reorder = tcol1.number_input(
-        t("🔴 补货线 (库存月数 <)"),
-        min_value=0.0, max_value=24.0, value=float(_saved["reorder_months"]), step=0.5,
+        t("🔴 断货线 (可售天数 <)"),
+        min_value=0.0, max_value=365.0, value=float(_saved["reorder_days"]), step=5.0,
         key="risk_th_reorder",
-        help=t("库存月数 = 当前JD库存 / 直近月销量。低于此线 = 断货风险, 要补货"))
+        help=t("可售天数 = 当前库存 / 日均销量(月销量/30)。低于此线 = 断货风险, 要补货"))
     overstock = tcol2.number_input(
-        t("🟡 压库存线 (库存月数 >)"),
-        min_value=0.0, max_value=60.0, value=float(_saved["overstock_months"]), step=0.5,
+        t("🟡 压库存线 (可售天数 >)"),
+        min_value=0.0, max_value=999.0, value=float(_saved["overstock_days"]), step=5.0,
         key="risk_th_overstock",
         help=t("高于此线 = 压库存, 减少订货 / 优先消化"))
     with tcol3:
         st.write("")
         st.write("")
         if st.button(t("💾 保存阈值"), use_container_width=True):
-            save_risk_thresholds({"reorder_months": reorder, "overstock_months": overstock})
+            save_risk_thresholds({"reorder_days": reorder, "overstock_days": overstock})
             st.success(t("✓ 已保存"))
     if reorder > overstock:
-        st.warning(t("⚠️ 补货线应 < 压库存线"))
-_th = {"reorder_months": reorder, "overstock_months": overstock}
+        st.warning(t("⚠️ 断货线应 < 压库存线"))
+_th = {"reorder_days": reorder, "overstock_days": overstock}
 
 
 # ============================================================
@@ -94,7 +94,7 @@ if df_all.empty:
     st.warning(t("⚠️ 暂无月度库存活动数据（nst.inventory_activity_monthly 为空）· 等待 NST 受領 daily pull 落数。"))
     st.stop()
 
-# 当前库存 = 月度活动表的月末在库(closing_qty)·现成数据 → 库存月数 = 当前库存/月销量
+# 当前库存 = 月度活动表的月末在库(closing_qty)·现成数据 → 可售天数 = 当前库存/日均销量
 # （旧版读 nst.inventory_snapshot 但该表未喂数；月末在库已够用·Boss 2026-06-04）
 df_all["current_stock"] = pd.to_numeric(df_all["close_qty"], errors="coerce").fillna(0)
 
@@ -116,6 +116,11 @@ if "in_transit_qty" not in df_all.columns:
 df_all["in_transit_qty"] = pd.to_numeric(df_all["in_transit_qty"], errors="coerce").fillna(0)
 
 df_all = enrich(df_all, _th)
+
+# 只取有商品等级的（item_rank 非空）· 无等级忽略（Boss 2026-06-04）
+if "rank" in df_all.columns:
+    _rk = df_all["rank"].astype(str).str.strip()
+    df_all = df_all[df_all["rank"].notna() & _rk.ne("") & _rk.str.lower().ne("none")].copy()
 
 
 # ============================================================
@@ -220,7 +225,7 @@ k4.metric(t("🟡 压库存"), int(risk_counts.get(RISK_OVERSTOCK, 0)))
 k5.metric(t("🟢 正常"), int(risk_counts.get(RISK_NORMAL, 0)))
 k6.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
 
-st.caption(t(f"当前筛选结果: {len(df)} 行 · 补货线<{reorder:g}月 / 压库存线>{overstock:g}月 · 当前库存=月末在库"))
+st.caption(t(f"当前筛选结果: {len(df)} 行 · 断货线<{reorder:g}天 / 压库存线>{overstock:g}天 · 当前库存=月末在库 · 仅有等级商品"))
 
 # 断货率（按商品等级·选中月全量·仅有等级产品·断货=上月有销量且当前库存0）
 _so = stockout_rate_by_rank(df_month_full)
@@ -243,7 +248,7 @@ ALL_COLS = [
     ("location", t("仓库")),
     ("qty_sold", t("月销量")),
     ("current_stock", t("当前库存(月末)")),
-    ("stock_months", t("库存月数")),
+    ("days_of_supply", t("可售天数")),
     ("is_stockout", t("断货")),
     ("sell_through_rate", t("完売率(参考)")),
     ("capital_exposure", t("资金占用(¥)")),
@@ -276,7 +281,7 @@ def _render_df_with_csv(d: pd.DataFrame, csv_name: str):
         show_disp[rate_col] = (
             pd.to_numeric(show_disp[rate_col], errors="coerce").fillna(0) * 100
         ).round(1).astype(str) + "%"
-    sm_col = t("库存月数")
+    sm_col = t("可售天数")
     if sm_col in show_disp.columns:
         show_disp[sm_col] = pd.to_numeric(show_disp[sm_col], errors="coerce").fillna(0).round(1)
     cap_col = t("资金占用(¥)")
@@ -302,15 +307,15 @@ tab_red, tab_yellow, tab_green, tab_360 = st.tabs([
 
 with tab_red:
     red = df[df["risk_label"] == RISK_STOCKOUT].sort_values(
-        "stock_months", ascending=True, na_position="last")   # 库存月数最少 = 最急
-    st.subheader(t(f"🔴 断货风险清单 (库存月数 < {reorder:g}月 · 要补货)"))
-    st.caption(t("库存薄 / 快断货 · 库存月数升序(最急在前) · 🛒 下单去発注AI"))
+        "days_of_supply", ascending=True, na_position="last")   # 可售天数最少 = 最急
+    st.subheader(t(f"🔴 断货风险清单 (可售天数 < {reorder:g}天 · 要补货)"))
+    st.caption(t("库存薄 / 快断货 · 可售天数升序(最急在前) · 🛒 下单去発注AI"))
     _render_df_with_csv(red, f"inv_risk_stockout_{sel_month}.csv")
 
 with tab_yellow:
     yellow = df[df["risk_label"] == RISK_OVERSTOCK].sort_values(
         "capital_exposure", ascending=False, na_position="last")
-    st.subheader(t(f"🟡 压库存清单 (库存月数 > {overstock:g}月 · 按资金占用降序)"))
+    st.subheader(t(f"🟡 压库存清单 (可售天数 > {overstock:g}天 · 按资金占用降序)"))
     st.caption(t("卖得慢 / 压资金 · 减少订货, 优先消化资金占用最高者"))
     _render_df_with_csv(yellow, f"inv_risk_overstock_{sel_month}.csv")
     if not yellow.empty:
@@ -319,8 +324,8 @@ with tab_yellow:
 
 with tab_green:
     green = df[df["risk_label"] == RISK_NORMAL].sort_values(
-        "stock_months", ascending=True, na_position="last")
-    st.subheader(t(f"🟢 正常 SKU ({reorder:g} ≤ 库存月数 ≤ {overstock:g}月)"))
+        "days_of_supply", ascending=True, na_position="last")
+    st.subheader(t(f"🟢 正常 SKU ({reorder:g} ≤ 可售天数 ≤ {overstock:g}天)"))
     st.caption(t("库存健康区间 · 参考"))
     _render_df_with_csv(green, f"inv_risk_normal_{sel_month}.csv")
 
@@ -372,7 +377,7 @@ with tab_360:
                  if prev_ym else pd.DataFrame(columns=["internal_id", "prev_month_sold"]))
 
         wide = df[["internal_id", "item_code", "jan", "display_name", "maker", "rank",
-                   "risk_label", "qty_sold", "stock_months", "sell_through_rate", "close_qty",
+                   "risk_label", "qty_sold", "days_of_supply", "sell_through_rate", "close_qty",
                    "capital_exposure", "last_purchase_cost"]].drop_duplicates("internal_id").copy()
         for aux in (s30, itx):
             if not aux.empty:
@@ -401,7 +406,7 @@ with tab_360:
             ("maker", t("厂家")), ("rank", t("商品等级")), ("risk_label", t("风险")),
             ("qty_sold", t("当月销量")), ("sales_30d", t("前30天销量")),
             ("prev_month_sold", t("上月销量")),
-            ("stock_months", t("库存月数")), ("inv_turnover", t("库存周转率")),
+            ("days_of_supply", t("可售天数")), ("inv_turnover", t("库存周转率")),
             ("sell_through_rate", t("完売率(参考)")),
             ("nst_stock", t("NST库存")), ("jdl_stock", t("JDL库存")),
             ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
@@ -415,7 +420,7 @@ with tab_360:
         rc = t("完売率(参考)")
         if rc in disp.columns:
             disp[rc] = (pd.to_numeric(disp[rc], errors="coerce").fillna(0) * 100).round(1).astype(str) + "%"
-        for _nc in (t("库存周转率"), t("库存月数")):
+        for _nc in (t("库存周转率"), t("可售天数")):
             if _nc in disp.columns:
                 disp[_nc] = pd.to_numeric(disp[_nc], errors="coerce").fillna(0).round(2)
         cap = t("资金占用(¥)")

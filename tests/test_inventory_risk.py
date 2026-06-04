@@ -11,23 +11,24 @@ import pytest
 from shared import inventory_risk as ir
 
 
-# ---- classify_risk 境界（库存月数ベース·既定 补货线1.0 / 压库存线3.0）----
+# ---- classify_risk 境界（可售天数ベース·既定 断货线30天 / 压库存线90天）----
+# 可售天数 = 当前库存 × 30 / 月销量
 
 def test_stockout_below_reorder_line():
-    assert ir.classify_risk(0, 10) == ir.RISK_STOCKOUT       # 库存0·月销10 → 0月 < 1
-    assert ir.classify_risk(5, 10) == ir.RISK_STOCKOUT       # 0.5月 < 1
-    assert ir.classify_risk(9, 10) == ir.RISK_STOCKOUT       # 0.9月 < 1
+    assert ir.classify_risk(0, 10) == ir.RISK_STOCKOUT       # 0天 < 30
+    assert ir.classify_risk(5, 10) == ir.RISK_STOCKOUT       # 15天 < 30
+    assert ir.classify_risk(9, 10) == ir.RISK_STOCKOUT       # 27天 < 30
 
 
 def test_normal_between_lines():
-    assert ir.classify_risk(10, 10) == ir.RISK_NORMAL        # 1.0月 = 补货线（含む→正常）
-    assert ir.classify_risk(20, 10) == ir.RISK_NORMAL        # 2.0月
-    assert ir.classify_risk(30, 10) == ir.RISK_NORMAL        # 3.0月 = 压库存线（含む→正常）
+    assert ir.classify_risk(10, 10) == ir.RISK_NORMAL        # 30天 = 断货线（含む→正常）
+    assert ir.classify_risk(20, 10) == ir.RISK_NORMAL        # 60天
+    assert ir.classify_risk(30, 10) == ir.RISK_NORMAL        # 90天 = 压库存线（含む→正常）
 
 
 def test_overstock_above_line():
-    assert ir.classify_risk(31, 10) == ir.RISK_OVERSTOCK     # 3.1月 > 3
-    assert ir.classify_risk(100, 10) == ir.RISK_OVERSTOCK    # 10月
+    assert ir.classify_risk(31, 10) == ir.RISK_OVERSTOCK     # 93天 > 90
+    assert ir.classify_risk(100, 10) == ir.RISK_OVERSTOCK    # 300天
 
 
 def test_zero_sales():
@@ -37,22 +38,27 @@ def test_zero_sales():
 
 
 def test_custom_thresholds():
-    # 补货线0.5 / 压库存线2.0
-    assert ir.classify_risk(4, 10, reorder_months=0.5, overstock_months=2.0) == ir.RISK_STOCKOUT  # 0.4月
-    assert ir.classify_risk(15, 10, reorder_months=0.5, overstock_months=2.0) == ir.RISK_NORMAL   # 1.5月
-    assert ir.classify_risk(25, 10, reorder_months=0.5, overstock_months=2.0) == ir.RISK_OVERSTOCK  # 2.5月
+    # 断货线15天 / 压库存线60天
+    assert ir.classify_risk(4, 10, reorder_days=15, overstock_days=60) == ir.RISK_STOCKOUT   # 12天
+    assert ir.classify_risk(15, 10, reorder_days=15, overstock_days=60) == ir.RISK_NORMAL    # 45天
+    assert ir.classify_risk(25, 10, reorder_days=15, overstock_days=60) == ir.RISK_OVERSTOCK  # 75天
 
 
-# ---- stock_months ----
+# ---- days_of_supply / stock_months ----
+
+def test_days_of_supply_basic():
+    assert ir.days_of_supply(20, 10) == 60.0     # 20×30/10
+    assert ir.days_of_supply(5, 10) == 15.0
+
+
+def test_days_of_supply_zero_sales_is_none():
+    assert ir.days_of_supply(50, 0) is None
+    assert ir.days_of_supply(50, None) is None
+
 
 def test_stock_months_basic():
     assert ir.stock_months(20, 10) == 2.0
     assert ir.stock_months(5, 10) == 0.5
-
-
-def test_stock_months_zero_sales_is_none():
-    assert ir.stock_months(50, 0) is None
-    assert ir.stock_months(50, None) is None
 
 
 def test_stock_months_negative_stock_floored():
@@ -63,16 +69,16 @@ def test_stock_months_negative_stock_floored():
 
 def test_thresholds_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("INVENTORY_RISK_THRESHOLDS", str(tmp_path / "th.json"))
-    assert ir.load_risk_thresholds() == {"reorder_months": 1.0, "overstock_months": 3.0}
-    ir.save_risk_thresholds({"reorder_months": 0.5, "overstock_months": 2.0, "ignored": 9})
-    assert ir.load_risk_thresholds() == {"reorder_months": 0.5, "overstock_months": 2.0}
+    assert ir.load_risk_thresholds() == {"reorder_days": 30.0, "overstock_days": 90.0}
+    ir.save_risk_thresholds({"reorder_days": 15.0, "overstock_days": 60.0, "ignored": 9})
+    assert ir.load_risk_thresholds() == {"reorder_days": 15.0, "overstock_days": 60.0}
 
 
 def test_load_thresholds_broken_file_falls_back(tmp_path, monkeypatch):
     p = tmp_path / "th.json"
     p.write_text("{ not json", encoding="utf-8")
     monkeypatch.setenv("INVENTORY_RISK_THRESHOLDS", str(p))
-    assert ir.load_risk_thresholds() == {"reorder_months": 1.0, "overstock_months": 3.0}
+    assert ir.load_risk_thresholds() == {"reorder_days": 30.0, "overstock_days": 90.0}
 
 
 # ---- enrich ----
@@ -88,22 +94,23 @@ def test_enrich_adds_derived_columns():
     out = ir.enrich(df)
     assert list(out["risk_label"]) == [
         ir.RISK_STOCKOUT, ir.RISK_NORMAL, ir.RISK_OVERSTOCK, ir.RISK_NO_DATA]
-    assert out.loc[0, "stock_months"] == pytest.approx(0.5)
-    assert out.loc[2, "stock_months"] == pytest.approx(9.0)
+    assert out.loc[0, "days_of_supply"] == pytest.approx(15.0)   # 50×30/100
+    assert out.loc[2, "days_of_supply"] == pytest.approx(270.0)  # 90×30/10
     assert out.loc[2, "capital_exposure"] == 900     # 当前库存 90 × 10
+    assert pd.isna(out.loc[3, "days_of_supply"])     # 月销0 → NaN
     # 完売率は参考列として残る（分档には未使用）
     assert out.loc[0, "sell_through_rate"] == pytest.approx(1.0)   # 100/(5+95)
 
 
 def test_enrich_custom_thresholds_shift_bands():
     df = pd.DataFrame([{"opening_qty": 0, "received_qty": 0, "qty_sold": 10,
-                        "current_stock": 25, "cost_estimate": 0}])   # 2.5月
-    assert ir.enrich(df, {"reorder_months": 1.0, "overstock_months": 3.0}).loc[0, "risk_label"] == ir.RISK_NORMAL
-    assert ir.enrich(df, {"reorder_months": 1.0, "overstock_months": 2.0}).loc[0, "risk_label"] == ir.RISK_OVERSTOCK
+                        "current_stock": 25, "cost_estimate": 0}])   # 75天
+    assert ir.enrich(df, {"reorder_days": 30, "overstock_days": 90}).loc[0, "risk_label"] == ir.RISK_NORMAL
+    assert ir.enrich(df, {"reorder_days": 30, "overstock_days": 60}).loc[0, "risk_label"] == ir.RISK_OVERSTOCK
 
 
 def test_enrich_missing_current_stock_safe():
-    # current_stock 欠如 → 0 扱い·月销>0 なら 库存月数0 → 断货
+    # current_stock 欠如 → 0 扱い·月销>0 なら 可售天数0 → 断货
     df = pd.DataFrame([{"opening_qty": 10, "received_qty": 0, "qty_sold": 9, "cost_estimate": 5}])
     out = ir.enrich(df)
     assert out.loc[0, "risk_label"] == ir.RISK_STOCKOUT

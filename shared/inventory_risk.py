@@ -26,8 +26,8 @@ RISK_OVERSTOCK = "压库存"
 RISK_NO_DATA = "数据不足"
 RISK_LABELS = (RISK_STOCKOUT, RISK_NORMAL, RISK_OVERSTOCK, RISK_NO_DATA)
 
-# 库存月数の閾値（Boss が随時調整·page18 の expander）
-_DEFAULT_THRESHOLDS = {"reorder_months": 1.0, "overstock_months": 3.0}
+# 可售天数の閾値（销售天数·Boss が随時調整·page18 の expander）
+_DEFAULT_THRESHOLDS = {"reorder_days": 30.0, "overstock_days": 90.0}
 
 
 def _thresholds_path() -> Path:
@@ -65,22 +65,29 @@ def stock_months(stock, monthly_sold):
         return None
 
 
-def classify_risk(stock, monthly_sold, *,
-                  reorder_months: float = 1.0, overstock_months: float = 3.0) -> str:
-    """库存月数を閾値と比較してリスクラベル。純関数。
-
-    月销 = 0: 在庫あり → 压库存（売れ残り）/ 在庫 0 → 数据不足。
-    境界は「正常」側に含める（= reorder / = overstock は 正常）。
-    """
+def days_of_supply(stock, monthly_sold, *, days_in_month: float = 30.0):
+    """可售天数 = 当前库存 / 日均销量（= 当前库存 × 30 / 月销量）。月销 ≤ 0 → None。純関数。"""
     m = stock_months(stock, monthly_sold)
-    if m is None:   # 月销 = 0
+    return None if m is None else m * days_in_month
+
+
+def classify_risk(stock, monthly_sold, *,
+                  reorder_days: float = 30.0, overstock_days: float = 90.0) -> str:
+    """可售天数を閾値（销售天数）と比較してリスクラベル。純関数。
+
+    可售天数 < 断货线 → 断货风险（要补货）/ > 压库存线 → 压库存 / 中间 → 正常。
+    月销 = 0: 在庫あり → 压库存（売れ残り）/ 在庫 0 → 数据不足。
+    境界は「正常」側に含める。
+    """
+    d = days_of_supply(stock, monthly_sold)
+    if d is None:   # 月销 = 0
         try:
             return RISK_OVERSTOCK if float(stock) > 0 else RISK_NO_DATA
         except (TypeError, ValueError):
             return RISK_NO_DATA
-    if m < reorder_months:
+    if d < reorder_days:
         return RISK_STOCKOUT
-    if m > overstock_months:
+    if d > overstock_days:
         return RISK_OVERSTOCK
     return RISK_NORMAL
 
@@ -104,12 +111,12 @@ def enrich(df, thresholds: dict | None = None):
     """DataFrame に派生列を付与して返す（page18 はこれだけ呼ぶ）。
 
     入力列: opening_qty / received_qty / qty_sold / current_stock / cost_estimate
-    付与列: available_qty / sell_through_rate(参考) / stock_months / risk_label / capital_exposure
+    付与列: available_qty / sell_through_rate(参考) / days_of_supply / risk_label / capital_exposure
     """
     import pandas as pd
 
     th = {**_DEFAULT_THRESHOLDS, **(thresholds or {})}
-    ro, ov = th["reorder_months"], th["overstock_months"]
+    ro, ov = th["reorder_days"], th["overstock_days"]
     out = df.copy()
     for col in ("opening_qty", "received_qty", "qty_sold", "current_stock",
                 "cost_estimate", "close_qty"):
@@ -123,13 +130,12 @@ def enrich(df, thresholds: dict | None = None):
     denom = out["available_qty"].replace(0, pd.NA)
     out["sell_through_rate"] = (out["qty_sold"] / denom).fillna(0).astype(float)
 
-    # 库存月数 + リスク分档（当前库存 vs 月销量）
-    out["stock_months"] = [
-        (lambda m: m if m is not None else 0.0)(stock_months(s, q))
-        for s, q in zip(out["current_stock"], out["qty_sold"])
-    ]
+    # 可售天数 + リスク分档（当前库存 vs 月销量·月销0 は NaN）
+    out["days_of_supply"] = pd.Series(
+        [days_of_supply(s, q) for s, q in zip(out["current_stock"], out["qty_sold"])],
+        index=out.index, dtype="float64")
     out["risk_label"] = [
-        classify_risk(s, q, reorder_months=ro, overstock_months=ov)
+        classify_risk(s, q, reorder_days=ro, overstock_days=ov)
         for s, q in zip(out["current_stock"], out["qty_sold"])
     ]
     # 资金占用 = 当前库存 × 定義原価（压库存 = 圧迫資金）
