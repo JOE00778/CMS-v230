@@ -233,7 +233,8 @@ st.caption(t(f"前{window_days}天销售 + JDL实物库存 · 断货线<{reorder
 # 断货率卡片（按商品等级·有等级全量·断货=前30天有销量+JDL库存0）
 _so = stockout_rate_by_rank(df_all)
 if not _so.empty:
-    st.markdown(f"##### 📊 {t(f"各等级断货率（前{window_days}天有销量 + 当前JDL库存=0）")}")
+    _so_title = t(f"各等级断货率（前{window_days}天有销量 + 当前JDL库存=0）")
+    st.markdown(f"##### 📊 {_so_title}")
     _rows = list(_so.itertuples(index=False))
     for _start in range(0, len(_rows), 6):
         _chunk = _rows[_start:_start + 6]
