@@ -71,7 +71,8 @@ def build_where(f: SearchFilters) -> tuple[str, list]:
         params.append(f.created_to + "￿")
 
     if f.hide_inactive:
-        clauses.append("COALESCE(im.is_inactive, 0) = 0")
+        # is_inactive は PG では boolean（SQLite では INTEGER）→ FALSE で両対応
+        clauses.append("COALESCE(im.is_inactive, FALSE) = FALSE")
 
     if f.stock_status == STOCK_IN:
         clauses.append("COALESCE(inv.qty_on_hand, 0) > 0")
