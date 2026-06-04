@@ -161,8 +161,10 @@ def render(conn) -> None:
 
     f1, f2, f3, f4 = st.columns([2, 2, 1.4, 1.4])
     with f1:
+        # options 保持中文原值（risk_label 比较用）· format_func=t 只翻显示
         sel_risk = st.selectbox(
-            t("风险等级"), options=[t("全部"), *RISK_LABELS], index=0, key="page18_risk")
+            t("风险等级"), options=["全部", *RISK_LABELS], index=0,
+            key="page18_risk", format_func=t)
     with f2:
         sel_ranks = st.multiselect(t("商品等级"), options=rank_opts, default=[], key="page18_ranks")
     with f3:
@@ -179,7 +181,7 @@ def render(conn) -> None:
 
     # 应用筛选
     df = df_all.copy()
-    if sel_risk != t("全部"):
+    if sel_risk != "全部":
         df = df[df["risk_label"] == sel_risk]
     if sel_ranks:
         df = df[df["rank"].astype(str).isin(sel_ranks)]
@@ -284,8 +286,10 @@ def render(conn) -> None:
     show360 = wide[order].copy()
     disp = show360.copy()
     disp.columns = [dict(COLS360)[k] for k in order]
+    if t("风险") in disp.columns:        # risk_label 业务值 → 显示层翻译（df 比较仍用原值）
+        disp[t("风险")] = disp[t("风险")].map(t)
     if t("断货") in disp.columns:
-        disp[t("断货")] = disp[t("断货")].map(lambda v: "🚫断货" if bool(v) else "")
+        disp[t("断货")] = disp[t("断货")].map(lambda v: "🚫" + t("断货") if bool(v) else "")
     if t("可售天数") in disp.columns:
         disp[t("可售天数")] = pd.to_numeric(disp[t("可售天数")], errors="coerce").round(0)
     if t("毛利率") in disp.columns:
