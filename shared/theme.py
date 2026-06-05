@@ -67,6 +67,17 @@ code, kbd, samp {
   line-height: 1.75 !important;
 }
 /* PPVI P3 终止 */
+
+/* 等级采购金额卡（page30·自包含：等级 / 总额 / 上月环比 / 挂账 / 预付款·复刻 metric 卡观感） */
+.cms-rank-card { background:#F8FAFC; border:1px solid #E2E8F0; border-radius:10px;
+  padding:14px 16px; box-shadow:0 1px 2px rgba(15,23,42,.04); margin-bottom:.5rem; }
+.cms-rank-card .rk-label { color:#64748B; font-size:.82rem; margin-bottom:.1rem; }
+.cms-rank-card .rk-value { font-size:1.6rem; font-weight:600; color:#0F172A; line-height:1.25;
+  font-family:'IBM Plex Mono','SF Mono',Menlo,monospace; font-variant-numeric:tabular-nums; }
+.cms-rank-card .rk-mom { color:#94A3B8; font-size:.78rem; margin-top:.1rem;
+  font-variant-numeric:tabular-nums; }
+.cms-rank-card .rk-sub { color:#64748B; font-size:.82rem; margin-top:.35rem;
+  font-variant-numeric:tabular-nums; }
 </style>
 """
 

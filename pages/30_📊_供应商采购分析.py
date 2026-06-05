@@ -126,37 +126,56 @@ def _render_analysis():
                      else f"{pct_pp:.0f}% {t('占比')}"),
               delta_color="off")
 
-    # --- 各等级采购金额（A/B/C/NEW·当月·总额大字 + 挂账/预付款小字）---
+    # --- 各等级采购金额卡（A/B/C/NEW·当月·总额 + 上月环比 + 整体占比 + 挂账/预付款·全在卡内）---
     # 等级需 SKU 级金额 → po_item_supplier_monthly JOIN item_master_raw 拿 item_rank
     #   is_prepay 仍取 vendor 级（po_export_vendor）· only_export → INNER JOIN 白名单过滤
+    #   取当月 + 上月两月（算环比）· 整体占比分母 = 当月全体总额 tot_cur（与顶部 KPI 同口径）
     _join = "JOIN" if only_export else "LEFT JOIN"
+    _rk_months = [sel_month] + ([prev_month] if prev_month else [])
+    _rk_ph = ", ".join(f"%(rkm{_i})s" for _i in range(len(_rk_months)))
+    _rk_p = {f"rkm{_i}": _m for _i, _m in enumerate(_rk_months)}
     try:
         rk = _df(
-            "SELECT im.item_rank AS rank, COALESCE(ev.is_prepay, FALSE) AS is_prepay, "
-            "SUM(q.amount) AS amount "
+            "SELECT im.item_rank AS rank, q.year_month AS year_month, "
+            "COALESCE(ev.is_prepay, FALSE) AS is_prepay, SUM(q.amount) AS amount "
             "FROM nst.po_item_supplier_monthly q "
             "JOIN nst.item_master_raw im ON im.internal_id = q.item_internal_id "
             f"{_join} nst.po_export_vendor ev ON ev.vendor_id = q.vendor_id "
-            "WHERE q.year_month = %(ym)s "
-            "GROUP BY im.item_rank, COALESCE(ev.is_prepay, FALSE)",
-            {"ym": sel_month},
+            f"WHERE q.year_month IN ({_rk_ph}) "
+            "GROUP BY im.item_rank, q.year_month, COALESCE(ev.is_prepay, FALSE)",
+            _rk_p,
         )
     except Exception:
-        rk = pd.DataFrame(columns=["rank", "is_prepay", "amount"])
+        rk = pd.DataFrame(columns=["rank", "year_month", "is_prepay", "amount"])
     rk["amount"] = pd.to_numeric(rk.get("amount", 0), errors="coerce").fillna(0.0)
     rk["is_prepay"] = rk.get("is_prepay", False).astype(bool)
 
     st.markdown("##### " + t("📦 各等级采购金额（{ym}）").format(ym=sel_month))
     _rank_cards = st.columns(len(RANK_TARGET_KEYS))
     for _c, _rk in zip(_rank_cards, RANK_TARGET_KEYS):
-        _sub = rk[rk["rank"] == _rk]
-        _tot = float(_sub["amount"].sum())
-        _cr = float(_sub.loc[~_sub["is_prepay"], "amount"].sum())   # 挂账（掛け払い）
-        _pp = float(_sub.loc[_sub["is_prepay"], "amount"].sum())    # 预付款（現金払い）
-        with _c:
-            st.metric(_rk, f"¥{_tot:,.0f}")
-            st.caption(f"{t('挂账')} ¥{_cr:,.0f}")
-            st.caption(f"{t('预付款')} ¥{_pp:,.0f}")
+        _cur = rk[(rk["rank"] == _rk) & (rk["year_month"] == sel_month)]
+        _tot = float(_cur["amount"].sum())
+        _cr = float(_cur.loc[~_cur["is_prepay"], "amount"].sum())   # 挂账（掛け払い）
+        _pp = float(_cur.loc[_cur["is_prepay"], "amount"].sum())    # 预付款（現金払い）
+        _tot_prev = (float(rk[(rk["rank"] == _rk) & (rk["year_month"] == prev_month)]["amount"].sum())
+                     if prev_month else 0.0)
+        _share = (_tot / tot_cur * 100) if tot_cur else 0.0
+        _parts = []
+        if _tot_prev:
+            _p = (_tot / _tot_prev - 1) * 100
+            _arrow = "↑" if _p > 0 else ("↓" if _p < 0 else "→")
+            _parts.append(f"{_arrow} {_p:+.1f}% {t('环比上月')}")
+        _parts.append(f"{_share:.0f}% {t('占比')}")
+        _c.markdown(
+            f"<div class='cms-rank-card'>"
+            f"<div class='rk-label'>{_rk}</div>"
+            f"<div class='rk-value'>¥{_tot:,.0f}</div>"
+            f"<div class='rk-mom'>{' · '.join(_parts)}</div>"
+            f"<div class='rk-sub'>{t('挂账')} ¥{_cr:,.0f}</div>"
+            f"<div class='rk-sub'>{t('预付款')} ¥{_pp:,.0f}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
     st.divider()
 
