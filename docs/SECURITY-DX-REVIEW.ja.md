@@ -492,7 +492,7 @@ DX部 は NetSuite 管理者と **年次でセキュリティ責任分界点を�
              │
    ┌─────────┼──────────┬──────────┬──────────┐
    ▼         ▼          ▼          ▼          ▼
-CMS Streamlit  N8N    pgweb 管理  Boss laptop  バックアップ NAS
+CMS Streamlit  N8N    pgweb 管理  JO laptop  バックアップ NAS
 (社内 Web)   (workflow) (DBA UI)  (pgweb 直結) LS210DC
    │            │          │           │           │
    ▼            ▼          ▼           ▼           ▼
@@ -513,7 +513,7 @@ CSV ダウンロード Slack/Lark dump 出力  ローカル    外部？誰が�
 
 | ロール | 人員例 | items (C1+C3) | costs (C3) | inventory (C1+C2) | sales (C2+C3) | 備考 |
 |---|---|---|---|---|---|---|
-| **経営者** | Boss | R | R | R | R | 全フィールド |
+| **経営者** | JO | R | R | R | R | 全フィールド |
 | **輸出事業 財務** | （TBD）| R（cost 列除く）| R | — | R | 金額必要、在庫不要 |
 | **輸出事業 営業** | （TBD）| R（cost 列除く）| — | R | R（本人/本組 client 行のみ）| RLS で担当者フィルタ |
 | **輸出事業 倉庫** | （TBD）| R（cost 列除く）| — | R | — | 在庫のみ、金額不可視 |
@@ -540,7 +540,7 @@ CSV ダウンロード Slack/Lark dump 出力  ローカル    外部？誰が�
 | **CMS Streamlit** | 直結 PG | `cms_reader`（ビュー読込専用） | 原テーブル不可、INSERT/UPDATE 不可、COPY TO 不可 |
 | **N8N** | 直結 PG | `n8n_reader`（items/inventory ビューのみ）| cost / sales 不可 |
 | **pgweb 管理 UI** | 直結 PG | 強制 `nst_dba` + 二段階確認 | 操作ログ全件 |
-| **Boss laptop（個人 pgweb）** | CF Access + Tailscale | `boss_full` | — |
+| **JO laptop（個人 pgweb）** | CF Access + Tailscale | `boss_full` | — |
 | **daily_pull コンテナ** | docker network local | `nst_writer` | cms.\* 不可、DROP 不可 |
 | **バックアップ** | `pg_dump` | `nst_backup_ro` | 必要 schema のみ |
 | **臨時分析** | — | 禁止、ビュー経由必須 | — |
@@ -557,7 +557,7 @@ CSV ダウンロード Slack/Lark dump 出力  ローカル    外部？誰が�
 |---|---|---|---|---|
 | CMS Streamlit CSV ダウンロード | 従業員 | ページに依る | なし | (a) cost 列を含むページはダウンロード禁止 (b) ダウンロード行動を監査 (c) CSV に watermark |
 | CMS Streamlit スクリーンショット | 従業員 | ページに依る | なし | プロセス教育 + 月次レビュー + 画面 watermark |
-| Boss スクショを Lark へ送信 | Boss 個人 | C3 可能性 | — | Lark グループメンバー審定 |
+| JO スクショを Lark へ送信 | JO 個人 | C3 可能性 | — | Lark グループメンバー審定 |
 | Lark webhook 失敗アラート | 自動 | error message + ログ末尾 | コード側で業務行を送信せず | ps1 のログ出力複査 |
 | NAS LS210DC への pg_dump | 日次定時 | DB 全体 C3 | NAS 共有 | (a) GPG 暗号化 (b) NAS 共有を `nst_backup` 限定 (c) 保持期間厳格化 |
 | 従業員 SELECT 後のローカル Excel | 任意権限保有者 | 権限に依る | pgaudit 未有効 | pgaudit 有効化 + 月次異常パターンレビュー |
@@ -642,7 +642,7 @@ CSV ダウンロード Slack/Lark dump 出力  ローカル    外部？誰が�
 |---|---|---|---|---|---|
 | I1 | 営業員が cost CSV を競合に提供 | C3 | ❌ | 信頼のみ | 営業ロールから cost 列禁止 + ダウンロード監査 |
 | I2 | 従業員が誤って sales スクショを Lark 外部グループに送信 | C2~C3 | ❌ | プロセス教育のみ | 画面 watermark + グループメンバー審定 |
-| I3 | Boss laptop 盗難 | C3 | 部分対応 | BitLocker？要確認 | BitLocker 必須 + Tailscale 失効 |
+| I3 | JO laptop 盗難 | C3 | 部分対応 | BitLocker？要確認 | BitLocker 必須 + Tailscale 失効 |
 | I4 | 退職従業員が依然 PG にアクセス | 権限に依る | ❌ | なし | 第 13 節 SOP |
 | I5 | IT 管理者の cost 越権参照 | C3 | ❌ | なし | DX/IT に cost 未付与 + 二人承認 |
 | I6 | NAS バックアップ持ち出し | C3 | ❌ | なし | GPG 暗号化 + NAS 権限縮小 |
@@ -690,11 +690,11 @@ CSV ダウンロード Slack/Lark dump 出力  ローカル    外部？誰が�
 
 | # | 議題 | 決議形式 | ブロック条件 | 視点 |
 |---|---|---|---|---|
-| 1 | 4 ドメインのフィールド級 C 等級リスト | 表 + Boss 承認 | D-101 ① | 内部 |
+| 1 | 4 ドメインのフィールド級 C 等級リスト | 表 + JO 承認 | D-101 ① | 内部 |
 | 2 | RBAC ロールとビュー設計（第 7 節） | T-NST-002 ticket | D-101 ① 後 | 内部 |
 | 3 | pgaudit 有効化 + 監査ログ保持期間 | 決議 + migration SQL | 即時 | 内外 |
 | 4 | CSV ダウンロード制御方針 | CMS 側落地方針 | 即時 | 内部 |
-| 5 | データ保持期間正式承認 | Boss + 財務 連署 | D-101 ② 前 | 内部 |
+| 5 | データ保持期間正式承認 | JO + 財務 連署 | D-101 ② 前 | 内部 |
 | 6 | 退職 / 異動 SOP の正式業務フロー化 | HR + DX 共同 | 即時 | 内部 |
 | 7 | バックアップ GPG 暗号化 + NAS 権限縮小 | DX 実装 | 即時 | 内部 |
 | 8 | 画面 watermark + Lark グループメンバー審定 | DX + 経営者 | 即時 | 内部 |
