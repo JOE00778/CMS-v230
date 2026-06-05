@@ -33,7 +33,8 @@ st.caption(t("SKU 级价格历史趋势 · 4 档波动分级 · 重点关注 �
 
 
 def _load(sql: str) -> pd.DataFrame:
-    return pd.DataFrame([dict(r) for r in conn.execute(sql).fetchall()])
+    from shared.cache import cached_df, data_version
+    return cached_df(conn, sql, ver=data_version())
 
 
 def _pct_color(v):

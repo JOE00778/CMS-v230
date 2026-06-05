@@ -199,10 +199,8 @@ def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31) -> pd.Data
 
 def _query(sql: str, params: tuple = ()):
     try:
-        cur = conn.execute(sql, params) if params else conn.execute(sql)
-        rows = cur.fetchall()
-        cols = [c[0] for c in cur.description] if cur.description else []
-        return pd.DataFrame([dict(zip(cols, r)) for r in rows], columns=cols), None
+        from shared.cache import cached_df, data_version
+        return cached_df(conn, sql, params or None, ver=data_version()), None
     except Exception as e:
         try:
             conn.rollback()

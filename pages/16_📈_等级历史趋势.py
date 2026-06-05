@@ -51,7 +51,7 @@ if not sel_q:
 import re as _re
 _safe_q = [_re.sub(r"[^A-Za-z0-9_-]", "", str(q))[:20] for q in sel_q]
 _in_clause = ",".join(f"'{q}'" for q in _safe_q if q)
-_rows_df = conn.execute(
+_rank_sql = (
     f"SELECT rh.*, im.display_name, "
     f"       COALESCE(inv.qty_on_hand, 0) AS qty_on_hand "
     f"FROM rank_history rh "
@@ -63,8 +63,9 @@ _rows_df = conn.execute(
     f") inv ON inv.item_internal_id = im.internal_id "
     f"WHERE rh.quarter IN ({_in_clause}) "
     f"ORDER BY rh.changed_at DESC"
-).fetchall()
-df = pd.DataFrame([dict(r) for r in _rows_df])
+)
+from shared.cache import cached_df, data_version
+df = cached_df(conn, _rank_sql, ver=data_version())
 
 if df.empty:
     st.info(t("选定季度内无变更记录。"))

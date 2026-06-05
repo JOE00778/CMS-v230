@@ -50,6 +50,8 @@ with col_recalc:
     if st.button(t("🔄 重新计算")):
         with st.spinner(t("生成中...")):
             generate_advice(ym, str(DB))
+        from shared.cache import cached_df
+        cached_df.clear()  # 重算已更新 operation_advice_monthly → 清缓存读最新
         st.success(t("✅ 已更新"))
         st.rerun()
 
@@ -57,12 +59,12 @@ with col_recalc:
 import re as _re
 _safe_ym = _re.sub(r"[^0-9-]", "", str(ym))[:10]
 try:
-    cur = conn.execute(
-        f"SELECT * FROM operation_advice_monthly WHERE year_month = '{_safe_ym}'"
+    from shared.cache import cached_df, data_version
+    df = cached_df(
+        conn,
+        f"SELECT * FROM operation_advice_monthly WHERE year_month = '{_safe_ym}'",
+        ver=data_version(),
     )
-    cols = [d[0] for d in cur.description] if cur.description else []
-    df = pd.DataFrame([dict(zip(cols, r)) if not hasattr(r, "keys") else dict(r)
-                       for r in cur.fetchall()])
 except Exception as _err:
     st.error(f"❌ 加载 operation_advice_monthly 失败: {_err}")
     st.stop()
