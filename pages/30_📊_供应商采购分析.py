@@ -16,6 +16,7 @@ import streamlit as st
 
 from shared.db import get_connection
 from shared.i18n import lang_selector, t
+from shared.inventory_risk import RANK_TARGET_KEYS  # NST 标准等级 A/B/C/NEW（复用·单一来源）
 
 st.set_page_config(page_title=t("供应商采购分析"), page_icon="📊", layout="wide")
 from shared.auth import require_password
@@ -124,6 +125,38 @@ def _render_analysis():
                      if mom_pp is not None
                      else f"{pct_pp:.0f}% {t('占比')}"),
               delta_color="off")
+
+    # --- 各等级采购金额（A/B/C/NEW·当月·总额大字 + 挂账/预付款小字）---
+    # 等级需 SKU 级金额 → po_item_supplier_monthly JOIN item_master_raw 拿 item_rank
+    #   is_prepay 仍取 vendor 级（po_export_vendor）· only_export → INNER JOIN 白名单过滤
+    _join = "JOIN" if only_export else "LEFT JOIN"
+    try:
+        rk = _df(
+            "SELECT im.item_rank AS rank, COALESCE(ev.is_prepay, FALSE) AS is_prepay, "
+            "SUM(q.amount) AS amount "
+            "FROM nst.po_item_supplier_monthly q "
+            "JOIN nst.item_master_raw im ON im.internal_id = q.item_internal_id "
+            f"{_join} nst.po_export_vendor ev ON ev.vendor_id = q.vendor_id "
+            "WHERE q.year_month = %(ym)s "
+            "GROUP BY im.item_rank, COALESCE(ev.is_prepay, FALSE)",
+            {"ym": sel_month},
+        )
+    except Exception:
+        rk = pd.DataFrame(columns=["rank", "is_prepay", "amount"])
+    rk["amount"] = pd.to_numeric(rk.get("amount", 0), errors="coerce").fillna(0.0)
+    rk["is_prepay"] = rk.get("is_prepay", False).astype(bool)
+
+    st.markdown("##### " + t("📦 各等级采购金额（{ym}）").format(ym=sel_month))
+    _rank_cards = st.columns(len(RANK_TARGET_KEYS))
+    for _c, _rk in zip(_rank_cards, RANK_TARGET_KEYS):
+        _sub = rk[rk["rank"] == _rk]
+        _tot = float(_sub["amount"].sum())
+        _cr = float(_sub.loc[~_sub["is_prepay"], "amount"].sum())   # 挂账（掛け払い）
+        _pp = float(_sub.loc[_sub["is_prepay"], "amount"].sum())    # 预付款（現金払い）
+        with _c:
+            st.metric(_rk, f"¥{_tot:,.0f}")
+            st.caption(f"{t('挂账')} ¥{_cr:,.0f}")
+            st.caption(f"{t('预付款')} ¥{_pp:,.0f}")
 
     st.divider()
 
