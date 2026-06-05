@@ -569,7 +569,15 @@ def _render_composition():
 
         st.download_button(
             t("📥 下载对账 CSV"),
-            df_rec[show_cols].to_csv(index=False).encode("utf-8-sig"),
+            df_rec[show_cols].rename(columns={
+                "status": t("状态"), "jan": "JAN", "item_code": t("商品コード"),
+                "display_name": t("商品名"), "maker": t("メーカー"), "item_rank": t("等级"),
+                "nst_qty_on_hand": t("NST 账面"), "jdl_qty_available": t("JDL 可用"),
+                "jdl_qty_unavailable": t("JDL 不可用"), "jdl_qty_in_stock": t("JDL 总库存"),
+                "diff_main": t("差异 (NST−JDL总库存)"), "jdl_qty_inbound": t("JDL 在途"),
+                "nst_qty_on_order": t("NST 在途"), "nst_snapshot_date": t("NST 快照日"),
+                "jdl_snapshot_date": t("JDL 快照日"),
+            }).to_csv(index=False).encode("utf-8-sig"),
             file_name=f"nst_jdl_reconciliation_{inv_date}.csv",
             mime="text/csv",
             key="rec_csv",
@@ -719,7 +727,14 @@ def _render_composition():
 
         st.download_button(
             t("📥 下载 JDL 库存 CSV"),
-            j_df[j_show_cols].to_csv(index=False).encode("utf-8-sig"),
+            j_df[j_show_cols].rename(columns={
+                "jan": "JAN", "jd_goods_id": t("JD商品ID"), "goods_name": t("商品名"),
+                "warehouse_code": t("仓库代码"), "warehouse_name": t("仓库名"),
+                "qty_available": t("可用"), "qty_unavailable": t("不可用"),
+                "qty_grand_total": t("总库存"), "qty_inbound": t("在途"),
+                "qty_preoccupied": t("预占"), "qty_operator_lock": t("操作锁"),
+                "qty_inventory_lock": t("库存锁"), "stock_level_name": t("等级"),
+            }).to_csv(index=False).encode("utf-8-sig"),
             file_name=f"jdl_inventory_{j_date}.csv",
             mime="text/csv",
             key="jdl_q_csv",

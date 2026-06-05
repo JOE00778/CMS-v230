@@ -317,5 +317,5 @@ def render(conn) -> None:
     st.dataframe(disp, use_container_width=True, height=560, hide_index=True)
     st.download_button(
         t("📥 下载 SKU 360 CSV"),
-        data=show360.to_csv(index=False).encode("utf-8-sig"),
+        data=disp.to_csv(index=False).encode("utf-8-sig"),  # disp = 翻译表头(所见即所得)
         file_name="sku360.csv", mime="text/csv", key="dl_sku360")
