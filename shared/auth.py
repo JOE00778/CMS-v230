@@ -181,19 +181,47 @@ def _lark_sso_enabled() -> bool:
     return lark_auth.is_configured()
 
 
-def _lark_login_gate() -> None:
-    """飞书 SSO 已启用但未登录 → 显示「用飞书登录」引导页并 st.stop()。
+# 飞书登录页专用 · 卡片式（参照同事 HR app 的 Lark ログイン 页）
+_LARK_LOGIN_CSS = """
+<style>
+[data-testid="stMainBlockContainer"], .main .block-container, [data-testid="block-container"]{
+    max-width: 540px !important; margin-left:auto !important; margin-right:auto !important;
+    padding-top: 7vh !important;
+}
+.lark-card{
+    background:#fff; border:1px solid #E5E7EB; border-radius:16px;
+    padding:44px 40px 38px; box-shadow:0 4px 24px rgba(17,24,39,.06); text-align:center;
+}
+.lark-card h1{font-size:2.2rem; font-weight:800; margin:0 0 14px; color:#1F2937; letter-spacing:.01em;}
+.lark-card p{color:#6B7280; font-size:.92rem; line-height:1.75; margin:0 0 26px;}
+.lark-btn{display:block; width:100%; box-sizing:border-box; background:#2B6E8F; color:#fff !important;
+    padding:13px 0; border-radius:10px; font-weight:700; font-size:1.05rem; text-decoration:none;
+    transition:background .15s;}
+.lark-btn:hover{background:#225a76;}
+.lark-note{color:#9CA3AF; font-size:.9rem; padding:12px 0;}
+.lark-dev-label{color:#9CA3AF; font-size:.8rem; margin:22px 0 6px; text-align:left;}
+</style>
+"""
+
+
+def _mock_login(role: str) -> None:
+    """开发用模拟登录：直接写登录态（不走真 OAuth）。仅 dev 入口可触发。"""
+    st.session_state["__auth_ok"] = True
+    st.session_state["__role"] = role
+    st.session_state["__lark_user"] = {"name": f"mock-{role}", "email": "", "union_id": "mock"}
+    st.rerun()
+
+
+def _lark_login_gate(dev_mock: bool = False) -> None:
+    """飞书 SSO 已启用但未登录 → 卡片式「CMS 登录」引导页并 st.stop()。
 
     这是「只能飞书账号进、一般网页进不来」的强制落点：**不 fallback 到密码框**。
     外人直接打开 URL 也只会停在这一页，点登录会被带到飞书授权；不在应用「可用
     范围」/ 无飞书账号者拿不到 code，进不来。
     应急回退：在元川机器清掉 LARK_* env → is_configured()=False → 自动回到密码/CF 模式。
+    dev_mock=True（仅 CMS_DEV_MOCK_LOGIN=1，生产不设）时额外显示模拟登录按钮。
     """
-    from shared import lark_auth
-
-    st.markdown(_LOGIN_NARROW_CSS, unsafe_allow_html=True)
-    st.title("🔒 一元管理系统V2.7")
-    st.caption(f"build {APP_VERSION}")
+    st.markdown(_LARK_LOGIN_CSS, unsafe_allow_html=True)
 
     # URL 带 code 却走到这里 = 换 token 失败（code 过期/已被用过），提示重试
     if st.query_params.get("code"):
@@ -203,15 +231,28 @@ def _lark_login_gate() -> None:
         except Exception:
             pass
 
+    if _lark_sso_enabled():
+        from shared import lark_auth
+        action = (f'<a class="lark-btn" href="{lark_auth.build_login_url()}" '
+                  f'target="_self">用飞书登录</a>')
+    else:
+        action = '<div class="lark-note">飞书未配置（开发模式）</div>'
     st.markdown(
-        "请使用**飞书账号**登录：\n\n"
-        "- 在**飞书工作台**点开「CMS」应用即可自动登录\n"
-        "- 或点下方按钮用飞书授权登录"
+        '<div class="lark-card"><h1>🔒 CMS 登录</h1>'
+        '<p>本系统通过<b>飞书账号</b>登录，仅授权成员可访问。<br>'
+        '在飞书工作台点开「CMS」即可自动登录。</p>'
+        f'{action}</div>',
+        unsafe_allow_html=True,
     )
-    st.link_button(
-        "用飞书登录", lark_auth.build_login_url(),
-        type="primary", use_container_width=True,
-    )
+
+    if dev_mock:
+        st.markdown('<div class="lark-dev-label">开发用：模拟登录（仅本地，生产关闭）</div>',
+                    unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        if c1.button("以管理员进入", use_container_width=True):
+            _mock_login("admin")
+        if c2.button("以普通成员进入", use_container_width=True):
+            _mock_login("guest")
     st.stop()
 
 
@@ -220,12 +261,16 @@ def require_password() -> None:
     if st.session_state.get("__auth_ok"):
         _hide_chrome_for_guest()
         return
+    dev_mock = _secret("CMS_DEV_MOCK_LOGIN") == "1"  # 仅本地开发；生产元川绝不设此 env
     # 飞书 SSO 已配置：强制走飞书账号，**不再 fallback 到密码框**（否则密码框=外人
     # 后门，"只能飞书账号进"就破了）。飞书未配时维持原行为（CF Access + 统一密码框）。
     if _lark_sso_enabled():
         if _try_lark_sso():       # URL 带 ?code 且校验通过 → 已写登录态
             st.rerun()
-        _lark_login_gate()        # 未登录 → 飞书登录引导并 st.stop()，不落到密码框
+        _lark_login_gate(dev_mock=dev_mock)  # 未登录 → 飞书登录引导并 st.stop()，不落密码框
+        return
+    if dev_mock:                  # 本地：飞书没配但开了 mock → 直接给模拟登录页
+        _lark_login_gate(dev_mock=True)
         return
     _login_form()
 
