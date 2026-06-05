@@ -53,6 +53,7 @@ _LBL = {
     "maker":              ("厂商", "メーカー名"),
     "item_rank":          ("商品等级", "商品ランク"),
     "handling_cd":        ("经销状态", "取扱区分"),
+    "date_created":       ("建立日期", "作成日"),
     "qty_on_hand":        ("现有库存", "手持"),
     "qty_available":      ("可用库存", "利用可能"),
     "qty_on_order":       ("在订数量", "注文済"),
@@ -128,7 +129,7 @@ def load_sku_view() -> pd.DataFrame:
             im.internal_id, im.item_code, im.jan, im.display_name,
             im.maker, im.item_rank, im.handling_cd, im.is_inactive,
             im.average_cost, im.cost_estimate, im.last_purchase_cost,
-            im.carton_qty, im.order_lot,
+            im.carton_qty, im.order_lot, im.date_created,
             inv.qty_on_hand, inv.qty_available, inv.qty_on_order,
             (COALESCE(im.average_cost, im.cost_estimate, 0)
                 * COALESCE(inv.qty_on_hand, 0)) AS stock_amount,
@@ -142,7 +143,7 @@ def load_sku_view() -> pd.DataFrame:
     rows = conn.execute(sql).fetchall()
     cols = ["internal_id", "item_code", "jan", "display_name", "maker", "item_rank",
             "handling_cd", "is_inactive", "average_cost", "cost_estimate",
-            "last_purchase_cost", "carton_qty", "order_lot", "qty_on_hand",
+            "last_purchase_cost", "carton_qty", "order_lot", "date_created", "qty_on_hand",
             "qty_available", "qty_on_order", "stock_amount", "qty_sold", "revenue",
             "wms_gross_weight_g"]
     return pd.DataFrame([dict(zip(cols, r)) for r in rows], columns=cols)
@@ -249,7 +250,7 @@ with _tab_search:
         v = v.sort_values(sc, ascending=sa, na_position="last")
 
         cols = ("item_code", "jan", "display_name", "maker", "item_rank", "handling_cd",
-                "qty_on_hand", "qty_available", "qty_on_order", "stock_amount",
+                "date_created", "qty_on_hand", "qty_available", "qty_on_order", "stock_amount",
                 "cost_estimate", "average_cost", "last_purchase_cost",
                 "wms_gross_weight_g", "carton_qty", "order_lot", "qty_sold", "revenue")
         st.dataframe(
@@ -289,6 +290,7 @@ with _tab_search:
             (_lb("item_rank"), row["item_rank"]),
             ("Internal ID", row["internal_id"]),
             (_lb("maker"), row["maker"]),
+            (_lb("date_created"), row["date_created"]),
             (_lb("carton_qty"), row["carton_qty"]),
             (_lb("order_lot"), row["order_lot"]),
         ]
