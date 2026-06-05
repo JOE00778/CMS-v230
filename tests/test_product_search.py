@@ -90,6 +90,21 @@ def test_filter_by_stock_status_out(conn):
     assert set(df["item_code"]) == {"4900002"}
 
 
+def test_multi_warehouse_no_duplicate_rows():
+    """同一 SKU 多仓（JD-千葉 + 弁天）同日快照 → 检索仍 1 行·qty 合计。
+
+    回归：inventory_snapshot 主键含 warehouse，inv CTE 不聚合会按仓库数重复行。
+    """
+    c = new_conn()
+    seed_item(c, "4900001", display_name="多仓商品", maker="花王", item_rank="Aランク")
+    seed_inventory(c, "4900001", qty_on_hand=10, warehouse="JD-物流-千葉", snapshot_date="2026-06-05")
+    seed_inventory(c, "4900001", qty_on_hand=5, warehouse="弁天倉庫", snapshot_date="2026-06-05")
+    c.commit()
+    df = search_items(c, SearchFilters(stock_status=STOCK_ALL))
+    assert len(df) == 1                          # 不按仓库重复
+    assert int(df.iloc[0]["qty_on_hand"]) == 15  # 两仓合计 10+5
+
+
 def test_filter_by_created_at(conn):
     """created_at 区间 2026-02-01..2026-12-31 → A(05)/C(06)（B 是 01 排除）。"""
     df = search_items(conn, SearchFilters(
