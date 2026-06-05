@@ -50,8 +50,8 @@ MATERIAL_ORDER = ["HC100317", "HC100318", "HC100319", "HC100320", "HC100321",
 
 
 def _df(sql: str, params=None) -> pd.DataFrame:
-    from shared.db_helpers import df
-    return df(conn, sql, params)
+    from shared.cache import cached_df, data_version
+    return cached_df(conn, sql, params, ver=data_version())
 
 
 def _split_name(s: str):

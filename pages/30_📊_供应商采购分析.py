@@ -31,8 +31,8 @@ st.caption(t("数据源 NetSuite 発注書 · 仕入先月度总订货金额 + S
 
 
 def _df(sql: str, params=None) -> pd.DataFrame:
-    from shared.db_helpers import df
-    return df(conn, sql, params)
+    from shared.cache import cached_df, data_version
+    return cached_df(conn, sql, params, ver=data_version())
 
 
 # 预付款列幂等迁移（schema 文件: database/.../009_add_prepay_vendor.sql）
@@ -480,6 +480,8 @@ def _render_whitelist():
                     conn.execute(
                         "DELETE FROM nst.po_export_vendor WHERE vendor_id = %(vid)s", {"vid": vid})
             conn.commit()
+            from shared.cache import cached_df
+            cached_df.clear()  # 白名单已变 → 清查询缓存，rerun 后读最新
             st.success(t("✅ 已保存 · 白名单 {n} 家").format(n=kept))
             st.rerun()
 
@@ -502,6 +504,8 @@ def _render_whitelist():
                     {"vid": new_id.strip(), "vn": new_name.strip() or None, "pp": bool(new_pp)},
                 )
                 conn.commit()
+                from shared.cache import cached_df
+                cached_df.clear()  # 白名单已变 → 清查询缓存，rerun 后读最新
                 st.success(t("✅ 已加入：{n}").format(n=new_name or new_id))
                 st.rerun()
             else:

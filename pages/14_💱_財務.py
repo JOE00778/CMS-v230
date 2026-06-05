@@ -284,8 +284,8 @@ SUMMARY_FEE_COLS = [
 # 工具
 # ============================================================
 def _df(sql: str, params=None) -> pd.DataFrame:
-    from shared.db_helpers import df
-    return df(conn, sql, params)
+    from shared.cache import cached_df, data_version
+    return cached_df(conn, sql, params, ver=data_version())
 
 
 def _country_from_shop(shop: str | None) -> str:

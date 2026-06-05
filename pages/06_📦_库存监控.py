@@ -34,8 +34,8 @@ def _render_composition():
 
 
     def _df(sql: str, params=None) -> pd.DataFrame:
-        from shared.db_helpers import df
-        return df(conn, sql, params)
+        from shared.cache import cached_df, data_version
+        return cached_df(conn, sql, params, ver=data_version())
 
 
     # 最新 snapshot_date

@@ -30,7 +30,8 @@ def render(conn) -> None:
     """库存风控タブ本体。conn = 呼び出し側の get_connection()。"""
 
     def _df(sql, params=None):
-        return _df_conn(conn, sql, params)
+        from shared.cache import cached_df, data_version
+        return cached_df(conn, sql, params, ver=data_version())
 
     st.title(t("🛡️ 库存风控"))
     st.caption(t("按可售天数(JDL库存/日均销量)识别断货 / 压库存风险 · 仅有等级商品 · "
