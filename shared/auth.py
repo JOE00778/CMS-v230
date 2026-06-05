@@ -172,14 +172,61 @@ def _try_lark_sso() -> bool:
     return True
 
 
+def _lark_sso_enabled() -> bool:
+    """飞书 SSO 是否已配齐（LARK_APP_ID/SECRET/REDIRECT_URI 都有）。"""
+    try:
+        from shared import lark_auth
+    except ImportError:
+        return False
+    return lark_auth.is_configured()
+
+
+def _lark_login_gate() -> None:
+    """飞书 SSO 已启用但未登录 → 显示「用飞书登录」引导页并 st.stop()。
+
+    这是「只能飞书账号进、一般网页进不来」的强制落点：**不 fallback 到密码框**。
+    外人直接打开 URL 也只会停在这一页，点登录会被带到飞书授权；不在应用「可用
+    范围」/ 无飞书账号者拿不到 code，进不来。
+    应急回退：在元川机器清掉 LARK_* env → is_configured()=False → 自动回到密码/CF 模式。
+    """
+    from shared import lark_auth
+
+    st.markdown(_LOGIN_NARROW_CSS, unsafe_allow_html=True)
+    st.title("🔒 一元管理系统V2.7")
+    st.caption(f"build {APP_VERSION}")
+
+    # URL 带 code 却走到这里 = 换 token 失败（code 过期/已被用过），提示重试
+    if st.query_params.get("code"):
+        st.error("飞书登录未成功（授权码可能已过期），请重新登录。")
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+
+    st.markdown(
+        "请使用**飞书账号**登录：\n\n"
+        "- 在**飞书工作台**点开「CMS」应用即可自动登录\n"
+        "- 或点下方按钮用飞书授权登录"
+    )
+    st.link_button(
+        "用飞书登录", lark_auth.build_login_url(),
+        type="primary", use_container_width=True,
+    )
+    st.stop()
+
+
 def require_password() -> None:
     _apply_compact_layout()  # 全局贴顶 · 不论登录前后都生效
     if st.session_state.get("__auth_ok"):
         _hide_chrome_for_guest()
         return
-    # 优先尝试飞书 SSO（仅 NAS 部署 + 配齐 LARK_* 时生效）
-    if _try_lark_sso():
-        st.rerun()
+    # 飞书 SSO 已配置：强制走飞书账号，**不再 fallback 到密码框**（否则密码框=外人
+    # 后门，"只能飞书账号进"就破了）。飞书未配时维持原行为（CF Access + 统一密码框）。
+    if _lark_sso_enabled():
+        if _try_lark_sso():       # URL 带 ?code 且校验通过 → 已写登录态
+            st.rerun()
+        _lark_login_gate()        # 未登录 → 飞书登录引导并 st.stop()，不落到密码框
+        return
     _login_form()
 
 
