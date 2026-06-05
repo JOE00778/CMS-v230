@@ -27,8 +27,13 @@ RISK_NO_DATA = "数据不足"
 RISK_LABELS = (RISK_STOCKOUT, RISK_NORMAL, RISK_OVERSTOCK, RISK_NO_DATA)
 
 # 可售天数の閾値（销售天数·Boss が随時調整·page18 の expander）
-# target_days = 标准可售天数（压库存释放の基準·これを超える分が可释放库存金额）
+# target_days = 标准可售天数（压库存释放の基準·これを超える分が可释放库存金额·全局 fallback）
 _DEFAULT_THRESHOLDS = {"reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0}
+
+# 标准可售天数を等级别に個別設定できる等级（A/B/C/NEW）。
+# 取扱中止/その他は発注対象外 → 個別設定せず全局 target_days にフォールバック。
+# 权威等级値: modules/rank_classifier/rules.py（Aランク/Bランク/Cランク/NEW/取扱中止）
+RANK_TARGET_KEYS = ("Aランク", "Bランク", "Cランク", "NEW")
 
 
 def _thresholds_path() -> Path:
@@ -36,20 +41,60 @@ def _thresholds_path() -> Path:
                                "data/files/inventory_risk_thresholds.json"))
 
 
+def _clean_by_rank(br) -> dict:
+    """{rank: 天数} を {str: float} に正規化（非数値は捨てる）。純関数。"""
+    out = {}
+    if isinstance(br, dict):
+        for k, v in br.items():
+            try:
+                out[str(k)] = float(v)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
 def load_risk_thresholds() -> dict:
-    """{reorder_days, overstock_days} を返す。欠如/壊れは既定（30 / 90）。"""
+    """{reorder_days, overstock_days, target_days, target_days_by_rank} を返す。
+
+    target_days_by_rank = {rank: 标准可售天数}（等级别·既定 空 dict）。
+    欠如/壊れは既定（30 / 90 / 60 / {}）。
+    """
+    base = {**_DEFAULT_THRESHOLDS, "target_days_by_rank": {}}
     try:
         with open(_thresholds_path(), encoding="utf-8") as f:
-            return {**_DEFAULT_THRESHOLDS, **json.load(f)}
+            data = json.load(f)
     except Exception:
-        return dict(_DEFAULT_THRESHOLDS)
+        return base
+    out = {**base, **{k: float(data[k]) for k in _DEFAULT_THRESHOLDS if k in data}}
+    out["target_days_by_rank"] = _clean_by_rank(data.get("target_days_by_rank"))
+    return out
 
 
 def save_risk_thresholds(d: dict) -> None:
     p = _thresholds_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    out = {k: float(d[k]) for k in _DEFAULT_THRESHOLDS if k in d}
+    if "target_days_by_rank" in d:
+        out["target_days_by_rank"] = _clean_by_rank(d["target_days_by_rank"])
     with open(p, "w", encoding="utf-8") as f:
-        json.dump({k: float(d[k]) for k in _DEFAULT_THRESHOLDS if k in d}, f)
+        json.dump(out, f, ensure_ascii=False)
+
+
+def target_days_for_rank(thresholds: dict, rank) -> float:
+    """某等级の标准可售天数。target_days_by_rank に有れば優先·無ければ全局 target_days。純関数。"""
+    try:
+        g = float(thresholds.get("target_days", _DEFAULT_THRESHOLDS["target_days"]))
+    except (TypeError, ValueError):
+        g = _DEFAULT_THRESHOLDS["target_days"]
+    br = thresholds.get("target_days_by_rank") or {}
+    if isinstance(br, dict):
+        v = br.get(str(rank))
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return g
+    return g
 
 
 def stock_months(stock, monthly_sold):

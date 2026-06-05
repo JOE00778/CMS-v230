@@ -86,16 +86,45 @@ def test_stock_months_negative_stock_floored():
 
 def test_thresholds_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("INVENTORY_RISK_THRESHOLDS", str(tmp_path / "th.json"))
-    assert ir.load_risk_thresholds() == {"reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0}
+    assert ir.load_risk_thresholds() == {
+        "reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0, "target_days_by_rank": {}}
     ir.save_risk_thresholds({"reorder_days": 15.0, "overstock_days": 60.0, "target_days": 45.0, "ignored": 9})
-    assert ir.load_risk_thresholds() == {"reorder_days": 15.0, "overstock_days": 60.0, "target_days": 45.0}
+    assert ir.load_risk_thresholds() == {
+        "reorder_days": 15.0, "overstock_days": 60.0, "target_days": 45.0, "target_days_by_rank": {}}
+
+
+def test_thresholds_roundtrip_by_rank(tmp_path, monkeypatch):
+    monkeypatch.setenv("INVENTORY_RISK_THRESHOLDS", str(tmp_path / "th.json"))
+    ir.save_risk_thresholds({
+        "reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0,
+        "target_days_by_rank": {"Aランク": 30, "Bランク": 45.0, "NEW": "90"}})
+    got = ir.load_risk_thresholds()
+    assert got["target_days_by_rank"] == {"Aランク": 30.0, "Bランク": 45.0, "NEW": 90.0}
+
+
+def test_target_days_for_rank_fallback():
+    th = {"target_days": 60.0, "target_days_by_rank": {"Aランク": 30.0, "Cランク": 120.0}}
+    assert ir.target_days_for_rank(th, "Aランク") == 30.0     # 等级别有 → 用
+    assert ir.target_days_for_rank(th, "Cランク") == 120.0
+    assert ir.target_days_for_rank(th, "NEW") == 60.0        # 等级别无 → 全局
+    assert ir.target_days_for_rank(th, "取扱中止") == 60.0   # 停售 → 全局
+    assert ir.target_days_for_rank({"target_days": 50.0}, "Aランク") == 50.0  # 无 by_rank → 全局
+
+
+def test_releasable_value_by_rank_differs():
+    # 同库存/销量·不同等级标准天数 → 不同可释放金额
+    th = {"target_days": 60.0, "target_days_by_rank": {"Aランク": 30.0, "Bランク": 90.0}}
+    # 库存100·月销30(日均1)·单价10：标准30→可释放700 / 标准90→可释放100
+    assert ir.releasable_value(100, 30, 10, target_days=ir.target_days_for_rank(th, "Aランク")) == 700.0
+    assert ir.releasable_value(100, 30, 10, target_days=ir.target_days_for_rank(th, "Bランク")) == 100.0
 
 
 def test_load_thresholds_broken_file_falls_back(tmp_path, monkeypatch):
     p = tmp_path / "th.json"
     p.write_text("{ not json", encoding="utf-8")
     monkeypatch.setenv("INVENTORY_RISK_THRESHOLDS", str(p))
-    assert ir.load_risk_thresholds() == {"reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0}
+    assert ir.load_risk_thresholds() == {
+        "reorder_days": 30.0, "overstock_days": 90.0, "target_days": 60.0, "target_days_by_rank": {}}
 
 
 # ---- enrich ----

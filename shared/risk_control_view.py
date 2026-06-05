@@ -21,8 +21,8 @@ from shared.db_helpers import df as _df_conn
 from shared.i18n import t
 from shared.inventory_risk import (
     RISK_STOCKOUT, RISK_NORMAL, RISK_OVERSTOCK, RISK_NO_DATA, RISK_LABELS,
-    enrich, load_risk_thresholds, save_risk_thresholds,
-    is_stockout, stockout_rate_by_rank, releasable_value,
+    RANK_TARGET_KEYS, enrich, load_risk_thresholds, save_risk_thresholds,
+    is_stockout, stockout_rate_by_rank, releasable_value, target_days_for_rank,
 )
 
 
@@ -45,7 +45,7 @@ def render(conn) -> None:
             t("销量统计窗口"), [t("前30天"), t("前60天"), t("前90天")],
             index=0, horizontal=True, key="page18_window",
             help=t("前N天销量 → 日均销量 → 可售天数 / 可释放金额"))
-        tcol1, tcol2, tcol3, tcol4 = st.columns([1.4, 1.4, 1.4, 1])
+        tcol1, tcol2, tcol3 = st.columns([1.5, 1.5, 1])
         reorder = tcol1.number_input(
             t("🔴 断货线 (可售天数 <)"),
             min_value=0.0, max_value=365.0, value=float(_saved["reorder_days"]), step=5.0,
@@ -56,22 +56,31 @@ def render(conn) -> None:
             min_value=0.0, max_value=999.0, value=float(_saved["overstock_days"]), step=5.0,
             key="risk_th_overstock",
             help=t("高于此线 = 压库存, 减少订货 / 优先消化"))
-        target = tcol3.number_input(
-            t("🎯 标准可售天数"),
-            min_value=0.0, max_value=999.0, value=float(_saved["target_days"]), step=5.0,
-            key="risk_th_target",
-            help=t("理想库存水位(天)。压库存中超出此水位的部分 = 可释放库存金额"))
-        with tcol4:
+        # 各等级标准可售天数（A/B/C/NEW 独立·停售/其它走全局默认）
+        st.markdown(f"**🎯 {t('各等级标准可售天数')}**")
+        st.caption(t("理想库存水位(天)·各等级独立。压库存中超出此水位的部分 = 可释放库存金额；"
+                     "停售 / 其它等级走全局默认 {d} 天").format(d=f"{_saved['target_days']:g}"))
+        _saved_by_rank = _saved.get("target_days_by_rank", {})
+        _rank_cols = st.columns(len(RANK_TARGET_KEYS))
+        target_by_rank = {}
+        for _col, _rk in zip(_rank_cols, RANK_TARGET_KEYS):
+            target_by_rank[_rk] = _col.number_input(
+                _rk, min_value=0.0, max_value=999.0,
+                value=float(_saved_by_rank.get(_rk, _saved["target_days"])), step=5.0,
+                key=f"risk_th_target_{_rk}")
+        with tcol3:
             st.write("")
             st.write("")
             if st.button(t("💾 保存阈值"), use_container_width=True):
                 save_risk_thresholds({"reorder_days": reorder, "overstock_days": overstock,
-                                      "target_days": target})
+                                      "target_days": float(_saved["target_days"]),
+                                      "target_days_by_rank": target_by_rank})
                 st.success(t("✓ 已保存"))
         if reorder > overstock:
             st.warning(t("⚠️ 断货线应 < 压库存线"))
     window_days = {t("前30天"): 30, t("前60天"): 60, t("前90天"): 90}[_window_label]
-    _th = {"reorder_days": reorder, "overstock_days": overstock, "target_days": target}
+    _th = {"reorder_days": reorder, "overstock_days": overstock,
+           "target_days": float(_saved["target_days"]), "target_days_by_rank": target_by_rank}
 
     # ============================================================
     # 数据加载（current-snapshot·只取有等级）
@@ -146,10 +155,12 @@ def render(conn) -> None:
     _rev = pd.to_numeric(df_all.get("revenue_30d", 0), errors="coerce").fillna(0)
     _gp = pd.to_numeric(df_all.get("gp_30d", 0), errors="coerce").fillna(0)
     df_all["gross_margin"] = (_gp / _rev.replace(0, pd.NA)).fillna(0).astype(float)
-    # 可释放库存金额 = 标准可售天数下超出部分 × 平均单价
+    # 可释放库存金额 = 标准可售天数下超出部分 × 平均单价（标准天数按等级取·停售走全局默认）
     df_all["releasable"] = [
-        releasable_value(stk, sld, prc, target_days=_th["target_days"], days_in_period=window_days)
-        for stk, sld, prc in zip(df_all["current_stock"], df_all["qty_sold"], df_all["avg_unit_price"])
+        releasable_value(stk, sld, prc,
+                         target_days=target_days_for_rank(_th, rk), days_in_period=window_days)
+        for stk, sld, prc, rk in zip(df_all["current_stock"], df_all["qty_sold"],
+                                     df_all["avg_unit_price"], df_all["rank"])
     ]
     # 断货标记：前N天有销量 且 当前 JDL 库存 = 0
     df_all["is_stockout"] = [is_stockout(s, k) for s, k in zip(df_all["qty_sold"], df_all["current_stock"])]
@@ -219,7 +230,7 @@ def render(conn) -> None:
     k3.metric(t("🟡 压库存"), int(risk_counts.get(RISK_OVERSTOCK, 0)))
     k4.metric(t("🟢 正常"), int(risk_counts.get(RISK_NORMAL, 0)))
     k5.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
-    k6.metric(t("♻️ 可释放库存金额(标准{d}天)").format(d=f"{target:g}"), f"¥{releasable_total:,.0f}")
+    k6.metric(t("♻️ 可释放库存金额(各等级标准)"), f"¥{releasable_total:,.0f}")
 
     st.caption(t("前{w}天销售 + JDL实物库存 · 断货线<{r}天 / 压库存线>{o}天 · "
                  "仅有等级商品 · 当前筛选 {n} 行").format(
