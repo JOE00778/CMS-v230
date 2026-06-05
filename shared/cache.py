@@ -20,18 +20,29 @@ from typing import Any, Optional, Sequence
 
 import streamlit as st
 
-# JST(UTC+9) − 5h = UTC+4：以每日 05:00 JST（NST 同步时刻）为缓存翻新分界。
-# 用固定偏移时区取日期，避免依赖宿主时区设置。
-_DAILY_BOUNDARY = timezone(timedelta(hours=4))
+# fallback 兜底：以 JST 06:00 为分界（NST Task Scheduler 注册在 05:00 JST + 余量）。
+# 仅当读不到实际同步记录时使用。JST(UTC+9) − 6h = UTC+3。
+_FALLBACK_BOUNDARY = timezone(timedelta(hours=3))
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def data_version() -> str:
-    """当前缓存版本号（按「JST 05:00 分界的日期」）。
+    """缓存版本号 = NST 实际最后同步完成时间（`nst.pull_schedule.last_run_at` 最大值）。
 
-    每天 05:00 JST（NST daily_pull 时刻）之后翻新 → 缓存自动失效、重查到当天
-    同步的新数据；同一天内保持不变 → 命中缓存秒开。
+    同步完成 → dispatcher 更新 last_run_at → 版本变 → cached_df 自动失效重查。
+    **不依赖硬编码时间**：NST 用 dispatcher + `pull_schedule.run_time` 调度，同步
+    几点跑都自动跟随。ttl=300 → 最多 5 分钟读一次 pull_schedule（很轻的 max 查询）。
+    表不可用时 fallback 到「JST 06:00 分界的日期」。
     """
-    return datetime.now(_DAILY_BOUNDARY).strftime("%Y-%m-%d")
+    try:
+        from shared.db import get_connection
+        row = get_connection().execute(
+            "SELECT max(last_run_at) FROM nst.pull_schedule").fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
+    return datetime.now(_FALLBACK_BOUNDARY).strftime("%Y-%m-%d")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
