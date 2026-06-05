@@ -98,7 +98,7 @@ def render(conn) -> None:
             )
             SELECT im.internal_id AS internal_id, im.item_code AS item_code, im.jan AS jan,
                    COALESCE(im.display_name, '') AS display_name,
-                   im.item_rank AS rank, im.maker AS maker,
+                   im.item_rank AS rank, im.maker AS maker, im.date_created AS date_created,
                    im.cost_estimate AS cost_estimate, im.last_purchase_cost AS last_purchase_cost,
                    COALESCE(im.average_cost, im.cost_estimate) AS avg_unit_price,
                    COALESCE(s30.qty_sold, 0) AS qty_sold,
@@ -270,6 +270,7 @@ def render(conn) -> None:
     except Exception:
         sup = pd.DataFrame(columns=["item_internal_id", "in_transit_suppliers", "latest_po"])
     wide = df[["internal_id", "item_code", "jan", "display_name", "maker", "rank",
+               "date_created",
                "risk_label", "is_stockout", "qty_sold", "gross_margin", "current_stock",
                "days_of_supply", "in_transit_qty", "last_purchase_cost", "avg_unit_price",
                "capital_exposure", "releasable"]].drop_duplicates("internal_id").copy()
@@ -284,7 +285,8 @@ def render(conn) -> None:
 
     COLS360 = [
         ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
-        ("maker", t("厂家")), ("rank", t("商品等级")), ("risk_label", t("风险")),
+        ("maker", t("厂家")), ("rank", t("商品等级")), ("date_created", t("建立日期")),
+        ("risk_label", t("风险")),
         ("is_stockout", t("断货")), ("qty_sold", t("前{d}天销量").format(d=window_days)),
         ("gross_margin", t("毛利率")),
         ("current_stock", t("JDL库存")), ("days_of_supply", t("可售天数")),
@@ -297,6 +299,9 @@ def render(conn) -> None:
     show360 = wide[order].copy()
     disp = show360.copy()
     disp.columns = [dict(COLS360)[k] for k in order]
+    if t("建立日期") in disp.columns:
+        disp[t("建立日期")] = pd.to_datetime(
+            disp[t("建立日期")], errors="coerce").dt.strftime("%Y-%m-%d")
     if t("风险") in disp.columns:        # risk_label 业务值 → 显示层翻译（df 比较仍用原值）
         disp[t("风险")] = disp[t("风险")].map(t)
     if t("断货") in disp.columns:
