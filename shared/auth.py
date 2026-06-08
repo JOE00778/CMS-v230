@@ -280,12 +280,14 @@ def is_admin() -> bool:
 
 
 def require_admin() -> None:
-    """整页禁SmikieJapan。仅 admin 可访问，否则显示提示并 stop。"""
+    """全开放（JO 2026-06-06）：操作页不再限 admin，仅需登录即可。
+
+    安全模型转为「飞书门禁挡外人 + 团队内部全开放」——入口靠飞书应用「可用范围」，
+    进来的团队成员都能用全部页面（含数据导入 / 定義原価编辑 / 发注 / 上传等）。
+    角色体系（admin/guest by ADMIN_LARK_EMAILS）保留但不再 gate 页面；
+    将来要收紧某页，恢复 `if not is_admin(): st.stop()` 即可。
+    """
     require_password()
-    if not is_admin():
-        st.title("⛔ 仅管理员可访问")
-        st.warning("此功能涉及数据底盘操作（数据导入 / 定義原価覆盖），仅管理员账号可进入。")
-        st.stop()
 
 
 def show_role_badge() -> None:
@@ -294,37 +296,9 @@ def show_role_badge() -> None:
 
 
 def require_extra_password(scope: str, env_var: str, default: str = "") -> None:
-    """页面级独立二级密码守门（page 99 数据导入用）。
+    """全开放（JO 2026-06-06）：二级密码已取消，直接放行。
 
-    用例：page 99 涉及数据库写入，需要比一级密码更高权限。
-    一级密码登录后，访问该 page 时再单独验证二级密码。
-
-    Args:
-        scope: 密码作用域名（如 "page99"），用于隔离不同 page 的 session 状态
-        env_var: 环境变量名，存储该 page 的密码（如 "PAGE99_PASSWORD"）
+    原为数据导入（page27）/ 物流上传（page29）的二级确认（防误操作覆盖 PG）。
+    团队内部全开放后去掉。将来要恢复：删掉下面的 return、还原二级密码表单逻辑。
     """
-    expected = _secret(env_var) or default
-    if not expected:
-        return  # 未配密码 = 不启用此层守门，直接放行
-
-    state_key = f"__extra_auth_{scope}"
-    if st.session_state.get(state_key):
-        return  # 本 session 已通过该 scope 的二级密码
-
-    st.title("🔐 此页面需要二级密码")
-    st.caption("数据底盘操作（导入 / 写库）需要二级密码授权")
-
-    with st.form(f"extra_auth_{scope}", clear_on_submit=False):
-        p = st.text_input(
-            "二级密码", type="password",
-            key=f"__extra_pwd_{scope}",
-            placeholder="请输入二级密码",
-        )
-        if st.form_submit_button("授权进入", type="primary", use_container_width=True):
-            if _check(p, expected):
-                st.session_state[state_key] = True
-                st.session_state.pop(f"__extra_pwd_{scope}", None)
-                st.rerun()
-            else:
-                st.error("二级密码错误")
-    st.stop()
+    return
