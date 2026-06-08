@@ -182,17 +182,6 @@ def _verify_cookie(token: str):
         return None
 
 
-def _cookie_manager():
-    """CookieManager 单实例（每 session）。需装 extra-streamlit-components 才可用。"""
-    try:
-        import extra_streamlit_components as stx
-    except ImportError:
-        return None
-    if "__cookie_mgr" not in st.session_state:
-        st.session_state["__cookie_mgr"] = stx.CookieManager(key="cms_cookie_mgr")
-    return st.session_state["__cookie_mgr"]
-
-
 def _restore_from_cookie() -> bool:
     """从 st.context.cookies 读签名 cookie，验签通过则恢复登录态（同步、刷新首次即有）。"""
     try:
@@ -211,10 +200,13 @@ def _restore_from_cookie() -> bool:
 
 
 def _write_login_cookie(user: dict, role: str) -> None:
-    """登录成功后写签名 cookie（CookieManager → 浏览器，7 天）。"""
-    cm = _cookie_manager()
-    if cm is None:
-        return
+    """登录成功后写签名 cookie 到浏览器（7 天）。
+
+    用 components.html 注入 JS 写 document.cookie——Streamlit 的 srcdoc iframe 在
+    `allow-same-origin` sandbox 下同源，document.cookie 写的是同域 cookie，
+    st.context.cookies 下次请求即可读到。比 CookieManager.set（刚创建就 set 有
+    时序 bug，丢失）可靠。
+    """
     payload = {
         "uid": (user.get("union_id") or user.get("open_id") or ""),
         "role": role,
@@ -222,13 +214,12 @@ def _write_login_cookie(user: dict, role: str) -> None:
         "exp": int(time.time()) + _COOKIE_TTL,
     }
     token = _sign_cookie(payload)
-    try:
-        from datetime import datetime, timedelta, timezone
-        cm.set(_COOKIE_NAME, token,
-               expires_at=datetime.now(timezone.utc) + timedelta(seconds=_COOKIE_TTL),
-               key="cms_cookie_set")
-    except Exception:
-        pass
+    import streamlit.components.v1 as components
+    components.html(
+        f'<script>document.cookie = "{_COOKIE_NAME}={token}; path=/; '
+        f'max-age={_COOKIE_TTL}; SameSite=Lax";</script>',
+        height=0,
+    )
 
 
 def _try_lark_sso() -> bool:
