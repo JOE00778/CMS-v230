@@ -223,24 +223,48 @@ def _lark_login_gate(dev_mock: bool = False) -> None:
     """
     st.markdown(_LARK_LOGIN_CSS, unsafe_allow_html=True)
 
-    # URL 带 code 却走到这里 = 换 token 失败（code 过期/已被用过），提示重试
-    if st.query_params.get("code"):
-        st.error("飞书登录未成功（授权码可能已过期），请重新登录。")
+    # URL 带 code 走到这里 = 换 token 失败（过期/已用）。此时**不自动跳转**（防
+    # 「失败→自动跳→又失败」死循环），显示手动重试。
+    code_failed = bool(st.query_params.get("code"))
+    if code_failed:
+        st.error("飞书登录未成功（授权码可能已过期），请点下方手动重试。")
         try:
             st.query_params.clear()
         except Exception:
             pass
 
-    if _lark_sso_enabled():
+    lark_on = _lark_sso_enabled()
+
+    # 正常未登录 + 飞书已配 + 非失败 + 非 dev → 自动重定向飞书授权（方案B）。
+    # session_state 刷新即丢，靠这个让刷新自动重登：飞书已授权则静默回跳带 code →
+    # 自动登录，用户只闪一下、无需手动点。
+    if lark_on and not code_failed and not dev_mock:
+        from shared import lark_auth
+        import streamlit.components.v1 as components
+        login_url = lark_auth.build_login_url()
+        st.markdown(
+            '<div class="lark-card"><h1>🔒 CMS 登录</h1>'
+            '<p>正在跳转飞书登录…<br>没有自动跳转的话，点下方按钮。</p>'
+            f'<a class="lark-btn" href="{login_url}" target="_top">用飞书登录</a></div>',
+            unsafe_allow_html=True,
+        )
+        # Streamlit components iframe 的 sandbox 含 allow-top-navigation → 可跳顶层窗口
+        components.html(
+            f'<script>window.top.location.href = "{login_url}";</script>',
+            height=0,
+        )
+        st.stop()
+
+    # 失败 / 飞书没配 / dev_mock → 显示卡片 + 手动按钮（不自动跳）
+    if lark_on:
         from shared import lark_auth
         action = (f'<a class="lark-btn" href="{lark_auth.build_login_url()}" '
-                  f'target="_self">用飞书登录</a>')
+                  f'target="_top">用飞书登录</a>')
     else:
         action = '<div class="lark-note">飞书未配置（开发模式）</div>'
     st.markdown(
         '<div class="lark-card"><h1>🔒 CMS 登录</h1>'
-        '<p>本系统通过<b>飞书账号</b>登录，仅授权成员可访问。<br>'
-        '在飞书工作台点开「CMS」即可自动登录。</p>'
+        '<p>本系统通过<b>飞书账号</b>登录，仅授权成员可访问。</p>'
         f'{action}</div>',
         unsafe_allow_html=True,
     )
