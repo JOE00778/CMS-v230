@@ -1,5 +1,7 @@
 # bump: 2.3.6 — asean_daily UPC fix + version banner + insert=0 raise
-streamlit>=1.32
+streamlit>=1.42
+# 登录态持久化 cookie（方案A·刷新无感 7 天免登）— shared/auth.py CookieManager
+extra-streamlit-components>=0.1.71
 pandas>=2.2
 plotly>=5.20
 openpyxl>=3.1

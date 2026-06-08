@@ -16,8 +16,12 @@ Page 顶部用法：
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
+import json
 import os
+import time
 
 import streamlit as st
 
@@ -143,6 +147,90 @@ def _hide_chrome_for_guest() -> None:
         st.markdown(_GUEST_HIDE_CSS, unsafe_allow_html=True)
 
 
+# ---- 方案A：登录态持久化到浏览器签名 cookie（刷新无感、7 天免登）----
+_COOKIE_NAME = "cms_lark_auth"
+_COOKIE_TTL = 7 * 24 * 3600  # 7 天
+
+
+def _cookie_secret() -> str:
+    """cookie 签名密钥（复用已有 secret，不新增配置）。"""
+    return (_secret("LARK_APP_SECRET") or _secret("ADMIN_PASSWORD")
+            or _secret("APP_PASSWORD") or "cms-cookie-fallback-secret")
+
+
+def _sign_cookie(payload: dict) -> str:
+    raw = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()).decode()
+    sig = hmac.new(_cookie_secret().encode(), raw.encode(),
+                   hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
+def _verify_cookie(token: str):
+    """验签 + 查过期，返回 payload dict 或 None。"""
+    try:
+        raw, sig = token.rsplit(".", 1)
+        expect = hmac.new(_cookie_secret().encode(), raw.encode(),
+                          hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expect):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode()).decode())
+        if float(payload.get("exp", 0)) < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _cookie_manager():
+    """CookieManager 单实例（每 session）。需装 extra-streamlit-components 才可用。"""
+    try:
+        import extra_streamlit_components as stx
+    except ImportError:
+        return None
+    if "__cookie_mgr" not in st.session_state:
+        st.session_state["__cookie_mgr"] = stx.CookieManager(key="cms_cookie_mgr")
+    return st.session_state["__cookie_mgr"]
+
+
+def _restore_from_cookie() -> bool:
+    """从 st.context.cookies 读签名 cookie，验签通过则恢复登录态（同步、刷新首次即有）。"""
+    try:
+        token = (st.context.cookies or {}).get(_COOKIE_NAME)
+    except Exception:
+        return False
+    if not token:
+        return False
+    payload = _verify_cookie(token)
+    if not payload:
+        return False
+    st.session_state["__auth_ok"] = True
+    st.session_state["__role"] = payload.get("role", "guest")
+    st.session_state["__lark_user"] = payload.get("user", {})
+    return True
+
+
+def _write_login_cookie(user: dict, role: str) -> None:
+    """登录成功后写签名 cookie（CookieManager → 浏览器，7 天）。"""
+    cm = _cookie_manager()
+    if cm is None:
+        return
+    payload = {
+        "uid": (user.get("union_id") or user.get("open_id") or ""),
+        "role": role,
+        "user": {"name": user.get("name", ""), "email": user.get("email", "")},
+        "exp": int(time.time()) + _COOKIE_TTL,
+    }
+    token = _sign_cookie(payload)
+    try:
+        from datetime import datetime, timedelta, timezone
+        cm.set(_COOKIE_NAME, token,
+               expires_at=datetime.now(timezone.utc) + timedelta(seconds=_COOKIE_TTL),
+               key="cms_cookie_set")
+    except Exception:
+        pass
+
+
 def _try_lark_sso() -> bool:
     """飞书 H5 应用 SSO 入口（NAS 部署时启用，Cloud 部署时 is_configured()=False 自动跳过）。
 
@@ -169,6 +257,7 @@ def _try_lark_sso() -> bool:
     email = (user.get("email") or "").lower()
     st.session_state["__role"] = "admin" if email in admin_emails else "guest"
     st.session_state["__lark_user"] = user
+    _write_login_cookie(user, st.session_state["__role"])  # 方案A：持久化到浏览器 cookie
     return True
 
 
@@ -285,12 +374,18 @@ def require_password() -> None:
     if st.session_state.get("__auth_ok"):
         _hide_chrome_for_guest()
         return
+    # 方案A：先从签名 cookie 恢复登录态（st.context.cookies 同步、刷新首次 run 即有
+    # → 真无感，7 天内不用重登）。
+    if _restore_from_cookie():
+        _hide_chrome_for_guest()
+        return
     dev_mock = _secret("CMS_DEV_MOCK_LOGIN") == "1"  # 仅本地开发；生产元川绝不设此 env
     # 飞书 SSO 已配置：强制走飞书账号，**不再 fallback 到密码框**（否则密码框=外人
     # 后门，"只能飞书账号进"就破了）。飞书未配时维持原行为（CF Access + 统一密码框）。
     if _lark_sso_enabled():
-        if _try_lark_sso():       # URL 带 ?code 且校验通过 → 已写登录态
-            st.rerun()
+        if _try_lark_sso():           # 登录成功 → 已写 session + cookie；**不 rerun**，
+            _hide_chrome_for_guest()  # 让本次 run 渲染完（CookieManager component 才写入 cookie）
+            return
         _lark_login_gate(dev_mock=dev_mock)  # 未登录 → 飞书登录引导并 st.stop()，不落密码框
         return
     if dev_mock:                  # 本地：飞书没配但开了 mock → 直接给模拟登录页

@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "商品信息管理平台 - SmikieJapan 综合商品分析与运营工具集"
 requires-python = ">=3.11"
 dependencies = [
-    "streamlit>=1.32",
+    "streamlit>=1.42",
+    "extra-streamlit-components>=0.1.71",
     "pandas>=2.2",
     "plotly>=5.20",
     "google-genai>=0.3",
