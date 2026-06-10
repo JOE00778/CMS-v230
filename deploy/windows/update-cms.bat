@@ -4,7 +4,9 @@ REM 使用：放桌面双击 / 元川さん 远程登录后双击
 REM
 REM 跟 redeploy.bat 区别：
 REM   - redeploy.bat = 拉代码 + 清缓存 + docker compose build + restart （重型）
-REM   - update-cms.bat = 仅 git pull + 显示容器状态（轻量 · 日常 push 后用这个）
+REM   - update-cms.bat = git pull + restart streamlit（轻量 · 日常 push 后用这个 · 不 build）
+REM     restart 是必须的：shared/ 下被 import 的模块（i18n / auth / cache 等）
+REM     是进程启动时求值一次，仅 bind mount 不重启进程不会生效。
 REM
 REM 何时改用 redeploy.bat:
 REM   - 新增 Python 依赖（pyproject.toml / requirements.txt 改了）
@@ -35,12 +37,16 @@ echo [2/3] 当前 HEAD:
 git log -1 --oneline
 
 echo.
-echo [3/3] Streamlit 容器状态:
+echo [3/4] 重启 streamlit 容器（让 shared/ 等 import 模块改动生效）...
+docker compose -f deploy\windows\docker-compose.yml restart streamlit
+
+echo.
+echo [4/4] Streamlit 容器状态:
 docker compose -f deploy\windows\docker-compose.yml ps streamlit
 
 echo.
 echo ============================================
-echo   完成 · Streamlit bind mount 已加载新代码
+echo   完成 · 新代码已加载 + streamlit 已重启
 echo ============================================
 echo.
 echo 如新增依赖 / 改 .env / 改 Dockerfile · 请改跑 redeploy.bat
