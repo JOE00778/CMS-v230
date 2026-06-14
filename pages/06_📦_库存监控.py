@@ -145,12 +145,15 @@ def _render_composition():
         lambda x: _RANK_ORDER.index(x) if x in _RANK_ORDER else len(_RANK_ORDER))
     by_rank = by_rank.sort_values(["_ord", "rank_label"]).drop(columns=["_ord"])
     if not by_rank.empty:
-        rank_cols = st.columns(min(len(by_rank), 6))
-        for col, (_, r) in zip(rank_cols, by_rank.iterrows()):
-            pct_r = (float(r["amt"]) / tot_amt * 100) if tot_amt else 0.0
-            col.metric(f"{r['rank_label']} (¥)", f"¥{float(r['amt']):,.0f}",
-                       delta=f"{pct_r:.0f}% {t('占比')} · {float(r['qty']):,.0f} {t('数量')}",
-                       delta_color="off")
+        _per_row = 3
+        _rank_rows = list(by_rank.iterrows())
+        for _i in range(0, len(_rank_rows), _per_row):
+            rank_cols = st.columns(_per_row)
+            for col, (_, r) in zip(rank_cols, _rank_rows[_i:_i + _per_row]):
+                pct_r = (float(r["amt"]) / tot_amt * 100) if tot_amt else 0.0
+                col.metric(f"{r['rank_label']} (¥)", f"¥{float(r['amt']):,.0f}",
+                           delta=f"{pct_r:.0f}% {t('占比')} · {float(r['qty']):,.0f} {t('数量')}",
+                           delta_color="off")
 
     # ----- 环状图（用途 + 等级 并排） -----
     import altair as alt
