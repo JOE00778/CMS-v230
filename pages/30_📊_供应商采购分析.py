@@ -633,10 +633,182 @@ def _render_in_transit():
 
 
 # ============================================================
-# 2 タブ統合：采购分析 / 在途入荷予定（Boss 2026-06-02）
+# tab3 · SKU 级 PO 明细（采购+在途合一·月份/等级/供货商/PO号 四维查找）
+#   grain = nst.purchase_order_line 行级（唯一同时含 po_number + 可 join item_rank 的数据源）
+#   月度视图 po_item_supplier_monthly 聚合掉了 po_number、也无 item_rank → 不能用
 # ============================================================
-tab_analysis, tab_transit = st.tabs([t("📊 供应商采购分析"), t("🚢 在途入荷予定")])
+# 等级固定展示顺序（对齐 pages/06 _RANK_ORDER · RANK_TARGET_KEYS 是其中 A/B/C/NEW 子集）
+_SKU_RANK_ORDER = ["NEW", "Aランク", "Bランク", "Cランク", "取扱中止"]
+
+
+def _render_sku_detail():
+    st.caption(t("PO 行级明细 · 月份/产品等级/供货商/PO番号 四维查找 · 采购与在途合一（在途 = 未close且入荷残>0）"))
+    _tc1, _tc2 = st.columns([2, 3])
+    with _tc1:
+        only_export = st.checkbox(
+            t("仅输出供货商（白名单过滤）"), value=True, key="sku_only_export",
+            help=t("勾选则只看「⚙️ 系统参数设定 → 🏢 输出供应商名单」里确认的输出供货商"),
+        )
+    with _tc2:
+        lens = st.radio(
+            t("视图"), [t("全部采购"), t("仅在途（残>0）")], horizontal=True, key="sku_lens",
+        )
+
+    wl = "JOIN nst.po_export_vendor ev3 ON ev3.vendor_id = pol.vendor_id" if only_export else ""
+    try:
+        base = _df(
+            "SELECT pol.po_number, pol.trandate, to_char(pol.trandate, 'YYYY-MM') AS year_month, "
+            "pol.vendor_id, pol.vendor_name, pol.item_internal_id, im.jan, im.display_name, "
+            "im.item_rank, pol.location, pol.status, "
+            "pol.quantity AS qty_ordered, COALESCE(pol.quantity_received, 0) AS qty_received, "
+            "(pol.quantity - COALESCE(pol.quantity_received, 0)) AS qty_outstanding, "
+            "pol.rate AS unit_price, pol.amount, "
+            "((pol.quantity - COALESCE(pol.quantity_received, 0)) * pol.rate) AS amt_outstanding, "
+            "pol.expected_receipt_date, COALESCE(pol.closed, FALSE) AS closed, "
+            "COALESCE(ev.is_prepay, FALSE) AS is_prepay "
+            "FROM nst.purchase_order_line pol "
+            "LEFT JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
+            "LEFT JOIN nst.po_export_vendor ev ON ev.vendor_id = pol.vendor_id "
+            f"{wl} "
+            "WHERE pol.trandate IS NOT NULL"
+        )
+    except Exception as e:
+        st.error(t("⚠️ nst.purchase_order_line 读取失败（PG 未接続 / schema 未部署？）") + f"\n\n{e}")
+        return
+
+    if base.empty:
+        if only_export:
+            st.info(t("白名单为空或无匹配。请到「⚙️ 系统参数设定 → 🏢 输出供应商名单」维护，或取消勾选看全部。"))
+        else:
+            st.info(t("暂无 PO 数据。请先在元川跑 daily_pull --domains po。"))
+        return
+
+    # 数值列规整
+    for _c in ("qty_ordered", "qty_received", "qty_outstanding", "unit_price", "amount", "amt_outstanding"):
+        base[_c] = pd.to_numeric(base[_c], errors="coerce").fillna(0.0)
+    base["closed"] = base["closed"].astype(bool)
+    base["is_prepay"] = base["is_prepay"].astype(bool)
+    base["trandate"] = pd.to_datetime(base["trandate"], errors="coerce").dt.date
+    base["expected_receipt_date"] = pd.to_datetime(base["expected_receipt_date"], errors="coerce").dt.date
+    # 产品等级标签（空/NaN → 未分类）
+    base["item_rank"] = base["item_rank"].astype(str).where(
+        base["item_rank"].notna() & (base["item_rank"].astype(str).str.strip() != "")
+        & (base["item_rank"].astype(str) != "nan"),
+        t("未分类"),
+    )
+
+    # 视图镜头：在途 = 未 close 且 残>0
+    if lens == t("仅在途（残>0）"):
+        base = base[(~base["closed"]) & (base["qty_outstanding"] > 0)]
+        if base.empty:
+            st.info(t("当前筛选下无在途明细（全部已入荷 / close）。"))
+            return
+
+    # ---- 四维过滤控件 ----
+    _f1, _f2, _f3, _f4 = st.columns([2, 2, 2, 2])
+    _month_opts = sorted(base["year_month"].dropna().astype(str).unique().tolist(), reverse=True)
+    sel_months = _f1.multiselect(
+        t("月份（多选 · 留空 = 全部）"), _month_opts, default=[], key="sku_months")
+    _rank_present = base["item_rank"].dropna().unique().tolist()
+    _rank_opts = ([r for r in _SKU_RANK_ORDER if r in _rank_present]
+                  + sorted([r for r in _rank_present if r not in _SKU_RANK_ORDER]))
+    sel_ranks = _f2.multiselect(
+        t("产品等级（多选 · 留空 = 全部）"), _rank_opts, default=[], key="sku_ranks")
+    _vendor_opts = sorted(base["vendor_name"].dropna().astype(str).unique().tolist())
+    sel_vendors = _f3.multiselect(
+        t("供货商（多选 · 留空 = 全部）"), _vendor_opts, default=[], key="sku_vendors")
+    po_kw = _f4.text_input(t("🔍 PO番号（部分匹配）"), "", key="sku_po_kw")
+
+    view = base
+    if sel_months:
+        view = view[view["year_month"].isin(sel_months)]
+    if sel_ranks:
+        view = view[view["item_rank"].isin(sel_ranks)]
+    if sel_vendors:
+        view = view[view["vendor_name"].isin(sel_vendors)]
+    if po_kw:
+        view = view[view["po_number"].astype(str).str.contains(po_kw, case=False, na=False)]
+
+    if view.empty:
+        st.info(t("无匹配明细（调整 月份 / 等级 / 供货商 / PO番号 筛选）"))
+        return
+
+    _is_transit = lens == t("仅在途（残>0）")
+
+    # ---- KPI（随镜头切换）----
+    if _is_transit:
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric(t("在途明细行"), f"{len(view):,}")
+        k2.metric(t("在途总量"), f"{view['qty_outstanding'].sum():,.0f}")
+        k3.metric(t("在途金额 (¥)"), f"¥{view['amt_outstanding'].sum():,.0f}")
+        k4.metric(t("涉及 PO 单"), f"{view['po_number'].nunique():,}")
+    else:
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric(t("SKU 明细行"), f"{len(view):,}")
+        k2.metric(t("总订货金额 (¥)"), f"¥{view['amount'].sum():,.0f}")
+        k3.metric(t("涉及 PO 单"), f"{view['po_number'].nunique():,}")
+        k4.metric(t("涉及 SKU"), f"{view['item_internal_id'].nunique():,}")
+        k5.metric(t("涉及供货商"), f"{view['vendor_name'].nunique():,}")
+
+    st.divider()
+
+    # ---- 产品等级汇总（用户强调的新维度）----
+    st.markdown("##### " + t("📦 各等级汇总"))
+    if _is_transit:
+        gr = (view.groupby("item_rank", as_index=False)
+              .agg(qty=("qty_outstanding", "sum"), amt=("amt_outstanding", "sum"),
+                   sku=("item_internal_id", "nunique"), po=("po_number", "nunique")))
+        _amt_label, _qty_label = t("在途金额(¥)"), t("在途量")
+    else:
+        gr = (view.groupby("item_rank", as_index=False)
+              .agg(qty=("qty_ordered", "sum"), amt=("amount", "sum"),
+                   sku=("item_internal_id", "nunique"), po=("po_number", "nunique")))
+        _amt_label, _qty_label = t("订货金额(¥)"), t("発注数")
+    gr["_ord"] = gr["item_rank"].map(
+        lambda x: _SKU_RANK_ORDER.index(x) if x in _SKU_RANK_ORDER else len(_SKU_RANK_ORDER))
+    gr = gr.sort_values(["_ord", "item_rank"]).drop(columns=["_ord"])
+    gr = gr.rename(columns={"item_rank": t("等级"), "qty": _qty_label, "amt": _amt_label,
+                            "sku": t("SKU 数"), "po": t("PO 单数")})
+    st.dataframe(gr, hide_index=True, use_container_width=True, height=min(60 + 35 * len(gr), 280),
+                 column_config={_amt_label: st.column_config.NumberColumn(format="¥%,.0f")})
+
+    st.divider()
+
+    # ---- SKU 明细表（采购+在途同行）----
+    st.markdown("##### " + t("📋 SKU × PO 明细"))
+    view = view.assign(prepay_mark=view["is_prepay"].map(lambda b: "✓" if bool(b) else ""))
+    disp = view[["year_month", "po_number", "trandate", "vendor_name", "prepay_mark",
+                 "jan", "display_name", "item_rank", "qty_ordered", "qty_received",
+                 "qty_outstanding", "unit_price", "amount", "amt_outstanding",
+                 "expected_receipt_date", "status"]].rename(columns={
+        "year_month": t("月份"), "po_number": t("PO番号"), "trandate": t("発注日"),
+        "vendor_name": t("仕入先"), "prepay_mark": t("预付款"), "jan": t("JAN"),
+        "display_name": t("商品名"), "item_rank": t("等级"), "qty_ordered": t("発注数"),
+        "qty_received": t("入荷済"), "qty_outstanding": t("在途残"),
+        "unit_price": t("単価"), "amount": t("金额"), "amt_outstanding": t("在途金额(¥)"),
+        "expected_receipt_date": t("入荷予定日"), "status": t("状態"),
+    })
+    disp = disp.sort_values([t("月份"), t("仕入先"), t("金额")],
+                            ascending=[False, True, False], na_position="last")
+    st.dataframe(disp, hide_index=True, use_container_width=True, height=520,
+                 column_config={
+                     t("単価"): st.column_config.NumberColumn(format="¥%,.2f"),
+                     t("金额"): st.column_config.NumberColumn(format="¥%,.0f"),
+                     t("在途金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
+                 })
+    st.download_button(t("📥 SKU 明细 CSV 下载"),
+                       disp.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="po_sku_detail.csv", mime="text/csv", key="sku_detail_csv")
+
+
+# ============================================================
+# 3 タブ統合：采购分析 / 在途入荷予定 / SKU 级明细（Boss 2026-06-15）
+# ============================================================
+tab_analysis, tab_transit, tab_sku = st.tabs(
+    [t("📊 供应商采购分析"), t("🚢 在途入荷予定"), t("🔬 SKU 级 PO 明细")])
 with tab_analysis:
     _render_analysis()
 with tab_transit:
     _render_in_transit()
+with tab_sku:
+    _render_sku_detail()
