@@ -465,8 +465,15 @@ with _q_tab:
     # ============================================================
     # クエリ組み立て
     # ============================================================
-    _INV = ("(SELECT item_internal_id, qty_on_hand FROM nst.inventory_snapshot "
-            "WHERE snapshot_date=(SELECT max(snapshot_date) FROM nst.inventory_snapshot))")
+    # _INV 必须「每品一行」：inventory_snapshot 按仓库分行(JD-物流-千葉 + 弁天倉庫)，
+    # 不聚合就 join 下方 sales_monthly 会把销售行 fan-out 翻倍 → SUM(qty_sold/revenue/
+    # gross_profit) 虚高(比率类免疫，绝对值类全错)。SUM(qty_on_hand) + 限 JD+弁天，
+    # 口径对齐本页 库存总金额 KPI。修复 2026-06-16 · 回归 tests/test_sales_inventory_fanout.py
+    _INV = ("(SELECT item_internal_id, SUM(qty_on_hand) AS qty_on_hand "
+            "FROM nst.inventory_snapshot "
+            "WHERE snapshot_date=(SELECT max(snapshot_date) FROM nst.inventory_snapshot) "
+            "  AND warehouse IN ('JD-物流-千葉', '弁天倉庫') "
+            "GROUP BY item_internal_id)")
 
     # 月份以外の筛选（下方の推移図 = 全月集計で再利用するため分離）
     _filt: list = []
