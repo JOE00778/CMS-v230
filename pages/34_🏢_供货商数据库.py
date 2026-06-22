@@ -303,41 +303,54 @@ with tab_dec:
         st.info(t("报价库为空。先到「📤 报价上传 / 种子」上传报价、或从 PO 实绩导入。"))
     else:
         _q = _q[_q["active"] != False]  # noqa: E712  停用供货商不参与
+        # 商品等级（item_master）merge → ABC 等级筛选
+        _rk = _read("SELECT jan, item_rank FROM nst.item_master_raw WHERE jan IS NOT NULL")
+        _q = (_q.merge(_rk.drop_duplicates("jan"), on="jan", how="left")
+              if not _rk.empty else _q.assign(item_rank=None))
+        _rk_sel = st.multiselect(
+            t("等级（留空=全部）"), ["Aランク", "Bランク", "Cランク", "NEW", "取扱中止"],
+            default=["Aランク", "Bランク", "Cランク"], key="dec_rank")
+        if _rk_sel:
+            _q = _q[_q["item_rank"].isin(_rk_sel)]
         for _c in ("price", "moq", "order_lot"):
             _q[_c] = pd.to_numeric(_q[_c], errors="coerce")
         _q["lead_days"] = pd.to_numeric(_q["lead_days"], errors="coerce").fillna(
             pd.to_numeric(_q["default_lead_days"], errors="coerce"))
-        _latest = sc.latest_quotes(_q)
-        _scored = sc.recommend(_latest, _weights)
+        _scored = sc.recommend(sc.latest_quotes(_q), _weights)
+        if _scored.empty:
+            st.info(t("该筛选下无报价（调整等级，或先导入报价）。"))
+        else:
+            k1, k2, k3 = st.columns(3)
+            k1.metric(t("覆盖 SKU"), f"{_scored['jan'].nunique():,}")
+            k2.metric(t("供货商数"), f"{_scored['supplier_name'].nunique():,}")
+            k3.metric(t("报价条数(最新)"), f"{len(_scored):,}")
 
-        k1, k2, k3 = st.columns(3)
-        k1.metric(t("覆盖 SKU"), f"{_scored['jan'].nunique():,}")
-        k2.metric(t("供货商数"), f"{_scored['supplier_name'].nunique():,}")
-        k3.metric(t("报价条数(最新)"), f"{len(_scored):,}")
+            _jan_kw = st.text_input(t("🔍 按 JAN / 商品名 搜索（留空=全部）"), key="dec_kw")
+            view = _scored
+            if _jan_kw.strip():
+                _kw = _jan_kw.strip()
+                view = view[view["jan"].astype(str).str.contains(_kw, na=False)
+                            | view["item_name"].astype(str).str.contains(_kw, case=False, na=False)]
 
-        _jan_kw = st.text_input(t("🔍 按 JAN / 商品名 搜索（留空=全部）"), key="dec_kw")
-        view = _scored
-        if _jan_kw.strip():
-            _kw = _jan_kw.strip()
-            view = view[view["jan"].astype(str).str.contains(_kw, na=False)
-                        | view["item_name"].astype(str).str.contains(_kw, case=False, na=False)]
-
-        st.markdown("##### " + t("🏆 采购推荐（每 JAN 综合得分最低者=🏆）"))
-        _disp = view.sort_values(["jan", "score"]).copy()
-        _disp["rec"] = _disp["is_recommended"].map(lambda b: "🏆" if b else "")
-        _show = _disp[["rec", "jan", "item_name", "supplier_name", "price", "moq",
-                       "order_lot", "lead_days", "is_prepay", "score", "quote_date", "source"]].rename(
-            columns={"rec": t("推荐"), "jan": t("JAN"), "item_name": t("商品名"),
-                     "supplier_name": t("供货商"), "price": t("采购价"), "moq": t("起订量"),
-                     "order_lot": t("订货批量"), "lead_days": t("纳期(日)"),
-                     "is_prepay": t("预付"), "score": t("综合得分"),
-                     "quote_date": t("报价日"), "source": t("来源")})
-        st.dataframe(_show, hide_index=True, use_container_width=True, height=560,
-                     column_config={
-                         t("采购价"): st.column_config.NumberColumn(format="¥%.2f"),
-                         t("综合得分"): st.column_config.NumberColumn(format="%.3f"),
-                     })
-        st.caption(t("得分越低越推荐 · 价格/纳期/起订量在同 JAN 内归一化 · 预付供货商按权重扣分"))
+            st.markdown("##### " + t("🏆 采购推荐（每 JAN 综合得分最低者=🏆）"))
+            _disp = view.sort_values(["jan", "score"]).copy()
+            _disp["rec"] = _disp["is_recommended"].map(lambda b: "🏆" if b else "")
+            _lead = (["rec", "item_rank", "jan", "item_name"] if "item_rank" in _disp.columns
+                     else ["rec", "jan", "item_name"])
+            _show = _disp[_lead + ["supplier_name", "price", "moq", "order_lot", "lead_days",
+                                   "is_prepay", "score", "quote_date", "source"]].rename(
+                columns={"rec": t("推荐"), "item_rank": t("等级"), "jan": t("JAN"),
+                         "item_name": t("商品名"), "supplier_name": t("供货商"),
+                         "price": t("采购价"), "moq": t("起订量"),
+                         "order_lot": t("订货批量"), "lead_days": t("纳期(日)"),
+                         "is_prepay": t("预付"), "score": t("综合得分"),
+                         "quote_date": t("报价日"), "source": t("来源")})
+            st.dataframe(_show, hide_index=True, use_container_width=True, height=560,
+                         column_config={
+                             t("采购价"): st.column_config.NumberColumn(format="¥%.2f"),
+                             t("综合得分"): st.column_config.NumberColumn(format="%.3f"),
+                         })
+            st.caption(t("得分越低越推荐 · 价格/纳期/起订量在同 JAN 内归一化 · 预付供货商按权重扣分"))
 
 # ============================================================
 # Tab：ABC 比价列表（ABC产品 × 各供货商报价 + 现在进货 + 最低价）

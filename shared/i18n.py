@@ -1875,6 +1875,14 @@ for _zh, _ja in [
 ]:
     TRANSLATIONS_JA[_zh] = _ja
 
+
+# page34 决策tab 等级筛选 追加（Boss 2026-06-22）
+for _zh, _ja in [
+    ("等级（留空=全部）", "ランク（空欄=全件）"),
+    ("该筛选下无报价（调整等级，或先导入报价）。", "この条件で見積がありません（ランクを調整、または先に見積を取込）。"),
+]:
+    TRANSLATIONS_JA[_zh] = _ja
+
 TRANSLATIONS_ZH: dict[str, str] = {
     # === page 13/25/26/27 UI 言語補完（2026-05-21）===
     # --- Page 13 改廃確認 (日文 key → 中文) ---
