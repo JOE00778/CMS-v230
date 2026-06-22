@@ -253,8 +253,10 @@ with _tab_search:
                 "date_created", "qty_on_hand", "qty_available", "qty_on_order", "stock_amount",
                 "cost_estimate", "average_cost", "last_purchase_cost",
                 "wms_gross_weight_g", "carton_qty", "order_lot", "qty_sold", "revenue")
+        # 行数に応じて高さ自動調整（単品/少数件で空行を出さない · 多件は 560 で頭打ち→スクロール）
+        _tbl_h = min(38 + 35 * len(v), 560)
         st.dataframe(
-            v[list(cols)], use_container_width=True, height=560, hide_index=True,
+            v[list(cols)], use_container_width=True, height=_tbl_h, hide_index=True,
             column_config=_cc(*cols),
         )
 
