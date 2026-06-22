@@ -220,6 +220,29 @@ def parse_peso_like(v):
         return None
 
 
+def compare_wide(latest: pd.DataFrame) -> pd.DataFrame:
+    """最新报价(jan, supplier_name, price) → 横持ち比価表。
+
+    index リセット済 · 列: jan, min_price(最低価), cheapest_supplier(最安仕入先),
+    その後に各 supplier の価格列。報価が無い JAN は含まれない。
+    """
+    cols0 = ["jan", "min_price", "cheapest_supplier"]
+    if latest is None or latest.empty:
+        return pd.DataFrame(columns=cols0)
+    d = latest.copy()
+    d["price"] = pd.to_numeric(d["price"], errors="coerce")
+    d = d.dropna(subset=["price"])
+    if d.empty:
+        return pd.DataFrame(columns=cols0)
+    piv = d.pivot_table(index="jan", columns="supplier_name", values="price", aggfunc="min")
+    piv = piv.dropna(axis=1, how="all")
+    _minp = piv.min(axis=1)
+    _cheap = piv.idxmin(axis=1)
+    piv.insert(0, "min_price", _minp)
+    piv.insert(1, "cheapest_supplier", _cheap)
+    return piv.reset_index()
+
+
 def is_data_sheet(name: str) -> bool:
     return name in DATA_SHEETS or any(name.startswith(p) for p in _DATA_PREFIX)
 

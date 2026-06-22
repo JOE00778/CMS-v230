@@ -107,8 +107,8 @@ def sc_int(v):
     return int(_n) if _n is not None else None
 
 
-tab_dec, tab_up, tab_sup = st.tabs(
-    [t("🏆 比价 / 采购决策"), t("📤 报价上传 / 种子"), t("🏢 供货商主档")])
+tab_dec, tab_list, tab_up, tab_sup = st.tabs(
+    [t("🏆 比价 / 采购决策"), t("📋 ABC 比价列表"), t("📤 报价上传 / 种子"), t("🏢 供货商主档")])
 
 # ============================================================
 # Tab：报价上传 / 种子
@@ -338,3 +338,76 @@ with tab_dec:
                          t("综合得分"): st.column_config.NumberColumn(format="%.3f"),
                      })
         st.caption(t("得分越低越推荐 · 价格/納期/起訂量在同 JAN 内归一化 · 预付供货商按权重扣分"))
+
+# ============================================================
+# Tab：ABC 比价列表（ABC产品 × 各供货商报价 + 现在进货 + 最低价）
+# ============================================================
+with tab_list:
+    st.caption(t("ABC 等级产品 × 各供货商最新报价(宽表) + 现在进货価/直近発注数 + 最低価/最安供货商。"))
+    _ranks = st.multiselect(t("等级"), ["Aランク", "Bランク", "Cランク"],
+                            default=["Aランク", "Bランク", "Cランク"], key="abc_ranks")
+    if not _ranks:
+        _ranks = ["Aランク", "Bランク", "Cランク"]
+    _items = _read(
+        "SELECT jan, display_name, maker, item_rank, last_purchase_cost "
+        "FROM nst.item_master_raw WHERE jan IS NOT NULL AND item_rank IN ("
+        + ",".join(["?"] * len(_ranks)) + ")", tuple(_ranks))
+    if _items.empty:
+        st.info(t("无 ABC 等级商品（NST item_master 未就绪？）"))
+    else:
+        _lq = _read("SELECT id, supplier_name, jan, price, quote_date FROM sourcing.supplier_quote")
+        _wide = (sc.compare_wide(sc.latest_quotes(_lq)) if not _lq.empty
+                 else pd.DataFrame(columns=["jan", "min_price", "cheapest_supplier"]))
+        _poq = _read("SELECT jan, year_month, qty_ordered FROM nst.po_item_supplier_monthly "
+                     "WHERE jan IS NOT NULL")
+        if not _poq.empty:
+            _poq["qty_ordered"] = pd.to_numeric(_poq["qty_ordered"], errors="coerce")
+            _pm = _poq.groupby(["jan", "year_month"], as_index=False)["qty_ordered"].sum()
+            _pm = (_pm.sort_values("year_month").drop_duplicates("jan", keep="last")
+                   [["jan", "qty_ordered"]].rename(columns={"qty_ordered": "recent_qty"}))
+        else:
+            _pm = pd.DataFrame(columns=["jan", "recent_qty"])
+
+        base = _items.merge(_wide, on="jan", how="left").merge(_pm, on="jan", how="left")
+        base["last_purchase_cost"] = pd.to_numeric(base["last_purchase_cost"], errors="coerce")
+        base["min_price"] = pd.to_numeric(base.get("min_price"), errors="coerce")
+        base["save_vs_min"] = base["last_purchase_cost"] - base["min_price"]
+
+        _c1, _c2 = st.columns([1, 2])
+        _only_q = _c1.checkbox(t("只看有报价的"), value=True, key="abc_onlyq")
+        _kw = _c2.text_input(t("🔍 JAN / 商品名 搜索"), key="abc_kw")
+        if _only_q:
+            base = base[base["min_price"].notna()]
+        if _kw.strip():
+            _k = _kw.strip()
+            base = base[base["jan"].astype(str).str.contains(_k, na=False)
+                        | base["display_name"].astype(str).str.contains(_k, case=False, na=False)]
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric(t("ABC 商品"), f"{len(base):,}")
+        k2.metric(t("有报价"), f"{int(base['min_price'].notna().sum()):,}")
+        k3.metric(t("现价>最低价(可省)"), f"{int((base['save_vs_min'] > 0).sum()):,}")
+
+        _supcols = [c for c in _wide.columns if c not in ("jan", "min_price", "cheapest_supplier")]
+        _core = ["item_rank", "jan", "display_name", "maker", "last_purchase_cost",
+                 "recent_qty", "min_price", "cheapest_supplier", "save_vs_min"]
+        _order = [c for c in _core if c in base.columns] + [c for c in _supcols if c in base.columns]
+        view = base[_order].sort_values(["item_rank", "save_vs_min"],
+                                        ascending=[True, False], na_position="last")
+        _ren = {"item_rank": t("等级"), "jan": t("JAN"), "display_name": t("商品名"),
+                "maker": t("メーカー"), "last_purchase_cost": t("现在进货価"),
+                "recent_qty": t("直近発注数"), "min_price": t("最低価"),
+                "cheapest_supplier": t("最安供货商"), "save_vs_min": t("现价-最低(可省)")}
+        disp = view.rename(columns=_ren)
+        st.dataframe(
+            disp, hide_index=True, use_container_width=True, height=600,
+            column_config={
+                t("现在进货価"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("最低価"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("现价-最低(可省)"): st.column_config.NumberColumn(format="¥%.0f"),
+            })
+        st.download_button(t("📥 ABC比价列表 CSV"),
+                           disp.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="abc_supplier_compare.csv", mime="text/csv", key="abc_csv")
+        st.caption(t("现在进货価=NST 前回購入価格 · 最低価=各供货商最新报价最小 · "
+                     "可省=现在进货価−最低価(>0 值得换最安) · 後ろ列=各供货商报价"))

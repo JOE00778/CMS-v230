@@ -140,3 +140,22 @@ def test_extract_skips_data_sheets():
     allq, counts = sc.extract_vendor_quotes(sheets)
     assert set(allq["supplier_name"]) == {"Maple"}
     assert "SUPABASE用" not in counts and "一元 Data12.4更新" not in counts
+
+
+# ---- ABC 横持ち比価表 ----
+def test_compare_wide_min_and_cheapest():
+    latest = pd.DataFrame([
+        {"jan": "J1", "supplier_name": "A", "price": 100},
+        {"jan": "J1", "supplier_name": "B", "price": 80},
+        {"jan": "J2", "supplier_name": "A", "price": 50},
+    ])
+    out = sc.compare_wide(latest)
+    r1 = out[out["jan"] == "J1"].iloc[0]
+    assert r1["min_price"] == 80 and r1["cheapest_supplier"] == "B"
+    assert r1["A"] == 100 and r1["B"] == 80
+    r2 = out[out["jan"] == "J2"].iloc[0]
+    assert r2["min_price"] == 50 and r2["cheapest_supplier"] == "A"
+
+
+def test_compare_wide_empty():
+    assert sc.compare_wide(pd.DataFrame(columns=["jan", "supplier_name", "price"])).empty
