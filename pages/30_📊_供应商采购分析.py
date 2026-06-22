@@ -802,13 +802,121 @@ def _render_sku_detail():
 
 
 # ============================================================
-# 3 タブ統合：采购分析 / 在途入荷予定 / SKU 级明细（Boss 2026-06-15）
+# tab4 · 一部受領 / 入荷未完了（NST PO ベース · JD入庫の遅れ検知 · Boss 2026-06-22）
+#   NST quantity_received は ItemReceipt（= JD 入庫後 NetSuite 記帳）由来 →
+#   「入荷残 > 0」= JD 入庫がまだ完了していない。一部受領 = 0 < 既入荷 < 発注数。
+#   JD 入庫単 API での突合は接口入手後に列追加（現状 path/字段/状態 未確定で見送り）。
 # ============================================================
-tab_analysis, tab_transit, tab_sku = st.tabs(
-    [t("📊 供应商采购分析"), t("🚢 在途入荷予定"), t("🔬 SKU 级 PO 明细")])
+def _render_partial_receipt():
+    st.caption(t(
+        "NST 発注書ベース · 入荷が完了していない明細（入荷残>0）。NST の既入荷は "
+        "ItemReceipt(JD 入庫後の記帳)由来なので、これが JD 入庫の遅れ＝未完了を反映する。"
+    ))
+    _pc1, _pc2 = st.columns([2, 3])
+    with _pc1:
+        only_export = st.checkbox(
+            t("仅输出供货商（白名单过滤）"), value=True, key="pr_only_export",
+            help=t("勾选则只看「⚙️ 系统参数设定 → 🏢 输出供应商名单」里确认的输出供货商"))
+    with _pc2:
+        recv_lens = st.radio(
+            t("受領区分"), [t("一部受領のみ"), t("全未完了入荷（含未受領）")],
+            horizontal=True, key="pr_lens")
+
+    wl = "JOIN nst.po_export_vendor ev ON ev.vendor_id = pol.vendor_id" if only_export else ""
+    try:
+        df = _df(
+            "SELECT pol.po_number, pol.trandate, pol.vendor_name, pol.item_internal_id, "
+            "im.jan, im.display_name, im.item_rank, pol.status, "
+            "pol.quantity AS qty_ordered, COALESCE(pol.quantity_received, 0) AS qty_received, "
+            "(pol.quantity - COALESCE(pol.quantity_received, 0)) AS qty_outstanding, "
+            "pol.rate, pol.expected_receipt_date "
+            "FROM nst.purchase_order_line pol "
+            "LEFT JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
+            f"{wl} "
+            "WHERE COALESCE(pol.closed, FALSE) = FALSE "
+            "  AND (pol.quantity - COALESCE(pol.quantity_received, 0)) > 0"
+        )
+    except Exception as e:
+        st.error(t("⚠️ nst.purchase_order_line 读取失败（PG 未接続 / schema 未部署？）") + f"\n\n{e}")
+        return
+
+    if df.empty:
+        st.info(t("入荷未完了の明細はありません（全て入荷済 / close）。"))
+        return
+
+    for _c in ("qty_ordered", "qty_received", "qty_outstanding", "rate"):
+        df[_c] = pd.to_numeric(df[_c], errors="coerce").fillna(0.0)
+    df["amt_outstanding"] = df["qty_outstanding"] * df["rate"]
+    df["recv_rate"] = (df["qty_received"] / df["qty_ordered"].where(df["qty_ordered"] != 0) * 100).fillna(0.0)
+    df["recv_kbn"] = df["qty_received"].map(lambda q: t("一部受領") if q > 0 else t("未受領"))
+    df["item_rank"] = df["item_rank"].astype(str).where(
+        df["item_rank"].notna() & (df["item_rank"].astype(str).str.strip() != "")
+        & (df["item_rank"].astype(str) != "nan"), t("未分类"))
+    df["trandate"] = pd.to_datetime(df["trandate"], errors="coerce").dt.date
+    df["expected_receipt_date"] = pd.to_datetime(df["expected_receipt_date"], errors="coerce").dt.date
+    _today = pd.Timestamp.now(tz="Asia/Tokyo").date()
+    df["days_elapsed"] = df["trandate"].map(
+        lambda d: (_today - d).days if pd.notna(d) else None)
+    df["overdue"] = df["expected_receipt_date"].map(
+        lambda d: bool(pd.notna(d) and d < _today))
+
+    if recv_lens == t("一部受領のみ"):
+        df = df[df["qty_received"] > 0]
+        if df.empty:
+            st.info(t("一部受領（既入荷>0 かつ 入荷残>0）の明細はありません。"))
+            return
+
+    # ---- KPI ----
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(t("対象明細"), f"{len(df):,}")
+    k2.metric(t("対象 PO 単"), f"{df['po_number'].nunique():,}")
+    k3.metric(t("一部受領 明細"), f"{int((df['qty_received'] > 0).sum()):,}")
+    k4.metric(t("入荷残 金額(¥)"), f"¥{df['amt_outstanding'].sum():,.0f}")
+    _n_overdue = int(df["overdue"].sum())
+    if _n_overdue:
+        st.caption("⚠️ " + t("入荷予定日 超過: {n} 明細").format(n=_n_overdue))
+
+    # ---- 明细表（経過日数 降順 = 滞留が長い順）----
+    st.markdown("##### " + t("📋 入荷未完了 明細"))
+    view = df.sort_values(["days_elapsed", "amt_outstanding"], ascending=[False, False],
+                          na_position="last").copy()
+    view["overdue_mark"] = view["overdue"].map(lambda b: "🔴" if b else "")
+    disp = view[["overdue_mark", "recv_kbn", "po_number", "trandate", "vendor_name",
+                 "jan", "display_name", "item_rank", "qty_ordered", "qty_received",
+                 "qty_outstanding", "recv_rate", "amt_outstanding",
+                 "expected_receipt_date", "days_elapsed", "status"]].rename(columns={
+        "overdue_mark": t("超過"), "recv_kbn": t("受領区分"), "po_number": t("PO番号"),
+        "trandate": t("発注日"), "vendor_name": t("仕入先"), "jan": t("JAN"),
+        "display_name": t("商品名"), "item_rank": t("等级"), "qty_ordered": t("発注数"),
+        "qty_received": t("既入荷"), "qty_outstanding": t("入荷残"),
+        "recv_rate": t("入荷率%"), "amt_outstanding": t("入荷残金額(¥)"),
+        "expected_receipt_date": t("入荷予定日"), "days_elapsed": t("発注経過日数"),
+        "status": t("状態"),
+    })
+    st.dataframe(disp, hide_index=True, use_container_width=True, height=520,
+                 column_config={
+                     t("入荷率%"): st.column_config.NumberColumn(format="%.0f%%"),
+                     t("入荷残金額(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
+                 })
+    st.download_button(t("📥 入荷未完了 CSV 下载"),
+                       disp.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="po_partial_receipt.csv", mime="text/csv", key="pr_csv")
+    st.caption(t(
+        "※ JD 入庫単 API（査詢入庫訂單詳情）での突合列は、接口 path/字段/状態枚举 入手後に追加予定。"
+    ))
+
+
+# ============================================================
+# 4 タブ統合：采购分析 / 在途入荷予定 / SKU 级明细 / 一部受領（Boss 2026-06-22）
+# ============================================================
+tab_analysis, tab_transit, tab_sku, tab_recv = st.tabs(
+    [t("📊 供应商采购分析"), t("🚢 在途入荷予定"), t("🔬 SKU 级 PO 明细"),
+     t("📥 一部受領 / 入荷未完了")])
 with tab_analysis:
     _render_analysis()
 with tab_transit:
     _render_in_transit()
 with tab_sku:
     _render_sku_detail()
+with tab_recv:
+    _render_partial_receipt()
