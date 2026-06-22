@@ -24,6 +24,7 @@ from shared.db import get_connection
 from shared.i18n import lang_selector, t, get_lang
 from shared.markets import ALL_MARKETS, add_market_column
 from shared.owners import OWNER_EXCLUDED, add_owner_column
+from shared import price_alert as pa
 
 st.set_page_config(page_title=t("店铺毛利"), page_icon="🏪", layout="wide")
 from shared.auth import require_password
@@ -301,8 +302,9 @@ m5.metric(t("粗利率"), f"{margin:.2f}%")
 st.divider()
 
 _owner_tab = "👤 担当者別" if get_lang() == "ja" else "👤 店铺负责人"
-tab_day, tab_owner, tab_shop, tab_market, tab_sku = st.tabs(
-    [t("📈 月内日次推移"), _owner_tab, t("🏪 店舗別"), t("🌐 市場別"), t("🏆 TOP SKU")]
+tab_day, tab_owner, tab_shop, tab_market, tab_sku, tab_alert = st.tabs(
+    [t("📈 月内日次推移"), _owner_tab, t("🏪 店舗別"), t("🌐 市場別"),
+     t("🏆 TOP SKU"), t("⚠️ 价格预警")]
 )
 
 # ============================================================
@@ -585,6 +587,118 @@ with tab_sku:
     sku_cols = ("display_name", "maker", "item_rank", "qty",
                 "revenue", "gross_profit", "gross_margin")
     html_table(_disp(g, sku_cols))
+
+# ============================================================
+# Tab 5：价格预警（当日 vs 近7日平均 · 参数可调 · Boss 2026-06-22）
+#   判定ロジックは shared/price_alert.py（純関数·tests/test_price_alert.py）
+# ============================================================
+with tab_alert:
+    st.caption(t(
+        "各店「当日」(最新确认日) を 近7日平均 と比べて毛利异常を检知 · "
+        "🔴=規則1/2/3(毛利侵蚀/降价冲量/破红线) · 🟡=規則4(収益↑だが毛利率↓) · 閾値は下で可変"
+    ))
+    _pc1, _pc2, _pc3, _pc4 = st.columns(4)
+    _p_dev = _pc1.number_input(t("①跌破近7日均(pp)"), 0.0, 50.0, 5.0, 0.5, key="pa_dev")
+    _p_qty = _pc2.number_input(t("②销量上涨(%)"), 0.0, 2000.0, 100.0, 10.0, key="pa_qty")
+    _p_mgn = _pc3.number_input(t("②毛利率下降(pp)"), 0.0, 50.0, 5.0, 0.5, key="pa_mgn")
+    _p_red = _pc4.number_input(t("③红线毛利率(%)"), 0.0, 100.0, 45.0, 1.0, key="pa_red")
+    _params = pa.AlertParams(dev_pp=_p_dev, qty_up_pct=_p_qty,
+                             mgn_drop_pp=_p_mgn, red_line_pct=_p_red)
+
+    # 当日 = 当前 df 内最新确认日 · 近7日は月境界をまたぐため sales_daily を直接クエリ
+    _cur_day = pd.to_datetime(df["sale_date"]).max().date()
+    _win_start = _cur_day - dt.timedelta(days=7)
+    _aw, _ae = _query(
+        "SELECT s.shop, s.sale_date, s.qty_sold, s.revenue, s.gross_profit "
+        "FROM nst.sales_daily s WHERE s.sale_date >= ? AND s.sale_date <= ?",
+        (_win_start.isoformat(), _cur_day.isoformat()),
+    )
+    if _ae:
+        st.error(_ae)
+    elif _aw is None or _aw.empty:
+        st.info(t("この条件のデータがありません"))
+    else:
+        for _c in ("qty_sold", "revenue", "gross_profit"):
+            _aw[_c] = _aw[_c].astype(float)
+        _aw["sale_date"] = pd.to_datetime(_aw["sale_date"]).dt.date
+        _aw = add_market_column(_aw, store_col="shop")
+        _aw = add_owner_column(_aw, shop_col="shop")
+        _aw = _aw[_aw["owner"] != OWNER_EXCLUDED]
+        if mk:
+            _aw = _aw[_aw["market"].isin(mk)]
+        _owner_map = (_aw.drop_duplicates("shop").set_index("shop")["owner"]
+                      if not _aw.empty else {})
+        _dd = _aw.groupby(["shop", "sale_date"], as_index=False).agg(
+            qty=("qty_sold", "sum"), revenue=("revenue", "sum"),
+            gross_profit=("gross_profit", "sum"))
+        _dd["margin"] = (_dd["gross_profit"]
+                         / _dd["revenue"].where(_dd["revenue"] != 0)).fillna(0) * 100
+
+        _RULE_LBL = {pa.R1: "①跌破7日均", pa.R2: "②降价冲量",
+                     pa.R3: "③破红线", pa.R4: "④收益涨毛利没跟"}
+        _EMO = {pa.ALERT_RED: "🔴", pa.ALERT_YELLOW: "🟡", pa.ALERT_OK: "✅"}
+        _rows = []
+        for _shop, _g in _dd.groupby("shop"):
+            _cur = _g[_g["sale_date"] == _cur_day]
+            if _cur.empty:
+                continue  # 当日に売上の無い店舗は判定対象外
+            _cur = _cur.iloc[0]
+            _base = _g[_g["sale_date"] < _cur_day]
+            _hb = not _base.empty
+            _am = float(_base["margin"].mean()) if _hb else None
+            _aq = float(_base["qty"].mean()) if _hb else None
+            _ar = float(_base["revenue"].mean()) if _hb else None
+            _status, _fired = pa.evaluate(
+                cur_margin=float(_cur["margin"]), avg7_margin=_am,
+                cur_qty=float(_cur["qty"]), avg7_qty=_aq,
+                cur_rev=float(_cur["revenue"]), avg7_rev=_ar,
+                params=_params, has_baseline=_hb)
+            _rows.append({
+                "_sev": pa.severity(_status), "_st": _status,
+                "shop": _shop, "owner": _owner_map.get(_shop, ""),
+                "cur_m": float(_cur["margin"]), "avg_m": _am,
+                "cur_q": float(_cur["qty"]), "avg_q": _aq,
+                "cur_r": float(_cur["revenue"]), "avg_r": _ar,
+                "fired": "、".join(_RULE_LBL[r] for r in _fired),
+            })
+        _adf = pd.DataFrame(_rows)
+        if _adf.empty:
+            st.info(t("当日に売上のある店舗がありません"))
+        else:
+            _ka, _kb, _kc, _kd = st.columns(4)
+            _ka.metric(t("当日"), f"{_cur_day.month}月{_cur_day.day}日")
+            _kb.metric("🔴 " + t("严重"), f"{int((_adf['_st'] == pa.ALERT_RED).sum())}")
+            _kc.metric("🟡 " + t("注意"), f"{int((_adf['_st'] == pa.ALERT_YELLOW).sum())}")
+            _kd.metric("✅ " + t("正常"), f"{int((_adf['_st'] == pa.ALERT_OK).sum())}")
+            _only = st.checkbox(t("只看预警(隐藏正常)"), value=True, key="pa_only")
+            _v = _adf.sort_values(["_sev", "cur_m"], ascending=[False, True])
+            if _only:
+                _v = _v[_v["_st"] != pa.ALERT_OK]
+            if _v.empty:
+                st.success(t("✅ 当日 全店毛利正常，无预警"))
+            else:
+                def _f_pct(x):
+                    return "—" if x is None or pd.isna(x) else f"{x:.2f}%"
+
+                def _f_yen(x):
+                    return "—" if x is None or pd.isna(x) else f"¥{x:,.0f}"
+
+                def _f_num(x):
+                    return "—" if x is None or pd.isna(x) else f"{x:,.0f}"
+
+                _disp_alert = pd.DataFrame({
+                    t("状态"): [_EMO[s] for s in _v["_st"]],
+                    _col("shop"): _v["shop"].tolist(),
+                    _col("owner"): _v["owner"].tolist(),
+                    t("当日毛利率"): [_f_pct(x) for x in _v["cur_m"]],
+                    t("近7日均毛利率"): [_f_pct(x) for x in _v["avg_m"]],
+                    t("当日销量"): [_f_num(x) for x in _v["cur_q"]],
+                    t("近7日均销量"): [_f_num(x) for x in _v["avg_q"]],
+                    t("当日总收益"): [_f_yen(x) for x in _v["cur_r"]],
+                    t("近7日均收益"): [_f_yen(x) for x in _v["avg_r"]],
+                    t("触发规则"): _v["fired"].tolist(),
+                })
+                html_table(_disp_alert)
 
 st.divider()
 st.caption(
