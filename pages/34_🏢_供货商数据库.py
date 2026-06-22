@@ -162,6 +162,54 @@ with tab_up:
                          + "｜" + t("实际列：") + "、".join(map(str, _raw.columns)))
 
     st.divider()
+    st.markdown("##### " + t("📚 一键导入 仕入先管理リスト.xlsx（多供货商）"))
+    st.caption(t("上传那个多 sheet 的 仕入先管理リスト → 自动逐供货商抽取 JAN/见积价/ロット/起訂金額。"))
+    _ml = st.file_uploader(t("仕入先管理リスト（.xlsx）"), type=["xlsx"], key="sq_multi")
+    _mdate = st.date_input(t("報価日（整批适用）"), value=dt.date.today(), key="sq_mdate")
+    if _ml is not None:
+        try:
+            _xls = pd.ExcelFile(io.BytesIO(_ml.read()))
+            _sheets = {_n: pd.read_excel(_xls, sheet_name=_n, header=None, dtype=str)
+                       for _n in _xls.sheet_names}
+        except Exception as e:  # noqa: BLE001
+            st.error(t("解析失败") + f"\n\n{e}")
+            _sheets = None
+        if _sheets:
+            _allq, _counts = sc.extract_vendor_quotes(_sheets)
+            _ok = {k: v for k, v in _counts.items() if v > 0}
+            _zero = [k for k, v in _counts.items() if v == 0]
+            st.success(t("抽出 {n} 条 · 供货商 {s} 家").format(n=len(_allq), s=len(_ok)))
+            st.dataframe(pd.DataFrame(sorted(_counts.items(), key=lambda x: -x[1]),
+                                      columns=[t("供货商sheet"), t("报价数")]),
+                         hide_index=True, use_container_width=True, height=240)
+            if _zero:
+                st.caption("⚠️ " + t("0 条的 sheet（已跳过）: ") + "、".join(_zero))
+            if not _allq.empty and st.button(t("✅ 全部写入报价库"), key="sq_multi_write"):
+                _ensure_suppliers(_allq["supplier_name"].tolist())
+                _params = [
+                    (str(_r["supplier_name"]).strip(), str(_r["jan"]).strip(),
+                     _r.get("item_name"), sc_num(_r.get("price")),
+                     sc_num(_r.get("order_lot")), _mdate.isoformat(), "excel")
+                    for _, _r in _allq.iterrows()
+                    if str(_r.get("supplier_name", "")).strip() and str(_r.get("jan", "")).strip()
+                ]
+                conn.executemany(
+                    "INSERT INTO sourcing.supplier_quote "
+                    "(supplier_name, jan, item_name, price, order_lot, quote_date, source) "
+                    "VALUES (?,?,?,?,?,?,?)", _params)
+                # 注文最低金額（供货商级起訂金額）→ supplier 主档（未设的才填，不覆盖手动）
+                _ma = _allq.copy()
+                _ma["min_order_amount"] = pd.to_numeric(_ma["min_order_amount"], errors="coerce")
+                for _sup, _amt in _ma.dropna(subset=["min_order_amount"]).groupby(
+                        "supplier_name")["min_order_amount"].max().items():
+                    conn.execute(
+                        "UPDATE sourcing.supplier SET min_order_amount=? "
+                        "WHERE supplier_name=? AND (min_order_amount IS NULL OR min_order_amount=0)",
+                        (float(_amt), str(_sup)))
+                conn.commit()
+                st.success(t("✅ 已写入 {n} 条报价 · 起訂金額已回填供货商主档").format(n=len(_params)))
+
+    st.divider()
     st.markdown("##### " + t("🌱 从 NST PO 实绩导入报价（种子）"))
     st.caption(t("用 po_item_supplier_monthly 每个 仕入先×JAN 的最新月加重平均単価 作为一条 source=po 报价。"))
     if st.button(t("从 PO 实绩导入/刷新"), key="sq_seed_po"):

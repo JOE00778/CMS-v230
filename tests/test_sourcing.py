@@ -100,3 +100,43 @@ def test_normalize_upload_missing_required():
     df = pd.DataFrame([{"商品名": "x", "納期": 5}])
     out, missing = sc.normalize_upload(df)
     assert set(missing) == {"supplier_name", "jan", "price"}
+
+
+# ---- 仕入先管理リスト 多供货商抽取 ----
+def _vendor_raw():
+    return pd.DataFrame([
+        [None, "商品名", "単価", "ロット", None, "注文最低金額"],
+        ["4900001000017", "商品A", "680", "144", None, "50000"],
+        ["4900002000024", "商品B", "￥1,001", "36", None, "50000"],
+        ["bad", "ゴミ行", "x", "x", None, "x"],
+        ["4900001000017", "商品A重複", "999", "144", None, "50000"],  # 同JAN→先頭優先
+    ])
+
+
+def test_parse_vendor_sheet_basic():
+    out = sc.parse_vendor_sheet("Maple", _vendor_raw())
+    assert list(out["jan"]) == ["4900001000017", "4900002000024"]  # bad 行除外·重複除外
+    r0 = out.iloc[0]
+    assert r0["supplier_name"] == "Maple" and r0["price"] == 680.0
+    assert r0["order_lot"] == 144.0 and r0["min_order_amount"] == 50000.0
+    assert out.iloc[1]["price"] == 1001.0  # ￥, カンマ清洗
+
+
+def test_price_priority_prefers_mitumori():
+    raw = pd.DataFrame([
+        ["JAN", "商品名", "希望納価", "御見積価格", "ロット"],
+        ["4900001000017", "X", "873", "1001", "60"],
+    ])
+    out = sc.parse_vendor_sheet("NEW WIND", raw)
+    assert out.iloc[0]["price"] == 1001.0  # 御見積 > 希望納価
+
+
+def test_extract_skips_data_sheets():
+    sheets = {
+        "Maple": _vendor_raw(),
+        "SUPABASE用": _vendor_raw(),      # data sheet → skip
+        "一元 Data12.4更新": _vendor_raw(),  # data sheet → skip
+    }
+    allq, counts = sc.extract_vendor_quotes(sheets)
+    assert set(allq["supplier_name"]) == {"Maple"}
+    assert "SUPABASE用" not in counts and "一元 Data12.4更新" not in counts

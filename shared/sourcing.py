@@ -116,3 +116,128 @@ def normalize_upload(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
             out[std] = df[hit]
     missing = [c for c in ("supplier_name", "jan", "price") if c not in out.columns]
     return out, missing
+
+
+# ============================================================
+# 仕入先管理リスト.xlsx 多供货商一括抽取
+#   各仕入先 sheet（1 sheet=1 仕入先）: JAN / 商品名 / 見積価格 / ロット / 注文最低金額。
+#   data sheet（集計/マスタ）は除外。Boss 2026-06-22。
+# ============================================================
+import re as _re
+
+# 価格は優先度順（御見積=実報価 > 見積 > 単価 > 卸 > 納価 > 価格 > 希望納価=目標値は最後）
+_PRICE_KW = ["御見積", "見積", "単価", "卸", "納価", "価格", "希望納価"]
+_LOT_KW = ["発注ロット", "ロット", "ケース入数", "入数"]
+_MIN_KW = ["注文最低", "最低金額", "起訂", "最低発注"]
+_NAME_KW = ["商品名", "品名", "display"]
+_JAN_HDR = ["jan", "本地sku", "商品コード", "商品コ-ド", "sku"]
+_JAN_RE = _re.compile(r"^\d{8,13}$")
+
+# 报价ではない集計/マスタ sheet（仕入先扱いしない）
+DATA_SHEETS = {
+    "仕入先-原価_AB類", "仕入先_原価_C類", "AB商品进货周期", "SUPABASE用",
+}
+_DATA_PREFIX = ("FB_アイテム別売上", "一元 Data", "NEW WIND ")  # 前方一致で除外するもの
+
+
+def _find_col(header: list[str], kws: list[str]):
+    """header(小写化済み list)から kws 優先度順で最初にヒットした列 index。無→None。"""
+    for kw in kws:
+        for i, h in enumerate(header):
+            if kw in h:
+                return i
+    return None
+
+
+def parse_vendor_sheet(supplier_name: str, raw: pd.DataFrame) -> pd.DataFrame:
+    """1 仕入先 sheet（header=None で読んだ生 DataFrame）→ 标准报价行。
+
+    戻り値列: supplier_name, jan, item_name, price, order_lot, min_order_amount。
+    抽けなければ空 DataFrame。
+    """
+    _cols = ["supplier_name", "jan", "item_name", "price", "order_lot", "min_order_amount"]
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=_cols)
+    # 表头行 = 「商品名」を含む最初の行（無ければ 0 行目）
+    hr = 0
+    for r in range(min(8, len(raw))):
+        if any("商品名" in str(x) for x in raw.iloc[r].tolist()):
+            hr = r
+            break
+    header = [str(x).strip().lower() for x in raw.iloc[hr].tolist()]
+    body = raw.iloc[hr + 1:]
+    # JAN 列：表头名优先、なければデータが JAN パターンの列
+    jan_col = _find_col(header, _JAN_HDR)
+    if jan_col is None:
+        for ci in range(min(5, raw.shape[1])):
+            vals = body.iloc[:, ci].dropna().astype(str).str.strip()
+            if len(vals) and vals.str.match(_JAN_RE).mean() > 0.5:
+                jan_col = ci
+                break
+    price_col = _find_col(header, _PRICE_KW)
+    if jan_col is None or price_col is None:
+        return pd.DataFrame(columns=_cols)
+    name_col = _find_col(header, _NAME_KW)
+    lot_col = _find_col(header, _LOT_KW)
+    min_col = _find_col(header, _MIN_KW)
+
+    rows = []
+    for _, r in body.iterrows():
+        jan = str(r.iloc[jan_col]).strip() if jan_col < len(r) else ""
+        if not _JAN_RE.match(jan):
+            continue
+        price = parse_peso_like(r.iloc[price_col]) if price_col < len(r) else None
+        if price is None:
+            continue
+        rows.append({
+            "supplier_name": supplier_name,
+            "jan": jan,
+            "item_name": (str(r.iloc[name_col]).strip()
+                          if name_col is not None and name_col < len(r) else None),
+            "price": price,
+            "order_lot": parse_peso_like(r.iloc[lot_col]) if lot_col is not None and lot_col < len(r) else None,
+            "min_order_amount": (parse_peso_like(r.iloc[min_col])
+                                 if min_col is not None and min_col < len(r) else None),
+        })
+    out = pd.DataFrame(rows, columns=_cols)
+    if not out.empty:
+        out = out.drop_duplicates(subset=["jan"], keep="first").reset_index(drop=True)
+    return out
+
+
+def parse_peso_like(v):
+    """'1,001' / '￥680' / 680 / '' → float。異常→None。（数値清洗·汎用）"""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = _re.sub(r"[^\d.\-]", "", str(v))
+    if s in ("", "-", ".", "-."):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def is_data_sheet(name: str) -> bool:
+    return name in DATA_SHEETS or any(name.startswith(p) for p in _DATA_PREFIX)
+
+
+def extract_vendor_quotes(sheets: dict) -> tuple[pd.DataFrame, dict]:
+    """{sheet_name: 生DataFrame(header=None)} → (全报价 DataFrame, {sheet:件数})。
+
+    data sheet は自動除外。各仕入先 sheet を parse_vendor_sheet で処理。
+    """
+    parts, counts = [], {}
+    for name, raw in sheets.items():
+        if is_data_sheet(name):
+            continue
+        q = parse_vendor_sheet(name, raw)
+        counts[name] = len(q)
+        if not q.empty:
+            parts.append(q)
+    allq = (pd.concat(parts, ignore_index=True) if parts
+            else pd.DataFrame(columns=["supplier_name", "jan", "item_name",
+                                       "price", "order_lot", "min_order_amount"]))
+    return allq, counts
