@@ -19,7 +19,7 @@ import altair as alt
 import streamlit as st
 
 from shared.db import get_connection
-from shared.owners import classify_market
+from shared.owners import classify_market, classify_owner, OWNER_EXCLUDED
 from shared.i18n import lang_selector, t, get_lang
 
 st.set_page_config(page_title=t("销售数据查询"), page_icon="📊", layout="wide")
@@ -166,7 +166,14 @@ def _render_sales_delta(_period_kind, _key):
         (_prev_s.isoformat(), _cur_e.isoformat()),
     ).fetchall()]
     _ALLW = _L("（全部店铺）", "（全店舗）")
-    _shop_sel = st.selectbox(_L("店铺", "店舗"), [_ALLW] + _shops, key=_key + "_shop")
+    _ALLO = _L("（全部负责人）", "（全担当者）")
+    _owner_opts = sorted({classify_owner(_s) for _s in _shops} - {OWNER_EXCLUDED})
+    _oc, _shc = st.columns(2)
+    _owner_sel = _oc.selectbox(_L("店铺负责人", "担当者"), [_ALLO] + _owner_opts,
+                               key=_key + "_owner")
+    _shop_choices = ([_s for _s in _shops if classify_owner(_s) == _owner_sel]
+                     if _owner_sel != _ALLO else _shops)
+    _shop_sel = _shc.selectbox(_L("店铺", "店舗"), [_ALLW] + _shop_choices, key=_key + "_shop")
     _sql = (
         "SELECT s.shop AS shop, MIN(im.jan) AS jan, MIN(im.display_name) AS name, "
         "MIN(im.item_rank) AS item_rank, "
@@ -188,6 +195,13 @@ def _render_sales_delta(_period_kind, _key):
     if _shop_sel != _ALLW:
         _sql += "AND s.shop = ? "
         _params.append(_shop_sel)
+    elif _owner_sel != _ALLO:
+        _osh = [_s for _s in _shops if classify_owner(_s) == _owner_sel]
+        if _osh:
+            _sql += "AND s.shop IN (" + ",".join(["?"] * len(_osh)) + ") "
+            _params.extend(_osh)
+        else:
+            _sql += "AND 1=0 "
     _sql += "GROUP BY s.shop, s.item_internal_id"
     try:
         _wrows = _wconn.execute(_sql, tuple(_params)).fetchall()
@@ -360,10 +374,16 @@ def _render_sales_delta(_period_kind, _key):
         "SELECT DISTINCT maker FROM nst.item_master_raw "
         "WHERE maker IS NOT NULL AND maker <> '' ORDER BY maker"
     ).fetchall()]
-    _f1, _f2, _f3, _f4 = st.columns(4)
+    _ALLO_T = _L("（全部负责人）", "（全担当者）")
+    _owner_opts_t = sorted({classify_owner(_s) for _s in _all_shops} - {OWNER_EXCLUDED})
+    _f0, _f1, _f2, _f3, _f4 = st.columns(5)
+    _f_owner = _f0.selectbox(_L("负责人", "担当者"), [_ALLO_T] + _owner_opts_t,
+                             key=_key + "_towner")
+    _shop_opts_t = ([_s for _s in _all_shops if classify_owner(_s) == _f_owner]
+                    if _f_owner != _ALLO_T else _all_shops)
     _f_market = _f1.multiselect(_L("市场", "市場"), _markets, key=_key + "_tmarket",
                                 placeholder=_L("全部", "全件"))  # 空選＝不限
-    _f_shop = _f2.selectbox(_L("店铺", "店舗"), [_ALL] + _all_shops, key=_key + "_tshop")
+    _f_shop = _f2.selectbox(_L("店铺", "店舗"), [_ALL] + _shop_opts_t, key=_key + "_tshop")
     _f_maker = _f3.multiselect(_L("品牌", "メーカー"), _all_makers, key=_key + "_tmaker",
                                placeholder=_L("全部", "全件"))  # 空選＝不限
     _f_jan = _f4.text_input(
@@ -371,6 +391,13 @@ def _render_sales_delta(_period_kind, _key):
         placeholder=_L("JAN 部分一致（留空=不限）", "JAN 部分一致（空欄=指定なし）"),
     )
     _wc, _wp, _caps = [], [], []
+    if _f_owner != _ALLO_T and _f_shop == _ALL:
+        _osh_t = [_s for _s in _all_shops if classify_owner(_s) == _f_owner]
+        if _osh_t:
+            _wc.append("s.shop IN (" + ",".join(["?"] * len(_osh_t)) + ")")
+            _wp.extend(_osh_t); _caps.append(_f_owner)
+        else:
+            _wc.append("1=0")
     if _f_market:
         _mshops = [_s for _s in _all_shops if _market_of.get(_s) in _f_market]
         if _mshops:
