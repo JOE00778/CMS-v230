@@ -39,7 +39,7 @@ _ROSTER_PATH = Path(__file__).resolve().parent.parent / "data" / "files" / "infl
 _DEFAULT_ROSTER = [
     {"name": "Bella", "wage": 2.0, "payee": "Anabel Magsipoc Malinog",
      "keywords": ["bella", "bell", "bel"]},
-    {"name": "Charm", "wage": 1.5, "payee": "Charlime Revillame",
+    {"name": "Charm", "wage": 1.5, "payee": "Charlime Villanueva",
      "keywords": ["charm"]},
 ]
 
@@ -95,18 +95,16 @@ with st.expander(t("👥 网红名册（人 / 时薪 / 收款人 / 匹配关键�
 # ============================================================
 # 参数（当時状況で手动）
 # ============================================================
-st.markdown("##### " + t("⚙️ 参数（汇率等当時状況で手动）"))
-_rc1, _rc2, _rc3 = st.columns(3)
-_php_usd = _rc1.number_input(t("Rate：peso/$（手动）"), 1.0, 500.0, 61.49, 0.01,
-                             key="w_rate", format="%.2f")
-_usd_jpy = _rc2.number_input(t("USD→JPY"), 1.0, 1000.0, 155.0, 1.0, key="w_jpy", format="%.2f")
-_fee = _rc3.number_input(t("含手续费倍率"), 1.0, 2.0, 1.045, 0.001, key="w_fee", format="%.3f")
+st.markdown("##### " + t("⚙️ 参数（Rate 当時状況で手动）"))
+_USD_JPY, _FEE = 155.0, 1.045  # 固定：USD→JPY / 含手续费倍率
+_php_usd = st.number_input(t("Rate：peso/$（手动）"), 1.0, 500.0, 61.49, 0.01,
+                           key="w_rate", format="%.2f")
 with st.expander(t("阶梯抽成参数（默认 20万peso 阈值 · 1% / 1.5%）")):
     _tc1, _tc2, _tc3 = st.columns(3)
     _th = _tc1.number_input(t("阈值(peso)"), 0.0, 1e8, 200000.0, 10000.0, key="w_th")
     _r1 = _tc2.number_input(t("阈值以内 %"), 0.0, 100.0, 1.0, 0.1, key="w_r1") / 100.0
     _r2 = _tc3.number_input(t("阈值以上 %"), 0.0, 100.0, 1.5, 0.1, key="w_r2") / 100.0
-_params = iw.WageParams(php_usd=_php_usd, usd_jpy=_usd_jpy, fee=_fee,
+_params = iw.WageParams(php_usd=_php_usd, usd_jpy=_USD_JPY, fee=_FEE,
                         tier_threshold=_th, tier1_rate=_r1, tier2_rate=_r2)
 
 # ============================================================
@@ -176,10 +174,14 @@ _unmatched = sorted(raw.loc[raw["_who"].isna(), "直播名称"].astype(str).uniq
 _assign: dict[str, str] = {}
 if _unmatched:
     st.markdown("##### ⚠️ " + t("未匹配直播（手动指派给网红）"))
-    st.caption(t("这些直播名称没带可识别的网红标识，请逐个指派；不指派则不计入工资。"))
+    st.caption(t("这些直播没带可识别的网红标识。看下方每场明细判断是谁，再指派；不指派则不计入。"))
+    _det_cols = [c for c in ["直播开始时间", "时长", "订单数(已确认订单)",
+                             "销售金额(已确认订单)"] if c in raw.columns]
     for _i, _nm in enumerate(_unmatched):
-        _cnt = int((raw["直播名称"].astype(str) == _nm).sum())
-        _sel = st.selectbox(f"{_nm}　({_cnt} 场)", [_SKIP] + _names, key=f"assign_{_i}")
+        _sub = raw[raw["直播名称"].astype(str) == _nm]
+        st.markdown(f"**{_nm}**　({len(_sub)} 场)")
+        st.dataframe(_sub[_det_cols], hide_index=True, use_container_width=True)
+        _sel = st.selectbox(t("↑ 指派给"), [_SKIP] + _names, key=f"assign_{_i}")
         if _sel != _SKIP:
             _assign[_nm] = _sel
     if _assign:
@@ -220,7 +222,26 @@ _k4.metric(t("含手续费 合计(¥)"), f"¥{_rdf['total_fee_jpy'].sum():,.0f}"
 if _n_unassigned:
     st.caption("⚠️ " + t("有 {n} 场未指派、未计入工资").format(n=_n_unassigned))
 
-st.markdown("##### " + t("💰 工资汇总"))
+# ---- 業績報告（直接表示·复制可）----
+_month_lbl = ""
+try:
+    _month_lbl = f"{int(str(raw['数据期间'].dropna().iloc[0]).split('/')[0].strip())}月"
+except Exception:
+    _month_lbl = ""
+_lines = [f"{_month_lbl}直播业绩", "", "ライブ実績："]
+for _, _r in _rdf.iterrows():
+    _full = _r["payee"] or _r["who"]
+    _lines.append(f"{_full}（{_r['who']}）　ライブ時間：{_r['hours']:.2f}時間　"
+                  f"売上：{int(round(_r['sales']))} peso")
+_lines += ["", "給料振込："]
+for _, _r in _rdf.iterrows():
+    _full = _r["payee"] or _r["who"]
+    _lines.append(f"{_full}（{_r['who']}）")
+    _lines.append(f"　振込：＄{_r['total_fee_usd']:.0f}（日本円：¥{_r['total_fee_jpy']:,.0f}）")
+st.markdown("##### " + t("📋 工资报告（可复制）"))
+st.code("\n".join(_lines), language=None)
+
+st.markdown("##### " + t("💰 工资汇总（明细）"))
 _disp = pd.DataFrame({
     t("网红"): _rdf["who"].tolist(),
     t("振込先"): _rdf["payee"].tolist(),
@@ -236,9 +257,6 @@ _disp = pd.DataFrame({
     t("含手续费(¥)"): [f"¥{x:,.0f}" for x in _rdf["total_fee_jpy"]],
 })
 html_table(_disp)
-st.download_button(
-    t("📥 工资表 CSV 下载"), _disp.to_csv(index=False).encode("utf-8-sig"),
-    file_name="influencer_wage.csv", mime="text/csv", key="wage_csv")
 
 # 各人 計算表 風 明細
 st.markdown("##### " + t("🧾 各人明细"))
@@ -249,9 +267,9 @@ for _, _r in _rdf.iterrows():
             f"→ {t('給与')}: **${_r['salary_usd']:,.0f}**\n"
             f"- {t('已确认销售额')}: **₱{_r['sales']:,.0f}** → {t('阶梯抽成')}: "
             f"**₱{_r['incentive_peso']:,.0f}** ÷ {_php_usd} = **${_r['incentive_usd']:,.2f}**\n"
-            f"- Total: **${_r['total_usd']:,.2f}** → {t('含手续费')}(×{_fee}): "
+            f"- Total: **${_r['total_usd']:,.2f}** → {t('含手续费')}(×{_FEE}): "
             f"**${_r['total_fee_usd']:,.2f}**\n"
-            f"- {t('日本円')}(×{_usd_jpy:g}): **¥{_r['total_jpy']:,.0f}** ／ "
+            f"- {t('日本円')}(×{_USD_JPY:g}): **¥{_r['total_jpy']:,.0f}** ／ "
             f"{t('含手续费')}: **¥{_r['total_fee_jpy']:,.0f}**\n"
             f"- {t('场次')}: {int(_r['sessions'])} ・ {t('场均销售额')}: "
             f"₱{(_r['sales'] / _r['sessions'] if _r['sessions'] else 0):,.0f}"
