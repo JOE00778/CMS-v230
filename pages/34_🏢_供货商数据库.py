@@ -1,10 +1,10 @@
-"""模块 #34 供货商数据库 · 仕入先比価 / 采购决策.
+"""模块 #34 供货商数据库 · 供货商比价 / 采购决策.
 
-报价(supplier_quote·append 留历史)を貯め、JAN ごとに最新报价を綜合加权(価格/納期/
-预付/起訂量)して「どの仕入先から買うのが最合理か」を判定する。新报价は上传で自動累積。
+报价(supplier_quote·append 留历史)を貯め、JAN ごとに最新报价を綜合加权(价格/纳期/
+预付/起订量)して「どの仕入先から買うのが最合理か」を判定する。新报价は上传で自動累積。
 
 データ: PG sourcing schema（本ページが idempotent 建表）。
-  sourcing.supplier        供货商主档（起訂金額/納期/预付/启用）
+  sourcing.supplier        供货商主档（起订金额/纳期/预付/启用）
   sourcing.supplier_quote  报价（supplier×jan×price×moq×lot×lead×quote_date·append）
 ロジック: shared/sourcing.py（純関数·tests/test_sourcing.py）。Boss 2026-06-22。
 """
@@ -28,9 +28,9 @@ inject_theme()
 lang_selector()
 conn = get_connection()
 
-st.title(t("🏢 供货商数据库（仕入先比価 / 采购决策）"))
+st.title(t("🏢 供货商数据库（供货商比价 / 采购决策）"))
 st.caption(t(
-    "报价累积(留历史) → 每个 JAN 取最新报价 → 价格/納期/预付/起訂量 综合加权 → "
+    "报价累积(留历史) → 每个 JAN 取最新报价 → 价格/纳期/预付/起订量 综合加权 → "
     "判断从哪个供货商采购最合理。新报价上传即自动增加/更新。"
 ))
 
@@ -115,9 +115,9 @@ tab_dec, tab_list, tab_up, tab_sup = st.tabs(
 # ============================================================
 with tab_up:
     st.markdown("##### " + t("📤 上传报价表"))
-    st.caption(t("列名自动识别(仕入先/供货商, 本地SKU/JAN, 仕入金額/采购价, 発注ロット, 起訂量, 納期)。"))
+    st.caption(t("列名自动识别(供货商, 本地SKU/JAN, 仕入金额/采购价, 订货批量, 起订量, 纳期)。"))
     _up = st.file_uploader(t("报价文件（CSV / Excel）"), type=["csv", "xlsx"], key="sq_up")
-    _qdate = st.date_input(t("報価日（整批适用）"), value=dt.date.today(), key="sq_date")
+    _qdate = st.date_input(t("报价日（整批适用）"), value=dt.date.today(), key="sq_date")
     if _up is not None:
         try:
             _raw = (pd.read_csv(io.BytesIO(_up.read()), dtype=str, keep_default_na=False)
@@ -163,9 +163,9 @@ with tab_up:
 
     st.divider()
     st.markdown("##### " + t("📚 一键导入 仕入先管理リスト.xlsx（多供货商）"))
-    st.caption(t("上传那个多 sheet 的 仕入先管理リスト → 自动逐供货商抽取 JAN/见积价/ロット/起訂金額。"))
+    st.caption(t("上传那个多 sheet 的 仕入先管理リスト → 自动逐供货商抽取 JAN/见积价/批量/起订金额。"))
     _ml = st.file_uploader(t("仕入先管理リスト（.xlsx）"), type=["xlsx"], key="sq_multi")
-    _mdate = st.date_input(t("報価日（整批适用）"), value=dt.date.today(), key="sq_mdate")
+    _mdate = st.date_input(t("报价日（整批适用）"), value=dt.date.today(), key="sq_mdate")
     if _ml is not None:
         try:
             _xls = pd.ExcelFile(io.BytesIO(_ml.read()))
@@ -197,7 +197,7 @@ with tab_up:
                     "INSERT INTO sourcing.supplier_quote "
                     "(supplier_name, jan, item_name, price, order_lot, quote_date, source) "
                     "VALUES (?,?,?,?,?,?,?)", _params)
-                # 注文最低金額（供货商级起訂金額）→ supplier 主档（未设的才填，不覆盖手动）
+                # 注文最低金额（供货商级起订金额）→ supplier 主档（未设的才填，不覆盖手动）
                 _ma = _allq.copy()
                 _ma["min_order_amount"] = pd.to_numeric(_ma["min_order_amount"], errors="coerce")
                 for _sup, _amt in _ma.dropna(subset=["min_order_amount"]).groupby(
@@ -207,11 +207,11 @@ with tab_up:
                         "WHERE supplier_name=? AND (min_order_amount IS NULL OR min_order_amount=0)",
                         (float(_amt), str(_sup)))
                 conn.commit()
-                st.success(t("✅ 已写入 {n} 条报价 · 起訂金額已回填供货商主档").format(n=len(_params)))
+                st.success(t("✅ 已写入 {n} 条报价 · 起订金额已回填供货商主档").format(n=len(_params)))
 
     st.divider()
     st.markdown("##### " + t("🌱 从 NST PO 实绩导入报价（种子）"))
-    st.caption(t("用 po_item_supplier_monthly 每个 仕入先×JAN 的最新月加重平均単価 作为一条 source=po 报价。"))
+    st.caption(t("用 po_item_supplier_monthly 每个 供货商×JAN 的最新月加重平均单价 作为一条 source=po 报价。"))
     if st.button(t("从 PO 实绩导入/刷新"), key="sq_seed_po"):
         _po = _read(
             "SELECT q.vendor_name AS supplier_name, q.jan, q.display_name AS item_name, "
@@ -241,7 +241,7 @@ with tab_up:
 # Tab：供货商主档
 # ============================================================
 with tab_sup:
-    st.markdown("##### " + t("🏢 供货商主档（起訂金額 / 納期 / 预付 / 启用）"))
+    st.markdown("##### " + t("🏢 供货商主档（起订金额 / 纳期 / 预付 / 启用）"))
     # 把报价里出现但主档没有的供货商补进来
     _seen = _read("SELECT DISTINCT supplier_name FROM sourcing.supplier_quote")
     if not _seen.empty:
@@ -258,9 +258,9 @@ with tab_sup:
             _sup_df, hide_index=True, use_container_width=True, key="sup_editor",
             column_config={
                 "supplier_name": st.column_config.TextColumn(t("供货商"), disabled=True),
-                "min_order_amount": st.column_config.NumberColumn(t("起訂金額(¥)"), format="%.0f"),
-                "default_lead_days": st.column_config.NumberColumn(t("納期(日)"), format="%d"),
-                "is_prepay": st.column_config.CheckboxColumn(t("预付(現金払い)")),
+                "min_order_amount": st.column_config.NumberColumn(t("起订金额(¥)"), format="%.0f"),
+                "default_lead_days": st.column_config.NumberColumn(t("纳期(日)"), format="%d"),
+                "is_prepay": st.column_config.CheckboxColumn(t("预付(现金支付)")),
                 "active": st.column_config.CheckboxColumn(t("启用")),
                 "note": st.column_config.TextColumn(t("备注")),
             })
@@ -287,9 +287,9 @@ with tab_sup:
 with tab_dec:
     _w1, _w2, _w3, _w4 = st.columns(4)
     _wp = _w1.slider(t("价格权重"), 0.0, 1.0, 0.70, 0.05, key="w_price")
-    _wl = _w2.slider(t("納期权重"), 0.0, 1.0, 0.10, 0.05, key="w_lead")
+    _wl = _w2.slider(t("纳期权重"), 0.0, 1.0, 0.10, 0.05, key="w_lead")
     _wpp = _w3.slider(t("预付权重(预付=扣分)"), 0.0, 1.0, 0.10, 0.05, key="w_prepay")
-    _wm = _w4.slider(t("起訂量权重"), 0.0, 1.0, 0.10, 0.05, key="w_moq")
+    _wm = _w4.slider(t("起订量权重"), 0.0, 1.0, 0.10, 0.05, key="w_moq")
     _weights = sc.Weights(price=_wp, lead=_wl, prepay=_wpp, moq=_wm)
 
     _q = _read(
@@ -328,22 +328,22 @@ with tab_dec:
         _show = _disp[["rec", "jan", "item_name", "supplier_name", "price", "moq",
                        "order_lot", "lead_days", "is_prepay", "score", "quote_date", "source"]].rename(
             columns={"rec": t("推荐"), "jan": t("JAN"), "item_name": t("商品名"),
-                     "supplier_name": t("供货商"), "price": t("采购价"), "moq": t("起訂量"),
-                     "order_lot": t("発注ロット"), "lead_days": t("納期(日)"),
+                     "supplier_name": t("供货商"), "price": t("采购价"), "moq": t("起订量"),
+                     "order_lot": t("订货批量"), "lead_days": t("纳期(日)"),
                      "is_prepay": t("预付"), "score": t("综合得分"),
-                     "quote_date": t("報価日"), "source": t("来源")})
+                     "quote_date": t("报价日"), "source": t("来源")})
         st.dataframe(_show, hide_index=True, use_container_width=True, height=560,
                      column_config={
                          t("采购价"): st.column_config.NumberColumn(format="¥%.2f"),
                          t("综合得分"): st.column_config.NumberColumn(format="%.3f"),
                      })
-        st.caption(t("得分越低越推荐 · 价格/納期/起訂量在同 JAN 内归一化 · 预付供货商按权重扣分"))
+        st.caption(t("得分越低越推荐 · 价格/纳期/起订量在同 JAN 内归一化 · 预付供货商按权重扣分"))
 
 # ============================================================
 # Tab：ABC 比价列表（ABC产品 × 各供货商报价 + 现在进货 + 最低价）
 # ============================================================
 with tab_list:
-    st.caption(t("ABC 等级产品 × 各供货商最新报价(宽表) + 现在进货価/直近発注数 + 最低価/最安供货商。"))
+    st.caption(t("ABC 等级产品 × 各供货商最新报价(宽表) + 现在进货价/最近订货数 + 最低价/最安供货商。"))
     _ranks = st.multiselect(t("等级"), ["Aランク", "Bランク", "Cランク"],
                             default=["Aランク", "Bランク", "Cランク"], key="abc_ranks")
     if not _ranks:
@@ -395,19 +395,19 @@ with tab_list:
         view = base[_order].sort_values(["item_rank", "save_vs_min"],
                                         ascending=[True, False], na_position="last")
         _ren = {"item_rank": t("等级"), "jan": t("JAN"), "display_name": t("商品名"),
-                "maker": t("メーカー"), "last_purchase_cost": t("现在进货価"),
-                "recent_qty": t("直近発注数"), "min_price": t("最低価"),
+                "maker": t("厂商"), "last_purchase_cost": t("现在进货价"),
+                "recent_qty": t("最近订货数"), "min_price": t("最低价"),
                 "cheapest_supplier": t("最安供货商"), "save_vs_min": t("现价-最低(可省)")}
         disp = view.rename(columns=_ren)
         st.dataframe(
             disp, hide_index=True, use_container_width=True, height=600,
             column_config={
-                t("现在进货価"): st.column_config.NumberColumn(format="¥%.0f"),
-                t("最低価"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("现在进货价"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("最低价"): st.column_config.NumberColumn(format="¥%.0f"),
                 t("现价-最低(可省)"): st.column_config.NumberColumn(format="¥%.0f"),
             })
         st.download_button(t("📥 ABC比价列表 CSV"),
                            disp.to_csv(index=False).encode("utf-8-sig"),
                            file_name="abc_supplier_compare.csv", mime="text/csv", key="abc_csv")
-        st.caption(t("现在进货価=NST 前回購入価格 · 最低価=各供货商最新报价最小 · "
-                     "可省=现在进货価−最低価(>0 值得换最安) · 後ろ列=各供货商报价"))
+        st.caption(t("现在进货价=NST 前回购入价格 · 最低价=各供货商最新报价最小 · "
+                     "可省=现在进货价−最低价(>0 值得换最安) · 后面列=各供货商报价"))
