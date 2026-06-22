@@ -495,6 +495,55 @@ with tab_shop:
     html_table(_disp(g, shop_cols, mom_prev=_prev_shop, dim="shop"))
     st.altair_chart(_hbar(g, "shop"), use_container_width=True)
 
+    st.divider()
+    # ── 単店の日次 粗利率トレンド（Boss 2026-06-22 依頼）──
+    #   月/市場フィルタは df 段階で適用済 · 店舗だけ選んで日次 粗利率曲線を見る。
+    _sub_hdr = ("🏪 単店の日次 粗利率トレンド" if get_lang() == "ja"
+                else "🏪 单店日次毛利率趋势")
+    st.markdown("##### " + _sub_hdr)
+    _shop_opts = g["shop"].tolist()  # gross_profit 降順（g は上で sort 済）
+    sel_shop = st.selectbox(_col("shop"), _shop_opts, key="shop_daily_sel")
+    _sdd = (df[df["shop"] == sel_shop]
+            .groupby("sale_date", as_index=False)
+            .agg(qty=("qty_sold", "sum"), revenue=("revenue", "sum"),
+                 gross_profit=("gross_profit", "sum"))
+            .sort_values("sale_date"))
+    _sdd["gross_margin"] = (
+        _sdd["gross_profit"] / _sdd["revenue"].where(_sdd["revenue"] != 0)
+    ).fillna(0) * 100
+    if _sdd.empty:
+        st.info(t("この条件のデータがありません"))
+    else:
+        _sc = _sdd.copy()
+        _sc["sale_date"] = pd.to_datetime(_sc["sale_date"])
+        _sc["margin_disp"] = _sc["gross_margin"].apply(lambda x: f"{x:.2f}%")
+        _sx = alt.X("sale_date:T", title=None,
+                    axis=alt.Axis(format="%-d日", labelAngle=0, tickCount="day"))
+        _mg_lbl = _col("gross_margin")
+        _stip = [
+            alt.Tooltip("sale_date:T", title=_col("sale_date"), format="%Y-%m-%d"),
+            alt.Tooltip("revenue:Q", title=_col("revenue"), format=",.0f"),
+            alt.Tooltip("gross_profit:Q", title=_col("gross_profit"), format=",.0f"),
+            alt.Tooltip("margin_disp:N", title=_mg_lbl),
+            alt.Tooltip("qty:Q", title=_col("qty"), format=",.0f"),
+        ]
+        # 月内日次推移 tab と同じ「透明縦ルール＋最近傍 hover」方式で線上以外でも tooltip。
+        _sbase = alt.Chart(_sc).encode(x=_sx)
+        _snear = alt.selection_point(nearest=True, on="pointerover",
+                                     fields=["sale_date"], empty=False)
+        _sline = _sbase.mark_line(point=True, color="#4F46E5").encode(
+            y=alt.Y("gross_margin:Q", title=_mg_lbl,
+                    scale=alt.Scale(zero=False)),  # 単店は 50-70% 外も有り得る→自動缩放
+        )
+        _srule = _sbase.mark_rule(color="#888").encode(
+            opacity=alt.condition(_snear, alt.value(0.35), alt.value(0)),
+            tooltip=_stip,
+        ).add_params(_snear)
+        _schart = (alt.layer(_sline, _srule).properties(height=300)
+                   .configure_axis(labelFontSize=_CHART_LABEL_FS,
+                                   titleFontSize=_CHART_TITLE_FS))
+        st.altair_chart(_schart, use_container_width=True)
+
 # ============================================================
 # Tab 2：市場別
 # ============================================================
