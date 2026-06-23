@@ -31,6 +31,7 @@ from shared.auth import require_password
 from shared.db import get_connection
 from shared.i18n import t, lang_selector
 from shared.theme import inject_theme
+from shared.jp_translit import to_english_title
 
 st.set_page_config(page_title=t("商品登录"), page_icon="📝", layout="wide")
 require_password()
@@ -50,6 +51,8 @@ tab_native = tab_item  # 保留旧变量名兼容下文
 
 NST_SHEET_NAME = "NetSuiteマスタ登録"
 JAN_COL_NAME = "JANコード"
+_NAME_COL = "アイテム名"
+_EN_TITLE_COL = "🔤 英文标题（可改）"  # 离线转写草稿 → JD 平台标题 / BM 英文名称
 
 
 def _parse_nst_xlsx(file) -> tuple[pd.DataFrame, list[str]]:
@@ -166,6 +169,12 @@ with tab_native:
 
         with get_connection() as conn:
             df = _augment_image_url(conn, df)
+        # 英文标题草稿（离线机械转写·可在表里改）→ JD「平台商品标题」/ BM「英文名称」
+        if _NAME_COL in df.columns:
+            df[_EN_TITLE_COL] = df[_NAME_COL].map(
+                lambda v: to_english_title(str(v)) if pd.notna(v) else "")
+        else:
+            df[_EN_TITLE_COL] = ""
 
         st.session_state["page15_df"] = df
         st.session_state["page15_warns"] = warns
@@ -187,8 +196,8 @@ with tab_native:
 
         st.subheader(t("📋 预览（可直接在表里补缺/修改）"))
 
-        # 移到首列：型番、アイテム名、JANコード（如果存在），其余按原序
-        priority = ["型番", "アイテム名", "JANコード"]
+        # 移到首列：型番、アイテム名、英文标题、JANコード（如果存在），其余按原序
+        priority = ["型番", "アイテム名", _EN_TITLE_COL, "JANコード"]
         cols_in_priority = [c for c in priority if c in df.columns]
         rest = [c for c in df.columns if c not in cols_in_priority]
         df_show = df[cols_in_priority + rest].copy()
@@ -196,6 +205,10 @@ with tab_native:
         col_config = {
             "_画像URL（参考·来自 image cache）": st.column_config.ImageColumn(
                 t("画像（参考）"), width="small"
+            ),
+            _EN_TITLE_COL: st.column_config.TextColumn(
+                t("🔤 英文标题（可改）"), width="medium",
+                help=t("离线转写草稿·可直接改·写入 JD平台商品标题 / BM英文名称"),
             ),
             "JANコード": st.column_config.TextColumn("JANコード", width="small"),
         }
@@ -247,6 +260,9 @@ with tab_native:
                     v = r.get(col)
                     if pd.notna(v) and str(v).strip() != "":
                         row[col] = v
+                _en = r.get(_EN_TITLE_COL)        # 英文标题（编辑后）→ JD/BM
+                if pd.notna(_en) and str(_en).strip():
+                    row["英文标题"] = str(_en).strip()
                 nst_rows.append(row)
                 jan = str(row.get(JAN_COL_NAME, "")).strip()
                 if jan and ref_col in edited.columns:

@@ -20,6 +20,8 @@ import datetime
 import io
 from typing import Iterable
 
+from shared.jp_translit import to_english_title
+
 # ───────────────────────── JD 商品信息 schema（新 单页基础商品导入·2026-06-23） ─────────────────────────
 # 源模板：Import-BasicGoods-SinglePage-Chinese.xlsx · sheet「商品信息」(75 列)
 # row1=分区标题（合并单元格·仅区首列有值）/ row2=列表头 / row3+=数据
@@ -270,7 +272,7 @@ def nst_to_jd_row(
     row[55] = jan                # col56 *商品条码
     row[56] = sales_channel      # col57 *销售渠道编码
     row[57] = platform_code      # col58 *平台商品编码
-    row[58] = ""                 # col59 *平台商品标题（英文·留空·用户后填）
+    row[58] = _g(nst_row, "英文标题") or to_english_title(name_ja)  # col59 平台商品标题(英文·离线转写草稿)
     return row
 
 
@@ -302,7 +304,7 @@ def nst_to_bm_row(
     row[27] = _num_or_blank(width)        # 宽(cm)
     row[28] = _num_or_blank(height)       # 高(cm)
     row[29] = name_ja                     # 中文名称（暂用日文）
-    row[30] = ""                          # 英文名称（留空）
+    row[30] = _g(nst_row, "英文标题") or to_english_title(name_ja)  # 英文名称(离线转写草稿)
     row[43] = image_url                   # 产品图片(URL)
     return row
 
