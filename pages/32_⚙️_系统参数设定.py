@@ -257,6 +257,8 @@ with tab4:
                     if getattr(res, "rowcount", 0):
                         removed += 1
             conn.commit()
+            from shared.cache import cached_df
+            cached_df.clear()  # 棚用途变 → 清缓存，page06 库存监控用途分类才会读最新
             st.success(t("✅ 已保存 · 有用途指定 {k} 棚 · 清除 {r} 棚").format(k=kept, r=removed))
             st.rerun()
 
@@ -354,6 +356,8 @@ with tab5:
                         "DELETE FROM nst.po_export_vendor WHERE vendor_id = %(vid)s",
                         {"vid": vid})
             conn.commit()
+            from shared.cache import cached_df
+            cached_df.clear()  # 白名单变 → 清查询缓存，page30 采购分析/在途 才会读最新
             st.success(t("✅ 已保存 · 白名单 {n} 家").format(n=kept))
             st.rerun()
 
@@ -376,6 +380,8 @@ with tab5:
                      "pp": bool(new_vpp)},
                 )
                 conn.commit()
+                from shared.cache import cached_df
+                cached_df.clear()
                 st.success(t("✅ 已加入：{n}").format(n=new_vname or new_vid))
                 st.rerun()
             else:
