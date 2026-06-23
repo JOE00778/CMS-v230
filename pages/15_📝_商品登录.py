@@ -120,7 +120,8 @@ with tab_native:
             "- **非模板列**：被自动忽略并提示（防止脏列污染 CSV）\n"
             "- **画像 URL**：自动从 nst.item_image_cache 按 JAN 取，参考列展示 + 自动填进 BM 图片URL\n"
             "- **一键打包 ZIP**：NetSuite CSV + JD.xlsx + BM.xlsx 三件一起出\n"
-            f"- **JD 默认值**：货主编码=`{JBM.DEFAULT_JD_CUSTOMER_CODE}` · 销售渠道=`{JBM.DEFAULT_JD_SALES_CHANNEL}` · 平台编码=`{JBM.DEFAULT_JD_PLATFORM_CODE}`（可在生成区域改）\n"
+            "- **JD 新模板**：单页「商品信息」(75 列·Import-BasicGoods-SinglePage)。自动填 客户SKU=JAN / 商品名称=日文名 / 件型=1 / 自带原包=1 / 商品条码=JAN / 销售渠道 / 平台编码；**平台商品标题(英文)留空待填**\n"
+            f"- **JD 默认值**：销售渠道=`{JBM.DEFAULT_JD_SALES_CHANNEL}` · 平台编码=`{JBM.DEFAULT_JD_PLATFORM_CODE}` · 货主ID 默认空（单货主不必填）\n"
             "- **BM 规则**：SPU=JAN · ERP 类目留空 · 英文名称留空（用户后填）"
         ))
 
@@ -214,9 +215,9 @@ with tab_native:
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             jd_customer_code = st.text_input(
-                t("JD *货主编码"),
-                value=JBM.DEFAULT_JD_CUSTOMER_CODE,
-                help=t("写入 JD xlsx 第 1 列，所有行同值"),
+                t("JD 货主ID（可空·单货主不必填）"),
+                value="",
+                help=t("写入「商品信息」col1 货主ID；单货主留空即可（与新模板样本一致）"),
             )
         with col_b:
             sales_channel = st.text_input(
