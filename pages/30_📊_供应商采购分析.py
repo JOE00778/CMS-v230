@@ -43,6 +43,21 @@ try:
 except Exception:
     conn.rollback()
 
+# 手動入荷予定日テーブル幂等自建（CMS 維護の手工注釈·NST へは回写しない·Boss 2026-06-23）
+#   line_id(= purchase_order_line.line_id) ごとに手動 ETA を保存。有効予定日 = COALESCE(手動, NST)。
+try:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS nst.po_line_eta ("
+        " line_id TEXT PRIMARY KEY,"
+        " po_number TEXT,"
+        " item_internal_id TEXT,"
+        " manual_eta DATE,"
+        " note TEXT,"
+        " updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+    conn.commit()
+except Exception:
+    conn.rollback()
+
 
 # 输出供应商名单 tab 已搬至「⚙️ 系统参数设定 → 🏢 输出供应商名单」(2026-05-27)
 
@@ -526,15 +541,19 @@ def _render_in_transit():
     wl = "JOIN nst.po_export_vendor ev ON ev.vendor_id = pol.vendor_id" if only_export else ""
     try:
         # 直接从 purchase_order_line 取（视图 po_open_lines 不含 rate/amount）
+        # line_id = 手動入荷予定日(nst.po_line_eta)の結合キー。有効予定日 = COALESCE(手動, NST)。
         df = _df(
-            "SELECT pol.item_internal_id, im.jan, pol.po_number, pol.vendor_name, pol.location, "
+            "SELECT pol.line_id, pol.item_internal_id, im.jan, pol.po_number, pol.vendor_name, pol.location, "
             "(pol.quantity - COALESCE(pol.quantity_received, 0)) AS qty_outstanding, "
-            "pol.trandate, pol.expected_receipt_date, pol.status, pol.vendor_id, "
+            "pol.trandate, pol.expected_receipt_date, eta.manual_eta, eta.note AS eta_note, "
+            "COALESCE(eta.manual_eta, pol.expected_receipt_date) AS eff_eta, "
+            "pol.status, pol.vendor_id, "
             "COALESCE(ev2.is_prepay, FALSE) AS is_prepay, "
             "((pol.quantity - COALESCE(pol.quantity_received, 0)) * pol.rate) AS amt_outstanding "
             "FROM nst.purchase_order_line pol "
             "LEFT JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
             "LEFT JOIN nst.po_export_vendor ev2 ON ev2.vendor_id = pol.vendor_id "
+            "LEFT JOIN nst.po_line_eta eta ON eta.line_id = pol.line_id "
             f"{wl} "
             "WHERE COALESCE(pol.closed, FALSE) = FALSE "
             "  AND (pol.quantity - COALESCE(pol.quantity_received, 0)) > 0"
@@ -555,6 +574,9 @@ def _render_in_transit():
     df["is_prepay"] = df["is_prepay"].astype(bool)
     df["trandate"] = pd.to_datetime(df["trandate"], errors="coerce").dt.date
     df["expected_receipt_date"] = pd.to_datetime(df["expected_receipt_date"], errors="coerce").dt.date
+    df["manual_eta"] = pd.to_datetime(df["manual_eta"], errors="coerce").dt.date
+    df["eff_eta"] = pd.to_datetime(df["eff_eta"], errors="coerce").dt.date
+    df["eta_note"] = df["eta_note"].fillna("").astype(str)
 
     # --- KPI ---
     k1, k2, k3, k4 = st.columns(4)
@@ -616,19 +638,98 @@ def _render_in_transit():
     elif pay_filter == t("预付款（現金払い）"):
         view = view[view["is_prepay"]]
 
+    view = view.copy()
     view["prepay_mark"] = view["is_prepay"].map(lambda b: "✓" if bool(b) else "")
-    disp = view[["trandate", "po_number", "vendor_name", "prepay_mark", "jan",
-                 "qty_outstanding", "amt_outstanding", "expected_receipt_date", "status"]].copy()
-    disp = disp.rename(columns={
-        "trandate": t("発注日"), "po_number": t("PO番号"), "vendor_name": t("仕入先"),
-        "prepay_mark": t("预付款"), "jan": t("JAN"), "qty_outstanding": t("在途残"),
-        "amt_outstanding": t("在途金额(¥)"), "expected_receipt_date": t("入荷予定日"),
-        "status": t("状態"),
+    view = view.sort_values("trandate", na_position="last").reset_index(drop=True)
+
+    st.caption(t("💡「手動入荷予定日」を直接編集 → 下の「💾 保存」。NST へは回写せず CMS にのみ保存。"
+                 "有効予定日 = 手動があればそれ、無ければ NST 予定日。"))
+
+    # 编辑用 df（line_id / item_internal_id は保存キー · column_order で非表示）
+    ed = pd.DataFrame({
+        "line_id": view["line_id"].astype(str),
+        "item_internal_id": view["item_internal_id"].astype(str),
+        "trandate": view["trandate"],
+        "po_number": view["po_number"],
+        "vendor_name": view["vendor_name"],
+        "prepay_mark": view["prepay_mark"],
+        "jan": view["jan"],
+        "qty_outstanding": view["qty_outstanding"],
+        "amt_outstanding": view["amt_outstanding"],
+        "expected_receipt_date": pd.to_datetime(view["expected_receipt_date"], errors="coerce"),
+        "manual_eta": pd.to_datetime(view["manual_eta"], errors="coerce"),
+        "eff_eta": pd.to_datetime(view["eff_eta"], errors="coerce"),
+        "eta_note": view["eta_note"],
+        "status": view["status"],
     })
-    disp = disp.sort_values(t("発注日"), na_position="last")
-    st.dataframe(disp, hide_index=True, use_container_width=True, height=480,
-                 column_config={t("在途金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
-    st.download_button(t("📥 CSV 下载"), disp.to_csv(index=False).encode("utf-8-sig"),
+
+    edited = st.data_editor(
+        ed, hide_index=True, use_container_width=True, height=480, key="intransit_editor",
+        column_order=["trandate", "po_number", "vendor_name", "prepay_mark", "jan",
+                      "qty_outstanding", "amt_outstanding", "expected_receipt_date",
+                      "manual_eta", "eff_eta", "eta_note", "status"],
+        column_config={
+            "trandate": st.column_config.DateColumn(t("発注日"), disabled=True, format="YYYY-MM-DD"),
+            "po_number": st.column_config.TextColumn(t("PO番号"), disabled=True),
+            "vendor_name": st.column_config.TextColumn(t("仕入先"), disabled=True),
+            "prepay_mark": st.column_config.TextColumn(t("预付款"), disabled=True),
+            "jan": st.column_config.TextColumn(t("JAN"), disabled=True),
+            "qty_outstanding": st.column_config.NumberColumn(t("在途残"), disabled=True),
+            "amt_outstanding": st.column_config.NumberColumn(t("在途金额(¥)"), format="¥%,.0f", disabled=True),
+            "expected_receipt_date": st.column_config.DateColumn(
+                t("NST予定日"), disabled=True, format="YYYY-MM-DD"),
+            "manual_eta": st.column_config.DateColumn(
+                t("手動入荷予定日"), format="YYYY-MM-DD",
+                help=t("ここに直接入力 → 保存で CMS に記録")),
+            "eff_eta": st.column_config.DateColumn(
+                t("有効入荷予定日"), disabled=True, format="YYYY-MM-DD",
+                help=t("手動があればそれ·無ければ NST。保存後に反映")),
+            "eta_note": st.column_config.TextColumn(t("備考")),
+            "status": st.column_config.TextColumn(t("状態"), disabled=True),
+        },
+    )
+
+    if st.button(t("💾 保存入荷予定日"), type="primary", key="intransit_save"):
+        _orig = ed.set_index("line_id")[["manual_eta", "eta_note"]]
+        up = dele = 0
+        for _, r in edited.iterrows():
+            lid = str(r["line_id"])
+            new_eta = pd.to_datetime(r["manual_eta"], errors="coerce")
+            new_note = ("" if pd.isna(r["eta_note"]) else str(r["eta_note"])).strip()
+            o = _orig.loc[lid] if lid in _orig.index else None
+            old_eta = pd.to_datetime(o["manual_eta"], errors="coerce") if o is not None else pd.NaT
+            old_note = ("" if o is None or pd.isna(o["eta_note"]) else str(o["eta_note"])).strip()
+            # 変化なし → skip
+            if (new_eta == old_eta or (pd.isna(new_eta) and pd.isna(old_eta))) and new_note == old_note:
+                continue
+            if pd.isna(new_eta) and new_note == "":
+                conn.execute("DELETE FROM nst.po_line_eta WHERE line_id = %(l)s", {"l": lid})
+                dele += 1
+            else:
+                conn.execute(
+                    "INSERT INTO nst.po_line_eta "
+                    "(line_id, po_number, item_internal_id, manual_eta, note, updated_at) "
+                    "VALUES (%(l)s, %(p)s, %(i)s, %(e)s, %(n)s, NOW()) "
+                    "ON CONFLICT (line_id) DO UPDATE SET "
+                    "manual_eta = EXCLUDED.manual_eta, note = EXCLUDED.note, "
+                    "po_number = EXCLUDED.po_number, item_internal_id = EXCLUDED.item_internal_id, "
+                    "updated_at = NOW()",
+                    {"l": lid, "p": str(r["po_number"]), "i": str(r["item_internal_id"]),
+                     "e": (None if pd.isna(new_eta) else new_eta.date()),
+                     "n": (new_note or None)},
+                )
+                up += 1
+        conn.commit()
+        from shared.cache import cached_df
+        cached_df.clear()  # ETA 変更 → 查询缓存清空·rerun で最新読込
+        st.success(t("✅ 保存しました（更新 {u} 件 · 解除 {d} 件）").format(u=up, d=dele))
+        st.rerun()
+
+    # CSV（有効予定日含む）
+    csv = edited[["trandate", "po_number", "vendor_name", "jan", "qty_outstanding",
+                  "amt_outstanding", "expected_receipt_date", "manual_eta", "eff_eta",
+                  "eta_note", "status"]].copy()
+    st.download_button(t("📥 CSV 下载"), csv.to_csv(index=False).encode("utf-8-sig"),
                        file_name="po_open_lines.csv", mime="text/csv", key="intransit_csv")
 
 
