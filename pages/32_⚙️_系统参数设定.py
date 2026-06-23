@@ -4,9 +4,9 @@
   - tab1 运营调整建议    → modules.operation_advice.settings
   - tab2 発注 AI v2       → shared.order_settings
   - tab3 NST vs JDL 对账   → shared.jdl_recon_settings（差异档位阈值）
-  - tab4 数据同步         → nst.pull_schedule + jdl.pull_schedule（手动触发）
-  - tab5 货架用途指定     → nst.bin_category (PG · 弁天棚号用途人工分类)
-  - tab6 输出供应商名单   → nst.po_export_vendor (PG · 仕入先白名单)
+  - tab4 货架用途指定     → nst.bin_category (PG · 弁天棚号用途人工分类)
+  - tab5 输出供应商名单   → nst.po_export_vendor (PG · 仕入先白名单)
+数据同步（NST/JDL 手动触发）已移除 → 统一到「📥 数据获取」页（功能重复·2026-06-23）。
 """
 from __future__ import annotations
 
@@ -43,13 +43,12 @@ def _df(sql: str, params=None) -> pd.DataFrame:
 st.title(t("⚙️ 系统参数设定"))
 st.caption(t("仅授权人员可改 · 各业务模块阈值/白名单独立 tab 管理"))
 
-tab1, tab2, tab3, tab4, tab5, tab_sync = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     t("💡 运营调整建议"),
     t("📦 発注 AI v2"),
     t("📊 NST vs JDL 账实对账"),
     t("🏷️ 货架用途指定"),
     t("🏢 输出供应商名单"),
-    t("🔄 数据同步"),
 ])
 
 # ============================================================
@@ -168,193 +167,6 @@ with tab3:
         + (t("百分比 ≤ {:.1f}%").format(_rp["minor_pct_threshold"])
            if _rp["minor_pct_threshold"] > 0 else t("百分比未启用"))
     )
-
-# ============================================================
-# tab_sync · 数据同步（NST / JDL 手动触发 · 各占 sub-tab）
-# 数据源：nst.pull_schedule + jdl.pull_schedule
-# 常驻 scheduler（nst_scheduler / jdl_scheduler）每分钟轮询，run_now=TRUE 立刻启动 daily_pull
-# ============================================================
-with tab_sync:
-    st.caption(t("分别触发 NST / JDL 拉取，1 分钟内常驻 scheduler 启动 daily_pull。"))
-
-    sync_nst, sync_jdl = st.tabs([t("🏬 NST（NetSuite）"), t("🚚 JDL（京东物流）")])
-
-    # ── NST 手動更新（复用 page 27 同款 nst.pull_schedule 逻辑） ──
-    with sync_nst:
-        _CAT_LABEL = {"basic": "📦 商品マスタ", "inventory": "🏬 在庫", "sales": "💰 売上"}
-        _FREQ_LABEL = {"daily": "毎日", "monthly": "毎月"}
-        try:
-            _nst_jobs = _df(
-                "SELECT job_key, category, frequency, run_time, run_now, "
-                "       last_run_at, last_status, description "
-                "FROM nst.pull_schedule WHERE enabled ORDER BY job_key"
-            )
-        except Exception as e:
-            st.error(t("⚠️ nst.pull_schedule 读取失败") + f"\n\n{e}")
-            _nst_jobs = pd.DataFrame()
-
-        if _nst_jobs.empty:
-            st.info(t("有效なジョブがありません"))
-        else:
-            for _, r in _nst_jobs.iterrows():
-                jk = str(r["job_key"])
-                cat = _CAT_LABEL.get(r["category"], r["category"])
-                freq = _FREQ_LABEL.get(r["frequency"], r["frequency"])
-                n1, n2, n3, n4 = st.columns([2.5, 2, 2, 1.5])
-                n1.markdown(f"**{cat}**  ·  {freq} {str(r['run_time'])[:5]} 自動")
-                if r.get("description"):
-                    n1.caption("📋 " + str(r["description"]))
-                n2.caption(t("上次同步") + ": " +
-                           (str(r["last_run_at"])[:16] if pd.notna(r["last_run_at"]) else "-"))
-                n3.caption(t("上次状态") + ": " +
-                           (str(r["last_status"]) if pd.notna(r["last_status"]) else "-"))
-                if r["run_now"]:
-                    n4.info(t("⏳ 实行待ち…"))
-                else:
-                    if n4.button(t("▶️ 今すぐ取得"), key=f"sys_nst_run_{jk}", type="primary"):
-                        try:
-                            conn.execute(
-                                "UPDATE nst.pull_schedule SET run_now=TRUE, updated_at=now() "
-                                "WHERE job_key=%(j)s", {"j": jk})
-                            conn.commit()
-                            st.success(t("{j} を予約しました（1分以内に実行）").format(j=jk))
-                            st.rerun()
-                        except Exception as e:
-                            conn.rollback()
-                            st.error(str(e))
-
-        st.divider()
-        with st.expander(t("⚙️ 编辑自动执行时间 / 启用状态"), expanded=False):
-            try:
-                _nst_all = _df(
-                    "SELECT job_key, category, frequency, enabled, run_time, run_day "
-                    "FROM nst.pull_schedule ORDER BY job_key"
-                )
-            except Exception as e:
-                st.error(str(e))
-                _nst_all = pd.DataFrame()
-            if not _nst_all.empty:
-                with st.form("nst_sched_form"):
-                    _new = {}
-                    for _, r in _nst_all.iterrows():
-                        jk = str(r["job_key"])
-                        cat = _CAT_LABEL.get(r["category"], r["category"])
-                        freq = _FREQ_LABEL.get(r["frequency"], r["frequency"])
-                        st.markdown(f"**{cat}**  ·  `{jk}`  ·  {freq}")
-                        c1, c2, c3 = st.columns([1.2, 2, 2])
-                        _en = c1.checkbox(t("启用"), value=bool(r["enabled"]),
-                                          key=f"sys_en_{jk}")
-                        _rt = c2.text_input(t("起动时刻 HH:MM"),
-                                            value=str(r["run_time"])[:5],
-                                            key=f"sys_rt_{jk}")
-                        _rd = None
-                        if r["frequency"] == "monthly":
-                            _rd = c3.number_input(
-                                t("执行日(1-28)"), 1, 28,
-                                value=int(r["run_day"] or 1),
-                                key=f"sys_rd_{jk}",
-                            )
-                        else:
-                            c3.caption("—")
-                        _new[jk] = (_en, _rt, _rd)
-                    if st.form_submit_button(t("💾 保存定时设定"), type="primary"):
-                        ok = 0
-                        for jk, (en, rt, rd) in _new.items():
-                            try:
-                                conn.execute(
-                                    "UPDATE nst.pull_schedule SET enabled=%(e)s, "
-                                    "run_time=%(t)s, run_day=%(d)s, updated_at=now() "
-                                    "WHERE job_key=%(j)s",
-                                    {"e": en, "t": rt.strip(), "d": rd, "j": jk},
-                                )
-                                ok += 1
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"{jk}: {e}")
-                        conn.commit()
-                        st.success(t("保存成功（{n} 件）").format(n=ok))
-                        st.rerun()
-
-    # ── JDL 立即同步（jdl.pull_schedule） ─────────────────────
-    with sync_jdl:
-        try:
-            _jdl_sched = _df(
-                "SELECT job_key, run_now, last_run_at, last_status, frequency, run_time, description "
-                "FROM jdl.pull_schedule ORDER BY job_key"
-            )
-        except Exception as e:
-            st.error(t("⚠️ jdl.pull_schedule 读取失败") + f"\n\n{e}")
-            _jdl_sched = pd.DataFrame()
-
-        if _jdl_sched.empty:
-            st.info(t("jdl.pull_schedule 未登录 job"))
-        else:
-            for _, r in _jdl_sched.iterrows():
-                jk = str(r["job_key"])
-                j1, j2, j3, j4 = st.columns([2.5, 2, 2, 1.5])
-                j1.markdown(f"**🚚 {jk}**  ·  {r['frequency']} {str(r['run_time'])[:5]} 自動")
-                if r.get("description"):
-                    j1.caption("📋 " + str(r["description"]))
-                j2.caption(t("上次同步") + ": " +
-                           (str(r["last_run_at"])[:16] if pd.notna(r["last_run_at"]) else "-"))
-                j3.caption(t("上次状态") + ": " +
-                           (str(r["last_status"]) if pd.notna(r["last_status"]) else "-"))
-                if r["run_now"]:
-                    j4.info(t("⏳ 同步中…"))
-                else:
-                    if j4.button(t("▶️ 立即同步"), key=f"sys_jdl_run_{jk}", type="primary"):
-                        try:
-                            conn.execute(
-                                "UPDATE jdl.pull_schedule SET run_now=TRUE, updated_at=now() "
-                                "WHERE job_key=%(j)s", {"j": jk})
-                            conn.commit()
-                            st.success(t("已触发 · 1 分钟内启动 daily_pull"))
-                            st.rerun()
-                        except Exception as e:
-                            conn.rollback()
-                            st.error(str(e))
-
-        st.divider()
-        with st.expander(t("⚙️ 编辑自动执行时间 / 启用状态"), expanded=False):
-            try:
-                _jdl_all = _df(
-                    "SELECT job_key, frequency, enabled, run_time "
-                    "FROM jdl.pull_schedule ORDER BY job_key"
-                )
-            except Exception as e:
-                st.error(str(e))
-                _jdl_all = pd.DataFrame()
-            if not _jdl_all.empty:
-                with st.form("jdl_sched_form"):
-                    _new_jdl = {}
-                    for _, r in _jdl_all.iterrows():
-                        jk = str(r["job_key"])
-                        st.markdown(f"**🚚 `{jk}`**  ·  {r['frequency']}")
-                        c1, c2 = st.columns([1.2, 2])
-                        _en = c1.checkbox(t("启用"), value=bool(r["enabled"]),
-                                          key=f"sys_jen_{jk}")
-                        _rt = c2.text_input(t("起动时刻 HH:MM"),
-                                            value=str(r["run_time"])[:5],
-                                            key=f"sys_jrt_{jk}")
-                        _new_jdl[jk] = (_en, _rt)
-                    if st.form_submit_button(t("💾 保存定时设定"), type="primary",
-                                              use_container_width=False):
-                        ok = 0
-                        for jk, (en, rt) in _new_jdl.items():
-                            try:
-                                conn.execute(
-                                    "UPDATE jdl.pull_schedule SET enabled=%(e)s, "
-                                    "run_time=%(t)s, updated_at=now() "
-                                    "WHERE job_key=%(j)s",
-                                    {"e": en, "t": rt.strip(), "j": jk},
-                                )
-                                ok += 1
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"{jk}: {e}")
-                        conn.commit()
-                        st.success(t("保存成功（{n} 件）").format(n=ok))
-                        st.rerun()
 
 # ============================================================
 # tab4 · 货架用途指定（弁天棚号 → 输出中国 / 返品 / 不良品 标签）

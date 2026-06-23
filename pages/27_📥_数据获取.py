@@ -45,6 +45,18 @@ _COL_LABELS = {
     "teigi_genka":        ("定义原价", "定義原価"),
     "arari":              ("毛利", "粗利"),
     "arari_rate":         ("毛利率", "粗利率"),
+    # 仕入先マスタ（vendor_master）
+    "vendor_code":        ("供货商代码", "仕入先コード"),
+    "company_name":       ("公司名", "会社名"),
+    "legal_name":         ("法人名", "正式名称"),
+    "payment_terms":      ("付款条件", "支払条件"),
+    "category":           ("分类", "カテゴリ"),
+    "email":              ("邮箱", "メール"),
+    "phone":              ("电话", "電話"),
+    "currency":           ("货币", "通貨"),
+    "is_inactive":        ("已停用", "無効"),
+    "comments":           ("备注", "備考"),
+    "date_created":       ("建立日", "登録日"),
 }
 
 
@@ -82,7 +94,8 @@ def _query(sql: str, params: tuple = ()):
 
 
 # カテゴリ / 頻度 の日本語ラベル（技術用語をプレーン表示に）
-_CAT_LABEL = {"basic": "📦 商品マスタ", "inventory": "🏬 在庫", "sales": "💰 売上"}
+_CAT_LABEL = {"basic": "📦 商品マスタ", "inventory": "🏬 在庫", "sales": "💰 売上",
+              "purchase": "🧾 発注書(PO)", "vendor": "🏭 仕入先マスタ"}
 _FREQ_LABEL = {"daily": "毎日", "monthly": "毎月"}
 
 
@@ -104,10 +117,11 @@ top_nst, top_jdl = st.tabs([
 # NST 顶层下嵌套现有 6 个子 tab
 # ──────────────────────────────────────────────────────────────
 with top_nst:
-    tab1, tab2, tab_sales, tab_sched, tab_manual, tab3 = st.tabs([
+    tab1, tab2, tab_sales, tab_vendor, tab_sched, tab_manual, tab3 = st.tabs([
         t("📦 商品マスタ"),
         t("🏬 在庫 (JD-物流-千葉)"),
         t("💰 売上"),
+        t("🏭 仕入先マスタ"),
         t("⏰ スケジュール設定"),
         t("▶️ 手動更新"),
         t("📜 取得履歴"),
@@ -289,6 +303,88 @@ with top_nst:
             else:
                 st.info(t("この月のデータがありません"))
     
+    # ============================================================
+    # Tab 仕入先マスタ nst.vendor_master（NetSuite Vendor ミラー）
+    #   表示 + 「今すぐ更新」(vendor_daily を run_now 予約)。pull_vendor が UPSERT。
+    # ============================================================
+    with tab_vendor:
+        st.caption(t("NetSuite の仕入先（Vendor）レコード。vendor_daily で日次更新 · 即時は下のボタン。"))
+
+        # 即時更新ボタン（vendor_daily を run_now 予約）
+        vjob, _ = _query(
+            "SELECT run_now, last_run_at, last_status FROM nst.pull_schedule "
+            "WHERE job_key='vendor_daily'"
+        )
+        vc1, vc2, vc3 = st.columns([2, 2, 2])
+        if vjob is not None and not vjob.empty:
+            _vr = vjob.iloc[0]
+            vc2.caption(t("前回更新") + ": " +
+                        (str(_vr["last_run_at"])[:16] if pd.notna(_vr["last_run_at"]) else "-"))
+            vc3.caption(t("前回状態") + ": " +
+                        (str(_vr["last_status"]) if pd.notna(_vr["last_status"]) else "-"))
+            if bool(_vr["run_now"]):
+                vc1.info(t("⏳ 更新待ち…"))
+            elif vc1.button(t("▶️ 今すぐ更新"), key="run_vendor", type="primary"):
+                try:
+                    conn.execute(
+                        "UPDATE nst.pull_schedule SET run_now=TRUE, updated_at=now() "
+                        "WHERE job_key='vendor_daily'")
+                    conn.commit()
+                    st.success(t("仕入先マスタ更新を予約しました（1分以内に実行）"))
+                    st.rerun()
+                except Exception as e:
+                    conn.rollback()
+                    st.error(str(e))
+        else:
+            vc1.warning(t("vendor_daily ジョブ未登録（017 マイグレーション未適用？）"))
+
+        st.divider()
+        vcnt, verr = _query(
+            "SELECT count(*) c, count(*) FILTER (WHERE NOT is_inactive) a, "
+            "max(pulled_at) p FROM nst.vendor_master"
+        )
+        if verr:
+            st.info(t("仕入先マスタ未取得（テーブル未作成 or 接続エラー）") + f"\n\n{verr}")
+        elif vcnt is not None and int(vcnt.iloc[0]["c"]) == 0:
+            st.info(t("仕入先マスタが空です。上の「今すぐ更新」で取得してください。"))
+        elif vcnt is not None:
+            _vrow = vcnt.iloc[0]
+            m1, m2, m3 = st.columns(3)
+            m1.metric(t("仕入先総数"), f"{int(_vrow['c']):,}")
+            m2.metric(t("有効"), f"{int(_vrow['a']):,}")
+            m3.caption(t("最終取得") + ": " +
+                       (str(_vrow["p"])[:16] if pd.notna(_vrow["p"]) else "-"))
+
+            vf1, vf2 = st.columns([2, 3])
+            _show_inactive = vf1.checkbox(t("無効も表示"), value=False, key="vendor_show_inactive")
+            vkw = vf2.text_input(t("仕入先名 / コード 検索"),
+                                 placeholder=t("会社名・コードの一部"), key="vendor_kw")
+            vwhere, vparams = [], []
+            if not _show_inactive:
+                vwhere.append("NOT is_inactive")
+            if vkw.strip():
+                vwhere.append("(vendor_code LIKE ? OR company_name LIKE ? OR legal_name LIKE ?)")
+                _vl = f"%{vkw.strip()}%"; vparams += [_vl, _vl, _vl]
+            vwhere_sql = (" WHERE " + " AND ".join(vwhere)) if vwhere else ""
+            vdf, verr2 = _query(
+                "SELECT vendor_code, company_name, legal_name, payment_terms, category, "
+                "currency, email, phone, is_inactive, comments, date_created "
+                f"FROM nst.vendor_master{vwhere_sql} ORDER BY vendor_code LIMIT 2000",
+                tuple(vparams),
+            )
+            if verr2:
+                st.error(verr2)
+            elif vdf is not None:
+                st.caption(t("表示件数: ") + f"{len(vdf):,}")
+                st.dataframe(
+                    vdf, use_container_width=True, height=560,
+                    column_config=_cc(
+                        "vendor_code", "company_name", "legal_name", "payment_terms",
+                        "category", "currency", "email", "phone", "is_inactive",
+                        "comments", "date_created",
+                    ),
+                )
+
     # ============================================================
     # Tab スケジュール設定 nst.pull_schedule（編集）
     # ============================================================
