@@ -307,8 +307,11 @@ with tab_dec:
         _rk = _read("SELECT jan, item_rank FROM nst.item_master_raw WHERE jan IS NOT NULL")
         _q = (_q.merge(_rk.drop_duplicates("jan"), on="jan", how="left")
               if not _rk.empty else _q.assign(item_rank=None))
+        # 等级が無い（NST 未登録）JAN は推奨対象外 → 常に除外
+        _q = _q[_q["item_rank"].notna()
+                & (_q["item_rank"].astype(str).str.strip() != "")]
         _rk_sel = st.multiselect(
-            t("等级（留空=全部）"), ["Aランク", "Bランク", "Cランク", "NEW", "取扱中止"],
+            t("等级（留空=全部有等级商品）"), ["Aランク", "Bランク", "Cランク", "NEW", "取扱中止"],
             default=["Aランク", "Bランク", "Cランク"], key="dec_rank")
         if _rk_sel:
             _q = _q[_q["item_rank"].isin(_rk_sel)]
