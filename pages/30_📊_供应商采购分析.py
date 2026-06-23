@@ -666,7 +666,7 @@ def _render_in_transit():
     edited = st.data_editor(
         ed, hide_index=True, use_container_width=True, height=480, key="intransit_editor",
         column_order=["trandate", "po_number", "vendor_name", "prepay_mark", "jan",
-                      "qty_outstanding", "amt_outstanding", "expected_receipt_date",
+                      "qty_outstanding", "amt_outstanding",
                       "manual_eta", "eff_eta", "eta_note", "status"],
         column_config={
             "trandate": st.column_config.DateColumn(t("発注日"), disabled=True, format="YYYY-MM-DD"),
@@ -676,8 +676,6 @@ def _render_in_transit():
             "jan": st.column_config.TextColumn(t("JAN"), disabled=True),
             "qty_outstanding": st.column_config.NumberColumn(t("在途残"), disabled=True),
             "amt_outstanding": st.column_config.NumberColumn(t("在途金额(¥)"), format="¥%,.0f", disabled=True),
-            "expected_receipt_date": st.column_config.DateColumn(
-                t("NST予定日"), disabled=True, format="YYYY-MM-DD"),
             "manual_eta": st.column_config.DateColumn(
                 t("手動入荷予定日"), format="YYYY-MM-DD",
                 help=t("ここに直接入力 → 保存で CMS に記録")),
@@ -727,7 +725,7 @@ def _render_in_transit():
 
     # CSV（有効予定日含む）
     csv = edited[["trandate", "po_number", "vendor_name", "jan", "qty_outstanding",
-                  "amt_outstanding", "expected_receipt_date", "manual_eta", "eff_eta",
+                  "amt_outstanding", "manual_eta", "eff_eta",
                   "eta_note", "status"]].copy()
     st.download_button(t("📥 CSV 下载"), csv.to_csv(index=False).encode("utf-8-sig"),
                        file_name="po_open_lines.csv", mime="text/csv", key="intransit_csv")
