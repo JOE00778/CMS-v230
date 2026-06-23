@@ -1,7 +1,9 @@
 """JD/BM 商品登録模板 schema + NST 主档行 → JD/BM 行映射
 
-源模板：20260000_NetSuite【アイテム】マスタ登録-V260326EX_登録者名.xlsx
-内嵌 sheet：JD商品登録 / BM商品登録（提取于 2026-05-29）
+下载模板（Boss 2026-06-23 更新·严格按格式·含合并单元格·尤重 row1/row2）：
+- JD（京东）：Import-BasicGoods-SinglePage-Chinese.xlsx · sheet「商品信息」(75 列)
+- BM（斑马）：Product导入模板.xlsx · sheet「数据」(46 列)
+两者 row1=分区标题（合并单元格）/ row2=列头 / row3+=数据。生成与模板逐格一致（脚本校验）。
 
 映射策略（Boss 2026-05-29 拍板）：
 - JD *货主编码：默认 "KH20000009340"（旧 HTML 商品登録ツール jdA 默认值）
@@ -187,17 +189,25 @@ DEFAULT_JD_CUSTOMER_CODE = "KH20000009340"   # 货主ID（新模板可不填·�
 DEFAULT_JD_SALES_CHANNEL = "sc-三金商事株式会社"
 DEFAULT_JD_PLATFORM_CODE = "Lazada/Shopee/coupang"
 
-# ───────────────────────── BM 商品登録 schema ─────────────────────────
+# row1 分区标题の合并单元格（テンプレと完全一致·Boss 2026-06-23「严格按格式·含合并」）
+JD_MERGES = ["A1:U1", "V1:AE1", "AF1:BC1", "BE1:BJ1", "BK1:BU1"]
 
-BM_GROUP = [
-    *(["SPU(相同信息可以填写一样的)"] * 12),
-    *(["SKU"] * 17),
-    *(["普通报关信息"] * 6),
-    *(["报关特殊属性"] * 8),
-    "图片信息",
-    "质检制作要求", "质检制作要求",
-]
+# ───────────────────────── BM「Product导入模板」schema（新·2026-06-23） ─────────────────────────
+# 源模板：Product导入模板.xlsx · sheet「数据」(46 列)
+# row1=分区標題（合并单元格）/ row2=列頭（旧 BM_HEADER と同一·映射不変）/ row3+=データ
+BM_SHEET_NAME = "数据"
+
+BM_GROUP = (
+    ["SPU(相同信息可以填写一样的)"] + [""] * 11    # 1-12  A1:L1
+    + ["SKU"] + [""] * 16                          # 13-29 M1:AC1
+    + ["普通报关信息"] + [""] * 5                   # 30-35 AD1:AI1
+    + ["报关特殊属性"] + [""] * 7                   # 36-43 AJ1:AQ1
+    + ["图片信息"]                                 # 44    AR1（単独）
+    + ["质检制作要求", ""]                          # 45-46 AS1:AT1
+)
 assert len(BM_GROUP) == 46, len(BM_GROUP)
+
+BM_MERGES = ["A1:L1", "M1:AC1", "AD1:AI1", "AJ1:AQ1", "AS1:AT1"]
 
 BM_HEADER = [
     "SPU", "产品标题", "ERP类目", "来源URL", "来源备注", "默认供应商名称",
@@ -300,9 +310,14 @@ def nst_to_bm_row(
 # ───────────────────────── xlsx 生成（openpyxl） ─────────────────────────
 
 def _build_xlsx(sheet_name: str, group: list[str], header: list[str],
-                data_rows: list[list]) -> bytes:
-    """生成 xlsx bytes · row0=分组标题 / row1=列名 / row2+=数据。"""
+                data_rows: list[list], merges: list[str] | None = None) -> bytes:
+    """生成 xlsx bytes · row1=分区标题（含合并单元格）/ row2=列头 / row3+=数据。
+
+    merges: 'A1:U1' 等の合并范围リスト（テンプレ row1 分区と一致させる）。
+    合并時は非アンカーセルを None にしてから merge（openpyxl 警告回避）。
+    """
     from openpyxl import Workbook
+    from openpyxl.utils import range_boundaries
     wb = Workbook()
     ws = wb.active
     ws.title = sheet_name
@@ -310,6 +325,13 @@ def _build_xlsx(sheet_name: str, group: list[str], header: list[str],
     ws.append(header)
     for r in data_rows:
         ws.append(r)
+    for rng in (merges or []):
+        c1, r1, c2, r2 = range_boundaries(rng)
+        for col in range(c1, c2 + 1):           # アンカー以外を空に（merge 警告回避）
+            for row in range(r1, r2 + 1):
+                if not (col == c1 and row == r1):
+                    ws.cell(row=row, column=col).value = None
+        ws.merge_cells(rng)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -335,7 +357,7 @@ def build_jd_xlsx(
             sales_channel=sales_channel,
             platform_code=platform_code,
         ))
-    return _build_xlsx(JD_SHEET_NAME, JD_GROUP, JD_HEADER, data)
+    return _build_xlsx(JD_SHEET_NAME, JD_GROUP, JD_HEADER, data, merges=JD_MERGES)
 
 
 def build_bm_xlsx(
@@ -348,7 +370,7 @@ def build_bm_xlsx(
     for n in nst_rows:
         jan = str(_g(n, "JANコード") or "").strip()
         data.append(nst_to_bm_row(n, image_url=image_url_map.get(jan, "")))
-    return _build_xlsx("BM商品登録", BM_GROUP, BM_HEADER, data)
+    return _build_xlsx(BM_SHEET_NAME, BM_GROUP, BM_HEADER, data, merges=BM_MERGES)
 
 
 def dated_filename_jd() -> str:

@@ -122,7 +122,8 @@ with tab_native:
             "- **一键打包 ZIP**：NetSuite CSV + JD.xlsx + BM.xlsx 三件一起出\n"
             "- **JD 新模板**：单页「商品信息」(75 列·Import-BasicGoods-SinglePage)。自动填 客户SKU=JAN / 商品名称=日文名 / 件型=1 / 自带原包=1 / 商品条码=JAN / 销售渠道 / 平台编码；**平台商品标题(英文)留空待填**\n"
             f"- **JD 默认值**：销售渠道=`{JBM.DEFAULT_JD_SALES_CHANNEL}` · 平台编码=`{JBM.DEFAULT_JD_PLATFORM_CODE}` · 货主ID 默认空（单货主不必填）\n"
-            "- **BM 规则**：SPU=JAN · ERP 类目留空 · 英文名称留空（用户后填）"
+            "- **BM 新模板（斑马）**：Product导入模板·sheet「数据」(46 列·含合并单元格)。SPU=JAN · ERP 类目留空 · 英文名称留空（用户后填）\n"
+            "- **下载模板严格按格式**：JD/BM 的 row1 分区(合并单元格) / row2 列头 与官方模板逐格一致"
         ))
 
     _ITEM_RESULT_KEYS = [
