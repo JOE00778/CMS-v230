@@ -63,7 +63,7 @@ try:
     df = cached_df(
         conn,
         f"SELECT * FROM operation_advice_monthly WHERE year_month = '{_safe_ym}'",
-        ver=data_version(),
+        ver=data_version("basic", "sales", "inventory"),
     )
 except Exception as _err:
     st.error(f"❌ 加载 operation_advice_monthly 失败: {_err}")

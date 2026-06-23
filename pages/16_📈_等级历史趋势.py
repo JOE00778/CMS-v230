@@ -65,7 +65,7 @@ _rank_sql = (
     f"ORDER BY rh.changed_at DESC"
 )
 from shared.cache import cached_df, data_version
-df = cached_df(conn, _rank_sql, ver=data_version())
+df = cached_df(conn, _rank_sql, ver=data_version("basic", "inventory"))
 
 if df.empty:
     st.info(t("选定季度内无变更记录。"))

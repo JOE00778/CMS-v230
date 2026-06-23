@@ -31,7 +31,7 @@ def render(conn) -> None:
 
     def _df(sql, params=None):
         from shared.cache import cached_df, data_version
-        return cached_df(conn, sql, params, ver=data_version())
+        return cached_df(conn, sql, params, ver=data_version("basic", "inventory", "sales", "purchase"))
 
     st.title(t("🛡️ 库存风控"))
     st.caption(t("按可售天数(JDL库存/日均销量)识别断货 / 压库存风险 · 仅有等级商品 · "

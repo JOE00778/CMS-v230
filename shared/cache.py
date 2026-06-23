@@ -25,19 +25,33 @@ import streamlit as st
 _FALLBACK_BOUNDARY = timezone(timedelta(hours=3))
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def data_version() -> str:
-    """缓存版本号 = NST 实际最后同步完成时间（`nst.pull_schedule.last_run_at` 最大值）。
+# pull_schedule.category（拉取域）一览。页面按自己读的数据域声明，避免一处拉取
+# 把全站缓存都打掉。**宁多勿少**：少声明会读到旧数据（比慢更糟），多声明只是多刷一次。
+#   basic=商品マスタ(item_master_raw/cost_history) · inventory=在庫(inventory_snapshot/bin)
+#   sales=売上(sales_*) · purchase=発注書(purchase_order_line/po_*) · vendor=仕入先マスタ
+PULL_DOMAINS = ("basic", "inventory", "sales", "purchase", "vendor")
 
-    同步完成 → dispatcher 更新 last_run_at → 版本变 → cached_df 自动失效重查。
-    **不依赖硬编码时间**：NST 用 dispatcher + `pull_schedule.run_time` 调度，同步
-    几点跑都自动跟随。ttl=300 → 最多 5 分钟读一次 pull_schedule（很轻的 max 查询）。
-    表不可用时 fallback 到「JST 06:00 分界的日期」。
+
+@st.cache_data(ttl=300, show_spinner=False)
+def data_version(*domains: str) -> str:
+    """缓存版本号 = 指定域の NST 最終同步完了時刻（`nst.pull_schedule.last_run_at` 最大値）。
+
+    `domains` 省略 = 全域 max（従来動作・全站一括失効）。域を渡すと該当 category の
+    last_run_at だけ見る → ある域を拉取しても無関係ページのキャッシュは保持される。
+    同步完了 → dispatcher が last_run_at 更新 → 版本変 → cached_df 自動失効重查。
+    ttl=300 → 最多 5 分钟读一次（很轻的 max 查询）。表不可用時は「JST 06:00 分界の日付」。
     """
     try:
         from shared.db import get_connection
-        row = get_connection().execute(
-            "SELECT max(last_run_at) FROM nst.pull_schedule").fetchone()
+        conn = get_connection()
+        if domains:
+            ph = ",".join("?" * len(domains))
+            row = conn.execute(
+                f"SELECT max(last_run_at) FROM nst.pull_schedule WHERE category IN ({ph})",
+                tuple(domains)).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT max(last_run_at) FROM nst.pull_schedule").fetchone()
         if row and row[0]:
             return str(row[0])
     except Exception:

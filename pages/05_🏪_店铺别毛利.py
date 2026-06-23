@@ -201,7 +201,7 @@ def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31) -> pd.Data
 def _query(sql: str, params: tuple = ()):
     try:
         from shared.cache import cached_df, data_version
-        return cached_df(conn, sql, params or None, ver=data_version()), None
+        return cached_df(conn, sql, params or None, ver=data_version("basic", "sales")), None
     except Exception as e:
         try:
             conn.rollback()

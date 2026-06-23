@@ -86,7 +86,7 @@ def _normalize_rank_base(rank: str) -> str:
 
 def _df(sql: str) -> pd.DataFrame:
     from shared.cache import cached_df, data_version
-    return cached_df(conn, sql, ver=data_version())
+    return cached_df(conn, sql, ver=data_version("basic", "inventory", "sales", "purchase"))
 
 
 # ============================================================
