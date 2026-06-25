@@ -122,10 +122,10 @@ def _render_history():
 
     sql = (
         "SELECT irl.receipt_date, irl.receipt_no, irl.vendor_name, im.jan, im.display_name, "
-        "       irl.location, irl.quantity, irl.rate, irl.amount, pol.po_number "
+        "       irl.location, irl.quantity, irl.rate, irl.amount, pol.po_number, pol.po_memo "
         "FROM nst.item_receipt_line irl "
         "LEFT JOIN nst.item_master_raw im ON im.internal_id = irl.item_internal_id "
-        "LEFT JOIN (SELECT DISTINCT po_internal_id, po_number FROM nst.purchase_order_line) pol "
+        "LEFT JOIN (SELECT DISTINCT po_internal_id, po_number, po_memo FROM nst.purchase_order_line) pol "
         "       ON pol.po_internal_id = irl.po_internal_id "
         "WHERE irl.receipt_date >= %s AND irl.receipt_date <= %s "
         f"{vsql}{kw_sql} "
@@ -146,6 +146,7 @@ def _render_history():
         "receipt_date": t("收货日"), "receipt_no": t("收货单号"), "vendor_name": t("供货商"),
         "jan": "JAN", "display_name": t("品名"), "location": t("仓库"),
         "quantity": t("数量"), "rate": t("单价"), "amount": t("金额"), "po_number": t("对应PO"),
+        "po_memo": t("発注メモ"),
     })
     st.dataframe(show, use_container_width=True, hide_index=True, column_config={
         t("金额"): st.column_config.NumberColumn(format="¥%,.0f"),

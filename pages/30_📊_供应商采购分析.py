@@ -547,7 +547,7 @@ def _render_in_transit():
             "(pol.quantity - COALESCE(pol.quantity_received, 0)) AS qty_outstanding, "
             "pol.trandate, pol.expected_receipt_date, eta.manual_eta, eta.note AS eta_note, "
             "COALESCE(eta.manual_eta, pol.expected_receipt_date) AS eff_eta, "
-            "pol.status, pol.vendor_id, "
+            "pol.status, pol.vendor_id, pol.po_memo, pol.line_memo, "
             "COALESCE(ev2.is_prepay, FALSE) AS is_prepay, "
             "((pol.quantity - COALESCE(pol.quantity_received, 0)) * pol.rate) AS amt_outstanding "
             "FROM nst.purchase_order_line pol "
@@ -660,6 +660,8 @@ def _render_in_transit():
         "manual_eta": pd.to_datetime(view["manual_eta"], errors="coerce"),
         "eff_eta": pd.to_datetime(view["eff_eta"], errors="coerce"),
         "eta_note": view["eta_note"],
+        "po_memo": view["po_memo"].fillna("").astype(str),
+        "line_memo": view["line_memo"].fillna("").astype(str),
         "status": view["status"],
     })
 
@@ -667,7 +669,7 @@ def _render_in_transit():
         ed, hide_index=True, use_container_width=True, height=480, key="intransit_editor",
         column_order=["trandate", "po_number", "vendor_name", "prepay_mark", "jan",
                       "qty_outstanding", "amt_outstanding",
-                      "manual_eta", "eff_eta", "eta_note", "status"],
+                      "manual_eta", "eff_eta", "eta_note", "line_memo", "po_memo", "status"],
         column_config={
             "trandate": st.column_config.DateColumn(t("発注日"), disabled=True, format="YYYY-MM-DD"),
             "po_number": st.column_config.TextColumn(t("PO番号"), disabled=True),
@@ -683,6 +685,10 @@ def _render_in_transit():
                 t("有効入荷予定日"), disabled=True, format="YYYY-MM-DD",
                 help=t("手動があればそれ·無ければ NST。保存後に反映")),
             "eta_note": st.column_config.TextColumn(t("備考")),
+            "line_memo": st.column_config.TextColumn(
+                t("行メモ"), disabled=True, help=t("NST 発注行メモ（例 1/7AM必着）")),
+            "po_memo": st.column_config.TextColumn(
+                t("発注メモ"), disabled=True, help=t("NST 発注書 header メモ（例 AB&NEW）")),
             "status": st.column_config.TextColumn(t("状態"), disabled=True),
         },
     )
@@ -764,6 +770,7 @@ def _render_sku_detail():
             "pol.rate AS unit_price, pol.amount, "
             "((pol.quantity - COALESCE(pol.quantity_received, 0)) * pol.rate) AS amt_outstanding, "
             "pol.expected_receipt_date, COALESCE(pol.closed, FALSE) AS closed, "
+            "pol.po_memo, pol.line_memo, "
             "COALESCE(ev.is_prepay, FALSE) AS is_prepay "
             "FROM nst.purchase_order_line pol "
             "LEFT JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
@@ -879,13 +886,14 @@ def _render_sku_detail():
     disp = view[["year_month", "po_number", "trandate", "vendor_name", "prepay_mark",
                  "jan", "display_name", "item_rank", "qty_ordered", "qty_received",
                  "qty_outstanding", "unit_price", "amount", "amt_outstanding",
-                 "expected_receipt_date", "status"]].rename(columns={
+                 "expected_receipt_date", "status", "po_memo", "line_memo"]].rename(columns={
         "year_month": t("月份"), "po_number": t("PO番号"), "trandate": t("発注日"),
         "vendor_name": t("仕入先"), "prepay_mark": t("预付款"), "jan": t("JAN"),
         "display_name": t("商品名"), "item_rank": t("等级"), "qty_ordered": t("発注数"),
         "qty_received": t("入荷済"), "qty_outstanding": t("在途残"),
         "unit_price": t("単価"), "amount": t("金额"), "amt_outstanding": t("在途金额(¥)"),
         "expected_receipt_date": t("入荷予定日"), "status": t("状態"),
+        "po_memo": t("発注メモ"), "line_memo": t("行メモ"),
     })
     disp = disp.sort_values([t("月份"), t("仕入先"), t("金额")],
                             ascending=[False, True, False], na_position="last")
