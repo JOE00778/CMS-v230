@@ -225,11 +225,13 @@ def render(conn) -> None:
     overstock_capital = float(df.loc[df["risk_label"] == RISK_OVERSTOCK, "capital_exposure"].sum())
 
     releasable_total = float(df.loc[df["risk_label"] == RISK_OVERSTOCK, "releasable"].sum())
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    # 第一行 = 数量类 KPI（SKU/断货/压库存/正常），第二行 = 金额类 KPI（更宽·避免截断）
+    k1, k2, k3, k4 = st.columns(4)
     k1.metric(t("SKU 总数"), int(df["item_code"].nunique()))
     k2.metric(t("🔴 断货风险"), int(risk_counts.get(RISK_STOCKOUT, 0)))
     k3.metric(t("🟡 压库存"), int(risk_counts.get(RISK_OVERSTOCK, 0)))
     k4.metric(t("🟢 正常"), int(risk_counts.get(RISK_NORMAL, 0)))
+    k5, k6 = st.columns(2)
     k5.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
     k6.metric(t("♻️ 可释放库存金额(各等级标准)"), f"¥{releasable_total:,.0f}")
 
