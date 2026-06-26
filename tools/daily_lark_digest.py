@@ -54,6 +54,7 @@ SELECT
         ELSE '输出'
     END AS category,
     im.item_rank                                                  AS item_rank,
+    COUNT(DISTINCT inv_all.item_internal_id)                      AS sku,
     SUM(inv_all.qty_on_hand)                                      AS qty,
     SUM(inv_all.qty_on_hand * COALESCE(im.cost_estimate, 0))::NUMERIC(16,2) AS amt
 FROM inv_all
@@ -68,7 +69,7 @@ _LABELS = {
     "输出": "通常输出",
     "输出中国": "输出中国",
     "返品": "返品（HENPIN-EX）",
-    "不良品": "不良品（FF-3）",
+    "不良品": "返品（全损）",
 }
 
 # 等级 raw → 展示名 + 固定顺序（口径同 page06 _RANK_ORDER；中止 = 取扱中止）
@@ -110,9 +111,10 @@ def build_composition(conn) -> dict:
         a["amt"] += amt
         if cat == "输出":
             rl = _rank_label(r["item_rank"])
-            b = shutsu_rank.setdefault(rl, {"qty": 0.0, "amt": 0.0})
+            b = shutsu_rank.setdefault(rl, {"qty": 0.0, "amt": 0.0, "sku": 0})
             b["qty"] += qty
             b["amt"] += amt
+            b["sku"] += int(r["sku"] or 0)
 
     tot_amt = sum(v["amt"] for v in cat_agg.values())
     tot_qty = sum(v["qty"] for v in cat_agg.values())
@@ -131,6 +133,7 @@ def build_composition(conn) -> dict:
     ordered += [rl for rl in shutsu_rank if rl not in _RANK_ORDER]  # 兜底未知等级
     rank_rows = [{
         "label": rl, "amt": shutsu_rank[rl]["amt"], "qty": shutsu_rank[rl]["qty"],
+        "sku": shutsu_rank[rl]["sku"],
         "pct": (shutsu_rank[rl]["amt"] / shutsu_amt * 100) if shutsu_amt else 0.0,
     } for rl in ordered]
 
@@ -155,7 +158,7 @@ def render_card(d: dict) -> dict:
         "is_short": True,
         "text": {"tag": "lark_md",
                  "content": (f"**{r['label']}**\n¥{r['amt']:,.0f}\n"
-                             f"{r['pct']:.0f}% · {r['qty']:,.0f} 数量")},
+                             f"{r['pct']:.0f}% · {r['sku']:,} SKU · {r['qty']:,.0f} 件")},
     } for r in d["rank_rows"]]
 
     elements = [
@@ -175,7 +178,7 @@ def render_card(d: dict) -> dict:
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "blue",
-            "title": {"tag": "plain_text", "content": "📊 每日库存构成 KPI（全仓库合算）"},
+            "title": {"tag": "plain_text", "content": "每日数据汇报 / 通常データ報告"},
         },
         "elements": elements,
     }
@@ -225,9 +228,14 @@ def main() -> int:
     card = render_card(data)
 
     if args.dry_run:
-        print(json.dumps({"msg_type": "interactive", "card": card}, ensure_ascii=False, indent=2))
-        print(f"\n[dry-run] 库存合计 ¥{data['tot_amt']:,.0f} · 总数量 {data['tot_qty']:,.0f} · "
-              f"通常输出 ¥{data['shutsu_amt']:,.0f}（{len(data['rank_rows'])} 等级）· 未发送")
+        # ASCII 友好明细（Windows cmd 终端中文会乱码，数字可读；rank 顺序固定 A/B/C/NEW/中止/未分类）
+        print(f"[dry-run] tot_amt={data['tot_amt']:,.0f} tot_qty={data['tot_qty']:,.0f} "
+              f"shutsu_amt={data['shutsu_amt']:,.0f}")
+        for i, b in enumerate(data["buckets"]):
+            print(f"  CAT[{i}] amt={b['amt']:,.0f} qty={b['qty']:,.0f} pct={b['pct']:.1f}")
+        for i, r in enumerate(data["rank_rows"]):
+            print(f"  RANK[{i}] {r['label']!r} sku={r['sku']:,} qty={r['qty']:,.0f} "
+                  f"amt={r['amt']:,.0f} pct={r['pct']:.1f}")
         return 0
 
     if not args.webhook:
