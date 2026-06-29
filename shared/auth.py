@@ -91,9 +91,15 @@ _GUEST_HIDE_CSS = """
 .viewerBadge_link__1S137,
 .viewerBadge_container__r5tak,
 .styles_viewerBadge__1yB5_,
-#MainMenu,
-header[data-testid="stHeader"] > div:last-child {
+#MainMenu {
     display: none !important;
+}
+/* 侧边栏折叠后的「展开」控件必须始终可见 —— guest 态 + 窄视口下若被裁掉，sidebar 收起后就再也展不开 */
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarCollapsedControl"] button {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
 }
 </style>
 """
@@ -112,6 +118,14 @@ _COMPACT_LAYOUT_CSS = """
 [data-testid="stHeader"] {
     height: 0 !important;
     background: transparent !important;
+    overflow: visible !important;   /* 别裁掉 header 里 fixed 定位的侧栏展开控件 */
+}
+/* 侧边栏折叠后的「展开」控件必须始终可见（全局·不论角色·窄视口强制折叠时唯一的回退入口）*/
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 999990 !important;
 }
 /* 标题与 caption 行间距收紧 */
 h1, h2, h3 {
