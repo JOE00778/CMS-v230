@@ -1014,11 +1014,12 @@ def _render_partial_receipt():
 
 
 # ============================================================
-# 4 タブ統合：采购分析 / 在途入荷予定 / SKU 级明细 / 一部受領（Boss 2026-06-22）
+# 5 タブ統合：采购分析 / 在途入荷予定 / SKU 级明细 / 一部受領 / 入库状态
+#   入库状态（受領状態）= 旧 page31「入荷实绩」を統合（Boss 2026-06-30）
 # ============================================================
-tab_analysis, tab_transit, tab_sku, tab_recv = st.tabs(
+tab_analysis, tab_transit, tab_sku, tab_recv, tab_status = st.tabs(
     [t("📊 供应商采购分析"), t("🚢 在途入荷予定"), t("🔬 SKU 级 PO 明细"),
-     t("📥 一部受領 / 入荷未完了")])
+     t("📥 一部受領 / 入荷未完了"), t("📦 入库状态")])
 with tab_analysis:
     _render_analysis()
 with tab_transit:
@@ -1027,3 +1028,6 @@ with tab_sku:
     _render_sku_detail()
 with tab_recv:
     _render_partial_receipt()
+with tab_status:
+    from shared import receipt_status_view
+    receipt_status_view.render(conn)
