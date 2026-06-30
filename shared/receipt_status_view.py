@@ -258,10 +258,10 @@ def render(conn=None) -> None:
                            file_name=f"receipt_amount_{mlabel}.csv", mime="text/csv")
 
     # ========================================================
-    # tab4 · 前日收货数据（昨天入荷スナップショット）
+    # tab4 · 前日入库数据（昨天入荷スナップショット）
     # ========================================================
     def _render_yesterday():
-        st.caption(t("前日（昨天）一天的收货明细快照 · 数据每天 06:35 自动更新后即为最新一天。"))
+        st.caption(t("前日（昨天）一天的入库明细快照 · 数据每天 06:35 自动更新后即为最新一天。"))
         target = str(dt.date.today() - dt.timedelta(days=1))
         # 兜底:前日无数据时落到最新有收货的一天
         chk = _df("SELECT 1 FROM nst.item_receipt_line WHERE receipt_date = %s LIMIT 1", [target])
@@ -308,7 +308,7 @@ def render(conn=None) -> None:
                            file_name=f"receipt_{target}.csv", mime="text/csv")
 
     tab_hist, tab_plan, tab_amt, tab_yday = st.tabs([
-        t("📜 入荷历史"), t("🎯 入荷实绩 vs 预定"), t("💴 检收金额"), t("📅 前日收货")])
+        t("📜 入荷历史"), t("🎯 入荷实绩 vs 预定"), t("💴 检收金额"), t("📅 前日入库")])
     with tab_hist:
         _render_history()
     with tab_plan:

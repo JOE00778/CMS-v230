@@ -9,7 +9,7 @@
   顶层 4 桶: 通常输出 / 输出中国 / 返品(HENPIN-EX) / 不良品(FF-3) + 库存合计 + 总数量
   └ 通常输出 内部再按「等级」细分: Rank A/B/C / NEW / 中止 / 未分类（口径同 page06 各等级库存金额）
 
-  📥 前日收货段（Boss 2026-06-30 追加）: 口径同 page30「📦 入库状态 → 前日收货」tab —
+  📥 前日入库段（Boss 2026-06-30 追加）: 口径同 page30「📦 入库状态 → 前日入库」tab —
      收货单数 / SKU数(=COUNT DISTINCT item·非明细行数) / 检收金额 / 供货商数。
      前日无数据则兜底落最新收货日。取数失败只省略该段、不影响库存汇报主体。
 
@@ -151,7 +151,7 @@ def build_composition(conn) -> dict:
 
 
 def build_receipt_yesterday(conn) -> dict:
-    """前日（昨天）一天的收货 4 指标 · 口径同 page30「📦 入库状态 → 前日收货」tab。
+    """前日（昨天）一天的收货 4 指标 · 口径同 page30「📦 入库状态 → 前日入库」tab。
     前日无数据则兜底落最新有收货的一天（与 shared/receipt_status_view._render_yesterday 一致）。
     SKU数 = COUNT(DISTINCT item_internal_id)（非明细行数·±修正行不重复计 SKU）。"""
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -182,7 +182,7 @@ def build_receipt_yesterday(conn) -> dict:
 
 
 def render_card(d: dict, recv: dict | None = None) -> dict:
-    """渲染飞书 interactive 卡片（4 构成桶 + 通常输出按等级内訳 + 可选 前日收货段）。"""
+    """渲染飞书 interactive 卡片（4 构成桶 + 通常输出按等级内訳 + 可选 前日入库段）。"""
     cat_fields = [{
         "is_short": True,
         "text": {"tag": "lark_md",
@@ -213,7 +213,7 @@ def render_card(d: dict, recv: dict | None = None) -> dict:
     if recv:
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md",
-            "content": f"**📥 前日收货 · {recv['date']}**"}})
+            "content": f"**📥 前日入库 · {recv['date']}**"}})
         elements.append({"tag": "div", "fields": [
             {"is_short": True, "text": {"tag": "lark_md",
                 "content": f"**收货单数**\n{recv['receipts']:,} 单"}},
@@ -276,10 +276,10 @@ def main() -> int:
         data = build_composition(conn)
         try:
             recv = build_receipt_yesterday(conn)
-        except Exception as e:          # 前日收货段失败不应拖垮库存汇报主体
+        except Exception as e:          # 前日入库段失败不应拖垮库存汇报主体
             recv = None
             conn.rollback()
-            print(f"[warn] 前日收货段取数失败，本次汇报省略该段: {e}")
+            print(f"[warn] 前日入库段取数失败，本次汇报省略该段: {e}")
     finally:
         conn.close()
     card = render_card(data, recv)
