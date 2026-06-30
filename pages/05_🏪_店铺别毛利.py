@@ -286,14 +286,12 @@ _prev_shop = _agg_prev(_prev_ym, mk, "shop", _max_day)
 # ============================================================
 # KPI（総）
 # ============================================================
-tot_q = df["qty_sold"].sum()
 tot_r = df["revenue"].sum()
 tot_c = df["defined_cost"].sum()
 tot_g = df["gross_profit"].sum()
 margin = (tot_g / tot_r * 100) if tot_r else 0
 
-m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric(t("販売数量 計"), f"{tot_q:,.0f}")
+m2, m3, m4, m5 = st.columns(4)
 m2.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
 m3.metric(t("定義原価 計"), f"¥{tot_c:,.0f}")
 m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}")
