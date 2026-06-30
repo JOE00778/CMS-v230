@@ -49,24 +49,26 @@ def render(conn=None) -> None:
                  "每天 06:35 自动更新"))
 
     # ---- 共通フィルタ部品 ----
-    _YEAR_START = dt.date(dt.date.today().year, 1, 1)
-    _TODAY = dt.date.today()
-
     def _vendor_options() -> list[tuple[str, str]]:
         """(vendor_id, vendor_name) 一覧（有收货实绩的供货商のみ · _df 已缓存）。"""
         d = _df("SELECT DISTINCT vendor_id, vendor_name FROM nst.item_receipt_line "
                 "WHERE vendor_id IS NOT NULL ORDER BY vendor_name")
         return [(r.vendor_id, r.vendor_name or r.vendor_id) for r in d.itertuples()]
 
-    def _period_picker(key: str):
-        c1, c2 = st.columns(2)
-        with c1:
-            d_from = st.date_input(t("收货日 从"), value=_YEAR_START,
-                                   min_value=dt.date(2026, 1, 1), max_value=_TODAY, key=f"{key}_from")
-        with c2:
-            d_to = st.date_input(t("收货日 到"), value=_TODAY,
-                                 min_value=dt.date(2026, 1, 1), max_value=_TODAY, key=f"{key}_to")
-        return str(d_from), str(d_to)
+    def _month_options() -> list[str]:
+        """利用可能な受領月 'YYYY-MM' 一覧（新しい順 · _df 已缓存）。"""
+        d = _df("SELECT DISTINCT to_char(receipt_date,'YYYY-MM') AS ym "
+                "FROM nst.item_receipt_line WHERE receipt_date IS NOT NULL ORDER BY ym DESC")
+        return [r.ym for r in d.itertuples()]
+
+    def _month_picker(key: str, col: str):
+        """收货月の多选フィルタ。戻り値 =(where片段, params, label)。空选=全部月份。"""
+        picked = st.multiselect(t("收货月（留空=全部）"), _month_options(), key=f"{key}_ym",
+                                help=t("按收货月份多选 · 留空=全部月份"))
+        if not picked:
+            return "TRUE", [], "all"
+        ph = ",".join(["%s"] * len(picked))
+        return f"to_char({col},'YYYY-MM') IN ({ph})", list(picked), "_".join(sorted(picked))
 
     def _vendor_filter(key: str):
         opts = _vendor_options()
@@ -86,7 +88,7 @@ def render(conn=None) -> None:
     # ========================================================
     def _render_history():
         st.caption(t("哪张收货单何时、从哪个供货商、收了什么、多少钱。行级明细（±修正行作为实数保留）。"))
-        d_from, d_to = _period_picker("h")
+        mfrag, mparams, mlabel = _month_picker("h", "irl.receipt_date")
         fc1, fc2 = st.columns([3, 2])
         with fc1:
             vids = _vendor_filter("h")
@@ -114,11 +116,11 @@ def render(conn=None) -> None:
             "LEFT JOIN nst.item_master_raw im ON im.internal_id = irl.item_internal_id "
             "LEFT JOIN (SELECT DISTINCT po_internal_id, po_number, po_memo FROM nst.purchase_order_line) pol "
             "       ON pol.po_internal_id = irl.po_internal_id "
-            "WHERE irl.receipt_date >= %s AND irl.receipt_date <= %s "
+            "WHERE " + mfrag + " "
             f"{vsql}{kw_sql} "
             "ORDER BY irl.receipt_date DESC, irl.receipt_no, im.display_name"
         )
-        df = _df(sql, [d_from, d_to] + vparams + kw_params)
+        df = _df(sql, mparams + vparams + kw_params)
         if df.empty:
             st.info(t("没有符合条件的收货明细，请放宽条件。"))
             return
@@ -141,7 +143,7 @@ def render(conn=None) -> None:
             t("数量"): st.column_config.NumberColumn(format="%,.0f"),
         })
         st.download_button(t("⬇️ 下载 CSV"), df.to_csv(index=False).encode("utf-8-sig"),
-                           file_name=f"receipt_history_{d_from}_{d_to}.csv", mime="text/csv")
+                           file_name=f"receipt_history_{mlabel}.csv", mime="text/csv")
 
     # ========================================================
     # tab2 · 入荷实绩 vs 预定
@@ -149,7 +151,7 @@ def render(conn=None) -> None:
     def _render_vs_plan():
         st.caption(t("有效预定日（优先 page30 的手动入荷预定日 · 没有则用 NST 预定日）与实际收货日的差。"
                      "发注→收货的提前期(LT)始终可算。※ 预定日未填时「差」为空。"))
-        d_from, d_to = _period_picker("p")
+        mfrag, mparams, mlabel = _month_picker("p", "m.receipt_date")
         vids = _vendor_filter("p")
 
         sql = (
@@ -158,11 +160,11 @@ def render(conn=None) -> None:
             "       m.eta_diff_days, m.lead_time_days "
             "FROM nst.receipt_po_match m "
             "LEFT JOIN nst.item_master_raw im ON im.internal_id = m.item_internal_id "
-            "WHERE m.receipt_date >= %s AND m.receipt_date <= %s "
+            "WHERE " + mfrag + " "
             + (f" AND m.vendor_id IN ({','.join(['%s']*len(vids))})" if vids else "")
             + " ORDER BY m.receipt_date DESC, m.receipt_no"
         )
-        df = _df(sql, [d_from, d_to] + list(vids))
+        df = _df(sql, mparams + list(vids))
         if df.empty:
             st.info(t("没有符合条件的数据。"))
             return
@@ -195,18 +197,17 @@ def render(conn=None) -> None:
             t("提前期(天)"): st.column_config.NumberColumn(format="%d", help=t("发注日→收货日的提前期")),
         })
         st.download_button(t("⬇️ 下载 CSV"), df.to_csv(index=False).encode("utf-8-sig"),
-                           file_name=f"receipt_vs_plan_{d_from}_{d_to}.csv", mime="text/csv")
+                           file_name=f"receipt_vs_plan_{mlabel}.csv", mime="text/csv")
 
     # ========================================================
     # tab3 · 检收金额 / 入荷原价
     # ========================================================
     def _render_amount():
         st.caption(t("收货原价 = 逐行 单价×数量。月别检收金额推移 + item别 TOP。"))
-        d_from, d_to = _period_picker("a")
+        mfrag, mparams, mlabel = _month_picker("a", "irl.receipt_date")
         vids = _vendor_filter("a")
         vsql, vparams = _in_clause(vids)
-        base_where = ("WHERE irl.receipt_date >= %s AND irl.receipt_date <= %s "
-                      f"{vsql}")
+        base_where = "WHERE " + mfrag + " " + vsql
 
         mdf = _df(
             "SELECT to_char(irl.receipt_date,'YYYY-MM') AS ym, "
@@ -214,7 +215,7 @@ def render(conn=None) -> None:
             "       SUM(irl.quantity) AS qty, SUM(irl.amount) AS amount "
             "FROM nst.item_receipt_line irl " + base_where +
             " GROUP BY 1 ORDER BY 1",
-            [d_from, d_to] + vparams)
+            mparams + vparams)
         if mdf.empty:
             st.info(t("没有符合条件的数据。"))
             return
@@ -244,7 +245,7 @@ def render(conn=None) -> None:
             "LEFT JOIN nst.item_master_raw im ON im.internal_id = irl.item_internal_id "
             + base_where +
             " GROUP BY im.jan, im.display_name ORDER BY amount DESC NULLS LAST LIMIT 50",
-            [d_from, d_to] + vparams)
+            mparams + vparams)
         show = idf.rename(columns={
             "jan": "JAN", "display_name": t("品名"), "qty": t("收货数量"),
             "amount": t("检收金额"), "receipts": t("收货单数"),
@@ -254,13 +255,65 @@ def render(conn=None) -> None:
             t("收货数量"): st.column_config.NumberColumn(format="%,.0f"),
         })
         st.download_button(t("⬇️ 下载 CSV"), idf.to_csv(index=False).encode("utf-8-sig"),
-                           file_name=f"receipt_amount_{d_from}_{d_to}.csv", mime="text/csv")
+                           file_name=f"receipt_amount_{mlabel}.csv", mime="text/csv")
 
-    tab_hist, tab_plan, tab_amt = st.tabs([
-        t("📜 入荷历史"), t("🎯 入荷实绩 vs 预定"), t("💴 检收金额")])
+    # ========================================================
+    # tab4 · 前日收货数据（昨天入荷スナップショット）
+    # ========================================================
+    def _render_yesterday():
+        st.caption(t("前日（昨天）一天的收货明细快照 · 数据每天 06:35 自动更新后即为最新一天。"))
+        target = str(dt.date.today() - dt.timedelta(days=1))
+        # 兜底:前日无数据时落到最新有收货的一天
+        chk = _df("SELECT 1 FROM nst.item_receipt_line WHERE receipt_date = %s LIMIT 1", [target])
+        if chk.empty:
+            mx = _df("SELECT MAX(receipt_date) AS d FROM nst.item_receipt_line")
+            latest = mx["d"].iloc[0] if not mx.empty and mx["d"].iloc[0] is not None else None
+            if latest is not None and str(latest) != target:
+                st.info(t("前日暂无收货数据，下面显示最新收货日的明细：") + f" {latest}")
+                target = str(latest)
+
+        st.subheader(t("收货日") + f"：{target}")
+        sql = (
+            "SELECT irl.receipt_no, irl.vendor_name, im.jan, im.display_name, "
+            "       irl.location, irl.quantity, irl.rate, irl.amount, pol.po_number "
+            "FROM nst.item_receipt_line irl "
+            "LEFT JOIN nst.item_master_raw im ON im.internal_id = irl.item_internal_id "
+            "LEFT JOIN (SELECT DISTINCT po_internal_id, po_number FROM nst.purchase_order_line) pol "
+            "       ON pol.po_internal_id = irl.po_internal_id "
+            "WHERE irl.receipt_date = %s "
+            "ORDER BY irl.receipt_no, im.display_name"
+        )
+        df = _df(sql, [target])
+        if df.empty:
+            st.info(t("这一天没有收货记录。"))
+            return
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(t("收货单数"), int(df["receipt_no"].nunique()))
+        m2.metric(t("明细行数"), len(df))
+        m3.metric(t("检收金额合计 (¥)"), f"¥{df['amount'].fillna(0).sum():,.0f}")
+        m4.metric(t("供货商数"), int(df["vendor_name"].nunique()))
+
+        show = df.rename(columns={
+            "receipt_no": t("收货单号"), "vendor_name": t("供货商"), "jan": "JAN",
+            "display_name": t("品名"), "location": t("仓库"), "quantity": t("数量"),
+            "rate": t("单价"), "amount": t("金额"), "po_number": t("对应PO"),
+        })
+        st.dataframe(show, use_container_width=True, hide_index=True, column_config={
+            t("金额"): st.column_config.NumberColumn(format="¥%,.0f"),
+            t("单价"): st.column_config.NumberColumn(format="¥%,.1f"),
+            t("数量"): st.column_config.NumberColumn(format="%,.0f"),
+        })
+        st.download_button(t("⬇️ 下载 CSV"), df.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"receipt_{target}.csv", mime="text/csv")
+
+    tab_hist, tab_plan, tab_amt, tab_yday = st.tabs([
+        t("📜 入荷历史"), t("🎯 入荷实绩 vs 预定"), t("💴 检收金额"), t("📅 前日收货")])
     with tab_hist:
         _render_history()
     with tab_plan:
         _render_vs_plan()
     with tab_amt:
         _render_amount()
+    with tab_yday:
+        _render_yesterday()
