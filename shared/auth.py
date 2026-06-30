@@ -87,14 +87,17 @@ _GUEST_HIDE_CSS = """
 [data-testid="stToolbar"],
 [data-testid="stStatusWidget"],
 [data-testid="stDecoration"],
-[data-testid="stHeader"] button,
 .viewerBadge_link__1S137,
 .viewerBadge_container__r5tak,
 .styles_viewerBadge__1yB5_,
 #MainMenu {
     display: none !important;
 }
-/* 侧边栏折叠后的「展开」控件必须始终可见 —— guest 态 + 窄视口下若被裁掉，sidebar 收起后就再也展不开 */
+/* ⚠️ 不要笼统隐藏 [data-testid="stHeader"] button —— 那会连带杀掉折叠后的「展开」按钮，
+   guest 收起侧栏后就再也展不开（2026-06-30 根因）。toolbar / MainMenu 已各自精准隐藏，无需这条黑名单。
+   折叠后的「展开」按钮 = Streamlit 1.42→1.57 testid「stExpandSidebarButton」（旧名 stSidebarCollapsedControl 已废，双写兼容），必须始终可见。*/
+[data-testid="stExpandSidebarButton"],
+[data-testid="stExpandSidebarButton"] button,
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="stSidebarCollapsedControl"] button {
     display: flex !important;
@@ -120,7 +123,9 @@ _COMPACT_LAYOUT_CSS = """
     background: transparent !important;
     overflow: visible !important;   /* 别裁掉 header 里 fixed 定位的侧栏展开控件 */
 }
-/* 侧边栏折叠后的「展开」控件必须始终可见（全局·不论角色·窄视口强制折叠时唯一的回退入口）*/
+/* 侧边栏折叠后的「展开」按钮必须始终可见（全局·不论角色·窄视口强制折叠时唯一的回退入口）·
+   1.57 testid = stExpandSidebarButton（旧名 stSidebarCollapsedControl 双写兼容）*/
+[data-testid="stExpandSidebarButton"],
 [data-testid="stSidebarCollapsedControl"] {
     display: flex !important;
     visibility: visible !important;
