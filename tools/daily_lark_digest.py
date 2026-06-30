@@ -9,6 +9,10 @@
   顶层 4 桶: 通常输出 / 输出中国 / 返品(HENPIN-EX) / 不良品(FF-3) + 库存合计 + 总数量
   └ 通常输出 内部再按「等级」细分: Rank A/B/C / NEW / 中止 / 未分类（口径同 page06 各等级库存金额）
 
+  📥 前日收货段（Boss 2026-06-30 追加）: 口径同 page30「📦 入库状态 → 前日收货」tab —
+     收货单数 / SKU数(=COUNT DISTINCT item·非明细行数) / 检收金额 / 供货商数。
+     前日无数据则兜底落最新收货日。取数失败只省略该段、不影响库存汇报主体。
+
 发送: 飞书群「自定义机器人」webhook（零权限・与 trend-radar 同款）。
   · LARK_DIGEST_WEBHOOK         群机器人 webhook URL（必填，非 dry-run）
   · LARK_DIGEST_WEBHOOK_SECRET  若机器人开了「签名校验」则填，否则留空
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime as dt
 import hashlib
 import hmac
 import json
@@ -145,8 +150,39 @@ def build_composition(conn) -> dict:
     }
 
 
-def render_card(d: dict) -> dict:
-    """渲染飞书 interactive 卡片（4 构成桶 + 通常输出按等级内訳）。"""
+def build_receipt_yesterday(conn) -> dict:
+    """前日（昨天）一天的收货 4 指标 · 口径同 page30「📦 入库状态 → 前日收货」tab。
+    前日无数据则兜底落最新有收货的一天（与 shared/receipt_status_view._render_yesterday 一致）。
+    SKU数 = COUNT(DISTINCT item_internal_id)（非明细行数·±修正行不重复计 SKU）。"""
+    cur = conn.cursor(cursor_factory=DictCursor)
+    target = str(dt.date.today() - dt.timedelta(days=1))
+    cur.execute("SELECT 1 FROM nst.item_receipt_line WHERE receipt_date = %s LIMIT 1", (target,))
+    if cur.fetchone() is None:
+        cur.execute("SELECT MAX(receipt_date) AS d FROM nst.item_receipt_line")
+        row = cur.fetchone()
+        latest = row["d"] if row else None
+        if latest is not None and str(latest) != target:
+            target = str(latest)
+
+    cur.execute(
+        "SELECT COUNT(DISTINCT receipt_no)       AS receipts, "
+        "       COUNT(DISTINCT item_internal_id) AS skus, "
+        "       COALESCE(SUM(amount), 0)         AS amount, "
+        "       COUNT(DISTINCT vendor_id)        AS vendors "
+        "FROM nst.item_receipt_line WHERE receipt_date = %s",
+        (target,))
+    r = cur.fetchone()
+    return {
+        "date": target,
+        "receipts": int(r["receipts"] or 0),
+        "skus": int(r["skus"] or 0),
+        "amount": float(r["amount"] or 0),
+        "vendors": int(r["vendors"] or 0),
+    }
+
+
+def render_card(d: dict, recv: dict | None = None) -> dict:
+    """渲染飞书 interactive 卡片（4 构成桶 + 通常输出按等级内訳 + 可选 前日收货段）。"""
     cat_fields = [{
         "is_short": True,
         "text": {"tag": "lark_md",
@@ -173,6 +209,21 @@ def render_card(d: dict) -> dict:
     ]
     if rank_fields:
         elements.append({"tag": "div", "fields": rank_fields})
+
+    if recv:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md",
+            "content": f"**📥 前日收货 · {recv['date']}**"}})
+        elements.append({"tag": "div", "fields": [
+            {"is_short": True, "text": {"tag": "lark_md",
+                "content": f"**收货单数**\n{recv['receipts']:,} 单"}},
+            {"is_short": True, "text": {"tag": "lark_md",
+                "content": f"**SKU 数**\n{recv['skus']:,}"}},
+            {"is_short": True, "text": {"tag": "lark_md",
+                "content": f"**检收金额**\n¥{recv['amount']:,.0f}"}},
+            {"is_short": True, "text": {"tag": "lark_md",
+                "content": f"**供货商数**\n{recv['vendors']:,}"}},
+        ]})
 
     return {
         "config": {"wide_screen_mode": True},
@@ -223,9 +274,15 @@ def main() -> int:
     conn = psycopg2.connect(args.db_url)
     try:
         data = build_composition(conn)
+        try:
+            recv = build_receipt_yesterday(conn)
+        except Exception as e:          # 前日收货段失败不应拖垮库存汇报主体
+            recv = None
+            conn.rollback()
+            print(f"[warn] 前日收货段取数失败，本次汇报省略该段: {e}")
     finally:
         conn.close()
-    card = render_card(data)
+    card = render_card(data, recv)
 
     if args.dry_run:
         # ASCII 友好明细（Windows cmd 终端中文会乱码，数字可读；rank 顺序固定 A/B/C/NEW/中止/未分类）
@@ -236,6 +293,11 @@ def main() -> int:
         for i, r in enumerate(data["rank_rows"]):
             print(f"  RANK[{i}] {r['label']!r} sku={r['sku']:,} qty={r['qty']:,.0f} "
                   f"amt={r['amt']:,.0f} pct={r['pct']:.1f}")
+        if recv:
+            print(f"  RECV date={recv['date']} receipts={recv['receipts']:,} "
+                  f"skus={recv['skus']:,} amount={recv['amount']:,.0f} vendors={recv['vendors']:,}")
+        else:
+            print("  RECV (省略·取数失败或无表)")
         return 0
 
     if not args.webhook:
