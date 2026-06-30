@@ -93,17 +93,8 @@ _GUEST_HIDE_CSS = """
 #MainMenu {
     display: none !important;
 }
-/* ⚠️ 不要笼统隐藏 [data-testid="stHeader"] button —— 那会连带杀掉折叠后的「展开」按钮，
-   guest 收起侧栏后就再也展不开（2026-06-30 根因）。toolbar / MainMenu 已各自精准隐藏，无需这条黑名单。
-   折叠后的「展开」按钮 = Streamlit 1.42→1.57 testid「stExpandSidebarButton」（旧名 stSidebarCollapsedControl 已废，双写兼容），必须始终可见。*/
-[data-testid="stExpandSidebarButton"],
-[data-testid="stExpandSidebarButton"] button,
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="stSidebarCollapsedControl"] button {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-}
+/* 注：不要笼统隐藏 [data-testid="stHeader"] button —— 会连带杀掉侧栏控件；toolbar / MainMenu 已各自精准隐藏。
+   侧栏折叠相关处理统一在全局 _COMPACT_LAYOUT_CSS（永久固定·禁折叠），此处不重复。*/
 </style>
 """
 
@@ -123,14 +114,24 @@ _COMPACT_LAYOUT_CSS = """
     background: transparent !important;
     overflow: visible !important;   /* 别裁掉 header 里 fixed 定位的侧栏展开控件 */
 }
-/* 侧边栏折叠后的「展开」按钮必须始终可见（全局·不论角色·窄视口强制折叠时唯一的回退入口）·
-   1.57 testid = stExpandSidebarButton（旧名 stSidebarCollapsedControl 双写兼容）*/
+/* === 侧边栏永久固定 · 禁用折叠（Boss 2026-06-30：折叠后展不开的彻底解法）=== */
+/* 1) 折叠 / 展开按钮全部隐藏 —— 用户无法再折叠，从源头根除「折叠后回不来」 */
+[data-testid="stSidebarCollapseButton"],
 [data-testid="stExpandSidebarButton"],
 [data-testid="stSidebarCollapsedControl"] {
-    display: flex !important;
+    display: none !important;
+}
+/* 2) 强制 sidebar 始终在视口内展开 —— 1.57 折叠机制 = transform:translateX(-102%)，
+      这里无条件复位；同时覆盖窄屏 / 子页 auto-collapse 与浏览器已存的 collapsed 状态 */
+section[data-testid="stSidebar"] {
+    transform: none !important;
     visibility: visible !important;
-    opacity: 1 !important;
-    z-index: 999990 !important;
+    margin-left: 0 !important;
+}
+section[data-testid="stSidebar"][aria-expanded="false"] {
+    min-width: 240px !important;
+    width: 240px !important;
+    max-width: 240px !important;
 }
 /* 标题与 caption 行间距收紧 */
 h1, h2, h3 {
