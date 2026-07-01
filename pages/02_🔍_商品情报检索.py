@@ -47,7 +47,7 @@ st.caption(_L(
 
 # 列見出し: (中文, 日本語) — UI 言語追従（page 04/05 と統一）
 _LBL = {
-    "internal_id":        ("内部ID", "Internal ID"),
+    "internal_id":        ("内部ID", "内部ID"),
     "item_code":          ("商品编码", "アイテム"),
     "jan":                ("UPC编码", "UPCコード"),
     "display_name":       ("显示名", "表示名"),
@@ -291,7 +291,7 @@ with _tab_search:
             (_lb("handling_cd"), row["handling_cd"]),
             (_lb("jan"), row["jan"]),
             (_lb("item_rank"), row["item_rank"]),
-            ("Internal ID", row["internal_id"]),
+            (_lb("internal_id"), row["internal_id"]),
             (_lb("maker"), row["maker"]),
             (_lb("date_created"), row["date_created"]),
             (_lb("carton_qty"), row["carton_qty"]),
