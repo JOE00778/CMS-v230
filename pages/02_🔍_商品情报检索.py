@@ -47,6 +47,7 @@ st.caption(_L(
 
 # 列見出し: (中文, 日本語) — UI 言語追従（page 04/05 と統一）
 _LBL = {
+    "internal_id":        ("内部ID", "Internal ID"),
     "item_code":          ("商品编码", "アイテム"),
     "jan":                ("UPC编码", "UPCコード"),
     "display_name":       ("显示名", "表示名"),
@@ -249,9 +250,9 @@ with _tab_search:
         sc, sa = sort_options[sort_pick]
         v = v.sort_values(sc, ascending=sa, na_position="last")
 
-        cols = ("item_code", "jan", "display_name", "maker", "item_rank", "handling_cd",
-                "date_created", "qty_on_hand", "qty_available", "qty_on_order", "stock_amount",
-                "cost_estimate", "average_cost", "last_purchase_cost",
+        cols = ("internal_id", "item_code", "jan", "display_name", "maker", "item_rank",
+                "handling_cd", "date_created", "qty_on_hand", "qty_available", "qty_on_order",
+                "stock_amount", "cost_estimate", "average_cost", "last_purchase_cost",
                 "wms_gross_weight_g", "carton_qty", "order_lot", "qty_sold", "revenue")
         # 行数に応じて高さ自動調整（単品/少数件で空行を出さない · 多件は 560 で頭打ち→スクロール）
         _tbl_h = min(38 + 35 * len(v), 560)
