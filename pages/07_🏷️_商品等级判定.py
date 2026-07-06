@@ -168,7 +168,12 @@ with tab1:
 
         # 过滤区块
         st.markdown(t("### 过滤"))
-        f1, f2, f3, f4 = st.columns(4)
+        f0, f1, f2, f3, f4 = st.columns(5)
+        old_rank_filter = f0.multiselect(
+            t("旧档"),
+            options=sorted(df['old_rank'].unique()) if 'old_rank' in df.columns else [],
+            default=[]
+        )
         rank_filter = f1.multiselect(
             t("新档"),
             options=sorted(df['new_rank'].unique()) if 'new_rank' in df.columns else [],
@@ -183,6 +188,8 @@ with tab1:
         sample = f4.number_input(t("显示行数"), min_value=10, max_value=10000, value=100, step=50)
 
         view = df.copy()
+        if old_rank_filter:
+            view = view[view['old_rank'].isin(old_rank_filter)]
         if rank_filter:
             view = view[view['new_rank'].isin(rank_filter)]
         if trend_filter:
