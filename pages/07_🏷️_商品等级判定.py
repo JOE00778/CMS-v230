@@ -145,27 +145,6 @@ with tab1:
     if st.session_state.proposal_data:
         df = pd.DataFrame(st.session_state.proposal_data)
 
-        # 增强：JOIN operation_advice_monthly
-        if 'sku' in df.columns:
-            year_month = QUARTER_TO_MONTH.get(q, '2026-04')
-            try:
-                conn = get_connection()
-                # 白名单防御 + f-string 拼接,绕开 PG/SQLite 占位符差异
-                import re as _re
-                _safe_ym = _re.sub(r"[^0-9-]", "", str(year_month))[:10]
-                _adv_rows = conn.execute(
-                    f"SELECT sku, advice FROM operation_advice_monthly "
-                    f"WHERE year_month='{_safe_ym}'"
-                ).fetchall()
-                adv = pd.DataFrame([dict(r) for r in _adv_rows])
-                conn.close()
-                if not adv.empty:
-                    df = df.merge(adv, on='sku', how='left').fillna({'advice': '—'})
-                else:
-                    df['advice'] = '—'
-            except Exception:
-                df['advice'] = '—'
-
         # KPI 卡片 (4 档 A/B/C/停售)
         c1, c2, c3, c4, c5 = st.columns(5)
         c6, c7, c8 = st.columns(3)
@@ -215,7 +194,7 @@ with tab1:
 
         # 显示表（选择显示列）
         view_display = view.head(int(sample)).copy()
-        display_cols = ['sku', 'name', 'old_rank', 'new_rank', 'trend', 'advice', 'sales', 'margin', 'rank_pct']
+        display_cols = ['sku', 'name', 'old_rank', 'new_rank', 'trend', 'sales', 'margin', 'rank_pct']
         display_cols = [c for c in display_cols if c in view_display.columns]
 
         # 密度 + 列显示控件 (Phase 2A)
