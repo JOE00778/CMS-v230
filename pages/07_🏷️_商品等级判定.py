@@ -168,7 +168,7 @@ with tab1:
 
         # 过滤区块
         st.markdown(t("### 过滤"))
-        f0, f1, f2, f3, f4 = st.columns(5)
+        f0, f1, f2, f3 = st.columns(4)
         old_rank_filter = f0.multiselect(
             t("旧档"),
             options=sorted(df['old_rank'].unique()) if 'old_rank' in df.columns else [],
@@ -185,7 +185,6 @@ with tab1:
             default=[]
         )
         change_only = f3.checkbox(t("只看有变化"), value=True)
-        sample = f4.number_input(t("显示行数"), min_value=10, max_value=10000, value=100, step=50)
 
         view = df.copy()
         if old_rank_filter:
@@ -200,7 +199,7 @@ with tab1:
         st.markdown(t(f"### 建议清单（{len(view)} 条）"))
 
         # 显示表（选择显示列）
-        view_display = view.head(int(sample)).copy()
+        view_display = view.copy()
         display_cols = ['sku', 'name', 'old_rank', 'new_rank', 'trend', 'sales', 'margin', 'rank_pct']
         display_cols = [c for c in display_cols if c in view_display.columns]
 
