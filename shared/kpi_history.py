@@ -6,12 +6,12 @@
 - `get_delta()` 拿当月 vs 上月 delta (sku/stock/revenue/margin)
 - `get_history(field, n)` 拿过去 n 个月某字段历史 (sparkline 用)
 
-字段:
+字段（数据源 2026-07 全部切 nst.* · 旧 item_v2/shop_sales 已弃）:
 - year_month       (主键, YYYYMM)
-- sku_total        item_v2 行数
-- stock_value_jpy  item_v2 SUM(total_amount)
-- month_revenue_jpy shop_sales 当月 SUM(revenue_jpy)
-- gross_margin     shop_sales 当月 gross_profit / revenue (0~1)
+- sku_total        nst.item_master_raw 行数（有 JAN）
+- stock_value_jpy  nst.inventory_snapshot 手持 × 定義原価（JD主仓最新快照·对齐page06）
+- month_revenue_jpy nst.sales_daily 当月 SUM(revenue)
+- gross_margin     nst.sales_daily 当月 gross_profit / revenue (0~1·对齐page05)
 - snapshot_at      ISO timestamp
 
 所有 SQL 都 try/except 防挂.
@@ -77,31 +77,30 @@ def take_snapshot(conn=None) -> dict:
     ym = datetime.now().strftime("%Y%m")
     snap_at = datetime.now().isoformat()
 
-    sku_total = _scalar(conn, "SELECT COUNT(*) FROM item_v2", 0) or 0
+    # nst.* 置換（旧 item_v2 / shop_sales）· 口径对齐 cms.py 首页 KPI + page05/06
+    sku_total = _scalar(
+        conn, "SELECT COUNT(*) FROM nst.item_master_raw WHERE jan IS NOT NULL", 0) or 0
     stock_value = _scalar(
         conn,
-        "SELECT SUM(total_amount) FROM item_v2 WHERE total_amount IS NOT NULL",
+        "SELECT COALESCE(SUM(inv.qty_on_hand * COALESCE(im.cost_estimate, 0)), 0) "
+        "FROM nst.inventory_snapshot inv "
+        "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
+        "WHERE inv.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot) "
+        "AND inv.warehouse = 'JD-物流-千葉'",
         0.0,
     ) or 0.0
+    _ym_dash = datetime.now().strftime("%Y-%m")
     month_rev = _scalar(
         conn,
-        f"SELECT SUM(revenue_jpy) FROM shop_sales "
-        f"WHERE granularity='monthly' "
-        f"AND substr(REPLACE(period_start,'-',''),1,6)='{ym}'",
+        f"SELECT COALESCE(SUM(revenue), 0) FROM nst.sales_daily "
+        f"WHERE to_char(sale_date, 'YYYY-MM') = '{_ym_dash}'",
         0.0,
     ) or 0.0
-    revenue_for_margin = _scalar(
-        conn,
-        f"SELECT SUM(revenue) FROM shop_sales "
-        f"WHERE granularity='monthly' "
-        f"AND substr(REPLACE(period_start,'-',''),1,6)='{ym}'",
-        0.0,
-    ) or 0.0
+    revenue_for_margin = month_rev  # nst.sales_daily.revenue = JPY 营业額（无本币/JPY 之分）
     profit = _scalar(
         conn,
-        f"SELECT SUM(gross_profit) FROM shop_sales "
-        f"WHERE granularity='monthly' "
-        f"AND substr(REPLACE(period_start,'-',''),1,6)='{ym}'",
+        f"SELECT COALESCE(SUM(gross_profit), 0) FROM nst.sales_daily "
+        f"WHERE to_char(sale_date, 'YYYY-MM') = '{_ym_dash}'",
         0.0,
     ) or 0.0
     margin = (profit / revenue_for_margin) if revenue_for_margin and revenue_for_margin > 0 else None

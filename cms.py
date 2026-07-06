@@ -110,32 +110,42 @@ def _safe_df(sql: str) -> pd.DataFrame:
 # PPVI P1 · 去 emoji 装饰前缀（结构主义：颜色/装饰仅用于编码信息）
 st.markdown(f"##### {t('业务大盘')}")
 
-# 1) 商品 SKU 数
-sku_total = _safe_scalar("SELECT COUNT(*) FROM item_v2", default=0)
+# 1) 商品 SKU 数（nst.item_master_raw · 旧 item_v2 置換）
+sku_total = _safe_scalar(
+    "SELECT COUNT(*) FROM nst.item_master_raw WHERE jan IS NOT NULL", default=0)
 
-# 2) 在库金额（item_v2.total_amount 合计）
+# 2) 在库金额（nst.inventory_snapshot 手持数 × 定義原価 · JD主仓最新快照 · 对齐库存监控页06）
 inv_amount = _safe_scalar(
-    "SELECT COALESCE(SUM(total_amount), 0) FROM item_v2 WHERE total_amount IS NOT NULL",
-    default=0,
-)
-
-# 3) 本月销售（shop_sales 当月 SUM(revenue_jpy)）
-period_start = f"{now.year}-{now.month:02d}-01"
-sales_amount = _safe_scalar(
-    f"""
-    SELECT COALESCE(SUM(revenue_jpy), 0) FROM shop_sales
-    WHERE granularity = 'monthly' AND period_start = '{period_start}'
+    """
+    SELECT COALESCE(SUM(inv.qty_on_hand * COALESCE(im.cost_estimate, 0)), 0)
+    FROM nst.inventory_snapshot inv
+    JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id
+    WHERE inv.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot)
+      AND inv.warehouse = 'JD-物流-千葉'
     """,
     default=0,
 )
 
-# 4) 毛利率
+# 本月 YYYY-MM（_ym 给 KPI #3/#4 的 nst.sales_daily · period_start 保留给下方 TOP10/趋势区）
+period_start = f"{now.year}-{now.month:02d}-01"
+_ym = f"{now.year}-{now.month:02d}"
+
+# 3) 本月营业额（nst.sales_daily 当月 SUM(revenue) · 对齐店铺毛利页05）
+sales_amount = _safe_scalar(
+    f"""
+    SELECT COALESCE(SUM(revenue), 0) FROM nst.sales_daily
+    WHERE to_char(sale_date, 'YYYY-MM') = '{_ym}'
+    """,
+    default=0,
+)
+
+# 4) 毛利率（nst.sales_daily 当月 gross_profit / revenue）
 gp_row = _safe_df(
     f"""
     SELECT COALESCE(SUM(gross_profit), 0) AS gp,
-           COALESCE(SUM(revenue_jpy), 0)  AS rev
-    FROM shop_sales
-    WHERE granularity = 'monthly' AND period_start = '{period_start}'
+           COALESCE(SUM(revenue), 0)      AS rev
+    FROM nst.sales_daily
+    WHERE to_char(sale_date, 'YYYY-MM') = '{_ym}'
     """
 )
 gp_rate = 0.0
