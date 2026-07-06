@@ -1,12 +1,16 @@
-"""模块 #34 供货商数据库 · 供货商比价 / 采购决策.
+"""模块 #34 供货商数据库 · 4 tab（Boss 2026-07-07 重整）.
 
-报价(supplier_quote·append 留历史)を貯め、JAN ごとに最新报价を綜合加权(价格/纳期/
-预付/起订量)して「どの仕入先から買うのが最合理か」を判定する。新报价は上传で自動累積。
+  📋 仕入れデータ  商品×采购价格台账（最新PO金额/主·次供货商(待上传)/最低报价/现状比）
+  🔍 見直し必要    采购价 ÷ 建议零售价(nst.item_msrp) = 仕入折数 → 需重新谈价一览
+  📤 見積書UP     报价上传（xlsx/csv·仕入先管理リスト一括·PO 实绩种子）
+  🏢 仕入先データ  供货商主档（起订金额/纳期/预付/启用）
 
-データ: PG sourcing schema（本ページが idempotent 建表）。
+データ: PG sourcing schema（本ページが idempotent 建表）+ nst.*（NST 直连）。
   sourcing.supplier        供货商主档（起订金额/纳期/预付/启用）
   sourcing.supplier_quote  报价（supplier×jan×price×moq×lot×lead×quote_date·append）
-ロジック: shared/sourcing.py（純関数·tests/test_sourcing.py）。Boss 2026-06-22。
+ロジック: shared/sourcing.py（純関数·tests/test_sourcing.py）。
+旧「🏆 比价/采购决策」（权重打分）tab は 2026-07-07 廃止（sourcing.py の
+Weights/recommend は tests 付きのため保留）。
 """
 from __future__ import annotations
 
@@ -28,10 +32,10 @@ inject_theme()
 lang_selector()
 conn = get_connection()
 
-st.title(t("🏢 供货商数据库（供货商比价 / 采购决策）"))
+st.title(t("🏢 供货商数据库"))
 st.caption(t(
-    "报价累积(留历史) → 每个 JAN 取最新报价 → 价格/纳期/预付/起订量 综合加权 → "
-    "判断从哪个供货商采购最合理。新报价上传即自动增加/更新。"
+    "仕入れデータ(采购价格台账) · 見直し必要(对比建议零售价) · "
+    "見積書UP(报价上传) · 仕入先データ(供货商主档)。"
 ))
 
 
@@ -107,8 +111,8 @@ def sc_int(v):
     return int(_n) if _n is not None else None
 
 
-tab_dec, tab_list, tab_up, tab_sup = st.tabs(
-    [t("🏆 比价 / 采购决策"), t("📋 ABC 比价列表"), t("📤 报价上传 / 种子"), t("🏢 供货商主档")])
+tab_data, tab_opt, tab_up, tab_sup = st.tabs(
+    [t("📋 仕入れデータ"), t("🔍 見直し必要"), t("📤 見積書UP"), t("🏢 仕入先データ")])
 
 # ============================================================
 # Tab：报价上传 / 种子
@@ -282,115 +286,53 @@ with tab_sup:
             st.success(t("✅ 已保存"))
 
 # ============================================================
-# Tab：比价 / 采购决策
+# Tab：仕入れデータ（数据管理 · ABC产品 × 供货商价格 + 最新订单金额 + 最低价）
 # ============================================================
-with tab_dec:
-    _w1, _w2, _w3, _w4 = st.columns(4)
-    _wp = _w1.slider(t("价格权重"), 0.0, 1.0, 0.70, 0.05, key="w_price")
-    _wl = _w2.slider(t("纳期权重"), 0.0, 1.0, 0.10, 0.05, key="w_lead")
-    _wpp = _w3.slider(t("预付权重(预付=扣分)"), 0.0, 1.0, 0.10, 0.05, key="w_prepay")
-    _wm = _w4.slider(t("起订量权重"), 0.0, 1.0, 0.10, 0.05, key="w_moq")
-    _weights = sc.Weights(price=_wp, lead=_wl, prepay=_wpp, moq=_wm)
-
-    _q = _read(
-        "SELECT q.id, q.supplier_name, q.jan, q.item_name, q.price, q.moq, q.order_lot, "
-        "q.lead_days, q.quote_date, q.source, "
-        "COALESCE(s.is_prepay, FALSE) AS is_prepay, s.default_lead_days, "
-        "COALESCE(s.active, TRUE) AS active "
-        "FROM sourcing.supplier_quote q "
-        "LEFT JOIN sourcing.supplier s ON s.supplier_name = q.supplier_name")
-    if _q.empty:
-        st.info(t("报价库为空。先到「📤 报价上传 / 种子」上传报价、或从 PO 实绩导入。"))
-    else:
-        _q = _q[_q["active"] != False]  # noqa: E712  停用供货商不参与
-        # 商品等级（item_master）merge → ABC 等级筛选
-        _rk = _read("SELECT jan, item_rank FROM nst.item_master_raw WHERE jan IS NOT NULL")
-        _q = (_q.merge(_rk.drop_duplicates("jan"), on="jan", how="left")
-              if not _rk.empty else _q.assign(item_rank=None))
-        # 等级が無い（NST 未登録）JAN は推奨対象外 → 常に除外
-        _q = _q[_q["item_rank"].notna()
-                & (_q["item_rank"].astype(str).str.strip() != "")]
-        _rk_sel = st.multiselect(
-            t("等级（留空=全部有等级商品）"), ["Aランク", "Bランク", "Cランク", "NEW", "取扱中止"],
-            default=["Aランク", "Bランク", "Cランク"], key="dec_rank")
-        if _rk_sel:
-            _q = _q[_q["item_rank"].isin(_rk_sel)]
-        for _c in ("price", "moq", "order_lot"):
-            _q[_c] = pd.to_numeric(_q[_c], errors="coerce")
-        _q["lead_days"] = pd.to_numeric(_q["lead_days"], errors="coerce").fillna(
-            pd.to_numeric(_q["default_lead_days"], errors="coerce"))
-        _scored = sc.recommend(sc.latest_quotes(_q), _weights)
-        if _scored.empty:
-            st.info(t("该筛选下无报价（调整等级，或先导入报价）。"))
-        else:
-            k1, k2, k3 = st.columns(3)
-            k1.metric(t("覆盖 SKU"), f"{_scored['jan'].nunique():,}")
-            k2.metric(t("供货商数"), f"{_scored['supplier_name'].nunique():,}")
-            k3.metric(t("报价条数(最新)"), f"{len(_scored):,}")
-
-            _jan_kw = st.text_input(t("🔍 按 JAN / 商品名 搜索（留空=全部）"), key="dec_kw")
-            view = _scored
-            if _jan_kw.strip():
-                _kw = _jan_kw.strip()
-                view = view[view["jan"].astype(str).str.contains(_kw, na=False)
-                            | view["item_name"].astype(str).str.contains(_kw, case=False, na=False)]
-
-            st.markdown("##### " + t("🏆 采购推荐（每 JAN 综合得分最低者=🏆）"))
-            _disp = view.sort_values(["jan", "score"]).copy()
-            _disp["rec"] = _disp["is_recommended"].map(lambda b: "🏆" if b else "")
-            _lead = (["rec", "item_rank", "jan", "item_name"] if "item_rank" in _disp.columns
-                     else ["rec", "jan", "item_name"])
-            _show = _disp[_lead + ["supplier_name", "price", "moq", "order_lot", "lead_days",
-                                   "is_prepay", "score", "quote_date", "source"]].rename(
-                columns={"rec": t("推荐"), "item_rank": t("等级"), "jan": t("JAN"),
-                         "item_name": t("商品名"), "supplier_name": t("供货商"),
-                         "price": t("采购价"), "moq": t("起订量"),
-                         "order_lot": t("订货批量"), "lead_days": t("纳期(日)"),
-                         "is_prepay": t("预付"), "score": t("综合得分"),
-                         "quote_date": t("报价日"), "source": t("来源")})
-            st.dataframe(_show, hide_index=True, use_container_width=True, height=560,
-                         column_config={
-                             t("采购价"): st.column_config.NumberColumn(format="¥%.2f"),
-                             t("综合得分"): st.column_config.NumberColumn(format="%.3f"),
-                         })
-            st.caption(t("得分越低越推荐 · 价格/纳期/起订量在同 JAN 内归一化 · 预付供货商按权重扣分"))
-
-# ============================================================
-# Tab：ABC 比价列表（ABC产品 × 各供货商报价 + 现在进货 + 最低价）
-# ============================================================
-with tab_list:
-    st.caption(t("ABC 等级产品 × 各供货商最新报价(宽表) + 现在进货价/最近订货数 + 最低价/最安供货商。"))
-    _ranks = st.multiselect(t("等级"), ["Aランク", "Bランク", "Cランク"],
+with tab_data:
+    st.caption(t("商品 × 采购价格台账：最新订单金额(NST PO) + 主/次供货商(待上传) + 最低价(报价) + 现状对比。"))
+    _ranks = st.multiselect(t("等级"), ["Aランク", "Bランク", "Cランク", "NEW"],
                             default=["Aランク", "Bランク", "Cランク"], key="abc_ranks")
     if not _ranks:
         _ranks = ["Aランク", "Bランク", "Cランク"]
     _items = _read(
-        "SELECT jan, display_name, maker, item_rank, last_purchase_cost "
+        "SELECT internal_id, jan, display_name, item_rank, last_purchase_cost "
         "FROM nst.item_master_raw WHERE jan IS NOT NULL AND item_rank IN ("
         + ",".join(["?"] * len(_ranks)) + ")", tuple(_ranks))
     if _items.empty:
-        st.info(t("无 ABC 等级商品（NST item_master 未就绪？）"))
+        st.info(t("无该等级商品（NST item_master 未就绪？）"))
     else:
         _lq = _read("SELECT id, supplier_name, jan, price, quote_date FROM sourcing.supplier_quote")
         _wide = (sc.compare_wide(sc.latest_quotes(_lq)) if not _lq.empty
                  else pd.DataFrame(columns=["jan", "min_price", "cheapest_supplier"]))
-        _poq = _read("SELECT jan, year_month, qty_ordered FROM nst.po_item_supplier_monthly "
-                     "WHERE jan IS NOT NULL")
-        if not _poq.empty:
-            _poq["qty_ordered"] = pd.to_numeric(_poq["qty_ordered"], errors="coerce")
-            _pm = _poq.groupby(["jan", "year_month"], as_index=False)["qty_ordered"].sum()
-            _pm = (_pm.sort_values("year_month").drop_duplicates("jan", keep="last")
-                   [["jan", "qty_ordered"]].rename(columns={"qty_ordered": "recent_qty"}))
+        # 最新订单金额 = 该商品最近一次 PO 行的金额（nst.purchase_order_line · MAX(trandate)）
+        _pol = _read("SELECT item_internal_id, trandate, amount FROM nst.purchase_order_line "
+                     "WHERE item_internal_id IS NOT NULL")
+        if not _pol.empty:
+            _pol["amount"] = pd.to_numeric(_pol["amount"], errors="coerce")
+            _pol = (_pol.sort_values("trandate").drop_duplicates("item_internal_id", keep="last")
+                    [["item_internal_id", "amount"]]
+                    .rename(columns={"item_internal_id": "internal_id",
+                                     "amount": "latest_po_amount"}))
         else:
-            _pm = pd.DataFrame(columns=["jan", "recent_qty"])
+            _pol = pd.DataFrame(columns=["internal_id", "latest_po_amount"])
+        _pol["internal_id"] = _pol["internal_id"].astype(str)
+        _items["internal_id"] = _items["internal_id"].astype(str)
 
-        base = _items.merge(_wide, on="jan", how="left").merge(_pm, on="jan", how="left")
+        base = (_items.merge(_wide[[c for c in ("jan", "min_price") if c in _wide.columns]],
+                             on="jan", how="left")
+                if not _wide.empty else _items.assign(min_price=None))
+        base = base.merge(_pol, on="internal_id", how="left")
         base["last_purchase_cost"] = pd.to_numeric(base["last_purchase_cost"], errors="coerce")
         base["min_price"] = pd.to_numeric(base.get("min_price"), errors="coerce")
-        base["save_vs_min"] = base["last_purchase_cost"] - base["min_price"]
+        # (现状进货价 / 最低价 − 1)%：>0 = 现状比最低价贵
+        base["ratio_vs_min"] = (base["last_purchase_cost"] / base["min_price"].where(
+            base["min_price"] > 0) - 1) * 100
+        # 主/次供货商 4 列：留白占位（数据后期上传 · Boss 2026-07-07）
+        for _c in ("main_supplier", "main_price", "sub_supplier", "sub_price"):
+            base[_c] = None
 
         _c1, _c2 = st.columns([1, 2])
-        _only_q = _c1.checkbox(t("只看有报价的"), value=True, key="abc_onlyq")
+        _only_q = _c1.checkbox(t("只看有报价的"), value=False, key="abc_onlyq")
         _kw = _c2.text_input(t("🔍 JAN / 商品名 搜索"), key="abc_kw")
         if _only_q:
             base = base[base["min_price"].notna()]
@@ -400,30 +342,103 @@ with tab_list:
                         | base["display_name"].astype(str).str.contains(_k, case=False, na=False)]
 
         k1, k2, k3 = st.columns(3)
-        k1.metric(t("ABC 商品"), f"{len(base):,}")
+        k1.metric(t("商品数"), f"{len(base):,}")
         k2.metric(t("有报价"), f"{int(base['min_price'].notna().sum()):,}")
-        k3.metric(t("现价>最低价(可省)"), f"{int((base['save_vs_min'] > 0).sum()):,}")
+        k3.metric(t("现价>最低价"), f"{int((base['ratio_vs_min'] > 0).sum()):,}")
 
-        _supcols = [c for c in _wide.columns if c not in ("jan", "min_price", "cheapest_supplier")]
-        _core = ["item_rank", "jan", "display_name", "maker", "last_purchase_cost",
-                 "recent_qty", "min_price", "cheapest_supplier", "save_vs_min"]
-        _order = [c for c in _core if c in base.columns] + [c for c in _supcols if c in base.columns]
-        view = base[_order].sort_values(["item_rank", "save_vs_min"],
+        _order = ["item_rank", "jan", "display_name", "latest_po_amount",
+                  "main_supplier", "main_price", "sub_supplier", "sub_price",
+                  "min_price", "ratio_vs_min"]
+        view = base[_order].sort_values(["item_rank", "ratio_vs_min"],
                                         ascending=[True, False], na_position="last")
-        _ren = {"item_rank": t("等级"), "jan": t("JAN"), "display_name": t("商品名"),
-                "maker": t("厂商"), "last_purchase_cost": t("现在进货价"),
-                "recent_qty": t("最近订货数"), "min_price": t("最低价"),
-                "cheapest_supplier": t("最安供货商"), "save_vs_min": t("现价-最低(可省)")}
+        _ren = {"item_rank": t("RANK"), "jan": t("JAN"), "display_name": t("商品名"),
+                "latest_po_amount": t("最新订单金额"),
+                "main_supplier": t("主供货商"), "main_price": t("主供货商价格"),
+                "sub_supplier": t("次供货商"), "sub_price": t("次供货商价格"),
+                "min_price": t("最低价格"), "ratio_vs_min": t("现状比最低价")}
         disp = view.rename(columns=_ren)
         st.dataframe(
             disp, hide_index=True, use_container_width=True, height=600,
             column_config={
-                t("现在进货价"): st.column_config.NumberColumn(format="¥%.0f"),
-                t("最低价"): st.column_config.NumberColumn(format="¥%.0f"),
-                t("现价-最低(可省)"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("最新订单金额"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("主供货商价格"): st.column_config.NumberColumn(format="¥%.2f"),
+                t("次供货商价格"): st.column_config.NumberColumn(format="¥%.2f"),
+                t("最低价格"): st.column_config.NumberColumn(format="¥%.2f"),
+                t("现状比最低价"): st.column_config.NumberColumn(format="%.1f%%"),
             })
-        st.download_button(t("📥 ABC比价列表 CSV"),
+        st.download_button(t("📥 仕入れデータ CSV"),
                            disp.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="abc_supplier_compare.csv", mime="text/csv", key="abc_csv")
-        st.caption(t("现在进货价=NST 前回购入价格 · 最低价=各供货商最新报价最小 · "
-                     "可省=现在进货价−最低价(>0 值得换最安) · 后面列=各供货商报价"))
+                           file_name="sourcing_data.csv", mime="text/csv", key="abc_csv")
+        st.caption(t("最新订单金额=NST 最近一次 PO 行金额 · 最低价格=各供货商最新报价最小 · "
+                     "现状比最低价=(NST 前回购入价 ÷ 最低价 − 1)(>0 现状偏贵) · 主/次供货商待上传"))
+
+# ============================================================
+# Tab：見直し必要（优化建议 · 采购价 vs 建议零售价 = 几折采购）
+# ============================================================
+with tab_opt:
+    st.caption(t("采购价(NST 前回购入价) ÷ 建议零售价(nst.item_msrp·官方源) = 仕入折数。"
+                 "折数越高利润越薄 → 需重新谈价。"))
+    _ranks_o = st.multiselect(t("等级"), ["Aランク", "Bランク", "Cランク", "NEW"],
+                              default=["Aランク", "Bランク", "NEW"], key="opt_ranks")
+    if not _ranks_o:
+        _ranks_o = ["Aランク", "Bランク", "NEW"]
+    _mi = _read(
+        "SELECT im.jan, im.display_name, im.item_rank, im.last_purchase_cost, "
+        "m.msrp_jpy, m.is_open_price "
+        "FROM nst.item_master_raw im "
+        "LEFT JOIN nst.item_msrp m ON m.jan = im.jan "
+        "WHERE im.jan IS NOT NULL AND im.item_rank IN ("
+        + ",".join(["?"] * len(_ranks_o)) + ")", tuple(_ranks_o))
+    if _mi.empty:
+        st.info(t("无数据（nst.item_msrp 未就绪？本地环境无 MSRP 表属正常）"))
+    else:
+        _mi["last_purchase_cost"] = pd.to_numeric(_mi["last_purchase_cost"], errors="coerce")
+        _mi["msrp_jpy"] = pd.to_numeric(_mi["msrp_jpy"], errors="coerce")
+        # 仕入折数 = 采购价 ÷ 建议零售价 × 10（7.0 = 7折 = 零售价的 70%）
+        _mi["wari"] = _mi["last_purchase_cost"] / _mi["msrp_jpy"].where(_mi["msrp_jpy"] > 0) * 10
+        _has = _mi[_mi["wari"].notna()].copy()
+        _no = _mi[_mi["wari"].isna()]
+
+        _th = st.slider(t("見直し阈值（仕入折数 ≥ X 折 = 需重新谈价）"),
+                        0.0, 10.0, 7.0, 0.5, key="opt_th")
+        _has["need"] = _has["wari"] >= _th
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric(t("有参考价"), f"{len(_has):,}")
+        k2.metric(t("見直し必要"), f"{int(_has['need'].sum()):,}")
+        k3.metric(t("无参考価"), f"{len(_no):,}")
+
+        _kw_o = st.text_input(t("🔍 JAN / 商品名 搜索"), key="opt_kw")
+        _v = _has
+        if _kw_o.strip():
+            _k = _kw_o.strip()
+            _v = _v[_v["jan"].astype(str).str.contains(_k, na=False)
+                    | _v["display_name"].astype(str).str.contains(_k, case=False, na=False)]
+
+        _v = _v.sort_values("wari", ascending=False, na_position="last").copy()
+        _v["flag"] = _v["need"].map(lambda b: "⚠️" if b else "")
+        _show_o = _v[["flag", "item_rank", "jan", "display_name",
+                      "last_purchase_cost", "msrp_jpy", "wari"]].rename(
+            columns={"flag": t("見直し"), "item_rank": t("RANK"), "jan": t("JAN"),
+                     "display_name": t("商品名"), "last_purchase_cost": t("采购价"),
+                     "msrp_jpy": t("建议零售价"), "wari": t("仕入折数")})
+        st.dataframe(
+            _show_o, hide_index=True, use_container_width=True, height=560,
+            column_config={
+                t("采购价"): st.column_config.NumberColumn(format="¥%.2f"),
+                t("建议零售价"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("仕入折数"): st.column_config.NumberColumn(format="%.1f折"),
+            })
+        st.download_button(t("📥 見直し必要 CSV"),
+                           _show_o.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="msrp_review.csv", mime="text/csv", key="opt_csv")
+        st.caption(t("建议零售价=官方源 MSRP(税抜) · 采购价=NST 前回购入价(税抜) · "
+                     "仕入折数=采购价÷零售价×10 · 无参考価=オープン価格/未调查(C 档暂缓)"))
+        if not _no.empty:
+            with st.expander(t("无参考価商品一览") + f"（{len(_no):,}）"):
+                _no_show = _no[["item_rank", "jan", "display_name", "last_purchase_cost"]].rename(
+                    columns={"item_rank": t("RANK"), "jan": t("JAN"),
+                             "display_name": t("商品名"), "last_purchase_cost": t("采购价")})
+                st.dataframe(_no_show, hide_index=True, use_container_width=True, height=300,
+                             column_config={
+                                 t("采购价"): st.column_config.NumberColumn(format="¥%.2f")})
