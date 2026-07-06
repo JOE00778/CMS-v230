@@ -106,11 +106,12 @@ def _job_title(category, frequency, run_time) -> str:
 
 
 # ============================================================
-# 顶层 tab: NST / JDL 两个数据源
+# 顶层 tab: NST / JDL / Coupang 三个数据源
 # ============================================================
-top_nst, top_jdl = st.tabs([
+top_nst, top_jdl, top_cp = st.tabs([
     t("🏬 NST（NetSuite）"),
     t("🚚 JDL（京东物流海外仓）"),
+    t("🇰🇷 Coupang（韩国店）"),
 ])
 
 # ──────────────────────────────────────────────────────────────
@@ -626,6 +627,143 @@ with top_jdl:
                              "rows_written": t("写入行数"),
                              "rows_total": t("总行数(JDL)"),
                              "error_code": t("错误码"),
+                             "error_message": t("错误信息"),
+                         })
+        else:
+            st.info(t("尚无拉取记录"))
+
+
+# ============================================================
+# Coupang 顶层 tab · 3 个子 tab（结算数据 / 调度+手动同步 / 拉取历史）
+#   coupang.settlement / coupang.pull_schedule / coupang.pull_log
+#   展示层在 page 05 店铺毛利「店铺扣减」tab · ここは原始数据 + 調度管理
+# ============================================================
+with top_cp:
+    c_set, c_sched, c_log = st.tabs([
+        t("💰 结算数据"),
+        t("▶️ 调度 + 手动同步"),
+        t("📜 拉取历史"),
+    ])
+
+    # ── 结算数据：coupang.settlement ─────────────────────────
+    with c_set:
+        meta_df, err = _query(
+            "SELECT count(*) c, max(settlement_date) d, max(pulled_at) p "
+            "FROM coupang.settlement"
+        )
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
+            st.info(t("初次使用需在元川 PG 跑 coupang_api/sql/000 迁移并启动 coupang_scheduler 容器"))
+        elif meta_df is None or int(meta_df.iloc[0]["c"]) == 0:
+            st.info(t("尚无 Coupang 结算数据。请到「调度 + 手动同步」tab 触发首次拉取。"))
+        else:
+            m = meta_df.iloc[0]
+            c1, c2, c3 = st.columns(3)
+            c1.metric(t("结算单行数"), f"{int(m['c']):,}")
+            c2.metric(t("最新结算日"), str(m["d"]))
+            c3.caption(t("最終取得") + ": " +
+                       (str(m["p"])[:16] if pd.notna(m["p"]) else "-"))
+            df, err2 = _query(
+                "SELECT revenue_recognition_year_month, settlement_type, "
+                "settlement_date, status, total_sale, service_fee, "
+                "seller_service_fee, seller_discount_coupon, downloadable_coupon, "
+                "store_fee_discount, deduction_amount, debt_of_last_week, "
+                "courantee_fee, courantee_customer_reward, "
+                "settlement_amount, last_amount, final_amount, pulled_at "
+                "FROM coupang.settlement "
+                "ORDER BY revenue_recognition_year_month DESC, settlement_date "
+                "LIMIT 500"
+            )
+            if err2:
+                st.error(err2)
+            elif df is not None:
+                st.caption(t("金额单位 KRW · 每行 = 销售认知月 × 结算类型 × 结算日"))
+                st.dataframe(df, use_container_width=True, height=520,
+                             column_config={
+                                 "revenue_recognition_year_month": t("销售认知月"),
+                                 "settlement_type": t("结算类型"),
+                                 "settlement_date": t("结算日"),
+                                 "status": t("状态"),
+                                 "total_sale": t("实际销售额"),
+                                 "service_fee": t("销售手续费"),
+                                 "seller_service_fee": t("MyShop手续费"),
+                                 "seller_discount_coupon": t("立减优惠券"),
+                                 "downloadable_coupon": t("下载优惠券"),
+                                 "store_fee_discount": t("店铺手续费折扣"),
+                                 "deduction_amount": t("结算扣款"),
+                                 "debt_of_last_week": t("上周未清欠款"),
+                                 "courantee_fee": "Courantee",
+                                 "courantee_customer_reward": t("Courantee补偿"),
+                                 "settlement_amount": t("结算额"),
+                                 "last_amount": t("尾款保留"),
+                                 "final_amount": t("最终支付额"),
+                                 "pulled_at": t("取得时刻"),
+                             })
+
+    # ── 调度 + 手动同步：coupang.pull_schedule ────────────────
+    with c_sched:
+        st.subheader(t("Coupang 结算定时拉取"))
+        st.caption(t(
+            "元川的常驻 coupang_scheduler 容器毎分检查此表，到时间或 run_now=TRUE 时启动 daily_pull。"
+            "每次拉取当月+前2个月（覆盖尾款与已付状态翻转）。"
+        ))
+        cp_sched_df, err = _query(
+            "SELECT job_key, frequency, enabled, run_time, run_now, "
+            "       last_run_at, last_status, description "
+            "FROM coupang.pull_schedule ORDER BY job_key"
+        )
+        if err:
+            st.error(t("接続エラー: ") + err)
+        elif cp_sched_df is None or cp_sched_df.empty:
+            st.info(t("スケジュール未登録（跑一次 coupang_api/sql/000_create_coupang_schema.sql）"))
+        else:
+            for _, r in cp_sched_df.iterrows():
+                jk = r["job_key"]
+                st.markdown(f"**🇰🇷 {jk}**  ·  {r['frequency']} {str(r['run_time'])[:5]} 自動")
+                if r.get("description"):
+                    st.caption("📋 " + str(r["description"]))
+                c1, c2, c3 = st.columns([2, 2, 1.5])
+                c1.caption(t("上次同步") + ": " +
+                           (str(r["last_run_at"])[:16] if r["last_run_at"] is not None else "-"))
+                c2.caption(t("上次状态") + ": " + (r["last_status"] or "-"))
+                if r["run_now"]:
+                    c3.info(t("⏳ 同步中…"))
+                else:
+                    if c3.button(t("▶️ 立即同步"), key=f"cp_run_{jk}", type="primary"):
+                        try:
+                            conn.execute(
+                                "UPDATE coupang.pull_schedule SET run_now=TRUE, updated_at=now() "
+                                "WHERE job_key=?", (jk,))
+                            conn.commit()
+                            st.success(t("已触发 · 1 分钟内启动 daily_pull"))
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(str(e))
+                st.divider()
+
+    # ── 拉取历史：coupang.pull_log ───────────────────────────
+    with c_log:
+        st.caption(t("直近 50 回の取得実行（coupang.pull_log）· 403=IP白名单 · 401=key失效(180天)"))
+        df, err = _query(
+            "SELECT id, started_at, finished_at, status, trigger_source, months, "
+            "       fetched, upserted, errors, error_message "
+            "FROM coupang.pull_log ORDER BY id DESC LIMIT 50"
+        )
+        if err:
+            st.error(t("テーブル未取得 or 接続エラー: ") + err)
+        elif df is not None and not df.empty:
+            st.dataframe(df, use_container_width=True, height=480,
+                         column_config={
+                             "id": "ID",
+                             "started_at": t("開始"),
+                             "finished_at": t("終了"),
+                             "status": t("結果"),
+                             "trigger_source": t("触发"),
+                             "months": t("对象月"),
+                             "fetched": t("拉取行数"),
+                             "upserted": t("写入行数"),
+                             "errors": t("错误数"),
                              "error_message": t("错误信息"),
                          })
         else:

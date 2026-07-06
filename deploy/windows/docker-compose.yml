@@ -208,6 +208,35 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # ------------------------------------------------------------
+  # coupang_scheduler · Coupang 결산(settlement) 日次拉取ディスパッチャ（常駐）
+  #   毎分 coupang.pull_schedule を見て daily_pull を起動（自動 07:00 JST + 手動 run_now）
+  #   イメージは nst_scheduler と同一 · コードは volume mount（scp/git pull で更新）
+  #   凭据 COUPANG_*（database/.env · WING key は斑马ERP と共用 · 180 日輪換注意）
+  # ------------------------------------------------------------
+  coupang_scheduler:
+    image: windows-nst_scheduler
+    container_name: cms_coupang_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../../../database/.env          # COUPANG_* 凭据
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cms}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cms}
+      TZ: Asia/Tokyo
+    command: ["python", "-m", "data_warehouse.coupang_api.dispatcher"]
+    volumes:
+      - ../../../database:/app:ro       # coupang_api コード（scp/git pull で更新）
+    networks:
+      - cms_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
 networks:
   cms_net:
     driver: bridge
