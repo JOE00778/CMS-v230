@@ -159,3 +159,27 @@ def test_compare_wide_min_and_cheapest():
 
 def test_compare_wide_empty():
     assert sc.compare_wide(pd.DataFrame(columns=["jan", "supplier_name", "price"])).empty
+
+
+# ---- 主供货商指定（③SKU明細）----
+def test_extract_main_suppliers():
+    raw = pd.DataFrame([
+        ["③ SKU明細（系列免送料 …）", None, None, None, None],
+        ["仕入先", "系列", "JAN", "商品名", "単価"],
+        ["■ 五洲　（88品 / ¥4,779,912）", None, None, None, None],
+        ["五洲", "ANESSA", "4909978253318", "アネッサ A", "2,322"],
+        ["五洲", "ANESSA", "4909978253318", "アネッサ A 重複", "9999"],  # JAN 重複 → 先勝ち
+        ["ハリマ", "KOSE", "4971710000015", "KOSE B", None],            # 単価空 → None
+        ["メイプル", "X", "not-a-jan", "壊れ行", "100"],                  # JAN 非合规 → skip
+    ])
+    out = sc.extract_main_suppliers(raw)
+    assert len(out) == 2
+    r1 = out[out["jan"] == "4909978253318"].iloc[0]
+    assert r1["supplier_name"] == "五洲" and r1["price"] == 2322.0
+    r2 = out[out["jan"] == "4971710000015"].iloc[0]
+    assert r2["supplier_name"] == "ハリマ" and pd.isna(r2["price"])
+
+
+def test_extract_main_suppliers_no_header():
+    raw = pd.DataFrame([["a", "b"], ["c", "d"]])
+    assert sc.extract_main_suppliers(raw).empty

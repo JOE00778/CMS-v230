@@ -58,6 +58,10 @@ def _ensure_schema() -> str | None:
             "imported_at TIMESTAMPTZ DEFAULT NOW())")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sq_jan ON sourcing.supplier_quote (jan)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sq_sup ON sourcing.supplier_quote (supplier_name)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sourcing.item_main_supplier ("
+            "jan TEXT PRIMARY KEY, supplier_name TEXT NOT NULL, price NUMERIC(14,2), "
+            "source TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())")
         conn.commit()
         return None
     except Exception as e:  # noqa: BLE001
@@ -214,6 +218,41 @@ with tab_up:
                 st.success(t("✅ 已写入 {n} 条报价 · 起订金额已回填供货商主档").format(n=len(_params)))
 
     st.divider()
+    st.markdown("##### " + t("🎯 主供货商指定文件（仕入先別_免送料判定 ③SKU明細）"))
+    st.caption(t("上传「仕入先別_系列別_免送料判定_明細付」xlsx → 读 ③SKU明細 sheet，"
+                 "每 JAN 的 仕入先/単価 = 主供货商/主供货商价格。写入=全量替换旧指定。"))
+    _msf = st.file_uploader(t("免送料判定（.xlsx）"), type=["xlsx"], key="ms_up")
+    if _msf is not None:
+        try:
+            _mxl = pd.ExcelFile(io.BytesIO(_msf.read()))
+            _msheet = next((n for n in _mxl.sheet_names if "SKU明細" in n), None)
+            _mraw = (pd.read_excel(_mxl, sheet_name=_msheet, header=None, dtype=str)
+                     if _msheet else None)
+        except Exception as e:  # noqa: BLE001
+            st.error(t("解析失败") + f"\n\n{e}")
+            _mraw = None
+        if _mraw is None:
+            st.error(t("找不到 ③SKU明細 sheet"))
+        else:
+            _mains = sc.extract_main_suppliers(_mraw)
+            if _mains.empty:
+                st.error(t("③SKU明細 里没抽到有效行（表头需含 仕入先/JAN/単価）"))
+            else:
+                st.dataframe(_mains.head(50), hide_index=True, use_container_width=True)
+                st.caption(t("预览前 50 行 · 共 {n} 行").format(n=len(_mains))
+                           + f" · {t('供货商')} {_mains['supplier_name'].nunique()}")
+                if st.button(t("✅ 写入主供货商（全量替换）"), key="ms_write"):
+                    conn.execute("DELETE FROM sourcing.item_main_supplier")
+                    conn.executemany(
+                        "INSERT INTO sourcing.item_main_supplier "
+                        "(jan, supplier_name, price, source) VALUES (?,?,?,?)",
+                        [(str(_r["jan"]).strip(), str(_r["supplier_name"]).strip(),
+                          sc_num(_r.get("price")), _msf.name)
+                         for _, _r in _mains.iterrows()])
+                    conn.commit()
+                    st.success(t("✅ 主供货商已替换：{n} 条").format(n=len(_mains)))
+
+    st.divider()
     st.markdown("##### " + t("🌱 从 NST PO 实绩导入报价（种子）"))
     st.caption(t("用 po_item_supplier_monthly 每个 供货商×JAN 的最新月加重平均单价 作为一条 source=po 报价。"))
     if st.button(t("从 PO 实绩导入/刷新"), key="sq_seed_po"):
@@ -327,8 +366,14 @@ with tab_data:
         # (现状进货价 / 最低价 − 1)%：>0 = 现状比最低价贵
         base["ratio_vs_min"] = (base["last_purchase_cost"] / base["min_price"].where(
             base["min_price"] > 0) - 1) * 100
-        # 主/次供货商 4 列：留白占位（数据后期上传 · Boss 2026-07-07）
-        for _c in ("main_supplier", "main_price", "sub_supplier", "sub_price"):
+        # 主供货商 = 免送料判定文件の指定（sourcing.item_main_supplier · 見積書UP で更新）
+        _ms = _read("SELECT jan, supplier_name AS main_supplier, price AS main_price "
+                    "FROM sourcing.item_main_supplier")
+        base = (base.merge(_ms.drop_duplicates("jan"), on="jan", how="left") if not _ms.empty
+                else base.assign(main_supplier=None, main_price=None))
+        base["main_price"] = pd.to_numeric(base.get("main_price"), errors="coerce")
+        # 次供货商 2 列：留白占位（数据后期上传 · Boss 2026-07-07）
+        for _c in ("sub_supplier", "sub_price"):
             base[_c] = None
 
         _c1, _c2 = st.columns([1, 2])
@@ -369,8 +414,9 @@ with tab_data:
         st.download_button(t("📥 仕入れデータ CSV"),
                            disp.to_csv(index=False).encode("utf-8-sig"),
                            file_name="sourcing_data.csv", mime="text/csv", key="abc_csv")
-        st.caption(t("最新订单金额=NST 最近一次 PO 行金额 · 最低价格=各供货商最新报价最小 · "
-                     "现状比最低价=(NST 前回购入价 ÷ 最低价 − 1)(>0 现状偏贵) · 主/次供货商待上传"))
+        st.caption(t("最新订单金额=NST 最近一次 PO 行金额 · 主供货商=免送料判定文件指定(見積書UP更新) · "
+                     "最低价格=各供货商最新报价最小 · 现状比最低价=(NST 前回购入价 ÷ 最低价 − 1)(>0 现状偏贵) · "
+                     "次供货商待上传"))
 
 # ============================================================
 # Tab：見直し必要（优化建议 · 采购价 vs 建议零售价 = 几折采购）

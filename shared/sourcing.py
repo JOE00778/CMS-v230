@@ -247,6 +247,51 @@ def is_data_sheet(name: str) -> bool:
     return name in DATA_SHEETS or any(name.startswith(p) for p in _DATA_PREFIX)
 
 
+def extract_main_suppliers(raw: pd.DataFrame) -> pd.DataFrame:
+    """「仕入先別_系列別_免送料判定_明細付」の ③SKU明細 sheet → 主供货商指定行。
+
+    入力: header=None で読んだ生 DataFrame。表头行 =「仕入先」と「JAN」を含む行。
+    「■ 五洲…」の様な区切り行 / JAN 非合规行はスキップ。JAN 重複は先勝ち。
+    戻り値列: supplier_name, jan, item_name, price（単価·無→None）。
+    """
+    _cols = ["supplier_name", "jan", "item_name", "price"]
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=_cols)
+    hr = None
+    for r in range(min(8, len(raw))):
+        vals = [str(x).strip() for x in raw.iloc[r].tolist()]
+        if "仕入先" in vals and any(v.upper() == "JAN" for v in vals):
+            hr = r
+            break
+    if hr is None:
+        return pd.DataFrame(columns=_cols)
+    header = [str(x).strip() for x in raw.iloc[hr].tolist()]
+    sup_col = header.index("仕入先")
+    jan_col = next(i for i, h in enumerate(header) if h.upper() == "JAN")
+    name_col = _find_col([h.lower() for h in header], _NAME_KW)
+    price_col = next((i for i, h in enumerate(header) if h == "単価"), None)
+
+    rows = []
+    for _, r in raw.iloc[hr + 1:].iterrows():
+        sup = str(r.iloc[sup_col]).strip() if sup_col < len(r) else ""
+        jan = str(r.iloc[jan_col]).strip() if jan_col < len(r) else ""
+        jan = jan[:-2] if jan.endswith(".0") else jan
+        if not sup or sup.startswith("■") or sup.lower() == "nan" or not _JAN_RE.match(jan):
+            continue
+        rows.append({
+            "supplier_name": sup,
+            "jan": jan,
+            "item_name": (str(r.iloc[name_col]).strip()
+                          if name_col is not None and name_col < len(r) else None),
+            "price": (parse_peso_like(r.iloc[price_col])
+                      if price_col is not None and price_col < len(r) else None),
+        })
+    out = pd.DataFrame(rows, columns=_cols)
+    if not out.empty:
+        out = out.drop_duplicates(subset=["jan"], keep="first").reset_index(drop=True)
+    return out
+
+
 def extract_vendor_quotes(sheets: dict) -> tuple[pd.DataFrame, dict]:
     """{sheet_name: 生DataFrame(header=None)} → (全报价 DataFrame, {sheet:件数})。
 
