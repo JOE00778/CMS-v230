@@ -236,6 +236,60 @@ def render(conn=None) -> None:
         ).properties(height=260)
         st.altair_chart(chart, use_container_width=True)
 
+        # --- 仕入先別 検収金額 推移（Top5）+ 排行 · 対齐発注分析形式 ---
+        vdf = _df(
+            "SELECT to_char(irl.receipt_date,'YYYY-MM') AS ym, irl.vendor_name, "
+            "       SUM(irl.amount) AS amount "
+            "FROM nst.item_receipt_line irl " + base_where +
+            " GROUP BY 1, 2 ORDER BY 1, 2",
+            mparams + vparams)
+        if not vdf.empty and vdf["vendor_name"].notna().any():
+            st.subheader(t("📈 仕入先別 检收金额 推移（Top 5）"))
+            top_vendors = (vdf.groupby("vendor_name")["amount"].sum()
+                           .sort_values(ascending=False).head(5).index.tolist())
+            trend_piv = vdf[vdf["vendor_name"].isin(top_vendors)]
+            base = alt.Chart(trend_piv).encode(
+                x=alt.X("ym:N", sort=None, title=None, axis=alt.Axis(labelAngle=0)),
+            )
+            line = base.mark_line(point=True).encode(
+                y=alt.Y("amount:Q", title=t("检收金额(¥)"),
+                        axis=alt.Axis(format=",.0f", grid=True)),
+                color=alt.Color("vendor_name:N", title=t("仕入先")),
+            )
+            nearest = alt.selection_point(nearest=True, on="mouseover",
+                                          fields=["ym"], empty=False)
+            v_tooltip = ([alt.Tooltip("ym:N", title=t("月"))]
+                         + [alt.Tooltip(f"{v}:Q", format=",.0f") for v in top_vendors])
+            selectors = base.transform_pivot(
+                "vendor_name", value="amount", groupby=["ym"],
+            ).mark_rule(opacity=0).encode(tooltip=v_tooltip).add_params(nearest)
+            rule = base.mark_rule(color="gray", strokeDash=[3, 3]).encode(
+                opacity=alt.condition(nearest, alt.value(0.6), alt.value(0)),
+            )
+            v_chart = alt.layer(line, selectors, rule).properties(height=300)
+            st.altair_chart(v_chart.configure_legend(orient="top"),
+                            use_container_width=True)
+
+            st.subheader(t("🏆 仕入先別 检收金额 排行"))
+            vrank = _df(
+                "SELECT irl.vendor_name, SUM(irl.amount) AS amount, "
+                "       SUM(irl.quantity) AS qty, "
+                "       COUNT(DISTINCT irl.receipt_internal_id) AS receipts "
+                "FROM nst.item_receipt_line irl " + base_where +
+                " GROUP BY irl.vendor_name ORDER BY amount DESC NULLS LAST",
+                mparams + vparams)
+            vshow = vrank.rename(columns={
+                "vendor_name": t("仕入先"), "amount": t("检收金额(¥)"),
+                "qty": t("收货数量"), "receipts": t("收货单数"),
+            })
+            st.dataframe(vshow, hide_index=True, use_container_width=True, height=400,
+                         column_config={
+                             t("检收金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f"),
+                             t("收货数量"): st.column_config.NumberColumn(format="%,.0f"),
+                         })
+            st.download_button(t("📥 CSV 下载"), vshow.to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"receipt_vendor_{mlabel}.csv", mime="text/csv")
+
         st.subheader(t("🏆 item别 检收金额 TOP"))
         idf = _df(
             "SELECT im.jan, im.display_name, "
