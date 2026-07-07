@@ -62,6 +62,8 @@ def _ensure_schema() -> str | None:
             "CREATE TABLE IF NOT EXISTS sourcing.item_main_supplier ("
             "jan TEXT PRIMARY KEY, supplier_name TEXT NOT NULL, price NUMERIC(14,2), "
             "source TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())")
+        conn.execute("ALTER TABLE sourcing.supplier "
+                     "ADD COLUMN IF NOT EXISTS free_ship_threshold NUMERIC(14,2)")
         conn.commit()
         return None
     except Exception as e:  # noqa: BLE001
@@ -290,7 +292,8 @@ with tab_sup:
     if not _seen.empty:
         _ensure_suppliers(_seen["supplier_name"].tolist())
     _sup_df = _read(
-        "SELECT supplier_name, min_order_amount, default_lead_days, is_prepay, active, note "
+        "SELECT supplier_name, min_order_amount, free_ship_threshold, default_lead_days, "
+        "is_prepay, active, note "
         "FROM sourcing.supplier ORDER BY supplier_name")
     if _sup_df.empty:
         st.info(t("还没有供货商。先在「报价上传」导入或上传报价。"))
@@ -302,6 +305,7 @@ with tab_sup:
             column_config={
                 "supplier_name": st.column_config.TextColumn(t("供货商"), disabled=True),
                 "min_order_amount": st.column_config.NumberColumn(t("起订金额(¥)"), format="%.0f"),
+                "free_ship_threshold": st.column_config.NumberColumn(t("免送料閾値(¥)"), format="%.0f"),
                 "default_lead_days": st.column_config.NumberColumn(t("纳期(日)"), format="%d"),
                 "is_prepay": st.column_config.CheckboxColumn(t("预付(现金支付)")),
                 "active": st.column_config.CheckboxColumn(t("启用")),
@@ -311,14 +315,17 @@ with tab_sup:
             for _, _r in _ed.iterrows():
                 conn.execute(
                     "INSERT INTO sourcing.supplier "
-                    "(supplier_name, min_order_amount, default_lead_days, is_prepay, active, note, updated_at) "
-                    "VALUES (?,?,?,?,?,?, NOW()) "
+                    "(supplier_name, min_order_amount, free_ship_threshold, default_lead_days, "
+                    " is_prepay, active, note, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?, NOW()) "
                     "ON CONFLICT (supplier_name) DO UPDATE SET "
                     "min_order_amount=EXCLUDED.min_order_amount, "
+                    "free_ship_threshold=EXCLUDED.free_ship_threshold, "
                     "default_lead_days=EXCLUDED.default_lead_days, "
                     "is_prepay=EXCLUDED.is_prepay, active=EXCLUDED.active, "
                     "note=EXCLUDED.note, updated_at=NOW()",
                     (str(_r["supplier_name"]).strip(), sc_num(_r.get("min_order_amount")),
+                     sc_num(_r.get("free_ship_threshold")),
                      sc_int(_r.get("default_lead_days")), bool(_r.get("is_prepay")),
                      bool(_r.get("active")), _r.get("note")))
             conn.commit()
