@@ -183,3 +183,17 @@ def test_extract_main_suppliers():
 def test_extract_main_suppliers_no_header():
     raw = pd.DataFrame([["a", "b"], ["c", "d"]])
     assert sc.extract_main_suppliers(raw).empty
+
+
+# ---- 供货商别名归一 ----
+def test_apply_supplier_alias():
+    df = pd.DataFrame({"supplier_name": ["0474 株式会社　五洲", "メイプル", "未知社"],
+                       "jan": ["1", "2", "3"]})
+    out = sc.apply_supplier_alias(df, {"0474 株式会社　五洲": "五洲"})
+    assert out["supplier_name"].tolist() == ["五洲", "メイプル", "未知社"]
+    assert df["supplier_name"].iloc[0] == "0474 株式会社　五洲"  # 不破坏原 df
+
+
+def test_apply_supplier_alias_empty_mapping():
+    df = pd.DataFrame({"supplier_name": ["A"]})
+    assert sc.apply_supplier_alias(df, {})["supplier_name"].tolist() == ["A"]

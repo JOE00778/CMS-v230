@@ -64,6 +64,9 @@ def _ensure_schema() -> str | None:
             "source TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())")
         conn.execute("ALTER TABLE sourcing.supplier "
                      "ADD COLUMN IF NOT EXISTS free_ship_threshold NUMERIC(14,2)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sourcing.supplier_alias ("
+            "alias TEXT PRIMARY KEY, canonical TEXT NOT NULL)")
         conn.commit()
         return None
     except Exception as e:  # noqa: BLE001
@@ -92,6 +95,12 @@ def _read(sql: str, params: tuple = ()) -> pd.DataFrame:
         except Exception:
             pass
         return pd.DataFrame()
+
+
+def _alias_map() -> dict:
+    """供货商别名表（NST 長名 → Boss 短名·整理相同供货商用）。"""
+    _al = _read("SELECT alias, canonical FROM sourcing.supplier_alias")
+    return dict(zip(_al["alias"], _al["canonical"])) if not _al.empty else {}
 
 
 def _ensure_suppliers(names: list[str]) -> None:
@@ -145,6 +154,7 @@ with tab_up:
                     if _sup_one.strip():
                         _norm["supplier_name"] = _sup_one.strip()
                 _norm = _norm[_norm["jan"].astype(str).str.strip() != ""]
+                _norm = sc.apply_supplier_alias(_norm, _alias_map())
                 st.dataframe(_norm.head(50), hide_index=True, use_container_width=True)
                 st.caption(t("预览前 50 行 · 共 {n} 行").format(n=len(_norm)))
                 if "supplier_name" in _norm.columns and st.button(
@@ -186,6 +196,7 @@ with tab_up:
             _sheets = None
         if _sheets:
             _allq, _counts = sc.extract_vendor_quotes(_sheets)
+            _allq = sc.apply_supplier_alias(_allq, _alias_map())
             _ok = {k: v for k, v in _counts.items() if v > 0}
             _zero = [k for k, v in _counts.items() if v == 0]
             st.success(t("抽出 {n} 条 · 供货商 {s} 家").format(n=len(_allq), s=len(_ok)))
@@ -266,6 +277,7 @@ with tab_up:
         if _po.empty:
             st.info(t("无 PO 实绩数据"))
         else:
+            _po = sc.apply_supplier_alias(_po, _alias_map())
             _po = _po.sort_values("year_month").drop_duplicates(
                 subset=["supplier_name", "jan"], keep="last")
             _ensure_suppliers(_po["supplier_name"].tolist())

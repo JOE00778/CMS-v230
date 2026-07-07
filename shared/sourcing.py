@@ -247,6 +247,19 @@ def is_data_sheet(name: str) -> bool:
     return name in DATA_SHEETS or any(name.startswith(p) for p in _DATA_PREFIX)
 
 
+def apply_supplier_alias(df: pd.DataFrame, mapping: dict,
+                         col: str = "supplier_name") -> pd.DataFrame:
+    """供货商名 → 別名表で正規化（NST 長名「0474 株式会社　五洲」→ Boss 短名「五洲」）。
+
+    mapping = {alias: canonical}。未登録名はそのまま。df は破壊しない。
+    """
+    if df is None or df.empty or not mapping or col not in df.columns:
+        return df
+    d = df.copy()
+    d[col] = d[col].map(lambda s: mapping.get(str(s).strip(), s))
+    return d
+
+
 def extract_main_suppliers(raw: pd.DataFrame) -> pd.DataFrame:
     """「仕入先別_系列別_免送料判定_明細付」の ③SKU明細 sheet → 主供货商指定行。
 
