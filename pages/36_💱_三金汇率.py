@@ -50,6 +50,32 @@ df["exchange_rate"] = pd.to_numeric(df["exchange_rate"], errors="coerce")
 df["effective_date"] = pd.to_datetime(df["effective_date"], errors="coerce")
 df["pulled_at"] = pd.to_datetime(df["pulled_at"], errors="coerce", utc=True)
 
+# 国名の後に英語名を付記（Boss 2026-07-08）· NST 名称は部分一致でマップ
+_EN_NAMES = [
+    ("フィリピン", "Philippine Peso (PHP)"),
+    ("ブラジル", "Brazilian Real (BRL)"),
+    ("ベトナム", "Vietnamese Dong (VND)"),
+    ("マレーシア", "Malaysian Ringgit (MYR)"),
+    ("シンガポール", "Singapore Dollar (SGD)"),
+    ("人民元", "Chinese Yuan (CNY)"),
+    ("台湾ドル", "New Taiwan Dollar (TWD)"),
+    ("大韓民国ウォン", "South Korean Won (KRW)"),
+    ("日本円", "Japanese Yen (JPY)"),
+    ("泰銖", "Thai Baht (THB)"),
+    ("泰铢", "Thai Baht (THB)"),
+    ("米ドル", "US Dollar (USD)"),
+]
+
+
+def _with_en(name: str) -> str:
+    for _ja, _en in _EN_NAMES:
+        if _ja in name:
+            return f"{name} / {_en}"
+    return name
+
+
+df["tx_currency"] = df["tx_currency"].astype(str).map(_with_en)
+
 
 def _jst(ts) -> str:
     try:
