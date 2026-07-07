@@ -64,6 +64,8 @@ def _ensure_schema() -> str | None:
             "source TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())")
         conn.execute("ALTER TABLE sourcing.supplier "
                      "ADD COLUMN IF NOT EXISTS free_ship_threshold NUMERIC(14,2)")
+        conn.execute("ALTER TABLE sourcing.supplier "
+                     "ADD COLUMN IF NOT EXISTS official_name TEXT")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sourcing.supplier_alias ("
             "alias TEXT PRIMARY KEY, canonical TEXT NOT NULL)")
@@ -248,6 +250,7 @@ with tab_up:
             st.error(t("找不到 ③SKU明細 sheet"))
         else:
             _mains = sc.extract_main_suppliers(_mraw)
+            _mains = sc.apply_supplier_alias(_mains, _alias_map())
             if _mains.empty:
                 st.error(t("③SKU明細 里没抽到有效行（表头需含 仕入先/JAN/単価）"))
             else:
@@ -304,8 +307,8 @@ with tab_sup:
     if not _seen.empty:
         _ensure_suppliers(_seen["supplier_name"].tolist())
     _sup_df = _read(
-        "SELECT supplier_name, min_order_amount, free_ship_threshold, default_lead_days, "
-        "is_prepay, active, note "
+        "SELECT supplier_name, official_name, min_order_amount, free_ship_threshold, "
+        "default_lead_days, is_prepay, active, note "
         "FROM sourcing.supplier ORDER BY supplier_name")
     if _sup_df.empty:
         st.info(t("还没有供货商。先在「报价上传」导入或上传报价。"))
@@ -315,7 +318,8 @@ with tab_sup:
         _ed = st.data_editor(
             _sup_df, hide_index=True, use_container_width=True, key="sup_editor",
             column_config={
-                "supplier_name": st.column_config.TextColumn(t("供货商"), disabled=True),
+                "supplier_name": st.column_config.TextColumn(t("简称(改名自动同步报价/主供货商)")),
+                "official_name": st.column_config.TextColumn(t("正式名(NST)")),
                 "min_order_amount": st.column_config.NumberColumn(t("起订金额(¥)"), format="%.0f"),
                 "free_ship_threshold": st.column_config.NumberColumn(t("免送料閾値(¥)"), format="%.0f"),
                 "default_lead_days": st.column_config.NumberColumn(t("纳期(日)"), format="%d"),
@@ -324,24 +328,55 @@ with tab_sup:
                 "note": st.column_config.TextColumn(t("备注")),
             })
         if st.button(t("💾 保存供货商主档"), key="save_sup"):
+            # ① 简称改名 → 报价 / 主供货商 / 别名表 级联同步(旧名进别名表防回流)
+            _renamed, _conflict = 0, []
+            for _i, _r in _ed.iterrows():
+                _new = str(_r["supplier_name"]).strip()
+                _old = str(_sup_df.iloc[_i]["supplier_name"]).strip()
+                if not _new or _new == _old:
+                    continue
+                _dup = _read("SELECT 1 FROM sourcing.supplier WHERE supplier_name=?", (_new,))
+                if not _dup.empty:
+                    _conflict.append(f"{_old}→{_new}")
+                    _ed.at[_i, "supplier_name"] = _old  # 回退,后续按旧名 upsert
+                    continue
+                conn.execute("UPDATE sourcing.supplier SET supplier_name=? "
+                             "WHERE supplier_name=?", (_new, _old))
+                conn.execute("UPDATE sourcing.supplier_quote SET supplier_name=? "
+                             "WHERE supplier_name=?", (_new, _old))
+                conn.execute("UPDATE sourcing.item_main_supplier SET supplier_name=? "
+                             "WHERE supplier_name=?", (_new, _old))
+                conn.execute("UPDATE sourcing.supplier_alias SET canonical=? "
+                             "WHERE canonical=?", (_new, _old))
+                conn.execute("INSERT INTO sourcing.supplier_alias (alias, canonical) "
+                             "VALUES (?,?) ON CONFLICT (alias) DO UPDATE SET "
+                             "canonical=EXCLUDED.canonical", (_old, _new))
+                _renamed += 1
+            # ② 字段 upsert
             for _, _r in _ed.iterrows():
                 conn.execute(
                     "INSERT INTO sourcing.supplier "
-                    "(supplier_name, min_order_amount, free_ship_threshold, default_lead_days, "
-                    " is_prepay, active, note, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?, NOW()) "
+                    "(supplier_name, official_name, min_order_amount, free_ship_threshold, "
+                    " default_lead_days, is_prepay, active, note, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?, NOW()) "
                     "ON CONFLICT (supplier_name) DO UPDATE SET "
+                    "official_name=EXCLUDED.official_name, "
                     "min_order_amount=EXCLUDED.min_order_amount, "
                     "free_ship_threshold=EXCLUDED.free_ship_threshold, "
                     "default_lead_days=EXCLUDED.default_lead_days, "
                     "is_prepay=EXCLUDED.is_prepay, active=EXCLUDED.active, "
                     "note=EXCLUDED.note, updated_at=NOW()",
-                    (str(_r["supplier_name"]).strip(), sc_num(_r.get("min_order_amount")),
+                    (str(_r["supplier_name"]).strip(), _r.get("official_name"),
+                     sc_num(_r.get("min_order_amount")),
                      sc_num(_r.get("free_ship_threshold")),
                      sc_int(_r.get("default_lead_days")), bool(_r.get("is_prepay")),
                      bool(_r.get("active")), _r.get("note")))
             conn.commit()
             st.success(t("✅ 已保存"))
+            if _renamed:
+                st.info(t("🔁 简称改名 {n} 件·报价/主供货商/别名已同步").format(n=_renamed))
+            if _conflict:
+                st.warning(t("⚠️ 改名目标已存在,已跳过: ") + "、".join(_conflict))
 
 # ============================================================
 # Tab：仕入れデータ（数据管理 · ABC产品 × 供货商价格 + 最新订单金额 + 最低价）
