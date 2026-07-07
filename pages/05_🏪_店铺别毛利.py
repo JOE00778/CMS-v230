@@ -786,7 +786,7 @@ with tab_deduct:
             st.caption(("データ更新: " if _ja else "数据更新: ") + _pull_str)
 
             # ── 展示货币（三金汇率 shared/forex.py · KRW 原币 / JPY / USD）──
-            from shared.forex import FX_TO_JPY, FX_SYMBOLS, FX_USD_JPY_EXPORT
+            from shared.forex import FX_TO_JPY, FX_SYMBOLS
             _CUR_OPTS = [("KRW", "₩ 韩元（原币）", "₩ ウォン（原貨）"),
                          ("JPY", "¥ 日元", "¥ 円"),
                          ("USD", "$ 美元", "$ ドル")]
@@ -796,15 +796,13 @@ with tab_deduct:
             _cur = _CUR_OPTS[_cur_lbls.index(_cur_pick)][0]
             _sym = FX_SYMBOLS[_cur]
             if _cur != "KRW":
-                # USD は輸出（出口）レート 150 を使用（進口=160 とは別 · Boss 2026-07-08）
-                _to_jpy = FX_USD_JPY_EXPORT if _cur == "USD" else FX_TO_JPY[_cur]
-                _fxr = FX_TO_JPY["KRW"] / _to_jpy   # KRW → 表示通貨
+                _fxr = FX_TO_JPY["KRW"] / FX_TO_JPY[_cur]   # KRW → 表示通貨
                 for _c in ["total_sale", "settlement_amount", "pending_released_amount",
                            "last_amount", "final_amount", "deduction_total"] + _ded_cols:
                     cdf[_c] = cdf[_c] * _fxr
                 st.caption(_dl(
-                    f"按三金汇率换算：1 KRW = {FX_TO_JPY['KRW']} 円 · 1 USD = {FX_USD_JPY_EXPORT:.0f} 円（出口汇率 · shared/forex.py）",
-                    f"三金レートで換算：1 KRW = {FX_TO_JPY['KRW']} 円 · 1 USD = {FX_USD_JPY_EXPORT:.0f} 円（輸出レート · shared/forex.py）"))
+                    f"按三金汇率换算：1 KRW = {FX_TO_JPY['KRW']} 円 · 1 USD = {FX_TO_JPY['USD']:.0f} 円（出口汇率 · shared/forex.py）",
+                    f"三金レートで換算：1 KRW = {FX_TO_JPY['KRW']} 円 · 1 USD = {FX_TO_JPY['USD']:.0f} 円（輸出レート · shared/forex.py）"))
 
             # ── 対象月 = ページ上部「対象月」に追従（Boss 2026-07-07: 月選択の重複排除）──
             _yms = cdf["ym"].drop_duplicates().tolist()   # DESC 済（トレンド用）

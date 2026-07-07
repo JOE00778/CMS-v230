@@ -624,7 +624,7 @@ with st.expander(t("💴 颗粒度 / 汇率 说明"), expanded=False):
     st.markdown(t(
         f"- 颗粒度: **{period_axis_label} × 店铺账号** (NST 上传切分仍以月份为基准)\n"
         f"- 跨国汇总按 country × 公司固定汇率换算为日元:\n"
-        f"  PHP=2.4 · TWD=4.57 · MYR=36.48 · SGD=113.44 · USD=145"
+        f"  PHP=2.4 · TWD=4.57 · MYR=36.48 · SGD=113.44 · USD=150"
     ))
 st.divider()
 

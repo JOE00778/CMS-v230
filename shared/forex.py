@@ -3,24 +3,19 @@
 来源: NetSuite「為替レート」管理画面 截图 (発効日: 2026-04-30)
 Boss 修正:
   - PHP: 2.36 → 2.4
-  - USD: 160  → 145
+  - USD: 出口汇率 150（2026-04 由 145 调整 · NetSuite の 160 は進口側レート）
 
 汇率口径: 1 单位外币 = X 日元
 基準通貨: 日本円 (JPY)
 """
 from __future__ import annotations
 
-# 輸出（出口）事業用 USD レート（Boss 2026-07-08）:
-#   NetSuite の 160 は「進口（輸入）」側レート · 輸出側は 150 を使う。
-#   Coupang 結算（page05 店铺扣减）など輸出系の USD 換算はこちら。
-FX_USD_JPY_EXPORT: float = 150.0
-
 # 1 单位外币 = X 日元
 # 数据源: NetSuite 為替レート (2026-04-30) + Boss 修正
 FX_TO_JPY: dict[str, float] = {
     "JPY": 1.0,        # 日本円 (基準)
     "PHP": 2.4,        # フィリピン (Boss 修正,NetSuite 默认 2.36)
-    "USD": 145.0,      # 米ドル (Boss 修正,NetSuite 默认 160)
+    "USD": 150.0,      # 米ドル 出口汇率 (2026-04 由145调整 · NetSuite 160=进口)
     "TWD": 4.57,       # 台湾ドル
     "MYR": 36.48,      # マレーシア
     "SGD": 113.44,     # シンガポール
