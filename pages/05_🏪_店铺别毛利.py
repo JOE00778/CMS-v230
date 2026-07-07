@@ -741,13 +741,13 @@ with tab_deduct:
         # 扣減項目（DB列, 中文, 日本語）— WING「预计最终支付金额」までの控除全項目
         _DED_ITEMS = [
             ("service_fee",              "销售手续费",      "販売手数料"),
-            ("seller_service_fee",       "MyShop手续费",    "MyShop手数料"),
+            ("seller_service_fee",       "卖家手续费",      "販売者手数料"),
             ("seller_discount_coupon",   "立减优惠券",      "即時割引クーポン"),
             ("downloadable_coupon",      "下载优惠券",      "DLクーポン"),
             ("store_fee_discount",       "店铺手续费折扣",  "店舗手数料割引"),
             ("courantee_fee",            "Courantee费",     "Courantee費"),
             ("courantee_customer_reward", "Courantee补偿",  "Courantee補償"),
-            ("deduction_amount",         "结算扣款",        "控除額"),
+            ("deduction_amount",         "广告费",          "広告費"),
             ("debt_of_last_week",        "上周未清欠款",    "前週未払金"),
             ("dedicated_delivery_amount", "专用快递费",     "専用宅配費"),
         ]
