@@ -10,6 +10,11 @@ Boss 修正:
 """
 from __future__ import annotations
 
+# 輸出（出口）事業用 USD レート（Boss 2026-07-08）:
+#   NetSuite の 160 は「進口（輸入）」側レート · 輸出側は 150 を使う。
+#   Coupang 結算（page05 店铺扣减）など輸出系の USD 換算はこちら。
+FX_USD_JPY_EXPORT: float = 150.0
+
 # 1 单位外币 = X 日元
 # 数据源: NetSuite 為替レート (2026-04-30) + Boss 修正
 FX_TO_JPY: dict[str, float] = {
