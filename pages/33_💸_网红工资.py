@@ -258,19 +258,19 @@ _disp = pd.DataFrame({
 })
 html_table(_disp)
 
-# 各人 計算表 風 明細
+# 各人 計算表 風 明細（内容は日本語固定 · 工资报告と同様コピー転送前提 · Boss 2026-07-07）
 st.markdown("##### " + t("🧾 各人明细"))
 for _, _r in _rdf.iterrows():
     with st.expander(f"💸 {_r['who']} — ¥{_r['total_fee_jpy']:,.0f}（{_r['payee']}）"):
         st.markdown(
-            f"- {t('总时长')}: **{_r['hours']:.2f} h** × {t('時給')} ${_wage_map.get(_r['who'], 0):g}/h "
-            f"→ {t('給与')}: **${_r['salary_usd']:,.0f}**\n"
-            f"- {t('已确认销售额')}: **₱{_r['sales']:,.0f}** → {t('阶梯抽成')}: "
+            f"- 総ライブ時間: **{_r['hours']:.2f} h** × 時給 ${_wage_map.get(_r['who'], 0):g}/h "
+            f"→ 給与: **${_r['salary_usd']:,.0f}**\n"
+            f"- 確定売上: **₱{_r['sales']:,.0f}** → 段階インセンティブ: "
             f"**₱{_r['incentive_peso']:,.0f}** ÷ {_php_usd} = **${_r['incentive_usd']:,.2f}**\n"
-            f"- Total: **${_r['total_usd']:,.2f}** → {t('含手续费')}(×{_FEE}): "
+            f"- Total: **${_r['total_usd']:,.2f}** → 手数料込み(×{_FEE}): "
             f"**${_r['total_fee_usd']:,.2f}**\n"
-            f"- {t('日本円')}(×{_USD_JPY:g}): **¥{_r['total_jpy']:,.0f}** ／ "
-            f"{t('含手续费')}: **¥{_r['total_fee_jpy']:,.0f}**\n"
-            f"- {t('场次')}: {int(_r['sessions'])} ・ {t('场均销售额')}: "
+            f"- 日本円(×{_USD_JPY:g}): **¥{_r['total_jpy']:,.0f}** ／ "
+            f"手数料込み: **¥{_r['total_fee_jpy']:,.0f}**\n"
+            f"- 配信回数: {int(_r['sessions'])} 回 ・ 1回あたり売上: "
             f"₱{(_r['sales'] / _r['sessions'] if _r['sessions'] else 0):,.0f}"
         )
