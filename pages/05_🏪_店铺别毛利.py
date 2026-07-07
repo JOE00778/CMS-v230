@@ -785,55 +785,61 @@ with tab_deduct:
                          else str(_pull_max)[:16])
             st.caption(("データ更新: " if _ja else "数据更新: ") + _pull_str)
 
-            # ── 月選択（結算単のある月のみ · 最新月既定）──
-            _yms = cdf["ym"].drop_duplicates().tolist()   # DESC 済
-            sel_ym = st.selectbox(t("销售认知月"), _yms, key="cp_ded_ym")
-            sub = cdf[cdf["ym"] == sel_ym]
+            # ── 対象月 = ページ上部「対象月」に追従（Boss 2026-07-07: 月選択の重複排除）──
+            _yms = cdf["ym"].drop_duplicates().tolist()   # DESC 済（トレンド用）
+            sub = cdf[cdf["ym"] == ym]
 
-            # ── KPI（該当月の全結算単合算）──
-            _k_sale = sub["total_sale"].sum()
-            _k_ded = sub["deduction_total"].sum()
-            _k_fin = sub["final_amount"].sum()
-            _k_rate = (_k_ded / _k_sale * 100) if _k_sale else 0
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric(_dl("实际销售额", "実際販売額"), f"₩{_k_sale:,.0f}")
-            k2.metric(_dl("扣减合计", "控除合計"), f"₩{_k_ded:,.0f}")
-            k3.metric(_dl("扣减率", "控除率"), f"{_k_rate:.2f}%")
-            k4.metric(_dl("最终支付额", "最終支払額"), f"₩{_k_fin:,.0f}")
-
-            # ── 該当月の結算単一覧（型 / 結算日 / 状態 / 金額）──
-            _rows = []
-            for _, r in sub.iterrows():
-                _ty = _TYPE_LBL.get(r["settlement_type"],
-                                    (r["settlement_type"], r["settlement_type"]))
-                _stt = _ST_LBL.get(r["status"], (r["status"] or "-",) * 2)
-                _rows.append({
-                    _dl("结算类型", "結算タイプ"): _dl(*_ty),
-                    _dl("结算日", "支払日"): str(r["settlement_date"]),
-                    _dl("实际销售额", "実際販売額"): f"₩{r['total_sale']:,.0f}",
-                    _dl("扣减合计", "控除合計"): f"₩{r['deduction_total']:,.0f}",
-                    _dl("最终支付额", "最終支払額"): f"₩{r['final_amount']:,.0f}",
-                    _dl("状态", "状態"): _dl(*_stt),
-                })
-            html_table(pd.DataFrame(_rows))
-
-            # ── 扣減構成明細（該当月合算 · 非ゼロのみ · 占比付き）──
-            st.markdown("##### " + _dl("🧾 扣减构成明细", "🧾 控除内訳"))
-            _items = []
-            for col, zh, ja in _DED_ITEMS:
-                amt = sub[col].sum()
-                if amt == 0:
-                    continue
-                _items.append({
-                    _dl("扣减项目", "控除項目"): _dl(zh, ja),
-                    _dl("金额", "金額"): f"₩{amt:,.0f}",
-                    _dl("占实际销售额", "対販売額比"):
-                        f"{(amt / _k_sale * 100) if _k_sale else 0:.2f}%",
-                })
-            if _items:
-                html_table(pd.DataFrame(_items))
+            if sub.empty:
+                st.info(
+                    (f"{ym} の Coupang 結算単はまだ生成されていません（売上認識月の終了後に生成）。"
+                     "下のトレンドは全期間を表示しています。") if _ja else
+                    (f"{ym} 的 Coupang 结算单尚未生成（认知月结束后由 Coupang 出单）。"
+                     "下方趋势图仍显示全期间。"))
             else:
-                st.info(_dl("该月无任何扣减项", "当月に控除項目はありません"))
+                # ── KPI（該当月の全結算単合算）──
+                _k_sale = sub["total_sale"].sum()
+                _k_ded = sub["deduction_total"].sum()
+                _k_fin = sub["final_amount"].sum()
+                _k_rate = (_k_ded / _k_sale * 100) if _k_sale else 0
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric(_dl("实际销售额", "実際販売額"), f"₩{_k_sale:,.0f}")
+                k2.metric(_dl("扣减合计", "控除合計"), f"₩{_k_ded:,.0f}")
+                k3.metric(_dl("扣减率", "控除率"), f"{_k_rate:.2f}%")
+                k4.metric(_dl("最终支付额", "最終支払額"), f"₩{_k_fin:,.0f}")
+
+                # ── 該当月の結算単一覧（型 / 結算日 / 状態 / 金額）──
+                _rows = []
+                for _, r in sub.iterrows():
+                    _ty = _TYPE_LBL.get(r["settlement_type"],
+                                        (r["settlement_type"], r["settlement_type"]))
+                    _stt = _ST_LBL.get(r["status"], (r["status"] or "-",) * 2)
+                    _rows.append({
+                        _dl("结算类型", "結算タイプ"): _dl(*_ty),
+                        _dl("结算日", "支払日"): str(r["settlement_date"]),
+                        _dl("实际销售额", "実際販売額"): f"₩{r['total_sale']:,.0f}",
+                        _dl("扣减合计", "控除合計"): f"₩{r['deduction_total']:,.0f}",
+                        _dl("最终支付额", "最終支払額"): f"₩{r['final_amount']:,.0f}",
+                        _dl("状态", "状態"): _dl(*_stt),
+                    })
+                html_table(pd.DataFrame(_rows))
+
+                # ── 扣減構成明細（該当月合算 · 非ゼロのみ · 占比付き）──
+                st.markdown("##### " + _dl("🧾 扣减构成明细", "🧾 控除内訳"))
+                _items = []
+                for col, zh, ja in _DED_ITEMS:
+                    amt = sub[col].sum()
+                    if amt == 0:
+                        continue
+                    _items.append({
+                        _dl("扣减项目", "控除項目"): _dl(zh, ja),
+                        _dl("金额", "金額"): f"₩{amt:,.0f}",
+                        _dl("占实际销售额", "対販売額比"):
+                            f"{(amt / _k_sale * 100) if _k_sale else 0:.2f}%",
+                    })
+                if _items:
+                    html_table(pd.DataFrame(_items))
+                else:
+                    st.info(_dl("该月无任何扣减项", "当月に控除項目はありません"))
 
             # ── 近 12 ヶ月トレンド（扣減構成 積上げ + 明細表）──
             st.markdown("##### " + _dl("📊 近12个月扣减趋势", "📊 直近12ヶ月の控除トレンド"))
