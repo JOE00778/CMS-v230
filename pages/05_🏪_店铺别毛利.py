@@ -704,173 +704,179 @@ with tab_alert:
 #   KRW 建て・Coupang 韓国店のみ → 上部の市場フィルタ / 対象月とは独立。
 # ============================================================
 with tab_deduct:
-    st.caption(t(
-        "Coupang（韩国店）结算单扣减构成 · Coupang Open API 每日自动拉取（page 27 可手动同步）· "
-        "金额单位 KRW · 结算单在销售认知月结束后生成，当月暂无属正常 · 本 tab 不受上方市场/月份筛选影响"
-    ))
+    # 扣減は Coupang（韓国店）の売上に対応するもの。東南亜/日本は扣減データ未接続
+    # → 市場フィルタが韓国を含まない場合は表示しない（Boss 2026-07-07）。
+    from shared.markets import MARKET_KOREA
+    if mk and MARKET_KOREA not in mk:
+        st.info(t("店铺扣减目前仅有 Coupang（韩国店）数据 · 东南亚/日本暂无 · 请在市场筛选中包含韩国或清空筛选"))
+    else:
+        st.caption(t(
+            "Coupang（韩国店）结算单扣减构成，对应 Coupang 自身销售额（KRW）· 东南亚/日本暂无扣减数据 · "
+            "Coupang Open API 每日自动拉取（page 27 可手动同步）· 结算单在销售认知月结束后生成，当月暂无属正常"
+        ))
 
-    @st.cache_data(ttl=300, show_spinner=False)
-    def _coupang_ver() -> str:
-        """coupang 域の缓存版本（coupang.pull_schedule.last_run_at 最大値）。"""
-        try:
-            row = get_connection().execute(
-                "SELECT max(last_run_at) FROM coupang.pull_schedule").fetchone()
-            if row and row[0]:
-                return str(row[0])
-        except Exception:
-            pass
-        return dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
-
-    def _cq(sql: str, params: tuple = ()):
-        try:
-            from shared.cache import cached_df
-            return cached_df(conn, sql, params or None, ver=_coupang_ver()), None
-        except Exception as e:
+        @st.cache_data(ttl=300, show_spinner=False)
+        def _coupang_ver() -> str:
+            """coupang 域の缓存版本（coupang.pull_schedule.last_run_at 最大値）。"""
             try:
-                conn.rollback()
+                row = get_connection().execute(
+                    "SELECT max(last_run_at) FROM coupang.pull_schedule").fetchone()
+                if row and row[0]:
+                    return str(row[0])
             except Exception:
                 pass
-            return None, str(e)
+            return dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
 
-    # 扣減項目（DB列, 中文, 日本語）— WING「预计最终支付金额」までの控除全項目
-    _DED_ITEMS = [
-        ("service_fee",              "销售手续费",      "販売手数料"),
-        ("seller_service_fee",       "MyShop手续费",    "MyShop手数料"),
-        ("seller_discount_coupon",   "立减优惠券",      "即時割引クーポン"),
-        ("downloadable_coupon",      "下载优惠券",      "DLクーポン"),
-        ("store_fee_discount",       "店铺手续费折扣",  "店舗手数料割引"),
-        ("courantee_fee",            "Courantee费",     "Courantee費"),
-        ("courantee_customer_reward", "Courantee补偿",  "Courantee補償"),
-        ("deduction_amount",         "结算扣款",        "控除額"),
-        ("debt_of_last_week",        "上周未清欠款",    "前週未払金"),
-        ("dedicated_delivery_amount", "专用快递费",     "専用宅配費"),
-    ]
-    _TYPE_LBL = {"MONTHLY": ("月结", "月次"), "WEEKLY": ("周结", "週次"),
-                 "ADDITIONAL": ("追加结算", "追加"), "RESERVE": ("尾款支付", "最終金")}
-    _ST_LBL = {"DONE": ("✅ 已打款", "✅ 支払済"), "SUBJECT": ("⏳ 待打款", "⏳ 未払")}
-    _ja = get_lang() == "ja"
+        def _cq(sql: str, params: tuple = ()):
+            try:
+                from shared.cache import cached_df
+                return cached_df(conn, sql, params or None, ver=_coupang_ver()), None
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None, str(e)
 
-    def _dl(zh: str, ja: str) -> str:
-        return ja if _ja else zh
+        # 扣減項目（DB列, 中文, 日本語）— WING「预计最终支付金额」までの控除全項目
+        _DED_ITEMS = [
+            ("service_fee",              "销售手续费",      "販売手数料"),
+            ("seller_service_fee",       "MyShop手续费",    "MyShop手数料"),
+            ("seller_discount_coupon",   "立减优惠券",      "即時割引クーポン"),
+            ("downloadable_coupon",      "下载优惠券",      "DLクーポン"),
+            ("store_fee_discount",       "店铺手续费折扣",  "店舗手数料割引"),
+            ("courantee_fee",            "Courantee费",     "Courantee費"),
+            ("courantee_customer_reward", "Courantee补偿",  "Courantee補償"),
+            ("deduction_amount",         "结算扣款",        "控除額"),
+            ("debt_of_last_week",        "上周未清欠款",    "前週未払金"),
+            ("dedicated_delivery_amount", "专用快递费",     "専用宅配費"),
+        ]
+        _TYPE_LBL = {"MONTHLY": ("月结", "月次"), "WEEKLY": ("周结", "週次"),
+                     "ADDITIONAL": ("追加结算", "追加"), "RESERVE": ("尾款支付", "最終金")}
+        _ST_LBL = {"DONE": ("✅ 已打款", "✅ 支払済"), "SUBJECT": ("⏳ 待打款", "⏳ 未払")}
+        _ja = get_lang() == "ja"
 
-    _ded_cols = [c for c, _, _ in _DED_ITEMS]
-    cdf, cerr = _cq(
-        "SELECT revenue_recognition_year_month AS ym, settlement_type, "
-        "settlement_date, status, total_sale, settlement_amount, "
-        "pending_released_amount, last_amount, final_amount, pulled_at, "
-        + ", ".join(_ded_cols) +
-        " FROM coupang.settlement "
-        "ORDER BY revenue_recognition_year_month DESC, settlement_date"
-    )
-    if cerr:
-        st.error(t("coupang.settlement 未取得 or 接続エラー: ") + cerr)
-        st.info(t("初次使用需在元川 PG 跑 coupang_api/sql/000 迁移并启动 coupang_scheduler 容器"))
-    elif cdf is None or cdf.empty:
-        st.info(t("尚无 Coupang 结算数据。请到 page 27「数据获取」→ Coupang tab 触发首次拉取。"))
-    else:
-        for _c in ["total_sale", "settlement_amount", "pending_released_amount",
-                   "last_amount", "final_amount"] + _ded_cols:
-            cdf[_c] = pd.to_numeric(cdf[_c], errors="coerce").fillna(0.0)
-        cdf["deduction_total"] = cdf[_ded_cols].sum(axis=1)
+        def _dl(zh: str, ja: str) -> str:
+            return ja if _ja else zh
 
-        _pull_max = pd.to_datetime(cdf["pulled_at"]).max()
-        _pull_str = (_pull_max.tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M")
-                     if _pull_max is not pd.NaT and _pull_max.tzinfo
-                     else str(_pull_max)[:16])
-        st.caption(("データ更新: " if _ja else "数据更新: ") + _pull_str)
-
-        # ── 月選択（結算単のある月のみ · 最新月既定）──
-        _yms = cdf["ym"].drop_duplicates().tolist()   # DESC 済
-        sel_ym = st.selectbox(t("销售认知月"), _yms, key="cp_ded_ym")
-        sub = cdf[cdf["ym"] == sel_ym]
-
-        # ── KPI（該当月の全結算単合算）──
-        _k_sale = sub["total_sale"].sum()
-        _k_ded = sub["deduction_total"].sum()
-        _k_fin = sub["final_amount"].sum()
-        _k_rate = (_k_ded / _k_sale * 100) if _k_sale else 0
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric(_dl("实际销售额", "実際販売額"), f"₩{_k_sale:,.0f}")
-        k2.metric(_dl("扣减合计", "控除合計"), f"₩{_k_ded:,.0f}")
-        k3.metric(_dl("扣减率", "控除率"), f"{_k_rate:.2f}%")
-        k4.metric(_dl("最终支付额", "最終支払額"), f"₩{_k_fin:,.0f}")
-
-        # ── 該当月の結算単一覧（型 / 結算日 / 状態 / 金額）──
-        _rows = []
-        for _, r in sub.iterrows():
-            _ty = _TYPE_LBL.get(r["settlement_type"],
-                                (r["settlement_type"], r["settlement_type"]))
-            _stt = _ST_LBL.get(r["status"], (r["status"] or "-",) * 2)
-            _rows.append({
-                _dl("结算类型", "結算タイプ"): _dl(*_ty),
-                _dl("结算日", "支払日"): str(r["settlement_date"]),
-                _dl("实际销售额", "実際販売額"): f"₩{r['total_sale']:,.0f}",
-                _dl("扣减合计", "控除合計"): f"₩{r['deduction_total']:,.0f}",
-                _dl("最终支付额", "最終支払額"): f"₩{r['final_amount']:,.0f}",
-                _dl("状态", "状態"): _dl(*_stt),
-            })
-        html_table(pd.DataFrame(_rows))
-
-        # ── 扣減構成明細（該当月合算 · 非ゼロのみ · 占比付き）──
-        st.markdown("##### " + _dl("🧾 扣减构成明细", "🧾 控除内訳"))
-        _items = []
-        for col, zh, ja in _DED_ITEMS:
-            amt = sub[col].sum()
-            if amt == 0:
-                continue
-            _items.append({
-                _dl("扣减项目", "控除項目"): _dl(zh, ja),
-                _dl("金额", "金額"): f"₩{amt:,.0f}",
-                _dl("占实际销售额", "対販売額比"):
-                    f"{(amt / _k_sale * 100) if _k_sale else 0:.2f}%",
-            })
-        if _items:
-            html_table(pd.DataFrame(_items))
+        _ded_cols = [c for c, _, _ in _DED_ITEMS]
+        cdf, cerr = _cq(
+            "SELECT revenue_recognition_year_month AS ym, settlement_type, "
+            "settlement_date, status, total_sale, settlement_amount, "
+            "pending_released_amount, last_amount, final_amount, pulled_at, "
+            + ", ".join(_ded_cols) +
+            " FROM coupang.settlement "
+            "ORDER BY revenue_recognition_year_month DESC, settlement_date"
+        )
+        if cerr:
+            st.error(t("coupang.settlement 未取得 or 接続エラー: ") + cerr)
+            st.info(t("初次使用需在元川 PG 跑 coupang_api/sql/000 迁移并启动 coupang_scheduler 容器"))
+        elif cdf is None or cdf.empty:
+            st.info(t("尚无 Coupang 结算数据。请到 page 27「数据获取」→ Coupang tab 触发首次拉取。"))
         else:
-            st.info(_dl("该月无任何扣减项", "当月に控除項目はありません"))
+            for _c in ["total_sale", "settlement_amount", "pending_released_amount",
+                       "last_amount", "final_amount"] + _ded_cols:
+                cdf[_c] = pd.to_numeric(cdf[_c], errors="coerce").fillna(0.0)
+            cdf["deduction_total"] = cdf[_ded_cols].sum(axis=1)
 
-        # ── 近 12 ヶ月トレンド（扣減構成 積上げ + 明細表）──
-        st.markdown("##### " + _dl("📊 近12个月扣减趋势", "📊 直近12ヶ月の控除トレンド"))
-        _m12 = sorted(_yms)[-12:]
-        hist = cdf[cdf["ym"].isin(_m12)]
-        _long = []
-        for col, zh, ja in _DED_ITEMS:
-            g = hist.groupby("ym", as_index=False)[col].sum()
-            g = g[g[col] != 0]
-            for _, r in g.iterrows():
-                _long.append({"ym": r["ym"], "item": _dl(zh, ja), "amount": float(r[col])})
-        if _long:
-            _ldf = pd.DataFrame(_long)
-            st.altair_chart(
-                alt.Chart(_ldf).mark_bar().encode(
-                    x=alt.X("ym:N", title=None, axis=alt.Axis(labelAngle=0)),
-                    y=alt.Y("amount:Q", title=_dl("扣减 (KRW)", "控除 (KRW)")),
-                    color=alt.Color("item:N", title=None,
-                                    legend=alt.Legend(orient="top")),
-                    tooltip=[
-                        alt.Tooltip("ym:N", title=_dl("月", "月")),
-                        alt.Tooltip("item:N", title=_dl("扣减项目", "控除項目")),
-                        alt.Tooltip("amount:Q", title=_dl("金额", "金額"), format=",.0f"),
-                    ],
-                ).properties(height=280)
-                .configure_axis(labelFontSize=_CHART_LABEL_FS,
-                                titleFontSize=_CHART_TITLE_FS),
-                use_container_width=True,
-            )
-        _mg = hist.groupby("ym", as_index=False).agg(
-            total_sale=("total_sale", "sum"),
-            deduction_total=("deduction_total", "sum"),
-            final_amount=("final_amount", "sum"),
-        ).sort_values("ym", ascending=False)
-        _mg["rate"] = (_mg["deduction_total"]
-                       / _mg["total_sale"].where(_mg["total_sale"] != 0)).fillna(0) * 100
-        html_table(pd.DataFrame({
-            _dl("销售认知月", "売上認識月"): _mg["ym"],
-            _dl("实际销售额", "実際販売額"): _mg["total_sale"].apply(lambda x: f"₩{x:,.0f}"),
-            _dl("扣减合计", "控除合計"): _mg["deduction_total"].apply(lambda x: f"₩{x:,.0f}"),
-            _dl("扣减率", "控除率"): _mg["rate"].apply(lambda x: f"{x:.2f}%"),
-            _dl("最终支付额", "最終支払額"): _mg["final_amount"].apply(lambda x: f"₩{x:,.0f}"),
-        }))
+            _pull_max = pd.to_datetime(cdf["pulled_at"]).max()
+            _pull_str = (_pull_max.tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M")
+                         if _pull_max is not pd.NaT and _pull_max.tzinfo
+                         else str(_pull_max)[:16])
+            st.caption(("データ更新: " if _ja else "数据更新: ") + _pull_str)
+
+            # ── 月選択（結算単のある月のみ · 最新月既定）──
+            _yms = cdf["ym"].drop_duplicates().tolist()   # DESC 済
+            sel_ym = st.selectbox(t("销售认知月"), _yms, key="cp_ded_ym")
+            sub = cdf[cdf["ym"] == sel_ym]
+
+            # ── KPI（該当月の全結算単合算）──
+            _k_sale = sub["total_sale"].sum()
+            _k_ded = sub["deduction_total"].sum()
+            _k_fin = sub["final_amount"].sum()
+            _k_rate = (_k_ded / _k_sale * 100) if _k_sale else 0
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric(_dl("实际销售额", "実際販売額"), f"₩{_k_sale:,.0f}")
+            k2.metric(_dl("扣减合计", "控除合計"), f"₩{_k_ded:,.0f}")
+            k3.metric(_dl("扣减率", "控除率"), f"{_k_rate:.2f}%")
+            k4.metric(_dl("最终支付额", "最終支払額"), f"₩{_k_fin:,.0f}")
+
+            # ── 該当月の結算単一覧（型 / 結算日 / 状態 / 金額）──
+            _rows = []
+            for _, r in sub.iterrows():
+                _ty = _TYPE_LBL.get(r["settlement_type"],
+                                    (r["settlement_type"], r["settlement_type"]))
+                _stt = _ST_LBL.get(r["status"], (r["status"] or "-",) * 2)
+                _rows.append({
+                    _dl("结算类型", "結算タイプ"): _dl(*_ty),
+                    _dl("结算日", "支払日"): str(r["settlement_date"]),
+                    _dl("实际销售额", "実際販売額"): f"₩{r['total_sale']:,.0f}",
+                    _dl("扣减合计", "控除合計"): f"₩{r['deduction_total']:,.0f}",
+                    _dl("最终支付额", "最終支払額"): f"₩{r['final_amount']:,.0f}",
+                    _dl("状态", "状態"): _dl(*_stt),
+                })
+            html_table(pd.DataFrame(_rows))
+
+            # ── 扣減構成明細（該当月合算 · 非ゼロのみ · 占比付き）──
+            st.markdown("##### " + _dl("🧾 扣减构成明细", "🧾 控除内訳"))
+            _items = []
+            for col, zh, ja in _DED_ITEMS:
+                amt = sub[col].sum()
+                if amt == 0:
+                    continue
+                _items.append({
+                    _dl("扣减项目", "控除項目"): _dl(zh, ja),
+                    _dl("金额", "金額"): f"₩{amt:,.0f}",
+                    _dl("占实际销售额", "対販売額比"):
+                        f"{(amt / _k_sale * 100) if _k_sale else 0:.2f}%",
+                })
+            if _items:
+                html_table(pd.DataFrame(_items))
+            else:
+                st.info(_dl("该月无任何扣减项", "当月に控除項目はありません"))
+
+            # ── 近 12 ヶ月トレンド（扣減構成 積上げ + 明細表）──
+            st.markdown("##### " + _dl("📊 近12个月扣减趋势", "📊 直近12ヶ月の控除トレンド"))
+            _m12 = sorted(_yms)[-12:]
+            hist = cdf[cdf["ym"].isin(_m12)]
+            _long = []
+            for col, zh, ja in _DED_ITEMS:
+                g = hist.groupby("ym", as_index=False)[col].sum()
+                g = g[g[col] != 0]
+                for _, r in g.iterrows():
+                    _long.append({"ym": r["ym"], "item": _dl(zh, ja), "amount": float(r[col])})
+            if _long:
+                _ldf = pd.DataFrame(_long)
+                st.altair_chart(
+                    alt.Chart(_ldf).mark_bar().encode(
+                        x=alt.X("ym:N", title=None, axis=alt.Axis(labelAngle=0)),
+                        y=alt.Y("amount:Q", title=_dl("扣减 (KRW)", "控除 (KRW)")),
+                        color=alt.Color("item:N", title=None,
+                                        legend=alt.Legend(orient="top")),
+                        tooltip=[
+                            alt.Tooltip("ym:N", title=_dl("月", "月")),
+                            alt.Tooltip("item:N", title=_dl("扣减项目", "控除項目")),
+                            alt.Tooltip("amount:Q", title=_dl("金额", "金額"), format=",.0f"),
+                        ],
+                    ).properties(height=280)
+                    .configure_axis(labelFontSize=_CHART_LABEL_FS,
+                                    titleFontSize=_CHART_TITLE_FS),
+                    use_container_width=True,
+                )
+            _mg = hist.groupby("ym", as_index=False).agg(
+                total_sale=("total_sale", "sum"),
+                deduction_total=("deduction_total", "sum"),
+                final_amount=("final_amount", "sum"),
+            ).sort_values("ym", ascending=False)
+            _mg["rate"] = (_mg["deduction_total"]
+                           / _mg["total_sale"].where(_mg["total_sale"] != 0)).fillna(0) * 100
+            html_table(pd.DataFrame({
+                _dl("销售认知月", "売上認識月"): _mg["ym"],
+                _dl("实际销售额", "実際販売額"): _mg["total_sale"].apply(lambda x: f"₩{x:,.0f}"),
+                _dl("扣减合计", "控除合計"): _mg["deduction_total"].apply(lambda x: f"₩{x:,.0f}"),
+                _dl("扣减率", "控除率"): _mg["rate"].apply(lambda x: f"{x:.2f}%"),
+                _dl("最终支付额", "最終支払額"): _mg["final_amount"].apply(lambda x: f"₩{x:,.0f}"),
+            }))
 
 st.divider()
 st.caption(
