@@ -785,6 +785,25 @@ with tab_deduct:
                          else str(_pull_max)[:16])
             st.caption(("データ更新: " if _ja else "数据更新: ") + _pull_str)
 
+            # ── 展示货币（三金汇率 shared/forex.py · KRW 原币 / JPY / USD）──
+            from shared.forex import FX_TO_JPY, FX_SYMBOLS
+            _CUR_OPTS = [("KRW", "₩ 韩元（原币）", "₩ ウォン（原貨）"),
+                         ("JPY", "¥ 日元", "¥ 円"),
+                         ("USD", "$ 美元", "$ ドル")]
+            _cur_lbls = [_dl(z, j) for _, z, j in _CUR_OPTS]
+            _cur_pick = st.radio(_dl("展示货币", "表示通貨"), _cur_lbls,
+                                 horizontal=True, key="cp_ded_cur")
+            _cur = _CUR_OPTS[_cur_lbls.index(_cur_pick)][0]
+            _sym = FX_SYMBOLS[_cur]
+            if _cur != "KRW":
+                _fxr = FX_TO_JPY["KRW"] / FX_TO_JPY[_cur]   # KRW → 表示通貨
+                for _c in ["total_sale", "settlement_amount", "pending_released_amount",
+                           "last_amount", "final_amount", "deduction_total"] + _ded_cols:
+                    cdf[_c] = cdf[_c] * _fxr
+                st.caption(_dl(
+                    f"按三金汇率换算：1 KRW = {FX_TO_JPY['KRW']} 円 · 1 USD = {FX_TO_JPY['USD']:.0f} 円（NetSuite 為替レート + Boss 修正 · shared/forex.py）",
+                    f"三金レートで換算：1 KRW = {FX_TO_JPY['KRW']} 円 · 1 USD = {FX_TO_JPY['USD']:.0f} 円（NetSuite 為替レート + Boss 修正 · shared/forex.py）"))
+
             # ── 対象月 = ページ上部「対象月」に追従（Boss 2026-07-07: 月選択の重複排除）──
             _yms = cdf["ym"].drop_duplicates().tolist()   # DESC 済（トレンド用）
             sub = cdf[cdf["ym"] == ym]
@@ -802,10 +821,10 @@ with tab_deduct:
                 _k_fin = sub["final_amount"].sum()
                 _k_rate = (_k_ded / _k_sale * 100) if _k_sale else 0
                 k1, k2, k3, k4 = st.columns(4)
-                k1.metric(_dl("实际销售额", "実際販売額"), f"₩{_k_sale:,.0f}")
-                k2.metric(_dl("扣减合计", "控除合計"), f"₩{_k_ded:,.0f}")
+                k1.metric(_dl("实际销售额", "実際販売額"), f"{_sym}{_k_sale:,.0f}")
+                k2.metric(_dl("扣减合计", "控除合計"), f"{_sym}{_k_ded:,.0f}")
                 k3.metric(_dl("扣减率", "控除率"), f"{_k_rate:.2f}%")
-                k4.metric(_dl("最终支付额", "最終支払額"), f"₩{_k_fin:,.0f}")
+                k4.metric(_dl("最终支付额", "最終支払額"), f"{_sym}{_k_fin:,.0f}")
 
                 # ── 該当月の結算単一覧（型 / 結算日 / 状態 / 金額）──
                 _rows = []
@@ -816,9 +835,9 @@ with tab_deduct:
                     _rows.append({
                         _dl("结算类型", "結算タイプ"): _dl(*_ty),
                         _dl("结算日", "支払日"): str(r["settlement_date"]),
-                        _dl("实际销售额", "実際販売額"): f"₩{r['total_sale']:,.0f}",
-                        _dl("扣减合计", "控除合計"): f"₩{r['deduction_total']:,.0f}",
-                        _dl("最终支付额", "最終支払額"): f"₩{r['final_amount']:,.0f}",
+                        _dl("实际销售额", "実際販売額"): f"{_sym}{r['total_sale']:,.0f}",
+                        _dl("扣减合计", "控除合計"): f"{_sym}{r['deduction_total']:,.0f}",
+                        _dl("最终支付额", "最終支払額"): f"{_sym}{r['final_amount']:,.0f}",
                         _dl("状态", "状態"): _dl(*_stt),
                     })
                 html_table(pd.DataFrame(_rows))
@@ -832,7 +851,7 @@ with tab_deduct:
                         continue
                     _items.append({
                         _dl("扣减项目", "控除項目"): _dl(zh, ja),
-                        _dl("金额", "金額"): f"₩{amt:,.0f}",
+                        _dl("金额", "金額"): f"{_sym}{amt:,.0f}",
                         _dl("占实际销售额", "対販売額比"):
                             f"{(amt / _k_sale * 100) if _k_sale else 0:.2f}%",
                     })
@@ -856,7 +875,7 @@ with tab_deduct:
                 st.altair_chart(
                     alt.Chart(_ldf).mark_bar().encode(
                         x=alt.X("ym:N", title=None, axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y("amount:Q", title=_dl("扣减 (KRW)", "控除 (KRW)")),
+                        y=alt.Y("amount:Q", title=_dl(f"扣减 ({_cur})", f"控除 ({_cur})")),
                         color=alt.Color("item:N", title=None,
                                         legend=alt.Legend(orient="top")),
                         tooltip=[
@@ -878,10 +897,10 @@ with tab_deduct:
                            / _mg["total_sale"].where(_mg["total_sale"] != 0)).fillna(0) * 100
             html_table(pd.DataFrame({
                 _dl("销售认知月", "売上認識月"): _mg["ym"],
-                _dl("实际销售额", "実際販売額"): _mg["total_sale"].apply(lambda x: f"₩{x:,.0f}"),
-                _dl("扣减合计", "控除合計"): _mg["deduction_total"].apply(lambda x: f"₩{x:,.0f}"),
+                _dl("实际销售额", "実際販売額"): _mg["total_sale"].apply(lambda x: f"{_sym}{x:,.0f}"),
+                _dl("扣减合计", "控除合計"): _mg["deduction_total"].apply(lambda x: f"{_sym}{x:,.0f}"),
                 _dl("扣减率", "控除率"): _mg["rate"].apply(lambda x: f"{x:.2f}%"),
-                _dl("最终支付额", "最終支払額"): _mg["final_amount"].apply(lambda x: f"₩{x:,.0f}"),
+                _dl("最终支付额", "最終支払額"): _mg["final_amount"].apply(lambda x: f"{_sym}{x:,.0f}"),
             }))
 
 st.divider()
