@@ -80,19 +80,24 @@ st.dataframe(_show, hide_index=True, use_container_width=True)
 st.caption(t("為替レート=1 外貨あたりの日本円 · 発効日=NST 上のレート適用開始日 · "
              "取得时刻=CMS が NST から取り込んだ時刻"))
 
-# 履歴（全量·通貨で絞り込み）
-with st.expander(t("📜 汇率履歴（全量）")):
-    _sel = st.multiselect(
-        t("货币（留空=全部）"),
-        sorted(df["tx_currency"].dropna().unique().tolist()), default=[], key="fx_cur")
-    _h = df if not _sel else df[df["tx_currency"].isin(_sel)]
-    _h = _h.sort_values(["effective_date", "tx_currency"], ascending=[False, True])
-    _hist = pd.DataFrame({
-        t("ソース通貨"): _h["tx_currency"],
-        t("為替レート"): _h["exchange_rate"].map(
-            lambda v: f"{v:g}" if pd.notna(v) else "—"),
-        t("発効日"): _h["effective_date"].dt.strftime("%Y-%m-%d"),
-    })
-    st.dataframe(_hist, hide_index=True, use_container_width=True, height=420)
-    st.download_button(t("📥 汇率履歴 CSV"), _hist.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="currency_rate_history.csv", mime="text/csv", key="fx_csv")
+# 月度履歴（近12个月 · 通貨×月のマトリクス · 更新の無い月は直前レートを継続適用）
+st.markdown("##### " + t("📜 月度汇率（近 12 个月）"))
+_months = pd.period_range(end=pd.Timestamp.today().to_period("M"), periods=12, freq="M")
+_rows = []
+for _cur, _g in df.dropna(subset=["effective_date"]).groupby("tx_currency"):
+    _g = _g.sort_values("effective_date")
+    _row = {"tx_currency": _cur}
+    for _m in _months:
+        _appl = _g[_g["effective_date"] <= _m.to_timestamp(how="end")]
+        _row[str(_m)] = (float(_appl["exchange_rate"].iloc[-1])
+                         if not _appl.empty and pd.notna(_appl["exchange_rate"].iloc[-1])
+                         else None)
+    _rows.append(_row)
+_piv = pd.DataFrame(_rows).sort_values("tx_currency").reset_index(drop=True)
+_piv_disp = _piv.rename(columns={"tx_currency": t("ソース通貨")})
+for _c in [str(m) for m in _months]:
+    _piv_disp[_c] = _piv_disp[_c].map(lambda v: f"{v:g}" if pd.notna(v) else "—")
+st.dataframe(_piv_disp, hide_index=True, use_container_width=True)
+st.caption(t("各月=月末时点适用中的汇率（按発効日·当月无更新则沿用上一次汇率）"))
+st.download_button(t("📥 月度汇率 CSV"), _piv_disp.to_csv(index=False).encode("utf-8-sig"),
+                   file_name="currency_rate_monthly.csv", mime="text/csv", key="fx_csv")
