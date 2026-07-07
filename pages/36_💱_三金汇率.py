@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.db import get_connection
+from shared.forex import usd_export_rate
 from shared.i18n import lang_selector, t
 
 st.set_page_config(page_title=t("三金汇率"), page_icon="💱", layout="wide")
@@ -69,16 +70,29 @@ k2.metric(t("最新発効日"), str(latest["effective_date"].max().date()))
 k3.metric(t("数据取得时刻(JST)"), _jst(_pulled) if pd.notna(_pulled) else "—")
 
 st.markdown("##### " + t("📌 最新汇率一览"))
+# 米ドルは進口（NST 原値）/ 出口（公司口径 · shared/forex.py）の 2 本立て（Boss 2026-07-08）
+_is_usd = latest["tx_currency"].astype(str).str.contains("米ドル|USD")
+_cur_ym = pd.Timestamp.today().strftime("%Y-%m")
 _show = pd.DataFrame({
-    t("ソース通貨"): latest["tx_currency"],
+    t("ソース通貨"): latest["tx_currency"].where(~_is_usd, latest["tx_currency"] + t("（进口）")),
     t("為替レート"): latest["exchange_rate"].map(
         lambda v: f"{v:g}" if pd.notna(v) else "—"),
     t("発効日"): latest["effective_date"].dt.strftime("%Y-%m-%d"),
     t("取得时刻(JST)"): latest["pulled_at"].map(_jst),
 })
+if _is_usd.any():
+    _usd_name = str(latest.loc[_is_usd, "tx_currency"].iloc[0])
+    _show = pd.concat([_show, pd.DataFrame([{
+        t("ソース通貨"): _usd_name + t("（出口）"),
+        t("為替レート"): f"{usd_export_rate(_cur_ym):g}",
+        t("発効日"): "2026-04-01",
+        t("取得时刻(JST)"): t("公司口径（非NST）"),
+    }])], ignore_index=True).sort_values(t("ソース通貨")).reset_index(drop=True)
 st.dataframe(_show, hide_index=True, use_container_width=True)
 st.caption(t("為替レート=1 外貨あたりの日本円 · 発効日=NST 上のレート適用開始日 · "
              "取得时刻=CMS が NST から取り込んだ時刻"))
+st.caption(t("💡 米ドルは 2 本立て：进口=NST currencyrate 原值（輸入側）· "
+             "出口=公司口径 150（2026-04 由 145 调整 · shared/forex.py · CMS 各模块换算用出口）"))
 
 # 月度履歴（近12个月 · 通貨×月のマトリクス · 更新の無い月は直前レートを継続適用）
 st.markdown("##### " + t("📜 月度汇率（近 12 个月）"))
@@ -93,6 +107,15 @@ for _cur, _g in df.dropna(subset=["effective_date"]).groupby("tx_currency"):
                          if not _appl.empty and pd.notna(_appl["exchange_rate"].iloc[-1])
                          else None)
     _rows.append(_row)
+# 米ドル行は「進口」に改名し、公司口径の「出口」行を追加（145→150 · 2026-04 調整）
+for _r in _rows:
+    if "米ドル" in str(_r["tx_currency"]) or "USD" in str(_r["tx_currency"]):
+        _exp = {"tx_currency": str(_r["tx_currency"]) + t("（出口）")}
+        for _m in _months:
+            _exp[str(_m)] = usd_export_rate(str(_m))
+        _r["tx_currency"] = str(_r["tx_currency"]) + t("（进口）")
+        _rows.append(_exp)
+        break
 _piv = pd.DataFrame(_rows).sort_values("tx_currency").reset_index(drop=True)
 _piv_disp = _piv.rename(columns={"tx_currency": t("ソース通貨")})
 for _c in [str(m) for m in _months]:

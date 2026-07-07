@@ -40,6 +40,12 @@ FX_NAMES_JA: dict[str, str] = {
 }
 
 
+def usd_export_rate(ym: str) -> float:
+    """USD 出口レート（引数 'YYYY-MM'）· Boss 2026-07-08 口径:
+    2026-04 に 145 → 150 調整。NST currencyrate の 155→160 は進口側で別物。"""
+    return 150.0 if ym >= "2026-04" else 145.0
+
+
 def to_jpy(amount: float, currency: str) -> float:
     """外币金额 → JPY."""
     rate = FX_TO_JPY.get(currency.upper(), 0.0)
