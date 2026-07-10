@@ -192,10 +192,31 @@ def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31) -> pd.Data
         defined_cost=("defined_cost", "sum"),
         gross_profit=("gross_profit", "sum"),
     )
+    g = _ns_round_money(g)
     g["gross_margin"] = (
         g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
     ).fillna(0) * 100
     return g.set_index(dim)
+
+
+def _rhu(v: float) -> float:
+    """円丸め HALF_UP(away from zero)= NST 表示丸め。Python round は banker's のため不可。"""
+    import math
+    return float(math.floor(v + 0.5) if v >= 0 else math.ceil(v - 0.5))
+
+
+def _ns_round_money(g: pd.DataFrame) -> pd.DataFrame:
+    """NST 報表の表示丸め順を再現:収益/定義原価を先に円丸め → 粗利=差。
+
+    粗利を直接丸めると原価合計が半円(.5)境界の時に NST と ±1 円ズレる
+    (2026-06 Shopee SG で実証·Boss 100%一致指示)。"""
+    g = g.copy()
+    if "defined_cost" not in g.columns:
+        g["defined_cost"] = g["revenue"] - g["gross_profit"]
+    g["revenue"] = g["revenue"].map(_rhu)
+    g["defined_cost"] = g["defined_cost"].map(_rhu)
+    g["gross_profit"] = g["revenue"] - g["defined_cost"]
+    return g
 
 
 def _query(sql: str, params: tuple = ()):
@@ -255,7 +276,7 @@ if df is None or df.empty:
 
 df["qty_sold"] = df["qty_sold"].astype(float)
 df["revenue"] = df["revenue"].astype(float)
-df["gross_profit"] = df["gross_profit"].astype(float)    # NetSuite 真実毛利（estgrossprofit）
+df["gross_profit"] = df["gross_profit"].astype(float)    # 報表口径 粗利(=売上−行級定義原価·2026-07-10)
 df["defined_cost"] = df["revenue"] - df["gross_profit"]  # NetSuite 口径の原価（売上−毛利）
 # 未来日付除外 + 当日は未確定（07:00 に前日分取得）のため除外：前日まで
 _today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
@@ -286,9 +307,9 @@ _prev_shop = _agg_prev(_prev_ym, mk, "shop", _max_day)
 # ============================================================
 # KPI（総）
 # ============================================================
-tot_r = df["revenue"].sum()
-tot_c = df["defined_cost"].sum()
-tot_g = df["gross_profit"].sum()
+tot_r = _rhu(df["revenue"].sum())
+tot_c = _rhu(df["defined_cost"].sum())
+tot_g = tot_r - tot_c  # NST 表示丸め順(原価丸め→差)·半円境界の±1円ズレ防止
 margin = (tot_g / tot_r * 100) if tot_r else 0
 
 m2, m3, m4, m5 = st.columns(4)
@@ -434,6 +455,7 @@ with tab_owner:
             n_shop=("shop", "nunique"),
             n_sku=("item_internal_id", "nunique"),
         )
+        g = _ns_round_money(g)
         g["gross_margin"] = (
             g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
         ).fillna(0) * 100
@@ -450,8 +472,8 @@ with tab_owner:
             sub = _od[_od["owner"] == _ow]
             t_ns = sub["shop"].nunique()
             t_q = sub["qty_sold"].sum()
-            t_r = sub["revenue"].sum()
-            t_g = sub["gross_profit"].sum()
+            t_r = _rhu(sub["revenue"].sum())
+            t_g = t_r - _rhu(sub["defined_cost"].sum())  # NST 丸め順
             t_m = (t_g / t_r * 100) if t_r else 0
             st.markdown(
                 f"**👤 {_ow}** &nbsp;｜&nbsp; {_col('n_shop')}: {t_ns} ｜ "
@@ -466,6 +488,7 @@ with tab_owner:
                 gross_profit=("gross_profit", "sum"),
                 n_sku=("item_internal_id", "nunique"),
             )
+            sg = _ns_round_money(sg)
             sg["gross_margin"] = (
                 sg["gross_profit"] / sg["revenue"].where(sg["revenue"] != 0)
             ).fillna(0) * 100
@@ -485,6 +508,7 @@ with tab_shop:
         gross_profit=("gross_profit", "sum"),
         n_sku=("item_internal_id", "nunique"),
     )
+    g = _ns_round_money(g)
     g["gross_margin"] = (
         g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
     ).fillna(0) * 100
@@ -556,6 +580,7 @@ with tab_market:
         n_shop=("shop", "nunique"),
         n_sku=("item_internal_id", "nunique"),
     )
+    g = _ns_round_money(g)
     g["gross_margin"] = (
         g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
     ).fillna(0) * 100
@@ -577,6 +602,7 @@ with tab_sku:
         revenue=("revenue", "sum"),
         gross_profit=("gross_profit", "sum"),
     )
+    g = _ns_round_money(g)
     g["gross_margin"] = (
         g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
     ).fillna(0) * 100
