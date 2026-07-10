@@ -47,6 +47,42 @@ def usd_export_rate(ym: str) -> float:
     return 150.0 if ym >= "2026-04" else 145.0
 
 
+def nst_monthly_rates(conn, currency: str, months) -> dict[str, float]:
+    """各月「月末時点で適用中」の NST 三金レート（1 外貨 = X 円）を返す。
+
+    nst.currency_rate（基準通貨=日本円）を 1 クエリで読み、当月更新の無い月は
+    直前レートを沿用（page36 月度マトリクスと同口径 · Boss 2026-07-10:
+    月次換算は固定値でなく当月レートを使う）。テーブルが読めない（ローカル
+    SQLite 等）/ 該当通貨なしの場合は FX_TO_JPY の固定値で全月埋める。
+    """
+    iso = currency.upper()
+    fallback = FX_TO_JPY.get(iso, 0.0)
+    months = [str(m)[:7] for m in months]
+    rows: list[tuple[str, float]] = []
+    try:
+        cur = conn.execute(
+            "SELECT effective_date, exchange_rate FROM nst.currency_rate "
+            "WHERE base_currency_id = '1' "
+            "AND (tx_currency LIKE ? OR tx_currency LIKE ?) "
+            "ORDER BY effective_date",
+            (f"%{FX_NAMES_JA.get(iso, iso)}%", f"%{iso}%"))
+        rows = [(str(r[0])[:10], float(r[1])) for r in cur.fetchall()]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    if not rows:
+        return {m: fallback for m in months}
+    out: dict[str, float] = {}
+    for m in months:
+        y, mo = int(m[:4]), int(m[5:7])
+        nxt = f"{y + (mo == 12)}-{(mo % 12) + 1:02d}-01"
+        appl = [r for d, r in rows if d < nxt]
+        out[m] = appl[-1] if appl else fallback
+    return out
+
+
 def to_jpy(amount: float, currency: str) -> float:
     """外币金额 → JPY."""
     rate = FX_TO_JPY.get(currency.upper(), 0.0)

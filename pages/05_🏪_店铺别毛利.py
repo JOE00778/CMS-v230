@@ -811,8 +811,10 @@ with tab_deduct:
                          else str(_pull_max)[:16])
             st.caption(("データ更新: " if _ja else "数据更新: ") + _pull_str)
 
-            # ── 展示货币（三金汇率 shared/forex.py · KRW 原币 / JPY / USD）──
-            from shared.forex import FX_TO_JPY, FX_SYMBOLS
+            # ── 展示货币（KRW 原币 / JPY / USD）──
+            # 認識月ごとに「その月に適用中」の三金レートで換算（当月更新なしは
+            # 前月沿用 · nst.currency_rate · Boss 2026-07-10）。USD は出口レート。
+            from shared.forex import FX_SYMBOLS, nst_monthly_rates, usd_export_rate
             _CUR_OPTS = [("KRW", "₩ 韩元（原币）", "₩ ウォン（原貨）"),
                          ("JPY", "¥ 日元", "¥ 円"),
                          ("USD", "$ 美元", "$ ドル")]
@@ -822,13 +824,23 @@ with tab_deduct:
             _cur = _CUR_OPTS[_cur_lbls.index(_cur_pick)][0]
             _sym = FX_SYMBOLS[_cur]
             if _cur != "KRW":
-                _fxr = FX_TO_JPY["KRW"] / FX_TO_JPY[_cur]   # KRW → 表示通貨
+                _rate_yms = sorted(set(cdf["ym"].astype(str)) | {str(ym)})
+                _krw_ym = nst_monthly_rates(conn, "KRW", _rate_yms)   # 1 KRW = X 円
+                _fx_ym = (_krw_ym if _cur == "JPY" else
+                          {_y: _krw_ym[_y] / usd_export_rate(_y) for _y in _rate_yms})
+                _fxs = cdf["ym"].astype(str).map(_fx_ym)
                 for _c in ["total_sale", "settlement_amount", "pending_released_amount",
                            "last_amount", "final_amount", "deduction_total"] + _ded_cols:
-                    cdf[_c] = cdf[_c] * _fxr
+                    cdf[_c] = cdf[_c] * _fxs
+                _usd_zh = (f" · 1 USD = {usd_export_rate(str(ym)):.0f} 円（出口汇率）"
+                           if _cur == "USD" else "")
+                _usd_ja = (f" · 1 USD = {usd_export_rate(str(ym)):.0f} 円（輸出レート）"
+                           if _cur == "USD" else "")
                 st.caption(_dl(
-                    f"按三金汇率换算：1 KRW = {FX_TO_JPY['KRW']} 円 · 1 USD = {FX_TO_JPY['USD']:.0f} 円（出口汇率 · shared/forex.py）",
-                    f"三金レートで換算：1 KRW = {FX_TO_JPY['KRW']} 円 · 1 USD = {FX_TO_JPY['USD']:.0f} 円（輸出レート · shared/forex.py）"))
+                    f"按各月当月三金汇率换算 · {ym}：1 KRW = {_krw_ym[str(ym)]:g} 円{_usd_zh}"
+                    "（nst.currency_rate · 当月无更新沿用上月）",
+                    f"各月その月の三金レートで換算 · {ym}：1 KRW = {_krw_ym[str(ym)]:g} 円{_usd_ja}"
+                    "（nst.currency_rate · 当月更新なしは前月沿用）"))
 
             # ── 対象月 = ページ上部「対象月」に追従（Boss 2026-07-07: 月選択の重複排除）──
             _yms = cdf["ym"].drop_duplicates().tolist()   # DESC 済（トレンド用）
