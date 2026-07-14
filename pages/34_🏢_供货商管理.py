@@ -549,11 +549,11 @@ with tab_data:
         st.dataframe(
             disp, hide_index=True, use_container_width=True, height=600,
             column_config={
-                t("最新订货单价"): st.column_config.NumberColumn(format="¥%.2f"),
-                t("主供货商价格"): st.column_config.NumberColumn(format="¥%.2f"),
-                t("次供货商价格"): st.column_config.NumberColumn(format="¥%.2f"),
-                t("最低价格"): st.column_config.NumberColumn(format="¥%.2f"),
-                t("现状比最低价"): st.column_config.NumberColumn(format="%.1f%%"),
+                t("最新订货单价"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("主供货商价格"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("次供货商价格"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("最低价格"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("现状比最低价"): st.column_config.NumberColumn(format="%.0f%%"),
             })
         st.download_button(t("📥 仕入れデータ CSV"),
                            disp.to_csv(index=False).encode("utf-8-sig"),
