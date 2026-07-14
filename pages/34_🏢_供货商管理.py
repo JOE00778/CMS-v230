@@ -719,12 +719,6 @@ with tab_ana:
                                   aggfunc="sum")
                    .reindex(columns=_yms).fillna(0).round(0))
             _skun = _ai.groupby("supplier")["jan"].nunique()
-            _thr = _read("SELECT supplier_name, free_ship_threshold "
-                         "FROM sourcing.supplier")
-            _thr_map = (dict(zip(_thr["supplier_name"],
-                                 pd.to_numeric(_thr["free_ship_threshold"],
-                                               errors="coerce")))
-                        if not _thr.empty else {})
 
             k1, k2, k3 = st.columns(3)
             k1.metric(t("供货商数"), f"{len(_pv):,}")
@@ -733,24 +727,18 @@ with tab_ana:
 
             _tab_a = _pv.copy()
             _tab_a.insert(0, t("SKU数"), _skun)
-            _tab_a[t("免送料閾値")] = pd.to_numeric(
-                _tab_a.index.map(_thr_map), errors="coerce")
             _tab_a = (_tab_a.sort_values(_yms[-1], ascending=False)
                       .reset_index().rename(columns={"supplier": t("供货商")}))
             # 金額は桁区切り表示（Boss 2026-07-14 · localized=千位分隔）
             st.dataframe(
                 _tab_a, hide_index=True, use_container_width=True, height=560,
-                column_config={
-                    **{c: st.column_config.NumberColumn(format="localized")
-                       for c in _yms},
-                    t("免送料閾値"): st.column_config.NumberColumn(format="localized"),
-                })
+                column_config={c: st.column_config.NumberColumn(format="localized")
+                               for c in _yms})
             st.download_button(t("📥 仕入先分析 CSV"),
                                _tab_a.to_csv(index=False).encode("utf-8-sig"),
                                file_name="supplier_monthly.csv",
                                mime="text/csv", key="ana_csv")
             st.caption(t("金额=当月销量×仕入单价的推算值(非 PO 实绩) · "
-                         "月订货金额低于免送料閾値的供货商要凑单或谈閾値 · "
                          "SKU数=分配到该供货商的取扱 JAN 数"))
 
             _pick = st.selectbox(t("供货商 SKU 构成（选择查看明细）"),
