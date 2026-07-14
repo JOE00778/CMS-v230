@@ -427,7 +427,7 @@ with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
         for _hcol, _m in zip(_hcols, ALL_MARKETS):
             _hc_in[_m] = _hcol.number_input(
                 f"{_m} " + _dl("人数", "人数"), min_value=0.0,
-                value=_hc.get(_m, 0.0), step=1.0, format="%.0f",
+                value=_hc.get(_m, 0.0), step=0.5, format="%.1f",
                 key=f"fx_hc_{_m}_{ym}")
         if st.button(_dl("💾 保存", "💾 保存"), key=f"fx_save_{ym}"):
             try:
