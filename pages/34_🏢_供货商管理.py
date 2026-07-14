@@ -4,6 +4,8 @@
   🔍 見直し必要    采购价 ÷ 建议零售价(nst.item_msrp) = 仕入折数 → 需重新谈价一览
   📤 見積書UP     报价上传（手动输入·xlsx/csv·仕入先管理リスト一括·PO 实绩种子）
   🏢 仕入先データ  供货商主档（起订金额/纳期/预付/启用）
+  📊 仕入先分析    供货商×月推算订货金额（Σ 当月销量×仕入单价）+ SKU数 + 免送料閾値
+  🏷️ ブランド分析  品牌(maker)×供货商:近12个月PO实绩 SKU数+平均仕入折数
 
 データ: PG sourcing schema（本ページが idempotent 建表）+ nst.*（NST 直连）。
   sourcing.supplier        供货商主档（起订金额/纳期/预付/启用）
@@ -35,7 +37,8 @@ conn = get_connection()
 st.title(t("🏢 供货商管理"))
 st.caption(t(
     "仕入れデータ(采购价格台账) · 見直し必要(对比建议零售价) · "
-    "見積書UP(报价上传) · 仕入先データ(供货商主档)。"
+    "見積書UP(报价上传) · 仕入先データ(供货商主档) · "
+    "仕入先分析(月订货金额推算) · ブランド分析(品牌×供货商)。"
 ))
 
 
@@ -123,13 +126,29 @@ def sc_num(v):
         return None
 
 
+def _latest_po_vendor() -> pd.DataFrame:
+    """internal_id → NST 直近 PO 行の仕入先/単価（MAX(trandate)·簡称へ正規化）."""
+    _p = _read("SELECT item_internal_id, trandate, vendor_name AS supplier_name, rate "
+               "FROM nst.purchase_order_line "
+               "WHERE item_internal_id IS NOT NULL AND vendor_name IS NOT NULL")
+    if _p.empty:
+        return pd.DataFrame(columns=["internal_id", "cur_supplier", "cur_rate"])
+    _p = _p.sort_values("trandate").drop_duplicates("item_internal_id", keep="last")
+    _p = sc.apply_supplier_alias(_p, _alias_map())
+    _p = _p.rename(columns={"item_internal_id": "internal_id",
+                            "supplier_name": "cur_supplier", "rate": "cur_rate"})
+    _p["internal_id"] = _p["internal_id"].astype(str)
+    return _p[["internal_id", "cur_supplier", "cur_rate"]]
+
+
 def sc_int(v):
     _n = sc_num(v)
     return int(_n) if _n is not None else None
 
 
-tab_data, tab_opt, tab_up, tab_sup = st.tabs(
-    [t("📋 仕入れデータ"), t("🔍 見直し必要"), t("📤 見積書UP"), t("🏢 仕入先データ")])
+tab_data, tab_opt, tab_up, tab_sup, tab_ana, tab_brand = st.tabs(
+    [t("📋 仕入れデータ"), t("🔍 見直し必要"), t("📤 見積書UP"),
+     t("🏢 仕入先データ"), t("📊 仕入先分析"), t("🏷️ ブランド分析")])
 
 # ============================================================
 # Tab：报价上传 / 种子
@@ -591,22 +610,10 @@ with tab_opt:
         _mi["msrp_taxex"] = _mi["msrp_jpy_taxin"].fillna(_mi["msrp_jpy"]) / 1.1
         # 仕入折数 = 采购价(税抜) ÷ 建议零售价(税抜) × 10（7.0 = 7折 = 零售价的 70%）
         _mi["wari"] = _mi["last_purchase_cost"] / _mi["msrp_taxex"].where(_mi["msrp_taxex"] > 0) * 10
-        # 现供货商 = NST 直近 PO 行の仕入先（MAX(trandate) · 簡称へ正規化）
-        _pov = _read("SELECT item_internal_id, trandate, vendor_name AS supplier_name "
-                     "FROM nst.purchase_order_line "
-                     "WHERE item_internal_id IS NOT NULL AND vendor_name IS NOT NULL")
-        if not _pov.empty:
-            _pov = _pov.sort_values("trandate").drop_duplicates(
-                "item_internal_id", keep="last")
-            _pov = sc.apply_supplier_alias(_pov, _alias_map())
-            _pov = (_pov[["item_internal_id", "supplier_name"]]
-                    .rename(columns={"item_internal_id": "internal_id",
-                                     "supplier_name": "cur_supplier"}))
-            _pov["internal_id"] = _pov["internal_id"].astype(str)
-            _mi["internal_id"] = _mi["internal_id"].astype(str)
-            _mi = _mi.merge(_pov, on="internal_id", how="left")
-        else:
-            _mi["cur_supplier"] = None
+        # 现供货商 = NST 直近 PO 行の仕入先（共通 helper）
+        _mi["internal_id"] = _mi["internal_id"].astype(str)
+        _mi = _mi.merge(_latest_po_vendor()[["internal_id", "cur_supplier"]],
+                        on="internal_id", how="left")
         _has = _mi[_mi["wari"].notna()].copy()
         _no = _mi[_mi["wari"].isna()]
 
@@ -656,3 +663,190 @@ with tab_opt:
                 st.dataframe(_no_show, hide_index=True, use_container_width=True, height=300,
                              column_config={
                                  t("采购价"): st.column_config.NumberColumn(format="¥%.0f")})
+
+# ============================================================
+# Tab：仕入先分析（供货商 × 月推算订货金额 = Σ 当月销量 × 仕入单价）
+# ============================================================
+with tab_ana:
+    st.caption(t("按供货商推算月订货金额 = Σ(SKU 当月销量 × 仕入单价)。"
+                 "供货商=主供货商指定优先、无指定用 NST 最近 PO 仕入先；"
+                 "单价=主供货商价格优先、无则 NST 前回购入价(税抜)。"))
+    _ai = _read("SELECT internal_id, jan, display_name, last_purchase_cost "
+                "FROM nst.item_master_raw WHERE jan IS NOT NULL")
+    if _ai.empty:
+        st.info(t("无数据（NST item_master 未就绪？）"))
+    else:
+        _ai["internal_id"] = _ai["internal_id"].astype(str)
+        _ai["last_purchase_cost"] = pd.to_numeric(_ai["last_purchase_cost"],
+                                                  errors="coerce")
+        _ms2 = _read("SELECT jan, supplier_name AS main_supplier, "
+                     "price AS main_price FROM sourcing.item_main_supplier")
+        if not _ms2.empty:
+            _ai = _ai.merge(_ms2.drop_duplicates("jan"), on="jan", how="left")
+        else:
+            _ai["main_supplier"] = None
+            _ai["main_price"] = None
+        _ai = _ai.merge(_latest_po_vendor()[["internal_id", "cur_supplier"]],
+                        on="internal_id", how="left")
+        _ai["supplier"] = _ai["main_supplier"].fillna(_ai["cur_supplier"])
+        _ai["main_price"] = pd.to_numeric(_ai["main_price"], errors="coerce")
+        _ai["unit_price"] = _ai["main_price"].fillna(_ai["last_purchase_cost"])
+        _ai = _ai[_ai["supplier"].notna()
+                  & (_ai["supplier"].astype(str).str.strip() != "")]
+
+        # 近 6 个月（含当月）销量 → 月推算金额
+        _yms = []
+        _cur = dt.date.today().replace(day=1)
+        for _ in range(6):
+            _yms.append(_cur.strftime("%Y-%m"))
+            _cur = (_cur - dt.timedelta(days=1)).replace(day=1)
+        _yms = sorted(_yms)
+        _sd = _read(
+            "SELECT item_internal_id, SUBSTR(CAST(sale_date AS TEXT),1,7) AS ym, "
+            "SUM(qty_sold) AS qty FROM nst.sales_daily WHERE sale_date >= ? "
+            "GROUP BY item_internal_id, SUBSTR(CAST(sale_date AS TEXT),1,7)",
+            (_yms[0] + "-01",))
+        if _sd.empty:
+            st.info(t("无销量数据（nst.sales_daily 未就绪？）"))
+        else:
+            _sd["item_internal_id"] = _sd["item_internal_id"].astype(str)
+            _sd["qty"] = pd.to_numeric(_sd["qty"], errors="coerce")
+            _j = _sd.merge(
+                _ai[["internal_id", "supplier", "unit_price", "jan", "display_name"]],
+                left_on="item_internal_id", right_on="internal_id", how="inner")
+            _j["amt"] = _j["qty"] * _j["unit_price"]
+            _pv = (_j.pivot_table(index="supplier", columns="ym", values="amt",
+                                  aggfunc="sum")
+                   .reindex(columns=_yms).fillna(0).round(0))
+            _skun = _ai.groupby("supplier")["jan"].nunique()
+            _thr = _read("SELECT supplier_name, free_ship_threshold "
+                         "FROM sourcing.supplier")
+            _thr_map = (dict(zip(_thr["supplier_name"],
+                                 pd.to_numeric(_thr["free_ship_threshold"],
+                                               errors="coerce")))
+                        if not _thr.empty else {})
+
+            k1, k2, k3 = st.columns(3)
+            k1.metric(t("供货商数"), f"{len(_pv):,}")
+            k2.metric(t("直近月推算合計"), f"¥{_pv[_yms[-1]].sum():,.0f}")
+            k3.metric(t("取扱SKU計"), f"{int(_skun.sum()):,}")
+
+            _tab_a = _pv.copy()
+            _tab_a.insert(0, t("SKU数"), _skun)
+            _tab_a[t("免送料閾値")] = _tab_a.index.map(_thr_map)
+            _tab_a = (_tab_a.sort_values(_yms[-1], ascending=False)
+                      .reset_index().rename(columns={"supplier": t("供货商")}))
+            st.dataframe(
+                _tab_a, hide_index=True, use_container_width=True, height=560,
+                column_config={
+                    **{c: st.column_config.NumberColumn(format="¥%.0f")
+                       for c in _yms},
+                    t("免送料閾値"): st.column_config.NumberColumn(format="¥%.0f"),
+                })
+            st.download_button(t("📥 仕入先分析 CSV"),
+                               _tab_a.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="supplier_monthly.csv",
+                               mime="text/csv", key="ana_csv")
+            st.caption(t("金额=当月销量×仕入单价的推算值(非 PO 实绩) · "
+                         "月订货金额低于免送料閾値的供货商要凑单或谈閾値 · "
+                         "SKU数=分配到该供货商的取扱 JAN 数"))
+
+            _pick = st.selectbox(t("供货商 SKU 构成（选择查看明细）"),
+                                 [""] + _tab_a[t("供货商")].tolist(),
+                                 key="ana_pick")
+            if _pick:
+                _d = _j[_j["supplier"] == _pick]
+                _dl = (_d[_d["ym"] == _yms[-1]]
+                       .groupby(["jan", "display_name"], as_index=False)
+                       .agg(qty_l=("qty", "sum"), amt_l=("amt", "sum")))
+                _d6 = (_d.groupby(["jan", "display_name"], as_index=False)
+                       .agg(amt6=("amt", "sum")))
+                _dd = (_d6.merge(_dl, on=["jan", "display_name"], how="left")
+                       .sort_values("amt6", ascending=False))
+                _dd = _dd.rename(columns={
+                    "jan": t("JAN"), "display_name": t("商品名"),
+                    "qty_l": t("直近月販数"), "amt_l": t("直近月金額"),
+                    "amt6": t("近6个月金額")})
+                st.dataframe(
+                    _dd[[t("JAN"), t("商品名"), t("直近月販数"),
+                         t("直近月金額"), t("近6个月金額")]],
+                    hide_index=True, use_container_width=True, height=400,
+                    column_config={
+                        t("直近月金額"): st.column_config.NumberColumn(format="¥%.0f"),
+                        t("近6个月金額"): st.column_config.NumberColumn(format="¥%.0f"),
+                        t("直近月販数"): st.column_config.NumberColumn(format="%.0f"),
+                    })
+
+# ============================================================
+# Tab：ブランド分析（品牌 × 供货商 · 近12个月 PO 实绩 + 平均仕入折数）
+# ============================================================
+with tab_brand:
+    st.caption(t("品牌(NST maker) × 供货商：近12个月 PO 实绩里该品牌从哪些供货商采购过、"
+                 "各家 SKU 数与平均仕入折数(PO 单价 ÷ MSRP 税抜 × 10)。"))
+    _bi = _read("SELECT internal_id, jan, maker FROM nst.item_master_raw "
+                "WHERE jan IS NOT NULL AND maker IS NOT NULL")
+    _pl = _read(
+        "SELECT item_internal_id, trandate, vendor_name AS supplier_name, rate "
+        "FROM nst.purchase_order_line "
+        "WHERE item_internal_id IS NOT NULL AND vendor_name IS NOT NULL "
+        "AND rate IS NOT NULL AND trandate >= ?",
+        ((dt.date.today() - dt.timedelta(days=365)).isoformat(),))
+    if _bi.empty or _pl.empty:
+        st.info(t("无数据（NST item_master / 近12个月 PO 未就绪？）"))
+    else:
+        _bi["internal_id"] = _bi["internal_id"].astype(str)
+        _pl["item_internal_id"] = _pl["item_internal_id"].astype(str)
+        _pl["rate"] = pd.to_numeric(_pl["rate"], errors="coerce")
+        _pl = sc.apply_supplier_alias(_pl, _alias_map())
+        # 同一 商品×供货商 取最新一次 PO 的単価
+        _pl = (_pl.sort_values("trandate")
+               .drop_duplicates(["item_internal_id", "supplier_name"], keep="last"))
+        _b = _pl.merge(_bi, left_on="item_internal_id",
+                       right_on="internal_id", how="inner")
+        _mp = _read("SELECT jan, msrp_jpy, msrp_jpy_taxin FROM nst.item_msrp")
+        if not _mp.empty:
+            _mp["msrp_jpy"] = pd.to_numeric(_mp["msrp_jpy"], errors="coerce")
+            _mp["msrp_jpy_taxin"] = pd.to_numeric(_mp["msrp_jpy_taxin"],
+                                                  errors="coerce")
+            _mp["msrp_taxex"] = _mp["msrp_jpy_taxin"].fillna(_mp["msrp_jpy"]) / 1.1
+            _b = _b.merge(_mp[["jan", "msrp_taxex"]].drop_duplicates("jan"),
+                          on="jan", how="left")
+        else:
+            _b["msrp_taxex"] = None
+        _b["msrp_taxex"] = pd.to_numeric(_b["msrp_taxex"], errors="coerce")
+        _b["wari"] = _b["rate"] / _b["msrp_taxex"].where(_b["msrp_taxex"] > 0) * 10
+
+        _g = (_b.groupby(["maker", "supplier_name"], as_index=False)
+              .agg(sku_n=("item_internal_id", "nunique"),
+                   msrp_n=("wari", "count"),
+                   wari_mean=("wari", "mean")))
+        _g = _g.sort_values(["maker", "sku_n"], ascending=[True, False])
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric(t("品牌数"), f"{_g['maker'].nunique():,}")
+        k2.metric(t("供货商数"), f"{_g['supplier_name'].nunique():,}")
+        k3.metric(t("品牌×供货商 组合"), f"{len(_g):,}")
+
+        _kw_b = st.text_input(t("🔍 品牌 / 供货商 搜索"), key="brand_kw")
+        _gv = _g
+        if _kw_b.strip():
+            _kb = _kw_b.strip()
+            _gv = _gv[_gv["maker"].astype(str).str.contains(_kb, case=False, na=False)
+                      | _gv["supplier_name"].astype(str)
+                      .str.contains(_kb, case=False, na=False)]
+        _show_b = _gv.rename(columns={
+            "maker": t("品牌"), "supplier_name": t("供货商"),
+            "sku_n": t("SKU数"), "msrp_n": t("有MSRP的SKU数"),
+            "wari_mean": t("平均仕入折数")})
+        st.dataframe(
+            _show_b, hide_index=True, use_container_width=True, height=560,
+            column_config={
+                t("平均仕入折数"): st.column_config.NumberColumn(format="%.1f折"),
+            })
+        st.download_button(t("📥 ブランド分析 CSV"),
+                           _show_b.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="brand_supplier.csv",
+                           mime="text/csv", key="brand_csv")
+        st.caption(t("SKU数=近12个月从该供货商采购过的该品牌 SKU 数 · "
+                     "平均仕入折数=各 SKU 最新 PO 单价÷MSRP 税抜×10 的平均"
+                     "(仅有 MSRP 的 SKU 参与) · 供货商名已按别名表归一"))
