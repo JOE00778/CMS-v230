@@ -1,8 +1,10 @@
 """模块 #37 利润分析 · 市場別 月次損益（Boss 2026-07-14 依頼）.
 
-サイドバー「店铺毛利」直下。KPI = 純利益額 / 純利益率。
-表 = 6 項目（総収益 / 仕入金額 / 物流費 / 広告費 / 決済手数料 / 固定費）× 市場列
-（市場ごとに右隣へ 占比=対総収益 列）。
+サイドバー「店铺毛利」直下。3 タブ構成（Boss 2026-07-14）:
+- 🏬 平台      = 東南亜/韓国/日本 × 損益項目（市場ごとに右隣へ 占比=対総収益 列 + 合計列）
+- 🌐 自建站    = smikiejapan 自社サイト単独（NST 入りまで ¥0）
+- 📦 輸出      = 全体 1 列 · 市場別なし · 全社口径費用（物流費/固定費 手入力）はここのみ計上
+各タブ KPI = 純利益額 / 純利益率（そのタブの範囲）。
 
 口径（Boss 2026-07-14）:
 - 総収益     = NST 当月営業額（nst.sales_daily.revenue · 前日確定分まで · page05 同口径）
@@ -25,7 +27,8 @@ import streamlit as st
 
 from shared.db import get_connection
 from shared.i18n import lang_selector, t, get_lang
-from shared.markets import ALL_MARKETS, MARKET_KOREA, add_market_column
+from shared.markets import (ALL_MARKETS, MARKET_KOREA, MARKET_UNKNOWN,
+                            add_market_column)
 
 st.set_page_config(page_title=t("利润分析"), page_icon="💹", layout="wide")
 from shared.auth import require_password
@@ -273,18 +276,14 @@ tot_fee = sum(_fee_vals)
 tot_net = tot_rev - tot_cost - tot_fee - (fx_total or 0.0) - (lg_total or 0.0)
 tot_margin = (tot_net / tot_rev * 100) if tot_rev else 0.0
 
-k1, k2, _, _ = st.columns(4)
-k1.metric(_dl("净利额", "純利益額"), f"¥{tot_net:,.0f}")
-k2.metric(_dl("净利率", "純利益率"), f"{tot_margin:.2f}%")
-
-st.divider()
-
 # ============================================================
-# 損益表（行 = 項目 · 列 = 市場 + 占比(対総収益) を市場ごとに1列 + 合計）
+# 3 タブ（Boss 2026-07-14: 平台=市場別 / 自建站=単独 / 輸出=全体·市場別なし·最後）
+#   物流費(手入力)/固定費は全社口径 → 輸出タブのみ計上。
 # ============================================================
 _item_lbl = _dl("项目", "項目")
 _tot_lbl = _dl("合计", "合計")
 _pct_lbl = _dl("占比", "構成比")
+PLATFORM_MKTS = [m for m in ALL_MARKETS if m != MARKET_UNKNOWN]
 
 # 市場名ヘッダ居中（Boss 2026-07-14 · html_table の th.num=右対齐をこのページのみ上書き）
 st.markdown("<style>.cms-table thead th.num{text-align:center;}</style>",
@@ -299,48 +298,107 @@ def _pct(v: float, base: float) -> str:
     return f"{v / base * 100:.2f}%" if base else "—"
 
 
-_cols = [_item_lbl]
-for _m in ALL_MARKETS:
-    _cols += [_m, _pct_lbl]
-_cols += [_tot_lbl, _pct_lbl]
+def _pnl_rows(mkts: list, total_label: str | None):
+    """市場列の損益表（平台/自建站タブ用 · 全社口径費用は含めない）。
+
+    返り値: (rows, cols, scope_net, scope_rev)。total_label=None なら合計列なし。
+    """
+    s_rev = sum(revenue[m] for m in mkts)
+    s_cost = sum(cost[m] for m in mkts)
+    s_fee_vals = [fee[m] for m in mkts if fee[m] is not None]
+    s_fee = sum(s_fee_vals)
+    s_net = s_rev - s_cost - s_fee
+
+    def row(label, nums, tot):
+        r = [label]
+        for m in mkts:
+            v = nums.get(m)
+            r += ["—", "—"] if v is None else [_yen(v), _pct(v, revenue[m])]
+        if total_label is not None:
+            r += ["—", "—"] if tot is None else [_yen(tot), _pct(tot, s_rev)]
+        return r
+
+    rows = [
+        row(_dl("总收益", "総収益"), revenue, s_rev),
+        row(_dl("采购金额（定义原价）", "仕入金額（定義原価）"), cost, s_cost),
+        row(_dl("物流费", "物流費"), {}, None),
+        row(_dl("广告费", "広告費"), {}, None),
+        row(_dl("支付手续费", "決済手数料"),
+            {m: v for m, v in fee.items() if v is not None},
+            s_fee if s_fee_vals else None),
+        row(_dl("净利额", "純利益額"), {m: net[m] for m in mkts}, s_net),
+    ]
+    cols = [_item_lbl]
+    for m in mkts:
+        cols += [m, _pct_lbl]
+    if total_label is not None:
+        cols += [total_label, _pct_lbl]
+    return rows, cols, s_net, s_rev
 
 
-def _money_row(label: str, nums: dict, tot: float | None) -> list:
-    """金額行: 市場ごとに [金額, 対総収益占比]。None/欠損 = 暫定空欄 "—"。"""
-    r = [label]
-    for m in ALL_MARKETS:
-        v = nums.get(m)
-        r += ["—", "—"] if v is None else [_yen(v), _pct(v, revenue[m])]
-    r += ["—", "—"] if tot is None else [_yen(tot), _pct(tot, tot_rev)]
-    return r
+tab_pf, tab_own, tab_all = st.tabs([
+    _dl("🏬 平台", "🏬 プラットフォーム"),
+    _dl("🌐 自建站", "🌐 自社サイト"),
+    _dl("📦 输出", "📦 輸出"),
+])
 
+# ── 平台タブ（東南亜/韓国/日本 + 合計）──
+with tab_pf:
+    _rows, _cols, _s_net, _s_rev = _pnl_rows(PLATFORM_MKTS, _tot_lbl)
+    _k1, _k2, _, _ = st.columns(4)
+    _k1.metric(_dl("平台净利额", "プラットフォーム純利益額"), f"¥{_s_net:,.0f}")
+    _k2.metric(_dl("平台净利率", "プラットフォーム純利益率"),
+               f"{(_s_net / _s_rev * 100) if _s_rev else 0:.2f}%")
+    html_table(pd.DataFrame(_rows, columns=_cols))
+    if _fee_note:
+        st.caption(_fee_note)
+    st.caption(_dl(
+        "物流费/固定费用为全公司口径 → 只计入「输出」tab · 占比 = 各项 ÷ 该市场总收益"
+        "（净利额行的占比即净利率）",
+        "物流費/固定費は全社口径 → 「輸出」タブのみ計上 · 構成比 = 各項目 ÷ 当該市場の総収益"
+        "（純利益行の構成比 = 純利益率）"))
 
-rows = [
-    _money_row(_dl("总收益", "総収益"), revenue, tot_rev),
-    _money_row(_dl("采购金额（定义原价）", "仕入金額（定義原価）"), cost, tot_cost),
-    _money_row(_dl("物流费", "物流費"), {}, lg_total),
-    _money_row(_dl("广告费", "広告費"), {}, None),
-    _money_row(_dl("支付手续费", "決済手数料"),
-               {m: v for m, v in fee.items() if v is not None},
-               tot_fee if _fee_vals else None),
-    _money_row(_dl("固定费用", "固定費"), {}, fx_total),
-    _money_row(_dl("净利额", "純利益額"), net, tot_net),
-]
-html_table(pd.DataFrame(rows, columns=_cols))
+# ── 自建站タブ（単独）──
+with tab_own:
+    _rows, _cols, _s_net, _s_rev = _pnl_rows([MARKET_UNKNOWN], None)
+    _k1, _k2, _, _ = st.columns(4)
+    _k1.metric(_dl("自建站净利额", "自社サイト純利益額"), f"¥{_s_net:,.0f}")
+    _k2.metric(_dl("自建站净利率", "自社サイト純利益率"),
+               f"{(_s_net / _s_rev * 100) if _s_rev else 0:.2f}%")
+    html_table(pd.DataFrame(_rows, columns=_cols))
+    st.caption(_dl(
+        "数据源与平台 tab 相同（NST 日次销售）· 自建站(Shopify)销售进入 NST 前此处为 ¥0",
+        "データ源はプラットフォームタブと同一（NST 日次売上）· 自社サイト(Shopify)売上が"
+        "NST に入るまでは ¥0"))
 
-st.caption(_dl(
-    "固定费用 = 人工费 + 管理费 + 本社配额 · 物流费/固定费用在下方折叠项输入"
-    "（全公司口径，未分摊到各市场，计入合计净利）",
-    "固定費 = 人件費 + 管理費 + 本社配賦 · 物流費/固定費は下の折りたたみで入力"
-    "（全社口径 · 市場別へは未配賦 · 合計純利益に計上）"))
-if _fee_note:
-    st.caption(_fee_note)
-st.caption(_dl(
-    "净利额 = 总收益 − 采购金额 − 物流费 − 广告费 − 支付手续费 − 固定费用（暂空项按 0 计）· "
-    "占比 = 各项 ÷ 该市场总收益（净利额行的占比即净利率）",
-    "純利益額 = 総収益 − 仕入金額 − 物流費 − 広告費 − 決済手数料 − 固定費（空欄は 0 扱い）· "
-    "構成比 = 各項目 ÷ 当該市場の総収益（純利益行の構成比 = 純利益率）",
-))
+# ── 輸出タブ（全体 · 市場別なし · 全社口径費用ここに計上）──
+with tab_all:
+    _k1, _k2, _, _ = st.columns(4)
+    _k1.metric(_dl("净利额", "純利益額"), f"¥{tot_net:,.0f}")
+    _k2.metric(_dl("净利率", "純利益率"), f"{tot_margin:.2f}%")
+
+    def _arow(label: str, v: float | None) -> list:
+        return [label] + (["—", "—"] if v is None else [_yen(v), _pct(v, tot_rev)])
+
+    _rows = [
+        _arow(_dl("总收益", "総収益"), tot_rev),
+        _arow(_dl("采购金额（定义原价）", "仕入金額（定義原価）"), tot_cost),
+        _arow(_dl("物流费", "物流費"), lg_total),
+        _arow(_dl("广告费", "広告費"), None),
+        _arow(_dl("支付手续费", "決済手数料"), tot_fee if _fee_vals else None),
+        _arow(_dl("固定费用", "固定費"), fx_total),
+        _arow(_dl("净利额", "純利益額"), tot_net),
+    ]
+    html_table(pd.DataFrame(_rows, columns=[_item_lbl, _dl("整体", "全体"), _pct_lbl]))
+    st.caption(_dl(
+        "固定费用 = 人工费 + 管理费 + 本社配额 · 物流费/固定费用在下方折叠项输入（全公司口径）",
+        "固定費 = 人件費 + 管理費 + 本社配賦 · 物流費/固定費は下の折りたたみで入力（全社口径）"))
+    st.caption(_dl(
+        "净利额 = 总收益 − 采购金额 − 物流费 − 广告费 − 支付手续费 − 固定费用（暂空项按 0 计）· "
+        "占比 = 各项 ÷ 整体总收益",
+        "純利益額 = 総収益 − 仕入金額 − 物流費 − 広告費 − 決済手数料 − 固定費（空欄は 0 扱い）· "
+        "構成比 = 各項目 ÷ 全体総収益",
+    ))
 
 # ============================================================
 # 固定費入力（折りたたみ · Boss 手入力 · 対象月単位で保存）
