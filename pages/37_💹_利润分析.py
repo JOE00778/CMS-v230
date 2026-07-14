@@ -1,0 +1,242 @@
+"""模块 #37 利润分析 · 市場別 月次損益（Boss 2026-07-14 依頼）.
+
+サイドバー「店铺毛利」直下。KPI = 純利益額 / 純利益率。
+表 = 5 項目（総収益 / 仕入金額 / 物流費 / 広告費 / 決済手数料）× 市場列。
+
+口径（Boss 2026-07-14）:
+- 総収益     = NST 当月営業額（nst.sales_daily.revenue · 前日確定分まで · page05 同口径）
+- 仕入金額   = 定義原価（revenue − gross_profit · NST 円丸め順）
+- 物流費     = 暫定空欄（未接続）
+- 広告費     = 暫定空欄（未接続）
+- 決済手数料 = 店舗控除合計（coupang.settlement · 現状韓国のみ · KRW→JPY 当月三金レート）
+  東南亜/日本/自建站は暫定空欄。
+"""
+from __future__ import annotations
+
+import datetime as dt
+
+import pandas as pd
+import streamlit as st
+
+from shared.db import get_connection
+from shared.i18n import lang_selector, t, get_lang
+from shared.markets import ALL_MARKETS, MARKET_KOREA, add_market_column
+
+st.set_page_config(page_title=t("利润分析"), page_icon="💹", layout="wide")
+from shared.auth import require_password
+from shared.theme import inject_theme, html_table
+require_password()
+inject_theme()
+lang_selector()
+conn = get_connection()
+
+_ja = get_lang() == "ja"
+
+
+def _dl(zh: str, ja: str) -> str:
+    return ja if _ja else zh
+
+
+st.title(t("💹 利润分析"))
+st.caption(_dl(
+    "市场别月次损益 · 总收益/采购金额 = NST 日次销售（截至前日确定分 · 定义原价口径）· "
+    "支付手续费 = 店铺扣减总费用（现仅 Coupang 韩国店 · KRW 按当月三金汇率换算 JPY）· "
+    "物流费/广告费及东南亚·日本·自建站的扣减暂空，待接入",
+    "市場別月次損益 · 総収益/仕入金額 = NST 日次売上（前日確定分まで · 定義原価ベース）· "
+    "決済手数料 = 店舗控除合計（現状 Coupang 韓国店のみ · KRW は当月三金レートで円換算）· "
+    "物流費/広告費と東南亜·日本·自建站の控除は暫定空欄（未接続）",
+))
+
+
+def _rhu(v: float) -> float:
+    """円丸め HALF_UP(away from zero)= NST 表示丸め（page05 と同一）。"""
+    import math
+    return float(math.floor(v + 0.5) if v >= 0 else math.ceil(v - 0.5))
+
+
+def _query(sql: str, params: tuple = ()):
+    try:
+        from shared.cache import cached_df, data_version
+        return cached_df(conn, sql, params or None, ver=data_version("basic", "sales")), None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None, str(e)
+
+
+# ============================================================
+# 対象月
+# ============================================================
+months_df, err = _query(
+    "SELECT DISTINCT to_char(sale_date,'YYYY-MM') AS ym "
+    "FROM nst.sales_daily ORDER BY ym DESC"
+)
+if err:
+    st.error(t("売上テーブル未取得 or 接続エラー: ") + err)
+    st.info(t("page 27「📥 NST 取得データ」→ 手動更新 で sales を実行してください。"))
+    st.stop()
+if months_df is None or months_df.empty:
+    st.warning(t("⚠️ 日次売上データ未取得。page 27「📥 NST 取得データ」で sales ジョブを実行してください。"))
+    st.stop()
+
+ym = st.selectbox(t("対象月"), months_df["ym"].tolist())
+
+# ============================================================
+# 総収益 / 定義原価（市場別 · nst.sales_daily）
+# ============================================================
+df, e2 = _query(
+    "SELECT s.shop, s.sale_date, s.revenue, s.gross_profit "
+    "FROM nst.sales_daily s "
+    "WHERE to_char(s.sale_date,'YYYY-MM') = ?",
+    (ym,),
+)
+if e2:
+    st.error(e2)
+    st.stop()
+if df is None or df.empty:
+    st.info(t("この条件のデータがありません"))
+    st.stop()
+
+df["revenue"] = df["revenue"].astype(float)
+df["gross_profit"] = df["gross_profit"].astype(float)
+df["defined_cost"] = df["revenue"] - df["gross_profit"]   # NetSuite 口径の原価
+# 未来日付除外 + 当日は未確定（07:00 に前日分取得）→ 前日まで（page05 と同口径）
+_today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
+_cutoff = _today - dt.timedelta(days=1)
+df = df[df["sale_date"] <= _cutoff]
+if df.empty:
+    st.info(t("確定済みの売上データがまだありません（前日分は翌07:00に取得）"))
+    st.stop()
+df = add_market_column(df, store_col="shop")
+
+_g = df.groupby("market").agg(revenue=("revenue", "sum"),
+                              defined_cost=("defined_cost", "sum"))
+revenue = {m: _rhu(float(_g.loc[m, "revenue"])) if m in _g.index else 0.0
+           for m in ALL_MARKETS}
+cost = {m: _rhu(float(_g.loc[m, "defined_cost"])) if m in _g.index else 0.0
+        for m in ALL_MARKETS}
+
+# ============================================================
+# 決済手数料 = 店舗控除合計（coupang.settlement · 韓国のみ · KRW→JPY）
+# ============================================================
+_DED_COLS = ["service_fee", "seller_service_fee", "seller_discount_coupon",
+             "downloadable_coupon", "store_fee_discount", "courantee_fee",
+             "courantee_customer_reward", "deduction_amount",
+             "debt_of_last_week", "dedicated_delivery_amount"]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _coupang_ver() -> str:
+    """coupang 域の缓存版本（coupang.pull_schedule.last_run_at 最大値 · page05 と同一）。"""
+    try:
+        row = get_connection().execute(
+            "SELECT max(last_run_at) FROM coupang.pull_schedule").fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
+    return dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
+
+
+def _cq(sql: str, params: tuple = ()):
+    try:
+        from shared.cache import cached_df
+        return cached_df(conn, sql, params or None, ver=_coupang_ver()), None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None, str(e)
+
+
+fee: dict[str, float | None] = {m: None for m in ALL_MARKETS}   # None = 暫定空欄（表示 "—"）
+_fee_note = ""
+cdf, cerr = _cq(
+    "SELECT " + ", ".join(_DED_COLS) +
+    " FROM coupang.settlement WHERE revenue_recognition_year_month = ?",
+    (str(ym),),
+)
+if cerr:
+    _fee_note = _dl("⚠️ coupang.settlement 未接続（支付手续费按空计）: ",
+                    "⚠️ coupang.settlement 未接続（決済手数料は空欄扱い）: ") + cerr
+elif cdf is None or cdf.empty:
+    _fee_note = _dl(
+        f"ℹ️ {ym} 的 Coupang 结算单尚未生成（认知月结束后出单）· 支付手续费暂无",
+        f"ℹ️ {ym} の Coupang 結算単は未生成（認識月終了後に出単）· 決済手数料は未計上")
+else:
+    for _c in _DED_COLS:
+        cdf[_c] = pd.to_numeric(cdf[_c], errors="coerce").fillna(0.0)
+    _krw_sum = float(cdf[_DED_COLS].sum().sum())
+    from shared.forex import nst_monthly_rates
+    _rate = nst_monthly_rates(conn, "KRW", [str(ym)])[str(ym)]
+    fee[MARKET_KOREA] = _rhu(_krw_sum * _rate)
+    _fee_note = _dl(
+        f"支付手续费 = Coupang 结算单扣减合计 ₩{_krw_sum:,.0f} × {_rate:g}（{ym} 三金汇率换算 JPY）",
+        f"決済手数料 = Coupang 結算控除合計 ₩{_krw_sum:,.0f} × {_rate:g}（{ym} 三金レートで円換算）")
+
+# ============================================================
+# 純利益 = 総収益 − 仕入金額 − 物流費(空=0) − 広告費(空=0) − 決済手数料(空=0)
+# ============================================================
+net = {m: revenue[m] - cost[m] - (fee[m] or 0.0) for m in ALL_MARKETS}
+tot_rev = sum(revenue.values())
+tot_cost = sum(cost.values())
+_fee_vals = [v for v in fee.values() if v is not None]
+tot_fee = sum(_fee_vals)
+tot_net = tot_rev - tot_cost - tot_fee
+tot_margin = (tot_net / tot_rev * 100) if tot_rev else 0.0
+
+k1, k2, _, _ = st.columns(4)
+k1.metric(_dl("净利额", "純利益額"), f"¥{tot_net:,.0f}")
+k2.metric(_dl("净利率", "純利益率"), f"{tot_margin:.2f}%")
+
+st.divider()
+
+# ============================================================
+# 損益表（行 = 項目 · 列 = 市場 + 合計）
+# ============================================================
+_item_lbl = _dl("项目", "項目")
+_tot_lbl = _dl("合计", "合計")
+
+
+def _yen(v: float) -> str:
+    return f"¥{v:,.0f}"
+
+
+def _row(label: str, vals: dict, total: str) -> dict:
+    r = {_item_lbl: label}
+    for m in ALL_MARKETS:
+        r[m] = vals[m]
+    r[_tot_lbl] = total
+    return r
+
+
+rows = [
+    _row(_dl("总收益", "総収益"),
+         {m: _yen(revenue[m]) for m in ALL_MARKETS}, _yen(tot_rev)),
+    _row(_dl("采购金额（定义原价）", "仕入金額（定義原価）"),
+         {m: _yen(cost[m]) for m in ALL_MARKETS}, _yen(tot_cost)),
+    _row(_dl("物流费", "物流費"),
+         {m: "—" for m in ALL_MARKETS}, "—"),
+    _row(_dl("广告费", "広告費"),
+         {m: "—" for m in ALL_MARKETS}, "—"),
+    _row(_dl("支付手续费", "決済手数料"),
+         {m: (_yen(fee[m]) if fee[m] is not None else "—") for m in ALL_MARKETS},
+         _yen(tot_fee) if _fee_vals else "—"),
+    _row(_dl("净利额", "純利益額"),
+         {m: _yen(net[m]) for m in ALL_MARKETS}, _yen(tot_net)),
+    _row(_dl("净利率", "純利益率"),
+         {m: (f"{net[m] / revenue[m] * 100:.2f}%" if revenue[m] else "—")
+          for m in ALL_MARKETS},
+         f"{tot_margin:.2f}%"),
+]
+html_table(pd.DataFrame(rows))
+
+if _fee_note:
+    st.caption(_fee_note)
+st.caption(_dl(
+    "净利额 = 总收益 − 采购金额 − 物流费 − 广告费 − 支付手续费（暂空项按 0 计）· 净利率 = 净利额 ÷ 总收益",
+    "純利益額 = 総収益 − 仕入金額 − 物流費 − 広告費 − 決済手数料（空欄は 0 扱い）· 純利益率 = 純利益額 ÷ 総収益",
+))
