@@ -1,8 +1,8 @@
-"""模块 #34 供货商数据库 · 4 tab（Boss 2026-07-07 重整）.
+"""模块 #34 供货商管理 · 4 tab（Boss 2026-07-07 重整 · 2026-07-14 改名）.
 
   📋 仕入れデータ  商品×采购价格台账（最新PO金额/主·次供货商(待上传)/最低报价/现状比）
   🔍 見直し必要    采购价 ÷ 建议零售价(nst.item_msrp) = 仕入折数 → 需重新谈价一览
-  📤 見積書UP     报价上传（xlsx/csv·仕入先管理リスト一括·PO 实绩种子）
+  📤 見積書UP     报价上传（手动输入·xlsx/csv·仕入先管理リスト一括·PO 实绩种子）
   🏢 仕入先データ  供货商主档（起订金额/纳期/预付/启用）
 
 データ: PG sourcing schema（本ページが idempotent 建表）+ nst.*（NST 直连）。
@@ -24,7 +24,7 @@ from shared.db import get_connection
 from shared.i18n import lang_selector, t
 from shared import sourcing as sc
 
-st.set_page_config(page_title=t("供货商数据库"), page_icon="🏢", layout="wide")
+st.set_page_config(page_title=t("供货商管理"), page_icon="🏢", layout="wide")
 from shared.auth import require_password  # noqa: E402
 require_password()
 from shared.theme import inject_theme  # noqa: E402
@@ -32,7 +32,7 @@ inject_theme()
 lang_selector()
 conn = get_connection()
 
-st.title(t("🏢 供货商数据库"))
+st.title(t("🏢 供货商管理"))
 st.caption(t(
     "仕入れデータ(采购价格台账) · 見直し必要(对比建议零售价) · "
     "見積書UP(报价上传) · 仕入先データ(供货商主档)。"
@@ -135,6 +135,75 @@ tab_data, tab_opt, tab_up, tab_sup = st.tabs(
 # Tab：报价上传 / 种子
 # ============================================================
 with tab_up:
+    st.markdown("##### " + t("✍️ 手动输入报价（少量更新）"))
+    st.caption(t("少量产品直接在表格输入 → 写入报价库（追加记录留历史，比价自动取最新）。"
+                 "供货商从主档选择；新供货商请走下方文件上传。"))
+    _sup_opts = _read(
+        "SELECT supplier_name FROM sourcing.supplier ORDER BY supplier_name")
+    _sup_opts = (_sup_opts["supplier_name"].dropna().tolist()
+                 if not _sup_opts.empty else [])
+    _hand_seed = pd.DataFrame({
+        "supplier_name": pd.Series(dtype="object"),
+        "jan": pd.Series(dtype="object"),
+        "item_name": pd.Series(dtype="object"),
+        "price": pd.Series(dtype="float64"),
+        "moq": pd.Series(dtype="float64"),
+        "order_lot": pd.Series(dtype="float64"),
+        "lead_days": pd.Series(dtype="float64"),
+    })
+    _hand = st.data_editor(
+        _hand_seed, num_rows="dynamic", hide_index=True,
+        use_container_width=True, key="sq_hand",
+        column_config={
+            "supplier_name": (st.column_config.SelectboxColumn(
+                t("供货商"), options=_sup_opts, width="medium") if _sup_opts
+                else st.column_config.TextColumn(t("供货商"))),
+            "jan": st.column_config.TextColumn("JAN"),
+            "item_name": st.column_config.TextColumn(t("品名（可选）")),
+            "price": st.column_config.NumberColumn(
+                t("仕入单价（税抜）"), min_value=0.0, format="%.2f"),
+            "moq": st.column_config.NumberColumn(
+                t("起订量"), min_value=0.0, format="%.0f"),
+            "order_lot": st.column_config.NumberColumn(
+                t("订货批量"), min_value=0.0, format="%.0f"),
+            "lead_days": st.column_config.NumberColumn(
+                t("纳期(日)"), min_value=0.0, format="%.0f"),
+        })
+    _hdate = st.date_input(t("报价日（整批适用）"), value=dt.date.today(),
+                           key="sq_hand_date")
+    if st.button(t("✅ 写入报价库"), key="sq_hand_write",
+                 disabled=_hand.empty):
+        _rows = _hand.copy()
+        _rows["supplier_name"] = (_rows["supplier_name"].fillna("")
+                                  .astype(str).str.strip())
+        _rows["jan"] = _rows["jan"].fillna("").astype(str).str.strip()
+        _valid = _rows[(_rows["supplier_name"] != "") & (_rows["jan"] != "")
+                       & _rows["price"].notna()]
+        _skip = len(_rows) - len(_valid)
+        if _valid.empty:
+            st.warning(t("没有可写入的行（需 供货商+JAN+单价）"))
+        else:
+            _valid = sc.apply_supplier_alias(_valid, _alias_map())
+            _ensure_suppliers(_valid["supplier_name"].tolist())
+            for _, _r in _valid.iterrows():
+                _iname = _r.get("item_name")
+                _iname = (None if pd.isna(_iname)
+                          else (str(_iname).strip() or None))
+                conn.execute(
+                    "INSERT INTO sourcing.supplier_quote "
+                    "(supplier_name, jan, item_name, price, moq, order_lot, "
+                    " lead_days, quote_date, source) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (str(_r["supplier_name"]).strip(), str(_r["jan"]).strip(),
+                     _iname, sc_num(_r.get("price")), sc_num(_r.get("moq")),
+                     sc_num(_r.get("order_lot")), sc_int(_r.get("lead_days")),
+                     _hdate.isoformat(), "manual"))
+            conn.commit()
+            _msg = t("✅ 已写入 {n} 条报价").format(n=len(_valid))
+            if _skip:
+                _msg += " · " + t("跳过 {m} 行（缺 供货商/JAN/单价）").format(m=_skip)
+            st.success(_msg)
+
+    st.divider()
     st.markdown("##### " + t("📤 上传报价表"))
     st.caption(t("列名自动识别(供货商, 本地SKU/JAN, 仕入金额/采购价, 订货批量, 起订量, 纳期)。"))
     _up = st.file_uploader(t("报价文件（CSV / Excel）"), type=["csv", "xlsx"], key="sq_up")
