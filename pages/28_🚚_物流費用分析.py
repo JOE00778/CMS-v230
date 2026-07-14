@@ -49,9 +49,28 @@ MATERIAL_ORDER = ["HC100317", "HC100318", "HC100319", "HC100320", "HC100321",
                   "HC100322", "HC100323", "HC100449", "HC100452", "HC100453"]
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _logi_ver() -> str:
+    """logistics 域の缓存版本 = cost_monthly 最終 recompute 時刻。
+
+    shared.cache.data_version() は nst.pull_schedule しか見ない → page29 の重算では
+    失効せず最長1h旧数据のまま（2026-07-14 Coupang 捞回で実証）。本页专用版本で解决。
+    """
+    try:
+        from shared.db import get_connection
+        row = get_connection().execute(
+            "SELECT max(computed_at) FROM logistics.cost_monthly").fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d")
+
+
 def _df(sql: str, params=None) -> pd.DataFrame:
-    from shared.cache import cached_df, data_version
-    return cached_df(conn, sql, params, ver=data_version())
+    from shared.cache import cached_df
+    return cached_df(conn, sql, params, ver=_logi_ver())
 
 
 def _split_name(s: str):
