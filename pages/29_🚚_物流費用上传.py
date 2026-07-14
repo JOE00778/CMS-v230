@@ -186,6 +186,9 @@ def parse_billing(data: bytes, ym: str):
 
 
 def run_recompute(ym=None):
+    # 紐付は parcel_no（JD 19桁）優先 → order_id 後備（2026-07-14: Coupang は 2026-05 以降
+    # 請求書の出庫単号が Coupang 注文番号(13/14桁)になり parcel_no と不一致 → 全部【不明】化）。
+    # order_id は全庫で店舗衝突ゼロ確認済 · サブクエリで order_id 一意化し二重計上を防ぐ。
     conn.execute(
         "DELETE FROM logistics.cost_monthly WHERE (%s IS NULL OR year_month=%s)",
         (ym, ym),
@@ -196,15 +199,19 @@ def run_recompute(ym=None):
             (year_month, dept, shop, cost_type, amount, qty, source, computed_at)
         SELECT r.year_month,
                COALESCE(d.dept, '不明'),
-               COALESCE(m.shop, '(未マッチ包裹)'),
+               COALESCE(COALESCE(mp.shop, mo.shop), '(未マッチ包裹)'),
                r.cost_type,
                SUM(r.amount_ex_tax), COUNT(*), 'recompute', now()
         FROM logistics.cost_invoice_raw r
-        LEFT JOIN logistics.order_shop_map m ON r.join_key = m.parcel_no
-        LEFT JOIN logistics.shop_dept_map  d ON m.shop = d.shop
+        LEFT JOIN logistics.order_shop_map mp ON r.join_key = mp.parcel_no
+        LEFT JOIN (SELECT order_id, MIN(shop) AS shop
+                   FROM logistics.order_shop_map
+                   WHERE order_id IS NOT NULL AND shop IS NOT NULL
+                   GROUP BY order_id) mo ON r.join_key = mo.order_id
+        LEFT JOIN logistics.shop_dept_map  d ON COALESCE(mp.shop, mo.shop) = d.shop
         WHERE (%s IS NULL OR r.year_month = %s)
         GROUP BY r.year_month, COALESCE(d.dept, '不明'),
-                 COALESCE(m.shop, '(未マッチ包裹)'), r.cost_type
+                 COALESCE(COALESCE(mp.shop, mo.shop), '(未マッチ包裹)'), r.cost_type
         """,
         (ym, ym),
     )
@@ -212,13 +219,16 @@ def run_recompute(ym=None):
 
 
 def show_match_feedback():
+    # 紐付判定は run_recompute と同口径（parcel_no 優先 + order_id 後備）
     rs = conn.execute(
         """SELECT r.year_month AS ym,
-                  round(100.0*count(m.parcel_no)/count(*),1) AS match_pct,
-                  round(coalesce(sum(r.amount_ex_tax) FILTER (WHERE m.parcel_no IS NULL),0))::bigint AS unknown_amt,
-                  round(100.0*coalesce(sum(r.amount_ex_tax) FILTER (WHERE m.parcel_no IS NULL),0)/nullif(sum(r.amount_ex_tax),0),1) AS unknown_pct
+                  round(100.0*count(*) FILTER (WHERE mp.parcel_no IS NOT NULL OR mo.order_id IS NOT NULL)/count(*),1) AS match_pct,
+                  round(coalesce(sum(r.amount_ex_tax) FILTER (WHERE mp.parcel_no IS NULL AND mo.order_id IS NULL),0))::bigint AS unknown_amt,
+                  round(100.0*coalesce(sum(r.amount_ex_tax) FILTER (WHERE mp.parcel_no IS NULL AND mo.order_id IS NULL),0)/nullif(sum(r.amount_ex_tax),0),1) AS unknown_pct
            FROM logistics.cost_invoice_raw r
-           LEFT JOIN logistics.order_shop_map m ON r.join_key = m.parcel_no
+           LEFT JOIN logistics.order_shop_map mp ON r.join_key = mp.parcel_no
+           LEFT JOIN (SELECT DISTINCT order_id FROM logistics.order_shop_map
+                      WHERE order_id IS NOT NULL) mo ON r.join_key = mo.order_id
            GROUP BY r.year_month ORDER BY r.year_month"""
     ).fetchall()
     df = pd.DataFrame([dict(x) for x in rs])
