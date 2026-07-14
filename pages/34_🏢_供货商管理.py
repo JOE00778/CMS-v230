@@ -1,6 +1,6 @@
 """模块 #34 供货商管理 · 4 tab（Boss 2026-07-07 重整 · 2026-07-14 改名）.
 
-  📋 仕入れデータ  商品×采购价格台账（最新PO金额/主·次供货商(待上传)/最低报价/现状比）
+  📋 仕入れデータ  商品×采购价格台账（最新PO单价/主·次供货商(待上传)/最低报价/现状比）
   🔍 見直し必要    采购价 ÷ 建议零售价(nst.item_msrp) = 仕入折数 → 需重新谈价一览
   📤 見積書UP     报价上传（手动输入·xlsx/csv·仕入先管理リスト一括·PO 实绩种子）
   🏢 仕入先データ  供货商主档（起订金额/纳期/预付/启用）
@@ -448,10 +448,10 @@ with tab_sup:
                 st.warning(t("⚠️ 改名目标已存在,已跳过: ") + "、".join(_conflict))
 
 # ============================================================
-# Tab：仕入れデータ（数据管理 · ABC产品 × 供货商价格 + 最新订单金额 + 最低价）
+# Tab：仕入れデータ（数据管理 · ABC产品 × 供货商价格 + 最新订货单价 + 最低价）
 # ============================================================
 with tab_data:
-    st.caption(t("商品 × 采购价格台账：最新订单金额(NST PO) + 主/次供货商(待上传) + 最低价(报价) + 现状对比。"))
+    st.caption(t("商品 × 采购价格台账：最新订货单价(NST PO) + 主/次供货商(待上传) + 最低价(报价) + 现状对比。"))
     _ranks = st.multiselect(t("等级"), ["Aランク", "Bランク", "Cランク", "NEW"],
                             default=["Aランク", "Bランク", "Cランク"], key="abc_ranks")
     if not _ranks:
@@ -466,17 +466,18 @@ with tab_data:
         _lq = _read("SELECT id, supplier_name, jan, price, quote_date FROM sourcing.supplier_quote")
         _wide = (sc.compare_wide(sc.latest_quotes(_lq)) if not _lq.empty
                  else pd.DataFrame(columns=["jan", "min_price", "cheapest_supplier"]))
-        # 最新订单金额 = 该商品最近一次 PO 行的金额（nst.purchase_order_line · MAX(trandate)）
-        _pol = _read("SELECT item_internal_id, trandate, amount FROM nst.purchase_order_line "
+        # 最新订货单价 = 该商品最近一次 PO 行的単価 rate=発注時原価（MAX(trandate)·
+        # Boss 2026-07-14: 行総額 amount だと数量×単価で比価にならない）
+        _pol = _read("SELECT item_internal_id, trandate, rate FROM nst.purchase_order_line "
                      "WHERE item_internal_id IS NOT NULL")
         if not _pol.empty:
-            _pol["amount"] = pd.to_numeric(_pol["amount"], errors="coerce")
+            _pol["rate"] = pd.to_numeric(_pol["rate"], errors="coerce")
             _pol = (_pol.sort_values("trandate").drop_duplicates("item_internal_id", keep="last")
-                    [["item_internal_id", "amount"]]
+                    [["item_internal_id", "rate"]]
                     .rename(columns={"item_internal_id": "internal_id",
-                                     "amount": "latest_po_amount"}))
+                                     "rate": "latest_po_price"}))
         else:
-            _pol = pd.DataFrame(columns=["internal_id", "latest_po_amount"])
+            _pol = pd.DataFrame(columns=["internal_id", "latest_po_price"])
         _pol["internal_id"] = _pol["internal_id"].astype(str)
         _items["internal_id"] = _items["internal_id"].astype(str)
 
@@ -514,13 +515,13 @@ with tab_data:
         k2.metric(t("有报价"), f"{int(base['min_price'].notna().sum()):,}")
         k3.metric(t("现价>最低价"), f"{int((base['ratio_vs_min'] > 0).sum()):,}")
 
-        _order = ["item_rank", "jan", "display_name", "latest_po_amount",
+        _order = ["item_rank", "jan", "display_name", "latest_po_price",
                   "main_supplier", "main_price", "sub_supplier", "sub_price",
                   "min_price", "ratio_vs_min"]
         view = base[_order].sort_values(["item_rank", "ratio_vs_min"],
                                         ascending=[True, False], na_position="last")
         _ren = {"item_rank": t("RANK"), "jan": t("JAN"), "display_name": t("商品名"),
-                "latest_po_amount": t("最新订单金额"),
+                "latest_po_price": t("最新订货单价"),
                 "main_supplier": t("主供货商"), "main_price": t("主供货商价格"),
                 "sub_supplier": t("次供货商"), "sub_price": t("次供货商价格"),
                 "min_price": t("最低价格"), "ratio_vs_min": t("现状比最低价")}
@@ -528,7 +529,7 @@ with tab_data:
         st.dataframe(
             disp, hide_index=True, use_container_width=True, height=600,
             column_config={
-                t("最新订单金额"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("最新订货单价"): st.column_config.NumberColumn(format="¥%.2f"),
                 t("主供货商价格"): st.column_config.NumberColumn(format="¥%.2f"),
                 t("次供货商价格"): st.column_config.NumberColumn(format="¥%.2f"),
                 t("最低价格"): st.column_config.NumberColumn(format="¥%.2f"),
@@ -537,7 +538,7 @@ with tab_data:
         st.download_button(t("📥 仕入れデータ CSV"),
                            disp.to_csv(index=False).encode("utf-8-sig"),
                            file_name="sourcing_data.csv", mime="text/csv", key="abc_csv")
-        st.caption(t("最新订单金额=NST 最近一次 PO 行金额 · 主供货商=免送料判定文件指定(見積書UP更新) · "
+        st.caption(t("最新订货单价=NST 最近一次 PO 行单价(発注時原価) · 主供货商=免送料判定文件指定(見積書UP更新) · "
                      "最低价格=各供货商最新报价最小 · 现状比最低价=(NST 前回购入价 ÷ 最低价 − 1)(>0 现状偏贵) · "
                      "次供货商待上传"))
 
