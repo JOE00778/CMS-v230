@@ -9,8 +9,8 @@
 - 仕入金額   = 定義原価（revenue − gross_profit · NST 円丸め順）
 - 物流費     = 暫定空欄（未接続）
 - 広告費     = 暫定空欄（未接続）
-- 固定費     = 人件費 + 管理費 + 本社配賦（頁内折りたたみで Boss 手入力 · finance.fixed_cost
-  月別 · 全社口径 → 市場別へは未配賦、合計純利益のみ計上 · Boss 2026-07-14）
+- 固定費     = 人件費 + 管理費 + 本社配賦（頁内折りたたみで Boss 手入力 · 単一金額 ·
+  finance.fixed_cost 月別 · 全社口径 → 市場別へは未配賦、合計純利益のみ計上 · Boss 2026-07-14）
 - 決済手数料 = 店舗控除合計（coupang.settlement · 現状韓国のみ · KRW→JPY 当月三金レート）
   東南亜/日本/自建站は暫定空欄。
 """
@@ -183,48 +183,58 @@ else:
         f"決済手数料 = Coupang 結算控除合計 ₩{_krw_sum:,.0f} × {_rate:g}（{ym} 三金レートで円換算）")
 
 # ============================================================
-# 固定費（Boss 手入力 · 月別 · finance.fixed_cost · 全社口径 → 合計のみ計上）
+# 固定費（Boss 手入力 · 月別 単一金額 · finance.fixed_cost · 全社口径 → 合計のみ計上）
 # ============================================================
-_FX_ITEMS = [("labor_cost", "人工费", "人件費"),
-             ("admin_cost", "管理费", "管理費"),
-             ("hq_allocation", "本社配额", "本社配賦")]
-
-
 def _ensure_fixed_cost() -> str | None:
     """幂等建表（page34 と同パターン）。失敗は文字列で返す（固定費は補助機能 · 頁は止めない）。"""
     try:
         conn.execute("CREATE SCHEMA IF NOT EXISTS finance")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS finance.fixed_cost ("
-            "ym TEXT PRIMARY KEY, labor_cost NUMERIC(14,2) NOT NULL DEFAULT 0, "
-            "admin_cost NUMERIC(14,2) NOT NULL DEFAULT 0, "
-            "hq_allocation NUMERIC(14,2) NOT NULL DEFAULT 0, "
+            "ym TEXT PRIMARY KEY, amount NUMERIC(14,2) NOT NULL DEFAULT 0, "
             "updated_at TIMESTAMPTZ DEFAULT NOW())")
+        conn.execute("ALTER TABLE finance.fixed_cost "
+                     "ADD COLUMN IF NOT EXISTS amount NUMERIC(14,2)")
         conn.commit()
-        return None
     except Exception as e:  # noqa: BLE001
         try:
             conn.rollback()
         except Exception:
             pass
         return str(e)
-
-
-_fx_err = _ensure_fixed_cost()
-_fx_vals: dict[str, float] | None = None
-if not _fx_err:
+    # 2026-07-14 当日の3列細分版(人工费/管理费/本社配额)からの移行: 合算→amount 後に旧列削除。
+    # 旧列が無い(新規/移行済)と UPDATE が失敗する → 無視して次へ。
     try:
-        _r = conn.execute(
-            "SELECT labor_cost, admin_cost, hq_allocation "
-            "FROM finance.fixed_cost WHERE ym = ?", (str(ym),)).fetchone()
-        if _r is not None:
-            _fx_vals = {k: float(_r[k] or 0) for k, _, _ in _FX_ITEMS}
+        conn.execute(
+            "UPDATE finance.fixed_cost SET amount = "
+            "COALESCE(labor_cost,0)+COALESCE(admin_cost,0)+COALESCE(hq_allocation,0) "
+            "WHERE amount IS NULL OR amount = 0")
+        conn.execute("ALTER TABLE finance.fixed_cost DROP COLUMN IF EXISTS labor_cost")
+        conn.execute("ALTER TABLE finance.fixed_cost DROP COLUMN IF EXISTS admin_cost")
+        conn.execute("ALTER TABLE finance.fixed_cost DROP COLUMN IF EXISTS hq_allocation")
+        conn.commit()
     except Exception:
         try:
             conn.rollback()
         except Exception:
             pass
-fx_total = sum(_fx_vals.values()) if _fx_vals else None
+    return None
+
+
+_fx_err = _ensure_fixed_cost()
+fx_total: float | None = None
+if not _fx_err:
+    try:
+        _r = conn.execute(
+            "SELECT amount FROM finance.fixed_cost WHERE ym = ?",
+            (str(ym),)).fetchone()
+        if _r is not None and _r["amount"] is not None:
+            fx_total = float(_r["amount"])
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 # ============================================================
 # 純利益 = 総収益 − 仕入金額 − 物流費(空=0) − 広告費(空=0) − 決済手数料(空=0)
@@ -316,27 +326,18 @@ with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
         st.caption(_dl(
             f"对象月 {ym} · 固定费用 = 人工费 + 管理费 + 本社配额 · 按月保存，切换对象月后各自独立",
             f"対象月 {ym} · 固定費 = 人件費 + 管理費 + 本社配賦 · 月単位で保存（対象月ごとに独立）"))
-        _fc1, _fc2, _fc3 = st.columns(3)
-        _in: dict[str, float] = {}
-        for _fcol, (_k, _zh, _ja2) in zip((_fc1, _fc2, _fc3), _FX_ITEMS):
-            _in[_k] = _fcol.number_input(
-                _dl(_zh + "（円）", _ja2 + "（円）"), min_value=0.0,
-                value=(_fx_vals[_k] if _fx_vals else 0.0),
-                step=10000.0, format="%.0f", key=f"fx_{_k}_{ym}")
-        st.caption(_dl("固定费用合计: ", "固定費合計: ") + f"¥{sum(_in.values()):,.0f}")
+        _amt = st.number_input(
+            _dl("固定费用（円）", "固定費（円）"), min_value=0.0,
+            value=(fx_total or 0.0), step=10000.0, format="%.0f",
+            key=f"fx_amt_{ym}")
         if st.button(_dl("💾 保存", "💾 保存"), key=f"fx_save_{ym}"):
             try:
                 conn.execute(
-                    "INSERT INTO finance.fixed_cost "
-                    "(ym, labor_cost, admin_cost, hq_allocation, updated_at) "
-                    "VALUES (?, ?, ?, ?, NOW()) "
+                    "INSERT INTO finance.fixed_cost (ym, amount, updated_at) "
+                    "VALUES (?, ?, NOW()) "
                     "ON CONFLICT (ym) DO UPDATE SET "
-                    "labor_cost = EXCLUDED.labor_cost, "
-                    "admin_cost = EXCLUDED.admin_cost, "
-                    "hq_allocation = EXCLUDED.hq_allocation, "
-                    "updated_at = NOW()",
-                    (str(ym), _in["labor_cost"], _in["admin_cost"],
-                     _in["hq_allocation"]))
+                    "amount = EXCLUDED.amount, updated_at = NOW()",
+                    (str(ym), _amt))
                 conn.commit()
                 st.rerun()   # 保存後 KPI/表を新固定費で再計算
             except Exception as e:  # noqa: BLE001
