@@ -509,6 +509,26 @@ with tab_data:
             _k = _kw.strip()
             base = base[base["jan"].astype(str).str.contains(_k, na=False)
                         | base["display_name"].astype(str).str.contains(_k, case=False, na=False)]
+            if base.empty:
+                # 検索 0 件の原因を顕在化：報価はあるのに行が出ない=ランク外 or 主档外
+                _k2 = f"%{_k}%"
+                _im_hit = _read(
+                    "SELECT item_rank FROM nst.item_master_raw "
+                    "WHERE jan LIKE ? OR display_name LIKE ?", (_k2, _k2))
+                _sq_hit = _read(
+                    "SELECT COUNT(*) AS n FROM sourcing.supplier_quote "
+                    "WHERE jan LIKE ?", (_k2,))
+                _nq = int(_sq_hit["n"].iloc[0]) if not _sq_hit.empty else 0
+                if not _im_hit.empty:
+                    _rk = "、".join(sorted(
+                        {str(x) if pd.notna(x) and str(x).strip() else "（空）"
+                         for x in _im_hit["item_rank"]}))
+                    st.warning(t("商品在 NST 主档但等级={r}，不在当前等级筛选 → "
+                                 "上方「等级」多选加上即可显示。该关键词报价库有 {n} 条报价。"
+                                 ).format(r=_rk, n=_nq))
+                elif _nq:
+                    st.warning(t("报价库有 {n} 条该关键词报价，但商品不在 NST 商品主档 → "
+                                 "仕入れデータ以 NST 主档为底，暂无法显示该行。").format(n=_nq))
 
         k1, k2, k3 = st.columns(3)
         k1.metric(t("商品数"), f"{len(base):,}")
@@ -546,7 +566,7 @@ with tab_data:
 # Tab：見直し必要（优化建议 · 采购价 vs 建议零售价 = 几折采购）
 # ============================================================
 with tab_opt:
-    st.caption(t("采购价(NST 前回购入价) ÷ 建议零售价(nst.item_msrp·官方源) = 仕入折数。"
+    st.caption(t("采购价(NST 前回购入价·税抜) ÷ 建议零售价(nst.item_msrp·官方源·税抜换算) = 仕入折数。"
                  "折数越高利润越薄 → 需重新谈价。"))
     _ranks_o = st.multiselect(t("等级"), ["Aランク", "Bランク", "Cランク", "NEW"],
                               default=["Aランク", "Bランク", "NEW"], key="opt_ranks")
@@ -554,7 +574,7 @@ with tab_opt:
         _ranks_o = ["Aランク", "Bランク", "NEW"]
     _mi = _read(
         "SELECT im.jan, im.display_name, im.item_rank, im.last_purchase_cost, "
-        "m.msrp_jpy, m.is_open_price "
+        "m.msrp_jpy, m.msrp_jpy_taxin, m.is_open_price "
         "FROM nst.item_master_raw im "
         "LEFT JOIN nst.item_msrp m ON m.jan = im.jan "
         "WHERE im.jan IS NOT NULL AND im.item_rank IN ("
@@ -564,8 +584,13 @@ with tab_opt:
     else:
         _mi["last_purchase_cost"] = pd.to_numeric(_mi["last_purchase_cost"], errors="coerce")
         _mi["msrp_jpy"] = pd.to_numeric(_mi["msrp_jpy"], errors="coerce")
-        # 仕入折数 = 采购价 ÷ 建议零售价 × 10（7.0 = 7折 = 零售价的 70%）
-        _mi["wari"] = _mi["last_purchase_cost"] / _mi["msrp_jpy"].where(_mi["msrp_jpy"] > 0) * 10
+        _mi["msrp_jpy_taxin"] = pd.to_numeric(_mi["msrp_jpy_taxin"], errors="coerce")
+        # 希望小売価格を税抜に統一（Boss 2026-07-14 · 税率10%）：
+        # msrp_jpy_taxin=税込換算値（税抜→×1.1済/税込→原値）÷1.1 → 税抜。
+        # taxin が無い行（tax=unknown）は原値を税込とみなして ÷1.1。
+        _mi["msrp_taxex"] = _mi["msrp_jpy_taxin"].fillna(_mi["msrp_jpy"]) / 1.1
+        # 仕入折数 = 采购价(税抜) ÷ 建议零售价(税抜) × 10（7.0 = 7折 = 零售价的 70%）
+        _mi["wari"] = _mi["last_purchase_cost"] / _mi["msrp_taxex"].where(_mi["msrp_taxex"] > 0) * 10
         _has = _mi[_mi["wari"].notna()].copy()
         _no = _mi[_mi["wari"].isna()]
 
@@ -588,21 +613,22 @@ with tab_opt:
         _v = _v.sort_values("wari", ascending=False, na_position="last").copy()
         _v["flag"] = _v["need"].map(lambda b: "⚠️" if b else "")
         _show_o = _v[["flag", "item_rank", "jan", "display_name",
-                      "last_purchase_cost", "msrp_jpy", "wari"]].rename(
+                      "last_purchase_cost", "msrp_taxex", "wari"]].rename(
             columns={"flag": t("見直し"), "item_rank": t("RANK"), "jan": t("JAN"),
                      "display_name": t("商品名"), "last_purchase_cost": t("采购价"),
-                     "msrp_jpy": t("建议零售价"), "wari": t("仕入折数")})
+                     "msrp_taxex": t("建议零售价(税抜)"), "wari": t("仕入折数")})
         st.dataframe(
             _show_o, hide_index=True, use_container_width=True, height=560,
             column_config={
                 t("采购价"): st.column_config.NumberColumn(format="¥%.2f"),
-                t("建议零售价"): st.column_config.NumberColumn(format="¥%.0f"),
+                t("建议零售价(税抜)"): st.column_config.NumberColumn(format="¥%.0f"),
                 t("仕入折数"): st.column_config.NumberColumn(format="%.1f折"),
             })
         st.download_button(t("📥 見直し必要 CSV"),
                            _show_o.to_csv(index=False).encode("utf-8-sig"),
                            file_name="msrp_review.csv", mime="text/csv", key="opt_csv")
-        st.caption(t("建议零售价=官方源 MSRP(税抜) · 采购价=NST 前回购入价(税抜) · "
+        st.caption(t("建议零售价=官方源 MSRP 税抜换算(税込÷1.1·税率10%·原值已税抜则不变) · "
+                     "采购价=NST 前回购入价(税抜) · "
                      "仕入折数=采购价÷零售价×10 · 无参考価=オープン価格/未调查(C 档暂缓)"))
         if not _no.empty:
             with st.expander(t("无参考価商品一览") + f"（{len(_no):,}）"):
