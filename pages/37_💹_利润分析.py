@@ -7,7 +7,7 @@
 口径（Boss 2026-07-14）:
 - 総収益     = NST 当月営業額（nst.sales_daily.revenue · 前日確定分まで · page05 同口径）
 - 仕入金額   = 定義原価（revenue − gross_profit · NST 円丸め順）
-- 物流費     = 暫定空欄（未接続）
+- 物流費     = 頁内折りたたみで Boss 手入力（finance.fixed_cost.logistics_cost · 月別 · 全社口径）
 - 広告費     = 暫定空欄（未接続）
 - 固定費     = 人件費 + 管理費 + 本社配賦（頁内折りたたみで Boss 手入力 · 単一金額 ·
   finance.fixed_cost 月別 · 全社口径 → 市場別へは未配賦、合計純利益のみ計上 · Boss 2026-07-14）
@@ -44,12 +44,12 @@ st.title(t("💹 利润分析"))
 st.caption(_dl(
     "市场别月次损益 · 总收益/采购金额 = NST 日次销售（截至前日确定分 · 定义原价口径）· "
     "支付手续费 = 店铺扣减总费用（现仅 Coupang 韩国店 · KRW 按当月三金汇率换算 JPY）· "
-    "固定费用=页内折叠项手动输入（全公司口径·仅计入合计净利）· "
-    "物流费/广告费及东南亚·日本·自建站的扣减暂空，待接入",
+    "物流费/固定费用=页内折叠项手动输入（全公司口径·仅计入合计净利）· "
+    "广告费及东南亚·日本·自建站的扣减暂空，待接入",
     "市場別月次損益 · 総収益/仕入金額 = NST 日次売上（前日確定分まで · 定義原価ベース）· "
     "決済手数料 = 店舗控除合計（現状 Coupang 韓国店のみ · KRW は当月三金レートで円換算）· "
-    "固定費=頁内折りたたみで手入力（全社口径·合計純利益のみ計上）· "
-    "物流費/広告費と東南亜·日本·自建站の控除は暫定空欄（未接続）",
+    "物流費/固定費=頁内折りたたみで手入力（全社口径·合計純利益のみ計上）· "
+    "広告費と東南亜·日本·自建站の控除は暫定空欄（未接続）",
 ))
 
 
@@ -195,6 +195,8 @@ def _ensure_fixed_cost() -> str | None:
             "updated_at TIMESTAMPTZ DEFAULT NOW())")
         conn.execute("ALTER TABLE finance.fixed_cost "
                      "ADD COLUMN IF NOT EXISTS amount NUMERIC(14,2)")
+        conn.execute("ALTER TABLE finance.fixed_cost "
+                     "ADD COLUMN IF NOT EXISTS logistics_cost NUMERIC(14,2)")
         conn.commit()
     except Exception as e:  # noqa: BLE001
         try:
@@ -222,14 +224,18 @@ def _ensure_fixed_cost() -> str | None:
 
 
 _fx_err = _ensure_fixed_cost()
-fx_total: float | None = None
+fx_total: float | None = None      # 固定費（手入力）
+lg_total: float | None = None      # 物流費（手入力）
 if not _fx_err:
     try:
         _r = conn.execute(
-            "SELECT amount FROM finance.fixed_cost WHERE ym = ?",
+            "SELECT amount, logistics_cost FROM finance.fixed_cost WHERE ym = ?",
             (str(ym),)).fetchone()
-        if _r is not None and _r["amount"] is not None:
-            fx_total = float(_r["amount"])
+        if _r is not None:
+            if _r["amount"] is not None:
+                fx_total = float(_r["amount"])
+            if _r["logistics_cost"] is not None:
+                lg_total = float(_r["logistics_cost"])
     except Exception:
         try:
             conn.rollback()
@@ -245,7 +251,7 @@ tot_rev = sum(revenue.values())
 tot_cost = sum(cost.values())
 _fee_vals = [v for v in fee.values() if v is not None]
 tot_fee = sum(_fee_vals)
-tot_net = tot_rev - tot_cost - tot_fee - (fx_total or 0.0)
+tot_net = tot_rev - tot_cost - tot_fee - (fx_total or 0.0) - (lg_total or 0.0)
 tot_margin = (tot_net / tot_rev * 100) if tot_rev else 0.0
 
 k1, k2, _, _ = st.columns(4)
@@ -293,7 +299,7 @@ def _money_row(label: str, nums: dict, tot: float | None) -> list:
 rows = [
     _money_row(_dl("总收益", "総収益"), revenue, tot_rev),
     _money_row(_dl("采购金额（定义原价）", "仕入金額（定義原価）"), cost, tot_cost),
-    _money_row(_dl("物流费", "物流費"), {}, None),
+    _money_row(_dl("物流费", "物流費"), {}, lg_total),
     _money_row(_dl("广告费", "広告費"), {}, None),
     _money_row(_dl("支付手续费", "決済手数料"),
                {m: v for m, v in fee.items() if v is not None},
@@ -304,8 +310,10 @@ rows = [
 html_table(pd.DataFrame(rows, columns=_cols))
 
 st.caption(_dl(
-    "固定费用 = 人工费 + 管理费 + 本社配额（在下方折叠项输入 · 全公司口径，未分摊到各市场，计入合计净利）",
-    "固定費 = 人件費 + 管理費 + 本社配賦（下の折りたたみで入力 · 全社口径 · 市場別へは未配賦 · 合計純利益に計上）"))
+    "固定费用 = 人工费 + 管理费 + 本社配额 · 物流费/固定费用在下方折叠项输入"
+    "（全公司口径，未分摊到各市场，计入合计净利）",
+    "固定費 = 人件費 + 管理費 + 本社配賦 · 物流費/固定費は下の折りたたみで入力"
+    "（全社口径 · 市場別へは未配賦 · 合計純利益に計上）"))
 if _fee_note:
     st.caption(_fee_note)
 st.caption(_dl(
@@ -326,18 +334,25 @@ with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
         st.caption(_dl(
             f"对象月 {ym} · 固定费用 = 人工费 + 管理费 + 本社配额 · 按月保存，切换对象月后各自独立",
             f"対象月 {ym} · 固定費 = 人件費 + 管理費 + 本社配賦 · 月単位で保存（対象月ごとに独立）"))
-        _amt = st.number_input(
+        _fc1, _fc2 = st.columns(2)
+        _amt = _fc1.number_input(
             _dl("固定费用（円）", "固定費（円）"), min_value=0.0,
             value=(fx_total or 0.0), step=10000.0, format="%.0f",
             key=f"fx_amt_{ym}")
+        _lg = _fc2.number_input(
+            _dl("物流费（円）", "物流費（円）"), min_value=0.0,
+            value=(lg_total or 0.0), step=10000.0, format="%.0f",
+            key=f"fx_lg_{ym}")
         if st.button(_dl("💾 保存", "💾 保存"), key=f"fx_save_{ym}"):
             try:
                 conn.execute(
-                    "INSERT INTO finance.fixed_cost (ym, amount, updated_at) "
-                    "VALUES (?, ?, NOW()) "
+                    "INSERT INTO finance.fixed_cost (ym, amount, logistics_cost, updated_at) "
+                    "VALUES (?, ?, ?, NOW()) "
                     "ON CONFLICT (ym) DO UPDATE SET "
-                    "amount = EXCLUDED.amount, updated_at = NOW()",
-                    (str(ym), _amt))
+                    "amount = EXCLUDED.amount, "
+                    "logistics_cost = EXCLUDED.logistics_cost, "
+                    "updated_at = NOW()",
+                    (str(ym), _amt, _lg))
                 conn.commit()
                 st.rerun()   # 保存後 KPI/表を新固定費で再計算
             except Exception as e:  # noqa: BLE001
