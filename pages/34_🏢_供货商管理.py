@@ -733,24 +733,23 @@ with tab_ana:
 
             _tab_a = _pv.copy()
             _tab_a.insert(0, t("SKU数"), _skun)
-            _tab_a[t("免送料閾値")] = _tab_a.index.map(_thr_map)
-            # 金額は万円単位で表示（Boss 2026-07-14:何万かを一目で）
-            for _c in [*_yms, t("免送料閾値")]:
-                _tab_a[_c] = pd.to_numeric(_tab_a[_c], errors="coerce") / 10000
+            _tab_a[t("免送料閾値")] = pd.to_numeric(
+                _tab_a.index.map(_thr_map), errors="coerce")
             _tab_a = (_tab_a.sort_values(_yms[-1], ascending=False)
                       .reset_index().rename(columns={"supplier": t("供货商")}))
+            # 金額は桁区切り表示（Boss 2026-07-14 · localized=千位分隔）
             st.dataframe(
                 _tab_a, hide_index=True, use_container_width=True, height=560,
                 column_config={
-                    **{c: st.column_config.NumberColumn(format="%.1f万")
+                    **{c: st.column_config.NumberColumn(format="localized")
                        for c in _yms},
-                    t("免送料閾値"): st.column_config.NumberColumn(format="%.1f万"),
+                    t("免送料閾値"): st.column_config.NumberColumn(format="localized"),
                 })
             st.download_button(t("📥 仕入先分析 CSV"),
                                _tab_a.to_csv(index=False).encode("utf-8-sig"),
                                file_name="supplier_monthly.csv",
                                mime="text/csv", key="ana_csv")
-            st.caption(t("金额单位=万円(含CSV) · 金额=当月销量×仕入单价的推算值(非 PO 实绩) · "
+            st.caption(t("金额=当月销量×仕入单价的推算值(非 PO 实绩) · "
                          "月订货金额低于免送料閾値的供货商要凑单或谈閾値 · "
                          "SKU数=分配到该供货商的取扱 JAN 数"))
 
@@ -775,8 +774,8 @@ with tab_ana:
                          t("直近月金額"), t("近6个月金額")]],
                     hide_index=True, use_container_width=True, height=400,
                     column_config={
-                        t("直近月金額"): st.column_config.NumberColumn(format="¥%.0f"),
-                        t("近6个月金額"): st.column_config.NumberColumn(format="¥%.0f"),
+                        t("直近月金額"): st.column_config.NumberColumn(format="localized"),
+                        t("近6个月金額"): st.column_config.NumberColumn(format="localized"),
                         t("直近月販数"): st.column_config.NumberColumn(format="%.0f"),
                     })
 
