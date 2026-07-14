@@ -573,8 +573,8 @@ with tab_opt:
     if not _ranks_o:
         _ranks_o = ["Aランク", "Bランク", "NEW"]
     _mi = _read(
-        "SELECT im.jan, im.display_name, im.item_rank, im.last_purchase_cost, "
-        "m.msrp_jpy, m.msrp_jpy_taxin, m.is_open_price "
+        "SELECT im.internal_id, im.jan, im.display_name, im.item_rank, "
+        "im.last_purchase_cost, m.msrp_jpy, m.msrp_jpy_taxin, m.is_open_price "
         "FROM nst.item_master_raw im "
         "LEFT JOIN nst.item_msrp m ON m.jan = im.jan "
         "WHERE im.jan IS NOT NULL AND im.item_rank IN ("
@@ -591,6 +591,22 @@ with tab_opt:
         _mi["msrp_taxex"] = _mi["msrp_jpy_taxin"].fillna(_mi["msrp_jpy"]) / 1.1
         # 仕入折数 = 采购价(税抜) ÷ 建议零售价(税抜) × 10（7.0 = 7折 = 零售价的 70%）
         _mi["wari"] = _mi["last_purchase_cost"] / _mi["msrp_taxex"].where(_mi["msrp_taxex"] > 0) * 10
+        # 现供货商 = NST 直近 PO 行の仕入先（MAX(trandate) · 簡称へ正規化）
+        _pov = _read("SELECT item_internal_id, trandate, vendor_name AS supplier_name "
+                     "FROM nst.purchase_order_line "
+                     "WHERE item_internal_id IS NOT NULL AND vendor_name IS NOT NULL")
+        if not _pov.empty:
+            _pov = _pov.sort_values("trandate").drop_duplicates(
+                "item_internal_id", keep="last")
+            _pov = sc.apply_supplier_alias(_pov, _alias_map())
+            _pov = (_pov[["item_internal_id", "supplier_name"]]
+                    .rename(columns={"item_internal_id": "internal_id",
+                                     "supplier_name": "cur_supplier"}))
+            _pov["internal_id"] = _pov["internal_id"].astype(str)
+            _mi["internal_id"] = _mi["internal_id"].astype(str)
+            _mi = _mi.merge(_pov, on="internal_id", how="left")
+        else:
+            _mi["cur_supplier"] = None
         _has = _mi[_mi["wari"].notna()].copy()
         _no = _mi[_mi["wari"].isna()]
 
@@ -613,14 +629,16 @@ with tab_opt:
         _v = _v.sort_values("wari", ascending=False, na_position="last").copy()
         _v["flag"] = _v["need"].map(lambda b: "⚠️" if b else "")
         _show_o = _v[["flag", "item_rank", "jan", "display_name",
-                      "last_purchase_cost", "msrp_taxex", "wari"]].rename(
+                      "last_purchase_cost", "msrp_taxex", "wari",
+                      "cur_supplier"]].rename(
             columns={"flag": t("見直し"), "item_rank": t("RANK"), "jan": t("JAN"),
                      "display_name": t("商品名"), "last_purchase_cost": t("采购价"),
-                     "msrp_taxex": t("建议零售价(税抜)"), "wari": t("仕入折数")})
+                     "msrp_taxex": t("建议零售价(税抜)"), "wari": t("仕入折数"),
+                     "cur_supplier": t("现供货商")})
         st.dataframe(
             _show_o, hide_index=True, use_container_width=True, height=560,
             column_config={
-                t("采购价"): st.column_config.NumberColumn(format="¥%.2f"),
+                t("采购价"): st.column_config.NumberColumn(format="¥%.0f"),
                 t("建议零售价(税抜)"): st.column_config.NumberColumn(format="¥%.0f"),
                 t("仕入折数"): st.column_config.NumberColumn(format="%.1f折"),
             })
@@ -628,7 +646,7 @@ with tab_opt:
                            _show_o.to_csv(index=False).encode("utf-8-sig"),
                            file_name="msrp_review.csv", mime="text/csv", key="opt_csv")
         st.caption(t("建议零售价=官方源 MSRP 税抜换算(税込÷1.1·税率10%·原值已税抜则不变) · "
-                     "采购价=NST 前回购入价(税抜) · "
+                     "采购价=NST 前回购入价(税抜) · 现供货商=NST 最近一次 PO 的仕入先 · "
                      "仕入折数=采购价÷零售价×10 · 无参考価=オープン価格/未调查(C 档暂缓)"))
         if not _no.empty:
             with st.expander(t("无参考価商品一览") + f"（{len(_no):,}）"):
@@ -637,4 +655,4 @@ with tab_opt:
                              "display_name": t("商品名"), "last_purchase_cost": t("采购价")})
                 st.dataframe(_no_show, hide_index=True, use_container_width=True, height=300,
                              column_config={
-                                 t("采购价"): st.column_config.NumberColumn(format="¥%.2f")})
+                                 t("采购价"): st.column_config.NumberColumn(format="¥%.0f")})
