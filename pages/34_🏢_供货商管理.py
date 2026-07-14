@@ -1,10 +1,10 @@
 """模块 #34 供货商管理 · 4 tab（Boss 2026-07-07 重整 · 2026-07-14 改名）.
 
-  📋 仕入れデータ  商品×采购价格台账（最新PO单价/主·次供货商(待上传)/最低报价/现状比）
+  📋 仕入詳細     商品×采购价格台账（最新PO单价/主·次供货商(待上传)/最低报价/现状比）
   🔍 見直し必要    采购价 ÷ 建议零售价(nst.item_msrp) = 仕入折数 → 需重新谈价一览
   📤 見積書UP     报价上传（手动输入·xlsx/csv·仕入先管理リスト一括·PO 实绩种子）
   🏢 仕入先データ  供货商主档（起订金额/纳期/预付/启用）
-  📊 仕入先分析    供货商×月推算订货金额（Σ 当月销量×仕入单价）+ SKU数 + 免送料閾値
+  📊 仕入先予測    供货商×月推算订货金额（Σ 当月销量×仕入单价）+ SKU数 + 免送料閾値
   🏷️ ブランド分析  品牌(maker)×供货商:近12个月PO实绩 SKU数+平均仕入折数
 
 データ: PG sourcing schema（本ページが idempotent 建表）+ nst.*（NST 直连）。
@@ -36,9 +36,9 @@ conn = get_connection()
 
 st.title(t("🏢 供货商管理"))
 st.caption(t(
-    "仕入れデータ(采购价格台账) · 見直し必要(对比建议零售价) · "
+    "仕入詳細(采购价格台账) · 見直し必要(对比建议零售价) · "
     "見積書UP(报价上传) · 仕入先データ(供货商主档) · "
-    "仕入先分析(月订货金额推算) · ブランド分析(品牌×供货商)。"
+    "仕入先予測(月订货金额推算) · ブランド分析(品牌×供货商)。"
 ))
 
 
@@ -147,8 +147,8 @@ def sc_int(v):
 
 
 tab_data, tab_opt, tab_up, tab_sup, tab_ana, tab_brand = st.tabs(
-    [t("📋 仕入れデータ"), t("🔍 見直し必要"), t("📤 見積書UP"),
-     t("🏢 仕入先データ"), t("📊 仕入先分析"), t("🏷️ ブランド分析")])
+    [t("📋 仕入詳細"), t("🔍 見直し必要"), t("📤 見積書UP"),
+     t("🏢 仕入先データ"), t("📊 仕入先予測"), t("🏷️ ブランド分析")])
 
 # ============================================================
 # Tab：报价上传 / 种子
@@ -467,7 +467,7 @@ with tab_sup:
                 st.warning(t("⚠️ 改名目标已存在,已跳过: ") + "、".join(_conflict))
 
 # ============================================================
-# Tab：仕入れデータ（数据管理 · ABC产品 × 供货商价格 + 最新订货单价 + 最低价）
+# Tab：仕入詳細（数据管理 · ABC产品 × 供货商价格 + 最新订货单价 + 最低价）
 # ============================================================
 with tab_data:
     st.caption(t("商品 × 采购价格台账：最新订货单价(NST PO) + 主/次供货商(待上传) + 最低价(报价) + 现状对比。"))
@@ -547,7 +547,7 @@ with tab_data:
                                  ).format(r=_rk, n=_nq))
                 elif _nq:
                     st.warning(t("报价库有 {n} 条该关键词报价，但商品不在 NST 商品主档 → "
-                                 "仕入れデータ以 NST 主档为底，暂无法显示该行。").format(n=_nq))
+                                 "仕入詳細以 NST 主档为底，暂无法显示该行。").format(n=_nq))
 
         k1, k2, k3 = st.columns(3)
         k1.metric(t("商品数"), f"{len(base):,}")
@@ -574,7 +574,7 @@ with tab_data:
                 t("最低价格"): st.column_config.NumberColumn(format="¥%.0f"),
                 t("现状比最低价"): st.column_config.NumberColumn(format="%.0f%%"),
             })
-        st.download_button(t("📥 仕入れデータ CSV"),
+        st.download_button(t("📥 仕入詳細 CSV"),
                            disp.to_csv(index=False).encode("utf-8-sig"),
                            file_name="sourcing_data.csv", mime="text/csv", key="abc_csv")
         st.caption(t("最新订货单价=NST 最近一次 PO 行单价(発注時原価) · 主供货商=免送料判定文件指定(見積書UP更新) · "
@@ -665,7 +665,7 @@ with tab_opt:
                                  t("采购价"): st.column_config.NumberColumn(format="¥%.0f")})
 
 # ============================================================
-# Tab：仕入先分析（供货商 × 月推算订货金额 = Σ 当月销量 × 仕入单价）
+# Tab：仕入先予測（供货商 × 月推算订货金额 = Σ 当月销量 × 仕入单价）
 # ============================================================
 with tab_ana:
     st.caption(t("按供货商推算月订货金额 = Σ(SKU 当月销量 × 仕入单价)。"
@@ -734,7 +734,7 @@ with tab_ana:
                 _tab_a, hide_index=True, use_container_width=True, height=560,
                 column_config={c: st.column_config.NumberColumn(format="localized")
                                for c in _yms})
-            st.download_button(t("📥 仕入先分析 CSV"),
+            st.download_button(t("📥 仕入先予測 CSV"),
                                _tab_a.to_csv(index=False).encode("utf-8-sig"),
                                file_name="supplier_monthly.csv",
                                mime="text/csv", key="ana_csv")
@@ -776,7 +776,8 @@ with tab_brand:
     _bi = _read("SELECT internal_id, jan, maker FROM nst.item_master_raw "
                 "WHERE jan IS NOT NULL AND maker IS NOT NULL")
     _pl = _read(
-        "SELECT item_internal_id, trandate, vendor_name AS supplier_name, rate "
+        "SELECT item_internal_id, trandate, vendor_name AS supplier_name, "
+        "rate, quantity, amount "
         "FROM nst.purchase_order_line "
         "WHERE item_internal_id IS NOT NULL AND vendor_name IS NOT NULL "
         "AND rate IS NOT NULL AND trandate >= ?",
@@ -786,7 +787,8 @@ with tab_brand:
     else:
         _bi["internal_id"] = _bi["internal_id"].astype(str)
         _pl["item_internal_id"] = _pl["item_internal_id"].astype(str)
-        _pl["rate"] = pd.to_numeric(_pl["rate"], errors="coerce")
+        for _c in ("rate", "quantity", "amount"):
+            _pl[_c] = pd.to_numeric(_pl[_c], errors="coerce")
         _pl = sc.apply_supplier_alias(_pl, _alias_map())
         # 同一 商品×供货商 取最新一次 PO 的単価
         _pl = (_pl.sort_values("trandate")
@@ -810,6 +812,13 @@ with tab_brand:
               .agg(sku_n=("item_internal_id", "nunique"),
                    msrp_n=("wari", "count"),
                    wari_mean=("wari", "mean")))
+        # 直近仕入 = 当該 品牌×供货商 の最新 PO 行（金額/数量/年月）
+        _last = (_b.sort_values("trandate")
+                 .drop_duplicates(["maker", "supplier_name"], keep="last")
+                 .assign(last_ym=lambda d: d["trandate"].astype(str).str[:7]))
+        _g = _g.merge(
+            _last[["maker", "supplier_name", "amount", "quantity", "last_ym"]],
+            on=["maker", "supplier_name"], how="left")
         _g = _g.sort_values(["maker", "sku_n"], ascending=[True, False])
 
         k1, k2, k3 = st.columns(3)
@@ -827,11 +836,14 @@ with tab_brand:
         _show_b = _gv.rename(columns={
             "maker": t("品牌"), "supplier_name": t("供货商"),
             "sku_n": t("SKU数"), "msrp_n": t("有MSRP的SKU数"),
-            "wari_mean": t("平均仕入折数")})
+            "wari_mean": t("平均仕入折数"), "amount": t("直近仕入金額"),
+            "quantity": t("直近ロット"), "last_ym": t("直近仕入月")})
         st.dataframe(
             _show_b, hide_index=True, use_container_width=True, height=560,
             column_config={
                 t("平均仕入折数"): st.column_config.NumberColumn(format="%.1f折"),
+                t("直近仕入金額"): st.column_config.NumberColumn(format="localized"),
+                t("直近ロット"): st.column_config.NumberColumn(format="%.0f"),
             })
         st.download_button(t("📥 ブランド分析 CSV"),
                            _show_b.to_csv(index=False).encode("utf-8-sig"),
@@ -839,4 +851,6 @@ with tab_brand:
                            mime="text/csv", key="brand_csv")
         st.caption(t("SKU数=近12个月从该供货商采购过的该品牌 SKU 数 · "
                      "平均仕入折数=各 SKU 最新 PO 单价÷MSRP 税抜×10 的平均"
-                     "(仅有 MSRP 的 SKU 参与) · 供货商名已按别名表归一"))
+                     "(仅有 MSRP 的 SKU 参与) · "
+                     "直近仕入金額/ロット=该组合最近一次 PO 行的金额/数量,"
+                     "直近仕入月=其年月 · 供货商名已按别名表归一"))
