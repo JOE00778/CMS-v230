@@ -250,14 +250,20 @@ if not _fx_err:
             conn.rollback()
         except Exception:
             pass
-_hc: dict[str, float] = {}         # 市場別 人数（手入力）
+_hc: dict[str, float] = {}         # 市場別 人数（手入力 · 未保存月は直近保存月を自動沿用）
+_hc_src_ym: str | None = None      # 実際に読めた月（≠対象月なら「沿用」表示）
 if not _fx_err:
     try:
-        for _hr in conn.execute(
-                "SELECT market, headcount FROM finance.market_headcount "
-                "WHERE ym = ?", (str(ym),)).fetchall():
-            if _hr["headcount"] is not None:
-                _hc[_hr["market"]] = float(_hr["headcount"])
+        _hr0 = conn.execute(
+            "SELECT max(ym) AS ym FROM finance.market_headcount WHERE ym <= ?",
+            (str(ym),)).fetchone()
+        _hc_src_ym = _hr0["ym"] if _hr0 is not None else None
+        if _hc_src_ym:
+            for _hr in conn.execute(
+                    "SELECT market, headcount FROM finance.market_headcount "
+                    "WHERE ym = ?", (_hc_src_ym,)).fetchall():
+                if _hr["headcount"] is not None:
+                    _hc[_hr["market"]] = float(_hr["headcount"])
     except Exception:
         try:
             conn.rollback()
@@ -422,6 +428,11 @@ with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
             _dl("物流费（円）", "物流費（円）"), min_value=0.0,
             value=(lg_total or 0.0), step=10000.0, format="%.0f",
             key=f"fx_lg_{ym}")
+        # 人数は未保存月＝直近保存月を自動沿用（Boss 2026-07-14: 毎月入力不要）
+        if _hc_src_ym and _hc_src_ym != str(ym):
+            st.caption(_dl(
+                f"人数沿用最近记录月 {_hc_src_ym} · 有变动改完点保存即写入 {ym}",
+                f"人数は直近記録月 {_hc_src_ym} を沿用 · 変更があれば保存で {ym} に書込"))
         _hcols = st.columns(len(ALL_MARKETS))
         _hc_in: dict[str, float] = {}
         for _hcol, _m in zip(_hcols, ALL_MARKETS):
