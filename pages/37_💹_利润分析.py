@@ -11,6 +11,8 @@
 - 広告費     = 暫定空欄（未接続）
 - 固定費     = 人件費 + 管理費 + 本社配賦（頁内折りたたみで Boss 手入力 · 単一金額 ·
   finance.fixed_cost 月別 · 全社口径 → 市場別へは未配賦、合計純利益のみ計上 · Boss 2026-07-14）
+- 市場別人数 = 頁内折りたたみで Boss 手入力（finance.market_headcount · ym×市場 · 記録のみ、
+  現時点で損益計算には未使用）
 - 決済手数料 = 店舗控除合計（coupang.settlement · 現状韓国のみ · KRW→JPY 当月三金レート）
   東南亜/日本/自建站は暫定空欄。
 """
@@ -197,6 +199,10 @@ def _ensure_fixed_cost() -> str | None:
                      "ADD COLUMN IF NOT EXISTS amount NUMERIC(14,2)")
         conn.execute("ALTER TABLE finance.fixed_cost "
                      "ADD COLUMN IF NOT EXISTS logistics_cost NUMERIC(14,2)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS finance.market_headcount ("
+            "ym TEXT, market TEXT, headcount NUMERIC(10,2), "
+            "updated_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (ym, market))")
         conn.commit()
     except Exception as e:  # noqa: BLE001
         try:
@@ -236,6 +242,19 @@ if not _fx_err:
                 fx_total = float(_r["amount"])
             if _r["logistics_cost"] is not None:
                 lg_total = float(_r["logistics_cost"])
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+_hc: dict[str, float] = {}         # 市場別 人数（手入力）
+if not _fx_err:
+    try:
+        for _hr in conn.execute(
+                "SELECT market, headcount FROM finance.market_headcount "
+                "WHERE ym = ?", (str(ym),)).fetchall():
+            if _hr["headcount"] is not None:
+                _hc[_hr["market"]] = float(_hr["headcount"])
     except Exception:
         try:
             conn.rollback()
@@ -332,8 +351,10 @@ with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
                        "finance.fixed_cost 初期化失敗（PG 未接続？）: ") + _fx_err)
     else:
         st.caption(_dl(
-            f"对象月 {ym} · 固定费用 = 人工费 + 管理费 + 本社配额 · 按月保存，切换对象月后各自独立",
-            f"対象月 {ym} · 固定費 = 人件費 + 管理費 + 本社配賦 · 月単位で保存（対象月ごとに独立）"))
+            f"对象月 {ym} · 固定费用 = 人工费 + 管理费 + 本社配额 · "
+            "各市场人数一并保存 · 按月保存，切换对象月后各自独立",
+            f"対象月 {ym} · 固定費 = 人件費 + 管理費 + 本社配賦 · "
+            "市場別人数も同時保存 · 月単位で保存（対象月ごとに独立）"))
         _fc1, _fc2 = st.columns(2)
         _amt = _fc1.number_input(
             _dl("固定费用（円）", "固定費（円）"), min_value=0.0,
@@ -343,6 +364,13 @@ with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
             _dl("物流费（円）", "物流費（円）"), min_value=0.0,
             value=(lg_total or 0.0), step=10000.0, format="%.0f",
             key=f"fx_lg_{ym}")
+        _hcols = st.columns(len(ALL_MARKETS))
+        _hc_in: dict[str, float] = {}
+        for _hcol, _m in zip(_hcols, ALL_MARKETS):
+            _hc_in[_m] = _hcol.number_input(
+                f"{_m} " + _dl("人数", "人数"), min_value=0.0,
+                value=_hc.get(_m, 0.0), step=1.0, format="%.0f",
+                key=f"fx_hc_{_m}_{ym}")
         if st.button(_dl("💾 保存", "💾 保存"), key=f"fx_save_{ym}"):
             try:
                 conn.execute(
@@ -353,6 +381,14 @@ with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
                     "logistics_cost = EXCLUDED.logistics_cost, "
                     "updated_at = NOW()",
                     (str(ym), _amt, _lg))
+                for _m, _v in _hc_in.items():
+                    conn.execute(
+                        "INSERT INTO finance.market_headcount "
+                        "(ym, market, headcount, updated_at) "
+                        "VALUES (?, ?, ?, NOW()) "
+                        "ON CONFLICT (ym, market) DO UPDATE SET "
+                        "headcount = EXCLUDED.headcount, updated_at = NOW()",
+                        (str(ym), _m, _v))
                 conn.commit()
                 st.rerun()   # 保存後 KPI/表を新固定費で再計算
             except Exception as e:  # noqa: BLE001
