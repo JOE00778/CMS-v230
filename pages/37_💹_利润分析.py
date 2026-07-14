@@ -195,48 +195,58 @@ k2.metric(_dl("净利率", "純利益率"), f"{tot_margin:.2f}%")
 st.divider()
 
 # ============================================================
-# 損益表（行 = 項目 · 列 = 市場 + 合計）
+# 損益表（行 = 項目 · 列 = 市場 + 占比(対総収益) を市場ごとに1列 + 合計）
 # ============================================================
 _item_lbl = _dl("项目", "項目")
 _tot_lbl = _dl("合计", "合計")
+_pct_lbl = _dl("占比", "構成比")
+
+# 市場名ヘッダ居中（Boss 2026-07-14 · html_table の th.num=右対齐をこのページのみ上書き）
+st.markdown("<style>.cms-table thead th.num{text-align:center;}</style>",
+            unsafe_allow_html=True)
 
 
 def _yen(v: float) -> str:
     return f"¥{v:,.0f}"
 
 
-def _row(label: str, vals: dict, total: str) -> dict:
-    r = {_item_lbl: label}
+def _pct(v: float, base: float) -> str:
+    return f"{v / base * 100:.2f}%" if base else "—"
+
+
+_cols = [_item_lbl]
+for _m in ALL_MARKETS:
+    _cols += [_m, _pct_lbl]
+_cols += [_tot_lbl, _pct_lbl]
+
+
+def _money_row(label: str, nums: dict, tot: float | None) -> list:
+    """金額行: 市場ごとに [金額, 対総収益占比]。None/欠損 = 暫定空欄 "—"。"""
+    r = [label]
     for m in ALL_MARKETS:
-        r[m] = vals[m]
-    r[_tot_lbl] = total
+        v = nums.get(m)
+        r += ["—", "—"] if v is None else [_yen(v), _pct(v, revenue[m])]
+    r += ["—", "—"] if tot is None else [_yen(tot), _pct(tot, tot_rev)]
     return r
 
 
 rows = [
-    _row(_dl("总收益", "総収益"),
-         {m: _yen(revenue[m]) for m in ALL_MARKETS}, _yen(tot_rev)),
-    _row(_dl("采购金额（定义原价）", "仕入金額（定義原価）"),
-         {m: _yen(cost[m]) for m in ALL_MARKETS}, _yen(tot_cost)),
-    _row(_dl("物流费", "物流費"),
-         {m: "—" for m in ALL_MARKETS}, "—"),
-    _row(_dl("广告费", "広告費"),
-         {m: "—" for m in ALL_MARKETS}, "—"),
-    _row(_dl("支付手续费", "決済手数料"),
-         {m: (_yen(fee[m]) if fee[m] is not None else "—") for m in ALL_MARKETS},
-         _yen(tot_fee) if _fee_vals else "—"),
-    _row(_dl("净利额", "純利益額"),
-         {m: _yen(net[m]) for m in ALL_MARKETS}, _yen(tot_net)),
-    _row(_dl("净利率", "純利益率"),
-         {m: (f"{net[m] / revenue[m] * 100:.2f}%" if revenue[m] else "—")
-          for m in ALL_MARKETS},
-         f"{tot_margin:.2f}%"),
+    _money_row(_dl("总收益", "総収益"), revenue, tot_rev),
+    _money_row(_dl("采购金额（定义原价）", "仕入金額（定義原価）"), cost, tot_cost),
+    _money_row(_dl("物流费", "物流費"), {}, None),
+    _money_row(_dl("广告费", "広告費"), {}, None),
+    _money_row(_dl("支付手续费", "決済手数料"),
+               {m: v for m, v in fee.items() if v is not None},
+               tot_fee if _fee_vals else None),
+    _money_row(_dl("净利额", "純利益額"), net, tot_net),
 ]
-html_table(pd.DataFrame(rows))
+html_table(pd.DataFrame(rows, columns=_cols))
 
 if _fee_note:
     st.caption(_fee_note)
 st.caption(_dl(
-    "净利额 = 总收益 − 采购金额 − 物流费 − 广告费 − 支付手续费（暂空项按 0 计）· 净利率 = 净利额 ÷ 总收益",
-    "純利益額 = 総収益 − 仕入金額 − 物流費 − 広告費 − 決済手数料（空欄は 0 扱い）· 純利益率 = 純利益額 ÷ 総収益",
+    "净利额 = 总收益 − 采购金额 − 物流费 − 广告费 − 支付手续费（暂空项按 0 计）· "
+    "占比 = 各项 ÷ 该市场总收益（净利额行的占比即净利率）",
+    "純利益額 = 総収益 − 仕入金額 − 物流費 − 広告費 − 決済手数料（空欄は 0 扱い）· "
+    "構成比 = 各項目 ÷ 当該市場の総収益（純利益行の構成比 = 純利益率）",
 ))
