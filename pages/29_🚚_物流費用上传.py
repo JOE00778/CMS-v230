@@ -246,9 +246,10 @@ def detect_kind(data: bytes, name: str):
     return ("bm", None) if is_bm else ("unknown", None)
 
 
-tab1, tab2 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     t("📤 批量上传（请求书 + BM）"),
     t("店铺→部署 分类"),
+    t("🇰🇷 Coupang 费用"),
 ])
 
 # ============================================================
@@ -392,3 +393,149 @@ with tab2:
             run_recompute(None)
             st.success(t("✅ 保存 + 重算完成"))
             st.rerun()
+
+# ============================================================
+# tab3 · Coupang 費用（LBF 輸送費明細 + 其他请求 手入力 · Boss 2026-07-14）
+#   Coupang は後期 JDL 発送を使わない（JDL は梱包のみ → Pick&Pack/包材は JD 請求書側）。
+#   輸送費は「YYYYMMLBF様輸送費.xlsx」で別途到着 → 暂时只读 K 列（Total JPY）合計。
+#   【其他请求】= Boss 手動入力項目。合計 = 輸送費 + 其他请求。
+# ============================================================
+with tab3:
+    st.markdown(t("##### Coupang 费用明细（LBF 輸送費 + 其他请求）"))
+    st.caption(t(
+        "上传「YYYYMM…LBF様輸送費.xlsx」→ 读 K 列（Total JPY）合计入库 · 月份取自文件名 YYYYMM · "
+        "【其他请求】手动输入 · 合计 = 輸送費 + 其他请求 · 与 JD 配賦（包装/包材）相互独立"
+    ))
+
+    def _ensure_coupang_cost() -> str | None:
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS logistics.coupang_cost_monthly ("
+                "year_month TEXT PRIMARY KEY, "
+                "freight_amount NUMERIC(14,2), freight_rows INTEGER, "
+                "other_amount NUMERIC(14,2), "
+                "updated_at TIMESTAMPTZ DEFAULT NOW())")
+            conn.commit()
+            return None
+        except Exception as e:  # noqa: BLE001
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return str(e)
+
+    _cp_err = _ensure_coupang_cost()
+    if _cp_err:
+        st.error(t("⚠️ logistics.coupang_cost_monthly 初始化失败: ") + _cp_err)
+        st.stop()
+
+    # ── ① LBF 輸送費上传（K列合計）──
+    cp_ups = st.file_uploader(t("LBF 輸送費 xlsx（可多选）"), type=["xlsx"],
+                              accept_multiple_files=True, key="cp_up")
+    if cp_ups and st.button(t("💾 解析 → 写入"), key="cp_btn", type="primary"):
+        _oks, _errs = [], []
+        for up in cp_ups:
+            try:
+                m = re.search(r"(20\d{2})\D?(\d{2})", up.name)
+                if not m:
+                    _errs.append(t("❌ {f}: 无法识别月份（文件名无 YYYYMM）").format(f=up.name))
+                    continue
+                _cym = f"{m[1]}-{m[2]}"
+                # dimension 情報が壊れた出力あり → read_only 不可（1行しか読めない実績）
+                wb = openpyxl.load_workbook(io.BytesIO(up.getvalue()), data_only=True)
+                _tot, _n = 0.0, 0
+                for ws in wb.worksheets:
+                    for r in ws.iter_rows(min_col=11, max_col=11, values_only=True):
+                        v = _num(r[0])
+                        if v is not None:
+                            _tot += v
+                            _n += 1
+                wb.close()
+                if _n == 0:
+                    _errs.append(t("❌ {f}: K列无数值").format(f=up.name))
+                    continue
+                conn.execute(
+                    """INSERT INTO logistics.coupang_cost_monthly
+                       (year_month, freight_amount, freight_rows, updated_at)
+                       VALUES (%s,%s,%s,now())
+                       ON CONFLICT (year_month) DO UPDATE SET
+                         freight_amount=EXCLUDED.freight_amount,
+                         freight_rows=EXCLUDED.freight_rows, updated_at=now()""",
+                    (_cym, _tot, _n))
+                conn.commit()
+                _oks.append(t("✅ {ym}: 輸送費 {a}（{n} 件）").format(
+                    ym=_cym, a=f"¥{_tot:,.0f}", n=f"{_n:,}"))
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                _errs.append(f"❌ {up.name}: {e}")
+        if _oks:
+            st.success("\n\n".join(_oks))
+        if _errs:
+            st.warning("\n\n".join(_errs))
+
+    st.divider()
+
+    # ── ②【其他请求】手入力（Boss 専用 · 月別）──
+    st.markdown("##### " + t("✏️ 其他请求（手动输入）"))
+
+    def _months_back(n: int = 14) -> list[str]:
+        _t = date.today()
+        y, mo = _t.year, _t.month
+        out = []
+        for _ in range(n):
+            out.append(f"{y}-{mo:02d}")
+            mo -= 1
+            if mo == 0:
+                y, mo = y - 1, 12
+        return out
+
+    _sel_ym = st.selectbox(t("対象月"), _months_back(), key="cp_other_ym")
+    _cur = None
+    try:
+        _cur = conn.execute(
+            "SELECT other_amount FROM logistics.coupang_cost_monthly "
+            "WHERE year_month=%s", (_sel_ym,)).fetchone()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    _other_val = (float(_cur["other_amount"])
+                  if _cur is not None and _cur["other_amount"] is not None else 0.0)
+    _other = st.number_input(t("其他请求（円）"), min_value=0.0, value=_other_val,
+                             step=1000.0, format="%.0f", key=f"cp_other_{_sel_ym}")
+    if st.button(t("💾 保存"), key=f"cp_other_btn_{_sel_ym}"):
+        conn.execute(
+            """INSERT INTO logistics.coupang_cost_monthly
+               (year_month, other_amount, updated_at)
+               VALUES (%s,%s,now())
+               ON CONFLICT (year_month) DO UPDATE SET
+                 other_amount=EXCLUDED.other_amount, updated_at=now()""",
+            (_sel_ym, _other))
+        conn.commit()
+        st.rerun()
+
+    # ── ③ 月別一覧（輸送費 → 其他请求 → 合計）──
+    _all = conn.execute(
+        "SELECT year_month, freight_amount, freight_rows, other_amount "
+        "FROM logistics.coupang_cost_monthly ORDER BY year_month DESC").fetchall()
+    if _all:
+        _cdf = pd.DataFrame([dict(r) for r in _all])
+        for _c in ("freight_amount", "other_amount"):
+            _cdf[_c] = pd.to_numeric(_cdf[_c], errors="coerce")
+        _cdf["total"] = _cdf[["freight_amount", "other_amount"]].fillna(0).sum(axis=1)
+
+        def _y(v):
+            return "—" if pd.isna(v) else f"¥{v:,.0f}"
+
+        st.dataframe(pd.DataFrame({
+            t("月"): _cdf["year_month"],
+            t("輸送費(K列合计)"): _cdf["freight_amount"].map(_y),
+            t("件数"): _cdf["freight_rows"].map(
+                lambda v: "—" if pd.isna(v) else f"{int(v):,}"),
+            t("其他请求"): _cdf["other_amount"].map(_y),
+            t("合计"): _cdf["total"].map(_y),
+        }), hide_index=True, use_container_width=True)
