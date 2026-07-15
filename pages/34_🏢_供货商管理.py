@@ -623,7 +623,7 @@ with tab_bs:
                 column_config={
                     _dl("近12月采购金额", "直近12ヶ月仕入金額"): st.column_config.NumberColumn(format="localized"),
                     _dl("采购数量", "仕入数量"): st.column_config.NumberColumn(format="localized"),
-                    _dl("加权折扣率", "加重掛率"): st.column_config.NumberColumn(format="%.2f折"),
+                    _dl("加权折扣率", "加重掛率"): st.column_config.NumberColumn(format="%.2f掛" if _ja else "%.2f折"),
                     _dl("MSRP覆盖率", "MSRP カバー率"): st.column_config.NumberColumn(format="percent"),
                     _dl("最低报价差异(理论节省)", "最安見積差異(理論節約)"): st.column_config.NumberColumn(format="localized"),
                 })
@@ -777,7 +777,7 @@ with tab_wr:
                         "coverage": _dl("MSRP覆盖率", "MSRP カバー率")}),
                     hide_index=True, use_container_width=True, height=320,
                     column_config={
-                        _dl("加权折扣率", "加重掛率"): st.column_config.NumberColumn(format="%.2f折"),
+                        _dl("加权折扣率", "加重掛率"): st.column_config.NumberColumn(format="%.2f掛" if _ja else "%.2f折"),
                         _dl("采购金额", "仕入金額"): st.column_config.NumberColumn(format="localized"),
                         _dl("MSRP覆盖率", "MSRP カバー率"): st.column_config.NumberColumn(format="percent"),
                     })
@@ -904,7 +904,7 @@ with tab_opp:
                      column_config={
                          _dl("当前价", "現行価"): st.column_config.NumberColumn(format="¥%.0f"),
                          t("建议零售价(税抜)"): st.column_config.NumberColumn(format="¥%.0f"),
-                         t("仕入折数"): st.column_config.NumberColumn(format="%.1f折"),
+                         t("仕入折数"): st.column_config.NumberColumn(format="%.1f掛" if _ja else "%.1f折"),
                      })
         st.download_button(t("📥 見直し必要 CSV"),
                            _show_w.to_csv(index=False).encode("utf-8-sig"),
@@ -924,6 +924,12 @@ with tab_opp:
         st.markdown("##### " + _dl("② 采购机会（当前价 > 最低有效报价）",
                                    "② 仕入機会（現行価 > 最安有効見積）"))
         _op = _fo[_fo["saving_unit"].notna()].sort_values("saving_amt", ascending=False)
+        # 有效性代码 → 语言化标签（valid/unconfirmed 等不直出）
+        _VLD_LBL = ({"valid": "有効", "unconfirmed": "有効性未確認", "expired": "失効",
+                     "not_yet": "未生効", "incomplete": "データ不足", "inactive": "停用"}
+                    if _ja else sc.VALIDITY_LABELS)
+        _op = _op.assign(best_validity=_op["best_validity"].map(
+            lambda v: _VLD_LBL.get(v, v) if pd.notna(v) else v))
         k4, k5 = st.columns(2)
         k4.metric(_dl("机会SKU数", "機会SKU数"), f"{len(_op):,}")
         k5.metric(_dl("理论节省合计(按直近完整月销量)", "理論節約合計(直近完全月販売)"),
