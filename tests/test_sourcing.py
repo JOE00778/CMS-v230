@@ -197,3 +197,110 @@ def test_apply_supplier_alias():
 def test_apply_supplier_alias_empty_mapping():
     df = pd.DataFrame({"supplier_name": ["A"]})
     assert sc.apply_supplier_alias(df, {})["supplier_name"].tolist() == ["A"]
+
+
+# ---- 折扣率(仕入折数)纯函数 · 供货商管理 v2 ----
+def test_msrp_taxex_coalesce():
+    out = sc.msrp_taxex(pd.Series([1100.0, 2200.0, None]),
+                        pd.Series([None, 3300.0, None]))
+    assert abs(out.iloc[0] - 1000.0) < 1e-9   # taxin 缺 → 原值÷1.1
+    assert abs(out.iloc[1] - 3000.0) < 1e-9   # taxin 优先
+    assert pd.isna(out.iloc[2])               # 都缺 → NaN
+
+
+def test_wari_guard_zero_msrp():
+    out = sc.wari(pd.Series([700.0, 700.0, 700.0]),
+                  pd.Series([1000.0, 0.0, None]))
+    assert out.iloc[0] == 7.0
+    assert pd.isna(out.iloc[1]) and pd.isna(out.iloc[2])
+
+
+def _wari_df():
+    return pd.DataFrame({
+        "ym": ["2026-06", "2026-06", "2026-07"],
+        "jan": ["1", "2", "1"],
+        "rate": [700.0, 300.0, 800.0],
+        "quantity": [10.0, 100.0, 5.0],
+        "msrp_taxex": [1000.0, None, 1000.0],
+        "maker": ["KAO", "KAO", "KAO"],
+    })
+
+
+def test_monthly_weighted_wari_basic_and_coverage():
+    g = sc.monthly_weighted_wari(_wari_df(), [])
+    jun = g[g["ym"] == "2026-06"].iloc[0]
+    # 6月: MSRP 有り行のみ加权 → 700×10 ÷ (1000×10) ×10 = 7.0
+    assert jun["wari_w"] == 7.0
+    # amount 全行 = 7000+30000; coverage = 7000/37000
+    assert jun["amount"] == 37000.0
+    assert abs(jun["coverage"] - 7000.0 / 37000.0) < 1e-9
+    assert jun["sku_n"] == 2
+    jul = g[g["ym"] == "2026-07"].iloc[0]
+    assert jul["wari_w"] == 8.0 and jul["coverage"] == 1.0
+
+
+def test_monthly_weighted_wari_weighted_not_simple_mean():
+    df = pd.DataFrame({
+        "ym": ["2026-06"] * 2, "jan": ["1", "2"],
+        "rate": [900.0, 100.0], "quantity": [1.0, 100.0],
+        "msrp_taxex": [1000.0, 1000.0]})
+    g = sc.monthly_weighted_wari(df, [])
+    # 加权 = (900+10000)/(1000+100000)*10 ≈ 1.079 ≠ 简单平均 (9+1)/2=5
+    assert abs(g["wari_w"].iloc[0] - (10900.0 / 101000.0 * 10)) < 1e-9
+
+
+def test_monthly_weighted_wari_group_and_empty():
+    g = sc.monthly_weighted_wari(_wari_df(), ["maker"])
+    assert set(g.columns) >= {"maker", "ym", "wari_w", "coverage"}
+    e = sc.monthly_weighted_wari(pd.DataFrame(), ["maker"])
+    assert e.empty and "wari_w" in e.columns
+
+
+# ---- 报价有效性 / 最低有效报价 ----
+def _status_df():
+    return pd.DataFrame({
+        "supplier_name": ["A", "B", "C", "D", "E"],
+        "jan": ["1"] * 5,
+        "price": [500.0, 480.0, 450.0, None, 470.0],
+        "quote_date": ["2026-06-01"] * 5,
+        "valid_from": [None, "2026-01-01", "2026-01-01", None, None],
+        "valid_to": [None, "2026-12-31", "2026-02-01", None, None],
+    })
+
+
+def test_quote_status_classification():
+    s = sc.quote_status(_status_df(), active={"E": False},
+                        today=pd.Timestamp("2026-07-15"))
+    m = dict(zip(s["supplier_name"], s["validity"]))
+    assert m == {"A": "unconfirmed", "B": "valid", "C": "expired",
+                 "D": "incomplete", "E": "inactive"}
+    el = dict(zip(s["supplier_name"], s["eligible"]))
+    assert el == {"A": True, "B": True, "C": False, "D": False, "E": False}
+
+
+def test_quote_status_not_yet_and_empty():
+    df = pd.DataFrame({"supplier_name": ["A"], "jan": ["1"], "price": [100.0],
+                       "quote_date": ["2026-06-01"],
+                       "valid_from": ["2026-08-01"], "valid_to": [None]})
+    s = sc.quote_status(df, today=pd.Timestamp("2026-07-15"))
+    assert s["validity"].iloc[0] == "not_yet" and not s["eligible"].iloc[0]
+    e = sc.quote_status(pd.DataFrame())
+    assert e.empty and "validity" in e.columns
+
+
+def test_best_effective_quote_picks_cheapest_eligible():
+    s = sc.quote_status(_status_df(), active={"E": False},
+                        today=pd.Timestamp("2026-07-15"))
+    best = sc.best_effective_quote(s)
+    r = best.iloc[0]
+    # C(450·过期)/E(470·停用)/D(缺价) 不参加 → 最低 = B 480
+    assert r["best_supplier"] == "B" and r["best_price"] == 480.0
+    assert r["best_validity"] == "valid" and r["n_eligible"] == 2
+
+
+def test_best_effective_quote_tie_break_by_name():
+    df = pd.DataFrame({
+        "supplier_name": ["Z", "A"], "jan": ["1", "1"],
+        "price": [100.0, 100.0], "quote_date": ["2026-06-01"] * 2})
+    best = sc.best_effective_quote(sc.quote_status(df))
+    assert best["best_supplier"].iloc[0] == "A"

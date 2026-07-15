@@ -305,6 +305,153 @@ def extract_main_suppliers(raw: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# ============================================================
+# 折扣率（仕入折数）分析 · 供货商管理 v2（Boss 2026-07-15）
+#   wari = 価格 ÷ MSRP税抜 × 10（7.0 = 7掛）。MSRP 源 = nst.item_msrp。
+#   従来 page34 の tab_opt / tab_brand にインライン重複していた式をここへ集約。
+# ============================================================
+
+def msrp_taxex(msrp_jpy: pd.Series, msrp_jpy_taxin: pd.Series) -> pd.Series:
+    """税抜MSRP = COALESCE(msrp_jpy_taxin, msrp_jpy) ÷ 1.1（税率10%）.
+
+    nst.item_msrp.msrp_jpy_taxin は「税込換算」列（元が税抜なら ×1.1 済）のため、
+    ÷1.1 で元税抜値に往復一致する（見直し必要 tab と同口径 · 97b4df3）。
+    """
+    a = pd.to_numeric(msrp_jpy_taxin, errors="coerce")
+    b = pd.to_numeric(msrp_jpy, errors="coerce")
+    return a.fillna(b) / 1.1
+
+
+def wari(price: pd.Series, msrp_ex: pd.Series) -> pd.Series:
+    """仕入折数 = price ÷ msrp_ex × 10。msrp_ex <= 0 / 欠損 → NaN。"""
+    p = pd.to_numeric(price, errors="coerce")
+    m = pd.to_numeric(msrp_ex, errors="coerce")
+    return p / m.where(m > 0) * 10
+
+
+def monthly_weighted_wari(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    """月度金額加重折扣率（グループ×月）。
+
+    入力列: ym, rate(PO 税抜単価), quantity, msrp_taxex（NaN 可）+ group_cols
+            （jan 列があれば sku_n を数える）。
+    出力列: group_cols + ym, wari_w, amount, amount_msrp, coverage, sku_n。
+      wari_w   = Σ(rate×qty) ÷ Σ(msrp_taxex×qty) × 10（MSRP 有り行のみで加重）
+      amount   = 全行の Σ(rate×qty)（MSRP 無し行も含む採購実額）
+      coverage = amount_msrp ÷ amount（折数の代表性判断用）
+    group_cols=[] は全体口径（ym ごと 1 行）。
+    """
+    out_cols = list(group_cols) + ["ym", "wari_w", "amount",
+                                   "amount_msrp", "coverage", "sku_n"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=out_cols)
+    d = df.copy()
+    for c in ("rate", "quantity", "msrp_taxex"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d.dropna(subset=["rate", "quantity"])
+    d = d[d["quantity"] > 0]
+    if d.empty:
+        return pd.DataFrame(columns=out_cols)
+    d["_amt"] = d["rate"] * d["quantity"]
+    _has = d["msrp_taxex"] > 0
+    d["_amt_m"] = d["_amt"].where(_has, 0.0)
+    d["_msrp_amt"] = (d["msrp_taxex"] * d["quantity"]).where(_has, 0.0)
+    keys = list(group_cols) + ["ym"]
+    grouped = d.groupby(keys, dropna=False)
+    g = grouped.agg(amount=("_amt", "sum"), amount_msrp=("_amt_m", "sum"),
+                    _msrp_amt=("_msrp_amt", "sum")).reset_index()
+    if "jan" in d.columns:
+        g = g.merge(grouped["jan"].nunique().rename("sku_n").reset_index(), on=keys)
+    else:
+        g["sku_n"] = pd.NA
+    g["wari_w"] = (g["amount_msrp"] / g["_msrp_amt"].where(g["_msrp_amt"] > 0)) * 10
+    g["coverage"] = g["amount_msrp"] / g["amount"].where(g["amount"] > 0)
+    return g[out_cols]
+
+
+# ============================================================
+# 报价有效性 / 最低有效报价（供货商管理 v2 第一期 · spec 2026-07-15）
+#   節省測算に参加できるのは「有効」報価のみ。有効期間未設定の歴史報価は
+#   参加させるが「有效性未确认」と明示（spec: 静默按默认值计算は禁止）。
+# ============================================================
+
+VALIDITY_LABELS = {
+    "valid": "有效", "unconfirmed": "有效性未确认", "expired": "报价过期",
+    "not_yet": "未生效", "incomplete": "数据不足", "inactive": "供应商停用",
+}
+
+
+def quote_status(latest: pd.DataFrame, active: dict | None = None,
+                 today: "pd.Timestamp | None" = None) -> pd.DataFrame:
+    """最新报价へ有効性判定列を付与。
+
+    latest: latest_quotes() 出力（supplier_name, jan, price, quote_date,
+            任意列 valid_from / valid_to）。active: {supplier_name: bool}（None=全て啓用）。
+    追加列:
+      validity ∈ inactive / incomplete / expired / not_yet / valid / unconfirmed
+        - incomplete   = price か quote_date 欠損
+        - expired      = valid_to < today
+        - not_yet      = valid_from > today
+        - valid        = 有効期間内（両端 NULL 可の判定後）
+        - unconfirmed  = valid_from も valid_to も未設定（歴史報価 · 参加可だが明示）
+      eligible = validity ∈ {valid, unconfirmed} かつ供货商啓用 → 節省測算に参加
+    """
+    cols = ["validity", "eligible"]
+    if latest is None or latest.empty:
+        out = (latest.copy() if latest is not None else pd.DataFrame())
+        for c in cols:
+            out[c] = pd.Series(dtype="object" if c == "validity" else "bool")
+        return out
+    d = latest.copy()
+    today = pd.Timestamp(today) if today is not None else pd.Timestamp.today()
+    today = today.normalize()
+    price = pd.to_numeric(d.get("price"), errors="coerce")
+    qdate = pd.to_datetime(d.get("quote_date"), errors="coerce")
+    vfrom = pd.to_datetime(d["valid_from"], errors="coerce") if "valid_from" in d.columns \
+        else pd.Series(pd.NaT, index=d.index)
+    vto = pd.to_datetime(d["valid_to"], errors="coerce") if "valid_to" in d.columns \
+        else pd.Series(pd.NaT, index=d.index)
+    if active:
+        is_active = d["supplier_name"].map(
+            lambda s: bool(active.get(str(s).strip(), True)))
+    else:
+        is_active = pd.Series(True, index=d.index)
+
+    validity = pd.Series("valid", index=d.index, dtype="object")
+    validity[vfrom.isna() & vto.isna()] = "unconfirmed"
+    validity[vfrom.notna() & (vfrom > today)] = "not_yet"
+    validity[vto.notna() & (vto < today)] = "expired"
+    validity[price.isna() | qdate.isna()] = "incomplete"
+    validity[~is_active] = "inactive"
+    d["validity"] = validity
+    d["eligible"] = validity.isin(["valid", "unconfirmed"])
+    return d
+
+
+def best_effective_quote(status: pd.DataFrame) -> pd.DataFrame:
+    """quote_status 出力 → JAN ごとの最低有效报价。
+
+    出力列: jan, best_supplier, best_price, best_validity,
+            n_eligible(参加供货商数)。eligible 行の無い JAN は含まれない。
+    tie-break: price → supplier_name（決定的）。
+    """
+    cols = ["jan", "best_supplier", "best_price", "best_validity", "n_eligible"]
+    if status is None or status.empty or "eligible" not in status.columns:
+        return pd.DataFrame(columns=cols)
+    d = status[status["eligible"]].copy()
+    d["price"] = pd.to_numeric(d["price"], errors="coerce")
+    d = d.dropna(subset=["price"])
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    d = d.sort_values(["jan", "price", "supplier_name"])
+    n = d.groupby("jan")["supplier_name"].nunique().rename("n_eligible")
+    best = d.drop_duplicates("jan", keep="first")
+    best = best.merge(n, on="jan")
+    best = best.rename(columns={"supplier_name": "best_supplier",
+                                "price": "best_price",
+                                "validity": "best_validity"})
+    return best[cols].reset_index(drop=True)
+
+
 def extract_vendor_quotes(sheets: dict) -> tuple[pd.DataFrame, dict]:
     """{sheet_name: 生DataFrame(header=None)} → (全报价 DataFrame, {sheet:件数})。
 
