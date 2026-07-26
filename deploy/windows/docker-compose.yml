@@ -237,6 +237,42 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # ------------------------------------------------------------
+  # marketing_scheduler · Google Ads/GA4/Shopify 日次集計採集(T-340)
+  #   毎分 marketing.pull_schedule を見て daily_ingest --write を起動
+  #   （自動 07:30 JST + 手動 run_now + 初回 7 日 backfill）
+  #   ⚠️ 専用イメージ(requests+google-auth+psycopg3 が必要 · NST 镜像不可):
+  #      初回のみ元川デスクトップで: docker compose build marketing_scheduler
+  #   凭据: database/.env の GOOGLE_MARKETING_*/SHOPIFY_MARKETING_*/
+  #        MARKETING_INGEST_DATABASE_URL(完成形URL·marketing_ingest 角色)
+  #        + C:\Users\smiki\secrets\marketing\ の 4 ファイル(/secrets mount)
+  #   DATABASE_URL は明示的に空 → 超級ユーザー接続串は採集器に渡らない
+  # ------------------------------------------------------------
+  marketing_scheduler:
+    build:
+      context: ../../../database
+      dockerfile: deploy/marketing-scheduler.Dockerfile
+    container_name: cms_marketing_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../../../database/.env          # GOOGLE_MARKETING_* / SHOPIFY_MARKETING_* / MARKETING_INGEST_DATABASE_URL
+    environment:
+      DATABASE_URL: ""                  # 遮断: env_file 由来の超級ユーザー URL を無効化
+      TZ: Asia/Tokyo
+    volumes:
+      - ../../../database:/app:ro       # marketing_api コード(scp 直送で更新)
+      - C:/Users/smiki/secrets/marketing:/secrets:ro
+    networks:
+      - cms_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
 networks:
   cms_net:
     driver: bridge
