@@ -142,18 +142,34 @@ with tab_camp:
         st.info(_dl("期间内无 Ads 数据。", "期間内に Ads データなし。"))
     else:
         a30["cpc_usd"] = (a30["cost_usd"] / a30["clicks"].replace(0, pd.NA)).astype(float)
-        view = a30.sort_values("report_date", ascending=False)[
-            ["report_date", "dimension", "cost_usd", "impressions", "clicks", "cpc_usd",
-             "conversions", "conversions_value"]]
+        a30["ctr"] = (a30["clicks"] / a30["impressions"].replace(0, pd.NA)).astype(float)
+        cols_show = ["report_date", "dimension", "cost_usd", "impressions", "clicks",
+                     "ctr", "cpc_usd", "conversions", "conversions_value"]
+        # 004 扩列后才有的三个展示份额(旧视图无此列时静默降级)
+        for c in ("search_impression_share", "search_budget_lost_impression_share",
+                  "search_rank_lost_impression_share"):
+            if c in a30.columns:
+                cols_show.append(c)
+        view = a30.sort_values("report_date", ascending=False)[cols_show]
         st.dataframe(view, hide_index=True, width="stretch", column_config={
             "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
             "dimension": "campaign",
             "cost_usd": st.column_config.NumberColumn(_dl("消耗$", "消化$"), format="localized"),
             "impressions": st.column_config.NumberColumn(_dl("展示", "表示"), format="localized"),
             "clicks": st.column_config.NumberColumn(_dl("点击", "クリック"), format="localized"),
+            "ctr": st.column_config.NumberColumn("CTR", format="percent"),
             "cpc_usd": st.column_config.NumberColumn("CPC$", format="%.2f"),
             "conversions": st.column_config.NumberColumn(_dl("转化", "CV"), format="%.2f"),
             "conversions_value": st.column_config.NumberColumn(_dl("转化价值", "CV価値"), format="%.0f"),
+            "search_impression_share": st.column_config.NumberColumn(
+                _dl("展示份额", "IS"), format="percent",
+                help=_dl("参竞率;品牌词应>90%", "参加率;ブランド語は>90%")),
+            "search_budget_lost_impression_share": st.column_config.NumberColumn(
+                _dl("预算丢失", "予算ロスIS"), format="percent",
+                help=_dl(">20-30%且ROAS达标=加预算信号", ">20-30%かつROAS達成=増額シグナル")),
+            "search_rank_lost_impression_share": st.column_config.NumberColumn(
+                _dl("排名丢失", "順位ロスIS"), format="percent",
+                help=_dl("区分「没钱」还是「竞争不过」", "「予算不足」か「競争負け」かの判別")),
         })
 
 d14 = today - dt.timedelta(days=14)
