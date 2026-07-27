@@ -91,29 +91,18 @@ if isinstance(frames, str):
 fresh, decision, gap = frames["fresh"], frames["decision"], frames["gap"]
 today = dt.date.today()
 
-# ── 1. 数据新鲜度(green=36h内拉取成功可信 / amber=延迟或最近出错 / red=源中断)──
-_STATUS_ICON = {"green": "🟢", "amber": "🟡", "red": "🔴"}
-_STATUS_TEXT = {
-    "green": ("正常", "正常"),
-    "amber": ("延迟", "遅延"),
-    "red": ("中断", "停止"),
-}
-_SRC_LABEL = {"google_ads": "Google Ads", "ga4": "GA4", "shopify": "Shopify"}
-cols = st.columns(3)
-for col, (_, row) in zip(cols, fresh.iterrows()):
-    status = row["freshness_status"]
-    icon = _STATUS_ICON.get(status, "⚪")
-    zh, ja = _STATUS_TEXT.get(status, (status, status))
-    ts = row["last_success_at"]
-    ts_s = pd.to_datetime(ts).strftime("%m-%d %H:%M") if pd.notna(ts) else _dl("从未成功", "成功なし")
-    col.metric(f"{icon} {_SRC_LABEL.get(row['source'], row['source'])}",
-               _dl(zh, ja),
-               _dl(f"最后成功拉取 {ts_s}", f"最終取得成功 {ts_s}"), delta_color="off")
-st.caption(_dl("状态含义:🟢正常=36小时内拉取成功 · 🟡延迟=超36小时或最近一次出错 · 🔴中断=源失败/授权失效(数字不可用)",
-               "状態:🟢正常=36時間以内に取得成功 · 🟡遅延=36時間超過/直近エラー · 🔴停止=ソース失敗/認証失効(数字使用不可)"))
-if (fresh["freshness_status"] == "red").any():
-    st.error(_dl("存在 red 源:数据不完整,本页数字不可用于投放判断。",
-                 "red ソースあり:データ不完全。本ページの数字は出稿判断に使用不可。"))
+# ── 1. 数据新鲜度:角落只显示拉取时间;异常源才警告(Boss 2026-07-27)──
+_ts = pd.to_datetime(fresh["last_success_at"]).max()
+_ts_s = _ts.strftime("%m-%d %H:%M") if pd.notna(_ts) else _dl("从未成功", "成功なし")
+st.caption(_dl(f"数据更新:{_ts_s}(每日 07:30 自动拉取)", f"データ更新:{_ts_s}(毎日 07:30 自動取得)"))
+_bad = fresh[fresh["freshness_status"] != "green"]
+if not _bad.empty:
+    names = ", ".join(_bad["source"])
+    if (_bad["freshness_status"] == "red").any():
+        st.error(_dl(f"数据源中断:{names}——本页数字不完整,不可用于投放判断。",
+                     f"データソース停止:{names}——本ページの数字は不完全。出稿判断に使用不可。"))
+    else:
+        st.warning(_dl(f"数据源延迟:{names}(超 36 小时未成功拉取)", f"データソース遅延:{names}(36時間超未取得)"))
 
 ads = decision[decision["source"] == "google_ads"].copy()
 ga4 = decision[decision["source"] == "ga4"].copy()
@@ -139,30 +128,34 @@ st.caption(_dl(
     "未接続(ゼロ表示しない):Pinterest 消化 · Reddit 消化 · サイト内ファネル(ATC/チェックアウト) · Search-term 明細",
 ))
 
-# ── 3. Google campaign 日次(近 30 日)─────────────────────────
-st.subheader(_dl("Google campaign 日次(近30日)", "Google campaign 日次(直近30日)"))
-a30 = ads[ads["report_date"] >= today - dt.timedelta(days=30)].copy()
-if a30.empty:
-    st.info(_dl("期间内无 Ads 数据。", "期間内に Ads データなし。"))
-else:
-    a30["cpc_usd"] = (a30["cost_usd"] / a30["clicks"].replace(0, pd.NA)).astype(float)
-    view = a30.sort_values("report_date", ascending=False)[
-        ["report_date", "dimension", "cost_usd", "impressions", "clicks", "cpc_usd",
-         "conversions", "conversions_value"]]
-    st.dataframe(view, hide_index=True, width="stretch", column_config={
-        "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
-        "dimension": "campaign",
-        "cost_usd": st.column_config.NumberColumn(_dl("消耗$", "消化$"), format="localized"),
-        "impressions": st.column_config.NumberColumn(_dl("展示", "表示"), format="localized"),
-        "clicks": st.column_config.NumberColumn(_dl("点击", "クリック"), format="localized"),
-        "cpc_usd": st.column_config.NumberColumn("CPC$", format="%.1f"),
-        "conversions": st.column_config.NumberColumn(_dl("转化", "CV"), format="%.2f"),
-        "conversions_value": st.column_config.NumberColumn(_dl("转化价值", "CV価値"), format="%.0f"),
-    })
+# ── 3-5. 三板块 → 各自 tab(Boss 2026-07-27)─────────────────
+tab_camp, tab_multi, tab_gap = st.tabs([
+    _dl("📈 Google campaign 日次", "📈 Google campaign 日次"),
+    _dl("📊 三源日次并列", "📊 3ソース日次並列"),
+    _dl("🔀 归因差异", "🔀 帰属差異"),
+])
 
-# ── 4. 三源日次并列(近 14 日)────────────────────────────────
-st.subheader(_dl("三源日次并列(近14日 · 各自归因口径,不相加)",
-                 "3ソース日次並列(直近14日 · 各帰属口径・合算しない)"))
+with tab_camp:
+    st.caption(_dl("近30日 · 金额为 Ads 账户币种(USD)", "直近30日 · 金額は Ads アカウント通貨(USD)"))
+    a30 = ads[ads["report_date"] >= today - dt.timedelta(days=30)].copy()
+    if a30.empty:
+        st.info(_dl("期间内无 Ads 数据。", "期間内に Ads データなし。"))
+    else:
+        a30["cpc_usd"] = (a30["cost_usd"] / a30["clicks"].replace(0, pd.NA)).astype(float)
+        view = a30.sort_values("report_date", ascending=False)[
+            ["report_date", "dimension", "cost_usd", "impressions", "clicks", "cpc_usd",
+             "conversions", "conversions_value"]]
+        st.dataframe(view, hide_index=True, width="stretch", column_config={
+            "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
+            "dimension": "campaign",
+            "cost_usd": st.column_config.NumberColumn(_dl("消耗$", "消化$"), format="localized"),
+            "impressions": st.column_config.NumberColumn(_dl("展示", "表示"), format="localized"),
+            "clicks": st.column_config.NumberColumn(_dl("点击", "クリック"), format="localized"),
+            "cpc_usd": st.column_config.NumberColumn("CPC$", format="%.2f"),
+            "conversions": st.column_config.NumberColumn(_dl("转化", "CV"), format="%.2f"),
+            "conversions_value": st.column_config.NumberColumn(_dl("转化价值", "CV価値"), format="%.0f"),
+        })
+
 d14 = today - dt.timedelta(days=14)
 
 
@@ -174,37 +167,38 @@ def _daily(df: pd.DataFrame, cols_map: dict[str, str]) -> pd.DataFrame:
     return g.rename(columns=cols_map)
 
 
-merged = (
-    _daily(ads, {"cost_usd": "ads_cost_usd", "clicks": "ads_clicks", "conversions": "ads_conv"})
-    .merge(_daily(ga4, {"sessions": "ga4_sessions", "orders": "ga4_orders"}),
-           on="report_date", how="outer")
-    .merge(_daily(shp, {"orders": "shopify_orders", "revenue": "shopify_revenue"}),
-           on="report_date", how="outer")
-    .sort_values("report_date", ascending=False)
-)
-st.dataframe(merged, hide_index=True, width="stretch", column_config={
-    "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
-    "ads_cost_usd": st.column_config.NumberColumn(_dl("Ads消耗$", "Ads消化$"), format="localized"),
-    "ads_clicks": st.column_config.NumberColumn(_dl("Ads点击", "Adsクリック"), format="localized"),
-    "ads_conv": st.column_config.NumberColumn("Ads CV", format="%.2f"),
-    "ga4_sessions": st.column_config.NumberColumn("GA4 sessions", format="localized"),
-    "ga4_orders": st.column_config.NumberColumn("GA4 orders", format="localized"),
-    "shopify_orders": st.column_config.NumberColumn(_dl("Shopify订单", "Shopify注文"), format="localized"),
-    "shopify_revenue": st.column_config.NumberColumn(_dl("Shopify收入*", "Shopify売上*"), format="%.1f"),
-})
-st.caption(_dl("* Shopify 收入为各订单结算货币原值合计,币种未折算(二轮改善);GA4 接入初期历史为 0 属正常。",
-               "* Shopify 売上は決済通貨のまま合算・通貨換算なし(第2弾で改善);GA4 は接続初期のため過去分 0 は正常。"))
+with tab_multi:
+    st.caption(_dl("近14日 · 各自归因口径,不相加", "直近14日 · 各帰属口径・合算しない"))
+    merged = (
+        _daily(ads, {"cost_usd": "ads_cost_usd", "clicks": "ads_clicks", "conversions": "ads_conv"})
+        .merge(_daily(ga4, {"sessions": "ga4_sessions", "orders": "ga4_orders"}),
+               on="report_date", how="outer")
+        .merge(_daily(shp, {"orders": "shopify_orders", "revenue": "shopify_revenue"}),
+               on="report_date", how="outer")
+        .sort_values("report_date", ascending=False)
+    )
+    st.dataframe(merged, hide_index=True, width="stretch", column_config={
+        "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
+        "ads_cost_usd": st.column_config.NumberColumn(_dl("Ads消耗$", "Ads消化$"), format="localized"),
+        "ads_clicks": st.column_config.NumberColumn(_dl("Ads点击", "Adsクリック"), format="localized"),
+        "ads_conv": st.column_config.NumberColumn("Ads CV", format="%.2f"),
+        "ga4_sessions": st.column_config.NumberColumn("GA4 sessions", format="localized"),
+        "ga4_orders": st.column_config.NumberColumn("GA4 orders", format="localized"),
+        "shopify_orders": st.column_config.NumberColumn(_dl("Shopify订单", "Shopify注文"), format="localized"),
+        "shopify_revenue": st.column_config.NumberColumn(_dl("Shopify收入*", "Shopify売上*"), format="%.1f"),
+    })
+    st.caption(_dl("* Shopify 收入为各订单结算货币原值合计,币种未折算(二轮改善);GA4 接入初期历史为 0 属正常。",
+                   "* Shopify 売上は決済通貨のまま合算・通貨換算なし(第2弾で改善);GA4 は接続初期のため過去分 0 は正常。"))
 
-# ── 5. GA4 × Shopify 归因差异(近 14 日)──────────────────────
-st.subheader(_dl("GA4 × Shopify 归因差异(近14日)", "GA4 × Shopify 帰属差異(直近14日)"))
-g14 = gap[gap["report_date"] >= d14].sort_values("report_date", ascending=False)
-st.dataframe(g14, hide_index=True, width="stretch", column_config={
-    "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
-    "ga4_transactions": "GA4 transactions",
-    "shopify_orders": _dl("Shopify订单", "Shopify注文"),
-    "ga4_revenue": "GA4 revenue",
-    "shopify_net_revenue": _dl("Shopify净收入", "Shopify純売上"),
-    "transaction_gap": st.column_config.NumberColumn(_dl("差(GA4−Shopify)", "差(GA4−Shopify)")),
-})
-st.caption(_dl("差异是两套归因系统的正常现象,解释它而非强行对齐;持续大差 → 检查埋码/结账域名。",
-               "差異は 2 つの帰属システム間で正常。無理に一致させず説明する;継続的な大差 → 計測タグ/チェックアウトドメイン確認。"))
+with tab_gap:
+    st.caption(_dl("近14日 · 差异是两套归因系统的正常现象,解释它而非强行对齐;持续大差 → 检查埋码/结账域名",
+                   "直近14日 · 差異は 2 つの帰属システム間で正常。継続的な大差 → 計測タグ/チェックアウトドメイン確認"))
+    g14 = gap[gap["report_date"] >= d14].sort_values("report_date", ascending=False)
+    st.dataframe(g14, hide_index=True, width="stretch", column_config={
+        "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
+        "ga4_transactions": "GA4 transactions",
+        "shopify_orders": _dl("Shopify订单", "Shopify注文"),
+        "ga4_revenue": "GA4 revenue",
+        "shopify_net_revenue": _dl("Shopify净收入", "Shopify純売上"),
+        "transaction_gap": st.column_config.NumberColumn(_dl("差(GA4−Shopify)", "差(GA4−Shopify)")),
+    })
