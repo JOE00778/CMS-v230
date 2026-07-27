@@ -16,7 +16,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.i18n_columns import localize_df
 from shared.i18n import lang_selector, t
 
@@ -26,7 +26,7 @@ require_password()
 from shared.theme import inject_theme
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("📊 价格波动分析"))
 st.caption(t("SKU 级价格历史趋势 · 4 档波动分级 · 重点关注 🔴 大波动 SKU"))

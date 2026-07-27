@@ -12,7 +12,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t
 
 st.set_page_config(page_title=t("物流费用分析"), page_icon="🚚", layout="wide")
@@ -21,7 +21,7 @@ from shared.theme import inject_theme
 require_password()
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("🚚 物流费用分析 (JD 配賦)"))
 st.caption(t(
@@ -57,8 +57,8 @@ def _logi_ver() -> str:
     失効せず最長1h旧数据のまま（2026-07-14 Coupang 捞回で実証）。本页专用版本で解决。
     """
     try:
-        from shared.db import get_connection
-        row = get_connection().execute(
+        from shared.db import get_readonly_connection
+        row = get_readonly_connection().execute(
             "SELECT max(computed_at) FROM logistics.cost_monthly").fetchone()
         if row and row[0]:
             return str(row[0])

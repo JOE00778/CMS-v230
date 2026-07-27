@@ -12,9 +12,9 @@ from shared.theme import inject_theme
 inject_theme()
 lang_selector()
 
-from shared.db import get_connection, DB_PATH
+from shared.db import get_readonly_connection, DB_PATH
 DB = DB_PATH
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("📈 等级历史趋势"))
 st.caption(t("跨季度等级变化跟踪 · 升级/降级/稳定 SKU 分析"))

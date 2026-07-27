@@ -59,6 +59,8 @@ services:
       # page38 広告状況ボード専用 · cms_reader は marketing 3ビューのみ SELECT 可
       # CMS_READER_PASSWORD は deploy/windows/.env に置く(未設定でも頁側がエラーメッセージで degrade·他頁影響なし)
       MARKETING_DATABASE_URL: postgresql://cms_reader:${CMS_READER_PASSWORD:-}@postgres:5432/cms
+      # 存量只读頁(15頁·Boss 2026-07-27 収権指示)用 · 同じ cms_reader(003 で業務 schema SELECT 付与)
+      READONLY_DATABASE_URL: postgresql://cms_reader:${CMS_READER_PASSWORD:-}@postgres:5432/cms
       # 認証は単一パスワード（CF Access + ADMIN_PASSWORD）。guest / username / page99 は廃止（2026-05-20）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       LARK_APP_ID: ${LARK_APP_ID:-}

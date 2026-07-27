@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t
 from shared.i18n_columns import localize_df
 
@@ -27,7 +27,7 @@ require_password()
 from shared.theme import inject_theme
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("📦 発注書作成"))
 st.caption(t("文本 / CSV / Excel → NetSuite 订货单 CSV"))

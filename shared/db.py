@@ -288,6 +288,24 @@ class _PostgresAdapter:
         self.close()
 
 
+def get_readonly_connection():
+    """只读页面统一入口(cms_reader · Boss 2026-07-27 存量收权指示)。
+
+    - PG 模式且设置 READONLY_DATABASE_URL → 以 cms_reader 连接(仅 SELECT,
+      DB 层强制;页面若意外触发写入会显式报 permission denied,不会静默)
+    - 其余情况(本地 SQLite / 未配置)→ 回退 get_connection(),行为与从前一致
+    - 不跑 schema bootstrap(只读角色无 DDL 权限,也不需要)
+    """
+    url = os.environ.get("READONLY_DATABASE_URL", "")
+    if not (_is_postgres() and url.startswith(("postgresql://", "postgres://"))):
+        return get_connection()
+    import psycopg2
+    from psycopg2.extras import DictCursor
+    raw = psycopg2.connect(url, cursor_factory=DictCursor)
+    raw.set_session(autocommit=False)
+    return _PostgresAdapter(raw)
+
+
 def get_connection():
     """统一入口。根据 DATABASE_URL 自动选 SQLite or Postgres。
 

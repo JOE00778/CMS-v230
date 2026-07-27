@@ -32,7 +32,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.auth import is_admin, require_admin
-from shared.db import get_connection, DATA_DIR
+from shared.db import get_readonly_connection, DATA_DIR
 from shared.i18n import get_lang, lang_selector, t
 from shared.i18n_columns import localize_df
 from shared.n8n_client import (
@@ -67,7 +67,7 @@ with st.sidebar:
 st.title(t("🚀 Shopee 上架"))
 st.caption(t("全自动管线 / 手工模式 / 参考图库 / 历史运行 一站式"))
 
-conn = get_connection()
+conn = get_readonly_connection()
 
 
 # --------------------------------------------------------------------------- #

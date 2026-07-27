@@ -13,7 +13,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.i18n_columns import localize_df
 from shared.i18n import lang_selector, t
 
@@ -23,7 +23,7 @@ require_password()
 from shared.theme import inject_theme
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("💰 价格改善"))
 st.caption(t("当前进价 vs 同 JAN 最低进价 · 找改善空间"))

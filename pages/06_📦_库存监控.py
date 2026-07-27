@@ -12,7 +12,7 @@ import streamlit as st
 import plotly.express as px
 
 from shared.bin_categories import CATEGORIES
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t
 from shared.i18n_columns import localize_df
 from shared.risk_control_view import render as render_risk_control
@@ -23,7 +23,7 @@ require_password()
 from shared.theme import inject_theme
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("📦 库存监控"))
 

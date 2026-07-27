@@ -20,7 +20,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t, get_lang
 from shared.markets import ALL_MARKETS, add_market_column
 from shared.owners import OWNER_EXCLUDED, add_owner_column
@@ -32,7 +32,7 @@ from shared.theme import inject_theme, html_table
 require_password()
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("🏪 店铺毛利"))
 # データ更新日時（sales_daily 最新 pulled_at · UTC→JST）
@@ -745,7 +745,7 @@ with tab_deduct:
         def _coupang_ver() -> str:
             """coupang 域の缓存版本（coupang.pull_schedule.last_run_at 最大値）。"""
             try:
-                row = get_connection().execute(
+                row = get_readonly_connection().execute(
                     "SELECT max(last_run_at) FROM coupang.pull_schedule").fetchone()
                 if row and row[0]:
                     return str(row[0])

@@ -11,7 +11,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t
 
 st.set_page_config(page_title=t("発注履歴"), page_icon="📜", layout="wide")
@@ -20,7 +20,7 @@ require_password()
 from shared.theme import inject_theme
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("📜 発注履歴"))
 st.caption(t("発注書(PO)明細クエリ · 数据源 NetSuite 発注書"))

@@ -22,9 +22,9 @@ from shared.theme import inject_theme
 inject_theme()
 lang_selector()
 
-from shared.db import DB_PATH, get_connection
+from shared.db import DB_PATH, get_readonly_connection
 DB = DB_PATH
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("💡 运营调整建议（B/C 档）"))
 

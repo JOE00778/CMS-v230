@@ -10,7 +10,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.forex import usd_export_rate
 from shared.i18n import lang_selector, t
 
@@ -20,7 +20,7 @@ require_password()
 from shared.theme import inject_theme  # noqa: E402
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("💱 三金汇率（NST 為替レート）"))
 st.caption(t("每月 1 日 06:58 JST 从 NST（currencyrate）自动全量更新。基準通貨=日本円。"))

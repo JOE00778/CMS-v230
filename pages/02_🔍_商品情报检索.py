@@ -19,7 +19,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t, get_lang
 from modules.weight_compare import compute_compare, coverage_stats, load_compare
 
@@ -29,7 +29,7 @@ from shared.theme import inject_theme
 require_password()
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 _JA = get_lang() == "ja"
 

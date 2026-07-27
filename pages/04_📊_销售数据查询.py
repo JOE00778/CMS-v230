@@ -18,7 +18,7 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 
-from shared.db import get_connection
+from shared.db import get_readonly_connection
 from shared.owners import classify_market, classify_owner, OWNER_EXCLUDED
 from shared.i18n import lang_selector, t, get_lang
 
@@ -28,7 +28,7 @@ from shared.theme import inject_theme
 require_password()
 inject_theme()
 lang_selector()
-conn = get_connection()
+conn = get_readonly_connection()
 
 st.title(t("📊 销售数据查询"))
 st.caption(t(
@@ -88,7 +88,7 @@ def _render_sales_delta(_period_kind, _key):
     """周次/月次 共通：対象期 vs 前期 の販売数量落差を店舗別で一覧（_period_kind: 'week'|'month'）。"""
     import datetime as _dtw
     _L = lambda zh, ja: ja if get_lang() == "ja" else zh
-    _wconn = get_connection()
+    _wconn = get_readonly_connection()
     try:
         _rng = _wconn.execute(
             "SELECT MAX(sale_date) AS mx FROM nst.sales_daily"
