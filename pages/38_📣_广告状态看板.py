@@ -91,17 +91,26 @@ if isinstance(frames, str):
 fresh, decision, gap = frames["fresh"], frames["decision"], frames["gap"]
 today = dt.date.today()
 
-# ── 1. 数据新鲜度 ────────────────────────────────────────────
+# ── 1. 数据新鲜度(green=36h内拉取成功可信 / amber=延迟或最近出错 / red=源中断)──
 _STATUS_ICON = {"green": "🟢", "amber": "🟡", "red": "🔴"}
+_STATUS_TEXT = {
+    "green": ("正常", "正常"),
+    "amber": ("延迟", "遅延"),
+    "red": ("中断", "停止"),
+}
 _SRC_LABEL = {"google_ads": "Google Ads", "ga4": "GA4", "shopify": "Shopify"}
 cols = st.columns(3)
 for col, (_, row) in zip(cols, fresh.iterrows()):
-    icon = _STATUS_ICON.get(row["freshness_status"], "⚪")
+    status = row["freshness_status"]
+    icon = _STATUS_ICON.get(status, "⚪")
+    zh, ja = _STATUS_TEXT.get(status, (status, status))
     ts = row["last_success_at"]
     ts_s = pd.to_datetime(ts).strftime("%m-%d %H:%M") if pd.notna(ts) else _dl("从未成功", "成功なし")
     col.metric(f"{icon} {_SRC_LABEL.get(row['source'], row['source'])}",
-               row["freshness_status"],
-               ts_s, delta_color="off")
+               _dl(zh, ja),
+               _dl(f"最后成功拉取 {ts_s}", f"最終取得成功 {ts_s}"), delta_color="off")
+st.caption(_dl("状态含义:🟢正常=36小时内拉取成功 · 🟡延迟=超36小时或最近一次出错 · 🔴中断=源失败/授权失效(数字不可用)",
+               "状態:🟢正常=36時間以内に取得成功 · 🟡遅延=36時間超過/直近エラー · 🔴停止=ソース失敗/認証失効(数字使用不可)"))
 if (fresh["freshness_status"] == "red").any():
     st.error(_dl("存在 red 源:数据不完整,本页数字不可用于投放判断。",
                  "red ソースあり:データ不完全。本ページの数字は出稿判断に使用不可。"))
@@ -109,17 +118,17 @@ if (fresh["freshness_status"] == "red").any():
 ads = decision[decision["source"] == "google_ads"].copy()
 ga4 = decision[decision["source"] == "ga4"].copy()
 shp = decision[decision["source"] == "shopify"].copy()
-ads["cost_jpy"] = ads["cost_micros"].fillna(0) / 1_000_000
+ads["cost_usd"] = ads["cost_micros"].fillna(0) / 1_000_000
 
 # ── 2. 本月 KPI ──────────────────────────────────────────────
 month_start = today.replace(day=1)
 ads_mtd = ads[ads["report_date"] >= month_start]
 shp_mtd = shp[shp["report_date"] >= month_start]
-mtd_cost = float(ads_mtd["cost_jpy"].sum())
+mtd_cost = float(ads_mtd["cost_usd"].sum())
 k1, k2, k3, k4 = st.columns(4)
-k1.metric(_dl("本月 Google 消耗", "今月 Google 消化"), f"¥{mtd_cost:,.0f}",
-          _dl(f"预算 ¥{MONTHLY_AD_BUDGET_JPY:,}(Google+Pin+Reddit 合计)",
-              f"予算 ¥{MONTHLY_AD_BUDGET_JPY:,}(Google+Pin+Reddit 合計)"), delta_color="off")
+k1.metric(_dl("本月 Google 消耗(USD)", "今月 Google 消化(USD)"), f"${mtd_cost:,.2f}",
+          _dl(f"总预算 ¥{MONTHLY_AD_BUDGET_JPY:,}/月(Google+Pin+Reddit 合计·JPY)",
+              f"総予算 ¥{MONTHLY_AD_BUDGET_JPY:,}/月(Google+Pin+Reddit 合計·JPY)"), delta_color="off")
 k2.metric(_dl("本月 Ads 点击", "今月 Ads クリック"), f"{int(ads_mtd['clicks'].fillna(0).sum()):,}")
 k3.metric(_dl("本月 Ads 转化(Ads 口径)", "今月 Ads CV(Ads 口径)"),
           f"{float(ads_mtd['conversions'].fillna(0).sum()):,.1f}")
@@ -136,17 +145,17 @@ a30 = ads[ads["report_date"] >= today - dt.timedelta(days=30)].copy()
 if a30.empty:
     st.info(_dl("期间内无 Ads 数据。", "期間内に Ads データなし。"))
 else:
-    a30["cpc_jpy"] = (a30["cost_jpy"] / a30["clicks"].replace(0, pd.NA)).astype(float)
+    a30["cpc_usd"] = (a30["cost_usd"] / a30["clicks"].replace(0, pd.NA)).astype(float)
     view = a30.sort_values("report_date", ascending=False)[
-        ["report_date", "dimension", "cost_jpy", "impressions", "clicks", "cpc_jpy",
+        ["report_date", "dimension", "cost_usd", "impressions", "clicks", "cpc_usd",
          "conversions", "conversions_value"]]
     st.dataframe(view, hide_index=True, width="stretch", column_config={
         "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
         "dimension": "campaign",
-        "cost_jpy": st.column_config.NumberColumn(_dl("消耗¥", "消化¥"), format="localized"),
+        "cost_usd": st.column_config.NumberColumn(_dl("消耗$", "消化$"), format="localized"),
         "impressions": st.column_config.NumberColumn(_dl("展示", "表示"), format="localized"),
         "clicks": st.column_config.NumberColumn(_dl("点击", "クリック"), format="localized"),
-        "cpc_jpy": st.column_config.NumberColumn("CPC¥", format="%.1f"),
+        "cpc_usd": st.column_config.NumberColumn("CPC$", format="%.1f"),
         "conversions": st.column_config.NumberColumn(_dl("转化", "CV"), format="%.2f"),
         "conversions_value": st.column_config.NumberColumn(_dl("转化价值", "CV価値"), format="%.0f"),
     })
@@ -166,7 +175,7 @@ def _daily(df: pd.DataFrame, cols_map: dict[str, str]) -> pd.DataFrame:
 
 
 merged = (
-    _daily(ads, {"cost_jpy": "ads_cost_jpy", "clicks": "ads_clicks", "conversions": "ads_conv"})
+    _daily(ads, {"cost_usd": "ads_cost_usd", "clicks": "ads_clicks", "conversions": "ads_conv"})
     .merge(_daily(ga4, {"sessions": "ga4_sessions", "orders": "ga4_orders"}),
            on="report_date", how="outer")
     .merge(_daily(shp, {"orders": "shopify_orders", "revenue": "shopify_revenue"}),
@@ -175,7 +184,7 @@ merged = (
 )
 st.dataframe(merged, hide_index=True, width="stretch", column_config={
     "report_date": st.column_config.DateColumn(_dl("日期", "日付")),
-    "ads_cost_jpy": st.column_config.NumberColumn(_dl("Ads消耗¥", "Ads消化¥"), format="localized"),
+    "ads_cost_usd": st.column_config.NumberColumn(_dl("Ads消耗$", "Ads消化$"), format="localized"),
     "ads_clicks": st.column_config.NumberColumn(_dl("Ads点击", "Adsクリック"), format="localized"),
     "ads_conv": st.column_config.NumberColumn("Ads CV", format="%.2f"),
     "ga4_sessions": st.column_config.NumberColumn("GA4 sessions", format="localized"),
