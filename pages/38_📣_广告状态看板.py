@@ -14,9 +14,18 @@ from __future__ import annotations
 import datetime as dt
 import os
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
+from modules.ads_roi import (
+    SAMPLE_MIN_CONVERSIONS,
+    add_ratio_columns,
+    breakeven_roas,
+    resample,
+    safe_ratio,
+    verdict,
+)
 from shared.i18n import lang_selector, t, get_lang
 
 st.set_page_config(page_title=t("广告状态看板"), page_icon="📣", layout="wide")
@@ -34,6 +43,13 @@ def _dl(zh: str, ja: str) -> str:
 
 
 MONTHLY_AD_BUDGET_JPY = 200_000  # Boss 2026-07:自建站推广月预算(Google+Pinterest+Reddit 合计)
+
+# 毛利率默认值(doc 23 §3.3 · Boss 2026-07-27 拍板)。保本 ROAS = 1÷0.50 = 2.00x。
+# 依据:本地快照 nst_store_sales(2026-05-05)实测全店 55.89% / Shopee PH 55.12%,
+# 下调至 50% 因该口径为 NST 定义原価毛利,**不含物流/广告/支付/平台佣金**,且宁可高估保本线。
+# 这是**平台店代理值**——自建站数据在 NST 侧尚未就绪(接入进行中)。
+# 升级触发:当 nst.sales_daily 出现 Shopify 自建站 shop 记录时,重评 doc 23 §2 方案 C。
+DEFAULT_GROSS_MARGIN = 0.50
 
 
 def _connect():
@@ -109,6 +125,26 @@ ga4 = decision[decision["source"] == "ga4"].copy()
 shp = decision[decision["source"] == "shopify"].copy()
 ads["cost_usd"] = ads["cost_micros"].fillna(0) / 1_000_000
 
+# ── 毛利率参数(doc 23 §3.3)· 保本线的唯一输入 ──────────────
+with st.sidebar:
+    st.markdown("---")
+    gross_margin = st.number_input(
+        _dl("毛利率(用于保本线)", "粗利率(損益分岐用)"),
+        min_value=0.01, max_value=1.0, value=DEFAULT_GROSS_MARGIN, step=0.01,
+        format="%.2f",
+        help=_dl("毛利率 = gross_profit ÷ revenue(NST 定义原価口径,不含物流/广告/支付/平台佣金)",
+                 "粗利率 = gross_profit ÷ revenue(NST 定義原価ベース・物流/広告/決済/手数料を含まない)"),
+    )
+    _be = breakeven_roas(gross_margin)
+    st.caption(_dl(f"保本 ROAS = 1÷{gross_margin:.0%} = **{_be:.2f}x**",
+                   f"損益分岐 ROAS = 1÷{gross_margin:.0%} = **{_be:.2f}x**"))
+    st.caption(_dl(
+        "⚠️ 该口径不含物流/广告/平台费,算出的保本线是**乐观下限**,真实盈亏线更高。"
+        "默认 0.50 为平台店代理值(自建站数据在 NST 侧尚未就绪),请按 page37 实际毛利校准。",
+        "⚠️ 本口径は物流/広告/手数料を含まないため、損益分岐線は**楽観的な下限**。"
+        "既定 0.50 はプラットフォーム店の代理値(自社サイトは NST 未対応)。page37 の実績で校正を。",
+    ))
+
 # ── 2. 本月 KPI ──────────────────────────────────────────────
 month_start = today.replace(day=1)
 ads_mtd = ads[ads["report_date"] >= month_start]
@@ -128,9 +164,53 @@ st.caption(_dl(
     "未接続(ゼロ表示しない):Pinterest 消化 · Reddit 消化 · サイト内ファネル(ATC/チェックアウト) · Search-term 明細",
 ))
 
+# ── 2b. 盈亏判定(doc 23 §3.2)· 本页的核心问题:这笔钱赚没赚 ──
+_mtd_conv = float(ads_mtd["conversions"].fillna(0).sum())
+_mtd_value = float(ads_mtd["conversions_value"].fillna(0).sum())
+_mtd_roas = safe_ratio(_mtd_value, mtd_cost)
+_mtd_cpa = safe_ratio(mtd_cost, _mtd_conv)
+_level, _label = verdict(_mtd_roas, _be, _mtd_conv)
+
+v1, v2, v3 = st.columns(3)
+v1.metric(_dl("本月 ROAS(Ads 口径)", "今月 ROAS(Ads 口径)"),
+          f"{_mtd_roas:.2f}x" if _mtd_roas is not None else "—",
+          _dl(f"保本线 {_be:.2f}x", f"損益分岐 {_be:.2f}x"), delta_color="off")
+v2.metric(_dl("本月 CPA", "今月 CPA"),
+          f"${_mtd_cpa:,.2f}" if _mtd_cpa is not None else "—",
+          _dl("越低越好", "低いほど良い"), delta_color="off")
+v3.metric(_dl("本月转化数", "今月 CV 数"), f"{_mtd_conv:,.1f}",
+          _dl(f"判定门槛 {SAMPLE_MIN_CONVERSIONS}", f"判定閾値 {SAMPLE_MIN_CONVERSIONS}"),
+          delta_color="off")
+
+if _level == "insufficient":
+    st.info(_dl(
+        f"⚪ **{_label}** —— 本月转化 {_mtd_conv:.0f} < {SAMPLE_MIN_CONVERSIONS},"
+        "ROAS/CPA 属统计噪音,**不要据此调预算或出价**。先积累样本,或先修转化跟踪。",
+        f"⚪ **サンプル不足・判定不可** —— 今月 CV {_mtd_conv:.0f} < {SAMPLE_MIN_CONVERSIONS}。"
+        "ROAS/CPA は統計ノイズ。**これを根拠に予算・入札を動かさないこと**。",
+    ))
+elif _level == "profit":
+    st.success(_dl(f"🟢 **{_label}** —— ROAS {_mtd_roas:.2f}x ≥ 保本线 {_be:.2f}x × 1.2",
+                   f"🟢 **黒字** —— ROAS {_mtd_roas:.2f}x ≥ 損益分岐 {_be:.2f}x × 1.2"))
+elif _level == "marginal":
+    st.warning(_dl(f"🟡 **{_label}** —— ROAS {_mtd_roas:.2f}x 刚过保本线 {_be:.2f}x,缓冲很薄",
+                   f"🟡 **損益トントン** —— ROAS {_mtd_roas:.2f}x は損益分岐 {_be:.2f}x 付近"))
+elif _level == "loss":
+    st.error(_dl(f"🔴 **{_label}** —— ROAS {_mtd_roas:.2f}x < 保本线 {_be:.2f}x;"
+                 "按决策链先查数据可信度,再逐环定位,**修复优先于加量**",
+                 f"🔴 **赤字** —— ROAS {_mtd_roas:.2f}x < 損益分岐 {_be:.2f}x"))
+
+st.caption(_dl(
+    "ROAS/CPA 为 **Ads 归因口径**,受转化跟踪完整性影响;"
+    "跟踪缺失会使 ROAS 偏低、CPA 偏高——请对照下方「三源日次并列」的 Shopify 实绩订单交叉验证。",
+    "ROAS/CPA は **Ads 帰属ベース**。計測欠損時は ROAS 過小・CPA 過大になる——"
+    "下部「3ソース日次並列」の Shopify 実績と突き合わせて確認。",
+))
+
 # ── 3-5. 三板块 → 各自 tab(Boss 2026-07-27)─────────────────
-tab_camp, tab_multi, tab_gap = st.tabs([
+tab_camp, tab_trend, tab_multi, tab_gap = st.tabs([
     _dl("📈 Google campaign 日次", "📈 Google campaign 日次"),
+    _dl("📉 趋势曲线", "📉 トレンド"),
     _dl("📊 三源日次并列", "📊 3ソース日次並列"),
     _dl("🔀 归因差异", "🔀 帰属差異"),
 ])
@@ -141,10 +221,9 @@ with tab_camp:
     if a30.empty:
         st.info(_dl("期间内无 Ads 数据。", "期間内に Ads データなし。"))
     else:
-        a30["cpc_usd"] = (a30["cost_usd"] / a30["clicks"].replace(0, pd.NA)).astype(float)
-        a30["ctr"] = (a30["clicks"] / a30["impressions"].replace(0, pd.NA)).astype(float)
+        a30 = add_ratio_columns(a30).rename(columns={"cpc": "cpc_usd"})
         cols_show = ["report_date", "dimension", "cost_usd", "impressions", "clicks",
-                     "ctr", "cpc_usd", "conversions", "conversions_value"]
+                     "ctr", "cpc_usd", "conversions", "conversions_value", "roas", "cpa"]
         # 004 扩列后才有的三个展示份额(旧视图无此列时静默降级)
         for c in ("search_impression_share", "search_budget_lost_impression_share",
                   "search_rank_lost_impression_share"):
@@ -161,6 +240,14 @@ with tab_camp:
             "cpc_usd": st.column_config.NumberColumn("CPC$", format="%.2f"),
             "conversions": st.column_config.NumberColumn(_dl("转化", "CV"), format="%.2f"),
             "conversions_value": st.column_config.NumberColumn(_dl("转化价值", "CV価値"), format="%.0f"),
+            "roas": st.column_config.NumberColumn(
+                "ROAS", format="%.2f",
+                help=_dl(f"转化价值÷消耗(Ads 归因)· 保本线 {_be:.2f}x · 空=当日无消耗",
+                         f"CV価値÷消化(Ads帰属)· 損益分岐 {_be:.2f}x")),
+            "cpa": st.column_config.NumberColumn(
+                "CPA$", format="%.2f",
+                help=_dl("消耗÷转化数 · 空=当日零转化 · 需低于单均毛利",
+                         "消化÷CV数 · 空=当日CVゼロ")),
             "search_impression_share": st.column_config.NumberColumn(
                 _dl("展示份额", "IS"), format="percent",
                 help=_dl("参竞率;品牌词应>90%", "参加率;ブランド語は>90%")),
@@ -171,6 +258,87 @@ with tab_camp:
                 _dl("排名丢失", "順位ロスIS"), format="percent",
                 help=_dl("区分「没钱」还是「竞争不过」", "「予算不足」か「競争負け」かの判別")),
         })
+
+with tab_trend:
+    # 粒度 × 指标(doc 23 §3.5)· 同一份日数据的三种重采样,不是三套代码
+    _GRAINS = {_dl("日", "日次"): "day", _dl("周", "週次"): "week", _dl("月", "月次"): "month"}
+    _WINDOW = {"day": 30, "week": 12, "month": 12}
+    _METRICS = {
+        "ROAS": ("roas", "%.2f"),
+        _dl("消耗$", "消化$"): ("cost_usd", "%.2f"),
+        "CPA$": ("cpa", "%.2f"),
+        _dl("转化数", "CV数"): ("conversions", "%.1f"),
+        _dl("点击", "クリック"): ("clicks", "%d"),
+        "CTR": ("ctr", "%.4f"),
+    }
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        _gl = st.radio(_dl("粒度", "粒度"), list(_GRAINS), horizontal=True)
+    with c2:
+        _ml = st.selectbox(_dl("指标", "指標"), list(_METRICS))
+    grain, (mcol, mfmt) = _GRAINS[_gl], _METRICS[_ml]
+
+    # campaign 维度先按天合并成账户级,再重采样(比率由聚合后的分子分母重算)
+    _daily_acct = ads.groupby("report_date", as_index=False)[
+        ["cost_usd", "impressions", "clicks", "conversions", "conversions_value"]
+    ].sum(min_count=1)
+    ts = resample(_daily_acct, grain, today=pd.Timestamp(today))
+    ts = ts.tail(_WINDOW[grain])
+
+    if ts.empty or ts[mcol].isna().all():
+        st.info(_dl("该粒度下暂无可用数据。", "この粒度では利用可能なデータがありません。"))
+    else:
+        _n = len(ts)
+        _start = pd.to_datetime(_daily_acct["report_date"]).min()
+        st.caption(_dl(
+            f"数据起始 {_start:%Y-%m-%d} · 当前 {_n} 个数据点"
+            + ("" if grain == "day" else _dl(" · 未走完的当期已剔除", " · 進行中の当期は除外")),
+            f"データ開始 {_start:%Y-%m-%d} · {_n} ポイント",
+        ))
+        if _n < 3:
+            st.warning(_dl(
+                f"⚠️ 仅 {_n} 个数据点,**不足以判读趋势**。marketing 数据自 2026-07 起采集,"
+                "月粒度需数月才有意义。",
+                f"⚠️ {_n} ポイントのみ。**トレンド判読には不十分**。",
+            ))
+
+        plot = ts.copy()
+        plot["thin_sample"] = plot["conversions"].fillna(0) < SAMPLE_MIN_CONVERSIONS
+        _title = f"{_ml} · {_gl}"
+        base = alt.Chart(plot)
+        line = base.mark_line(point=False, color="#4C78A8").encode(
+            x=alt.X("period:T", title=None),
+            y=alt.Y(f"{mcol}:Q", title=_ml, scale=alt.Scale(zero=False)),
+        )
+        # 样本不足的点视觉降级——不让噪音点和可信点长得一样(doc 23 §3.5)
+        pts = base.mark_point(filled=True, size=70).encode(
+            x="period:T", y=f"{mcol}:Q",
+            color=alt.condition(alt.datum.thin_sample, alt.value("#BBBBBB"), alt.value("#4C78A8")),
+            tooltip=[alt.Tooltip("period:T", title=_dl("期间", "期間")),
+                     alt.Tooltip(f"{mcol}:Q", title=_ml, format=mfmt.replace("%", "")),
+                     alt.Tooltip("conversions:Q", title=_dl("转化", "CV"), format=".1f"),
+                     alt.Tooltip("cost_usd:Q", title=_dl("消耗$", "消化$"), format=".2f")],
+        )
+        layers = [line, pts]
+        if mcol == "roas" and _be:
+            rule = alt.Chart(pd.DataFrame({"y": [_be]})).mark_rule(
+                color="#E45756", strokeDash=[6, 4]).encode(y="y:Q")
+            layers.append(rule)
+        st.altair_chart(alt.layer(*layers).properties(height=320, title=_title),
+                        use_container_width=True)
+        if mcol == "roas":
+            st.caption(_dl(
+                f"红色虚线 = 保本 ROAS {_be:.2f}x(侧栏毛利率决定)· "
+                f"灰点 = 该期转化 < {SAMPLE_MIN_CONVERSIONS},判定不可信",
+                f"赤破線 = 損益分岐 ROAS {_be:.2f}x · グレー点 = CV < {SAMPLE_MIN_CONVERSIONS}",
+            ))
+        with st.expander(_dl("查看聚合后数据", "集計データを表示")):
+            st.dataframe(ts, hide_index=True, width="stretch")
+    st.caption(_dl(
+        "比率类指标(ROAS/CPA/CTR)按「Σ分子÷Σ分母」聚合,非日值平均——低消耗日不会被过度加权。",
+        "比率指標は「Σ分子÷Σ分母」で集計(日次平均ではない)。",
+    ))
 
 d14 = today - dt.timedelta(days=14)
 
