@@ -35,6 +35,10 @@ YAHOO_SEARCH = "https://shopping.yahoo.co.jp/search?p={jan}"
 _ING_RE = re.compile(r"(?:【\s*)?(?:全成分|成分)\s*(?:】|[::])\s*([^【]{40,%d})" % MAX_INGREDIENT)
 _TAG_RE = re.compile(r"<script.*?</script>|<style.*?</style>", re.S | re.I)
 _YAHOO_CHROME = ("Yahoo!ショッピング", "ふるさと納税", "PayPay", "ログイン", "カート")
+# 商品が無くても 200 でサイト共通ページを返す店がある(楽天全国スーパー等)→
+# 「商品名が取れた」と誤認しないためのサイト共通タイトル排除。
+_GENERIC_TITLE = ("ネットスーパー", "エラー", "見つかりません", "ページが存在",
+                  "楽天市場", "検索結果", "お探しの商品")
 
 
 def _get(url: str) -> bytes | None:
@@ -105,7 +109,8 @@ def lookup(jan: str) -> dict:
             continue
         text = decode(raw)
         name = parse_rakuten_title(text)
-        if not name or "エラー" in name or "見つかりません" in name:
+        # 商品ページである確証:JAN がページ内にあり、かつサイト共通タイトルでない
+        if not name or jan not in text or any(g in name for g in _GENERIC_TITLE):
             continue
         return {"name": name, "ingredient": parse_ingredient(text), "source": label, "url": url}
 
