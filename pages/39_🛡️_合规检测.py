@@ -176,11 +176,18 @@ VERDICT_UI = {
 
 
 def _render_result(res: dict):
+    # 成分が無いまま緑を出すと「安全」と誤読される。名称だけ通過は別状態として出す。
+    if res["verdict"] == "green" and not res["ingredient_checked"]:
+        st.warning(_dl("⚪ 判定未完成——名称/宣称无问题,但**成分未取得**,成分维度未判定",
+                       "⚪ 判定未完了——名称/表現は問題なし,ただし**成分未取得**のため成分は未判定"))
+        st.caption(_dl("→ 粘贴成分表(商品包装/厂商页的全成分)后可完成判定",
+                       "→ 成分表(パッケージ/メーカー页の全成分)を貼れば判定を完了できます"))
+        return
     fn, label = VERDICT_UI[res["verdict"]]
     getattr(st, fn)(label)
     if not res["ingredient_checked"]:
-        st.caption(_dl("⚠️ 成分数据未收录——仅完成名称/宣称判定,成分维度未覆盖",
-                       "⚠️ 成分データ未収録——名称/表現判定のみ,成分は未カバー"))
+        st.caption(_dl("⚠️ 成分未取得——以上仅为名称/宣称判定,成分维度未覆盖",
+                       "⚠️ 成分未取得——名称/表現判定のみ,成分は未カバー"))
     if res["hits"]:
         df = pd.DataFrame(res["hits"])
         df["severity"] = df["severity"].map({"red": "🔴", "yellow": "🟡", "info": "ℹ️"})

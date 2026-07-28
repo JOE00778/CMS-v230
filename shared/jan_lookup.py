@@ -27,12 +27,20 @@ UA = {
 TIMEOUT = 12
 MAX_INGREDIENT = 2000
 
-RAKUTEN24 = "https://item.rakuten.co.jp/rakuten24/{jan}/"
-RAKUTEN_SUPER = "https://netsuper.rakuten.co.jp/seiyu/item/{jan}/"
+# JAN をそのまま商品コードに使う店(実測で確認)。成分の載る率が高い順。
+JAN_ADDRESSABLE = (
+    ("https://item.rakuten.co.jp/rakuten24/{jan}/", "楽天24"),
+    ("https://item.rakuten.co.jp/matsukiyo/{jan}/", "マツキヨ楽天店"),
+    ("https://item.rakuten.co.jp/sundrug/{jan}/", "サンドラッグ楽天店"),
+    ("https://netsuper.rakuten.co.jp/seiyu/item/{jan}/", "楽天全国スーパー"),
+)
 YAHOO_SEARCH = "https://shopping.yahoo.co.jp/search?p={jan}"
 
-# 成分段:「【全成分】…」「成分】…」「全成分:…」。到下一个【或过长处截断。
-_ING_RE = re.compile(r"(?:【\s*)?(?:全成分|成分)\s*(?:】|[::])\s*([^【]{40,%d})" % MAX_INGREDIENT)
+# 成分の見出しは店ごとにバラバラ:【全成分】/ 全成分: / 成分／分量 / 原料・成分等【成分】
+_ING_RE = re.compile(
+    r"(?:【\s*)?(?:全成分|成分\s*[／/・]\s*分量|原料\s*・\s*成分等|配合成分|成分)"
+    # 下限 15:成分 5 品目程度の短い表もあるため。散文の誤検出は区切り記号チェックで弾く。
+    r"\s*(?:】|[::]|\s)\s*([^【]{15,%d})" % MAX_INGREDIENT)
 _TAG_RE = re.compile(r"<script.*?</script>|<style.*?</style>", re.S | re.I)
 _YAHOO_CHROME = ("Yahoo!ショッピング", "ふるさと納税", "PayPay", "ログイン", "カート")
 # 商品が無くても 200 でサイト共通ページを返す店がある(楽天全国スーパー等)→
@@ -68,13 +76,15 @@ def _plain(text: str) -> str:
 
 
 def parse_ingredient(page_text: str) -> str:
-    m = _ING_RE.search(_plain(page_text))
-    if not m:
-        return ""
-    body = m.group(1).strip()
-    # 後続の販促文(「※」「広告文責」等)で切る
-    body = re.split(r"※|広告文責|内容量|原産国|メーカー|区分\s*[:：]", body)[0]
-    return body.strip(" 、,")[:MAX_INGREDIENT]
+    """成分表らしさを検証してから返す(「有効成分について」等の散文を拾わない)。"""
+    text = _plain(page_text)
+    for m in _ING_RE.finditer(text):
+        body = re.split(r"※|広告文責|内容量|原産国|メーカー|区分\s*[:：]|お問い合わせ", m.group(1))[0]
+        body = body.strip(" 、,")
+        # 成分表は区切り記号が多い。3 個未満は説明文とみなし採用しない。
+        if body.count("、") + body.count(",") >= 3:
+            return body[:MAX_INGREDIENT]
+    return ""
 
 
 def parse_rakuten_title(page_text: str) -> str:
@@ -102,7 +112,8 @@ def lookup(jan: str) -> dict:
     if not (jan.isdigit() and len(jan) >= 8):
         return {}
 
-    for url_tpl, label in ((RAKUTEN24, "楽天24"), (RAKUTEN_SUPER, "楽天全国スーパー")):
+    best: dict = {}
+    for url_tpl, label in JAN_ADDRESSABLE:
         url = url_tpl.format(jan=jan)
         raw = _get(url)
         if not raw:
@@ -112,12 +123,16 @@ def lookup(jan: str) -> dict:
         # 商品ページである確証:JAN がページ内にあり、かつサイト共通タイトルでない
         if not name or jan not in text or any(g in name for g in _GENERIC_TITLE):
             continue
-        return {"name": name, "ingredient": parse_ingredient(text), "source": label, "url": url}
+        hit = {"name": name, "ingredient": parse_ingredient(text), "source": label, "url": url}
+        if hit["ingredient"]:
+            return hit          # 成分まで取れたら即採用
+        best = best or hit      # 名称だけの店は保持し、成分のある店を探し続ける
 
-    raw = _get(YAHOO_SEARCH.format(jan=jan))
-    if raw:
-        name = parse_yahoo_name(decode(raw))
-        if name:
-            return {"name": name, "ingredient": "", "source": "Yahoo!ショッピング",
-                    "url": YAHOO_SEARCH.format(jan=jan)}
-    return {}
+    if not best:
+        raw = _get(YAHOO_SEARCH.format(jan=jan))
+        if raw:
+            name = parse_yahoo_name(decode(raw))
+            if name:
+                best = {"name": name, "ingredient": "", "source": "Yahoo!ショッピング",
+                        "url": YAHOO_SEARCH.format(jan=jan)}
+    return best

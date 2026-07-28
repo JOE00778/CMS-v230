@@ -50,3 +50,29 @@ def test_lookup_rejects_non_jan_without_network():
     assert lookup("アネッサ") == {}
     assert lookup("") == {}
     assert lookup("123") == {}
+
+
+SUNDRUG_PAGE = """<html><head><title>【楽天市場】TSUBAKI シャンプー(400ml)：サンドラッグ</title></head>
+<body><p>お問い合わせの際に必要な場合があります。 成分／分量 水、ラウレス硫酸Na、コカミドプロピルベタイン、
+ジステアリン酸グリコール、ポリクオタニウム-10、香料 ※パッケージ変更</p></body></html>"""
+
+MATSUKIYO_PAGE = """<html><head><title>【楽天市場】キャンメイク クイックラッシュカーラー：マツモトキヨシ</title></head>
+<body><p>原料・成分等 【成分】 シクロペンタシロキサン、イソドデカン、パラフィン、ミツロウ、シリカ</p></body></html>"""
+
+PROSE_PAGE = """<html><body><p>有効成分について 詳しくはメーカーにお問い合わせください。
+この商品は日本国内で製造されており品質管理を徹底しています。</p></body></html>"""
+
+
+def test_parse_ingredient_handles_sundrug_slash_label():
+    ing = parse_ingredient(SUNDRUG_PAGE)
+    assert ing.startswith("水、ラウレス硫酸Na")
+    assert "※" not in ing
+
+
+def test_parse_ingredient_handles_matsukiyo_label():
+    assert parse_ingredient(MATSUKIYO_PAGE).startswith("シクロペンタシロキサン")
+
+
+def test_parse_ingredient_rejects_prose_without_separators():
+    """「有効成分について…」のような散文を成分表と誤認しない。"""
+    assert parse_ingredient(PROSE_PAGE) == ""
