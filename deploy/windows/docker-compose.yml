@@ -278,6 +278,42 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # ------------------------------------------------------------
+  # compliance_scheduler · 合规官方源月次盯梢 + Shopify 成分周次同步(page39)
+  #   毎分 compliance.pull_schedule を見て source_watch / shopify_item_sync を起動
+  #   （source_watch=毎月1日 07:00 JST · shopify_sync=毎週月曜 06:45 JST · run_now 手動可)
+  #   ⚠️ 専用イメージ(psycopg3 のみ): 初回のみ元川デスクトップで:
+  #      docker compose build compliance_scheduler
+  #   凭据: database/.env の COMPLIANCE_INGEST_DATABASE_URL(compliance_ingest 角色)
+  #        + COMPLIANCE_SHOPIFY_TOKEN_FILE=/secrets/shopify_admin_token.txt
+  #        (C:\Users\smiki\secrets\compliance\ に配置 · read_products のみで可)
+  #   DATABASE_URL は明示的に空 → 超級ユーザー接続串は採集器に渡らない
+  # ------------------------------------------------------------
+  compliance_scheduler:
+    build:
+      context: ../../../database
+      dockerfile: deploy/compliance-scheduler.Dockerfile
+    container_name: cms_compliance_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../../../database/.env          # COMPLIANCE_INGEST_DATABASE_URL / COMPLIANCE_SHOPIFY_*
+    environment:
+      DATABASE_URL: ""                  # 遮断: env_file 由来の超級ユーザー URL を無効化
+      TZ: Asia/Tokyo
+    volumes:
+      - ../../../database:/app:ro       # compliance_api コード(scp 直送で更新)
+      - C:/Users/smiki/secrets/compliance:/secrets:ro
+    networks:
+      - cms_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
 networks:
   cms_net:
     driver: bridge
