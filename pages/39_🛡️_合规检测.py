@@ -206,8 +206,12 @@ def _country_tab(country: str, rules):
     """
     kw_rules, ing_rules = rules
     st.markdown(_dl(f"##### {country} 单品判定", f"##### {country} 単品判定"))
-    q = st.text_input(_dl("JAN 码(或商品名关键词)", "JANコード(または商品名キーワード)"),
-                      key=f"q_{country}", placeholder="4573306630098 / アネッサ")
+    q = st.text_input(
+        _dl("① 输入 JAN 码 → 自动取商品名与成分并判定", "① JANコード入力 → 商品名と成分を自動取得して判定"),
+        key=f"q_{country}", placeholder="4909978147105",
+        help=_dl("也可输入商品名关键词,但关键词只查自社数据库(自建站/NST);"
+                 "外部自动取数只对 JAN 有效",
+                 "商品名キーワードも可。ただし自社DB(自社サイト/NST)のみ検索。外部自動取得は JAN のみ"))
     q = q.strip()
 
     item = {"jan": "", "name_en": "", "name_ja": "", "maker": "", "ingredient": "", "sources": []}
@@ -246,12 +250,12 @@ def _country_tab(country: str, rules):
     # 判定输入:已知数据预填,可改;未收录时手动粘贴。key 含 JAN → 换商品自动刷新预填。
     slot = item.get("jan") or "manual"
     name = st.text_input(
-        _dl("商品名(日/英均可)", "商品名(日英どちらも可)"),
+        _dl("② 商品名(自动填入·可修改)", "② 商品名(自動入力·修正可)"),
         value=item["name_ja"] or item["name_en"], key=f"n_{country}_{slot}")
     name_alt = item["name_en"] if (item["name_ja"] and item["name_en"]) else ""
     ing = st.text_area(
-        _dl("成分表(逗号分隔原文粘贴;无则留空,仅做名称判定)",
-            "成分表(原文貼り付け;空欄なら名称のみ判定)"),
+        _dl("③ 成分表(自动取到则填入;取不到时粘贴包装/厂商页的全成分)",
+            "③ 成分表(自動取得できれば自動入力;取れない場合はパッケージ/メーカーの全成分を貼付)"),
         value=item["ingredient"], key=f"i_{country}_{slot}", height=110)
 
     if name.strip() or ing.strip():
