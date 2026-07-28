@@ -110,35 +110,55 @@ def _load_overview():
         return None
 
 
-def _search_items(kw: str) -> pd.DataFrame:
-    """JAN(纯数字≥8位)精确 / 否则商品名·厂商 LIKE,上限 30。"""
-    conn = _conn()
-    kw = kw.strip()
-    if kw.isdigit() and len(kw) >= 8:
-        sql = ("SELECT internal_id, jan, display_name, maker, item_rank FROM nst.item_master_raw "
-               "WHERE jan = ? LIMIT 30")
-        params = [kw]
-    else:
-        like = f"%{kw.lower()}%"
-        sql = ("SELECT internal_id, jan, display_name, maker, item_rank FROM nst.item_master_raw "
-               "WHERE LOWER(COALESCE(display_name,'')) LIKE ? OR LOWER(COALESCE(maker,'')) LIKE ? "
-               "ORDER BY item_code LIMIT 30")
-        params = [like, like]
-    cur = conn.execute(sql, params)
-    cols = [d[0] for d in cur.description]
-    return pd.DataFrame([dict(zip(cols, r)) for r in cur.fetchall()], columns=cols)
-
-
-def _shopify_item(jan: str):
+def _rows(sql: str, params: list) -> list[tuple]:
+    """单表查询;表不存在(本地/未迁移)→ 空,不阻断判定。"""
     try:
-        conn = _conn()
-        cur = conn.execute(
-            "SELECT title, ingredient_text, product_status FROM compliance.shopify_item WHERE jan = ?",
-            [jan])
-        row = cur.fetchone()
-        return {"title": row[0] or "", "ingredient_text": row[1] or "", "status": row[2] or ""} if row else None
+        return _conn().execute(sql, params).fetchall()
     except Exception:
-        return None
+        return []
+
+
+def _is_jan(s: str) -> bool:
+    return s.isdigit() and len(s) >= 8
+
+
+def resolve_by_jan(jan: str) -> dict:
+    """JAN → 已知的商品名/成分。成分主源=Shopify 收录;NST 只补日文名,**不是门槛**。"""
+    sp = _rows("SELECT title, ingredient_text, product_status FROM compliance.shopify_item "
+               "WHERE jan = ?", [jan])
+    ns = _rows("SELECT display_name, maker FROM nst.item_master_raw WHERE jan = ? LIMIT 1", [jan])
+    out = {"jan": jan, "name_en": "", "name_ja": "", "maker": "", "ingredient": "", "sources": []}
+    if sp:
+        out["name_en"] = sp[0][0] or ""
+        out["ingredient"] = sp[0][1] or ""
+        out["sources"].append(_dl("Shopify 已上架", "Shopify 出品済"))
+    if ns:
+        out["name_ja"] = ns[0][0] or ""
+        out["maker"] = ns[0][1] or ""
+        out["sources"].append(_dl("NST 商品主档", "NST 商品マスタ"))
+    return out
+
+
+def search_candidates(kw: str) -> list[dict]:
+    """关键词 → 候选(Shopify 与 NST 并集,按 JAN 去重)。JAN 输入直接单条返回。"""
+    kw = kw.strip()
+    if not kw:
+        return []
+    if _is_jan(kw):
+        return [resolve_by_jan(kw)]
+    like = f"%{kw.lower()}%"
+    found: dict[str, dict] = {}
+    for jan, name in _rows(
+            "SELECT jan, title FROM compliance.shopify_item "
+            "WHERE LOWER(COALESCE(title,'')) LIKE ? ORDER BY jan LIMIT 30", [like]):
+        found.setdefault(jan, {"jan": jan, "label": name or jan})
+    for jan, name, maker in _rows(
+            "SELECT jan, display_name, maker FROM nst.item_master_raw "
+            "WHERE LOWER(COALESCE(display_name,'')) LIKE ? OR LOWER(COALESCE(maker,'')) LIKE ? "
+            "ORDER BY item_code LIMIT 30", [like, like]):
+        if jan:
+            found.setdefault(jan, {"jan": jan, "label": f"{name or ''} {maker or ''}".strip()})
+    return list(found.values())[:30]
 
 
 VERDICT_UI = {
@@ -166,37 +186,50 @@ def _render_result(res: dict):
 
 
 def _country_tab(country: str, rules):
+    """JAN 直判:输入 JAN → 已知数据自动填充 → 立即判定;未收录也能粘贴后判定。
+
+    商品是否在 NST/Shopify 里**不作门槛**——上架前的新品本来就不在任何库。
+    """
     kw_rules, ing_rules = rules
     st.markdown(_dl(f"##### {country} 单品判定", f"##### {country} 単品判定"))
-    q = st.text_input(_dl("输入 JAN 码或商品名关键词", "JANコードまたは商品名キーワード"),
-                      key=f"q_{country}", placeholder="4901234567890 / アネッサ")
-    if q.strip():
-        hits = _search_items(q)
-        if hits.empty:
-            st.info(_dl("NST 商品主档中未找到;可用下方「手动输入」直接判定",
-                        "NST 商品マスタに見つかりません;下の「手動入力」で直接判定できます"))
-        else:
-            options = {
-                f"{r.jan or '-'} | {r.display_name} | {r.maker or ''}": r
-                for r in hits.itertuples()}
-            label = st.selectbox(_dl("命中商品(选择一件)", "該当商品(1件選択)"),
-                                 list(options), key=f"sel_{country}")
-            row = options[label]
-            sp = _shopify_item(str(row.jan)) if row.jan else None
-            fields = {_dl("商品名(日)", "商品名(日)"): row.display_name or ""}
-            if sp and sp["title"]:
-                fields[_dl("商品名(EN)", "商品名(EN)")] = sp["title"]
-            ing_text = sp["ingredient_text"] if sp else None
-            res = judge(kw_rules, ing_rules, country, fields, ing_text)
-            _render_result(res)
+    q = st.text_input(_dl("JAN 码(或商品名关键词)", "JANコード(または商品名キーワード)"),
+                      key=f"q_{country}", placeholder="4573306630098 / アネッサ")
+    q = q.strip()
 
-    with st.expander(_dl("✍️ 手动输入判定(未入库新品用)", "✍️ 手動入力判定(未登録の新商品用)")):
-        name = st.text_input(_dl("商品名(日/英均可)", "商品名(日英どちらも可)"), key=f"mn_{country}")
-        ing = st.text_area(_dl("成分表(可空;逗号分隔原文粘贴)", "成分表(空欄可;原文貼り付け)"),
-                           key=f"mi_{country}", height=100)
-        if name.strip() or ing.strip():
-            res = judge(kw_rules, ing_rules, country, {_dl("商品名", "商品名"): name}, ing or None)
-            _render_result(res)
+    item = {"jan": "", "name_en": "", "name_ja": "", "maker": "", "ingredient": "", "sources": []}
+    if q:
+        cands = search_candidates(q)
+        if len(cands) > 1:
+            labels = {f"{c['jan']} | {c.get('label', '')}": c["jan"] for c in cands}
+            picked = st.selectbox(_dl("候选商品", "候補商品"), list(labels), key=f"sel_{country}")
+            item = resolve_by_jan(labels[picked])
+        elif cands:
+            item = cands[0] if "sources" in cands[0] else resolve_by_jan(cands[0]["jan"])
+        if item.get("sources"):
+            st.caption(_dl(f"数据来源:{' + '.join(item['sources'])}"
+                           + ("" if item["ingredient"] else " ・成分未收录"),
+                           f"データ元:{' + '.join(item['sources'])}"))
+        else:
+            st.info(_dl(
+                "该 JAN 未收录(未上架/未进货的新品属正常)——在下方粘贴商品名与成分表即可直接判定",
+                "このJANは未収録(未出品/未入荷の新商品では正常)——下に商品名と成分表を貼り付ければ判定できます"))
+
+    # 判定输入:已知数据预填,可改;未收录时手动粘贴。key 含 JAN → 换商品自动刷新预填。
+    slot = item.get("jan") or "manual"
+    name = st.text_input(
+        _dl("商品名(日/英均可)", "商品名(日英どちらも可)"),
+        value=item["name_ja"] or item["name_en"], key=f"n_{country}_{slot}")
+    name_alt = item["name_en"] if (item["name_ja"] and item["name_en"]) else ""
+    ing = st.text_area(
+        _dl("成分表(逗号分隔原文粘贴;无则留空,仅做名称判定)",
+            "成分表(原文貼り付け;空欄なら名称のみ判定)"),
+        value=item["ingredient"], key=f"i_{country}_{slot}", height=110)
+
+    if name.strip() or ing.strip():
+        fields = {_dl("商品名", "商品名"): name}
+        if name_alt:
+            fields[_dl("商品名(EN)", "商品名(EN)")] = name_alt
+        _render_result(judge(kw_rules, ing_rules, country, fields, ing or None))
 
     with st.expander(_dl(f"📌 {country} 通用注意事项", f"📌 {country} 共通注意事項"), expanded=False):
         st.markdown(COUNTRY_NOTES[country])
