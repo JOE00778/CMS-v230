@@ -21,6 +21,7 @@ from shared.auth import require_password
 from shared.theme import inject_theme
 from shared.db import get_readonly_connection
 from shared.compliance_engine import judge
+from shared.jan_lookup import lookup as jan_lookup
 
 require_password()
 inject_theme()
@@ -139,6 +140,12 @@ def resolve_by_jan(jan: str) -> dict:
     return out
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _external(jan: str) -> dict:
+    """外部按 JAN 取商品名/全成分(楽天24→楽天スーパー→Yahoo)。缓存 1 天。"""
+    return jan_lookup(jan)
+
+
 def search_candidates(kw: str) -> list[dict]:
     """关键词 → 候选(Shopify 与 NST 并集,按 JAN 去重)。JAN 输入直接单条返回。"""
     kw = kw.strip()
@@ -205,14 +212,29 @@ def _country_tab(country: str, rules):
             item = resolve_by_jan(labels[picked])
         elif cands:
             item = cands[0] if "sources" in cands[0] else resolve_by_jan(cands[0]["jan"])
+
+        # 库里没有(上架前的新品=常态),或库里有但缺成分 → 按 JAN 去外部取
+        if _is_jan(q) and (not item.get("sources") or not item["ingredient"]):
+            with st.spinner(_dl("外部检索中(楽天/Yahoo)…", "外部検索中(楽天/Yahoo)…")):
+                ext = _external(q)
+            if ext:
+                item["jan"] = q
+                item["name_ja"] = item["name_ja"] or ext["name"]
+                item["ingredient"] = item["ingredient"] or ext["ingredient"]
+                item["sources"].append(
+                    ext["source"] + ("" if ext["ingredient"] else _dl("(名称のみ)", "(名称のみ)")))
+
         if item.get("sources"):
             st.caption(_dl(f"数据来源:{' + '.join(item['sources'])}"
-                           + ("" if item["ingredient"] else " ・成分未收录"),
-                           f"データ元:{' + '.join(item['sources'])}"))
+                           + ("" if item["ingredient"] else " ・成分未取得(可在下方粘贴)"),
+                           f"データ元:{' + '.join(item['sources'])}"
+                           + ("" if item["ingredient"] else " ・成分未取得")))
         else:
             st.info(_dl(
-                "该 JAN 未收录(未上架/未进货的新品属正常)——在下方粘贴商品名与成分表即可直接判定",
-                "このJANは未収録(未出品/未入荷の新商品では正常)——下に商品名と成分表を貼り付ければ判定できます"))
+                "该 JAN 在自建站/NST 与外部(楽天24・楽天スーパー・Yahoo)均查不到——"
+                "多为未在日本零售流通的品;在下方粘贴商品名与成分表即可判定",
+                "このJANは自社DB・外部(楽天24/楽天スーパー/Yahoo)いずれにも見つかりません——"
+                "下に商品名と成分表を貼り付ければ判定できます"))
 
     # 判定输入:已知数据预填,可改;未收录时手动粘贴。key 含 JAN → 换商品自动刷新预填。
     slot = item.get("jan") or "manual"
