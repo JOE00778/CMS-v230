@@ -745,8 +745,9 @@ with tab_deduct:
         return ja if _ja0 else zh
 
     st.caption(t(
-        "以【出荷日】为唯一基准 · NST 销售额（出荷日）× 平台手数料/入金（按订单号突合）· "
-        "日元 · 出货后拨款需 1~2 周，故「已回款率」低属正常"
+        "以【发货日】为唯一基准 · NST 销售额（发货日）× 平台手续费/回款（按订单号匹配）· 日元 · "
+        "「费用匹配率」= 该店发货订单中能在平台侧查到费用明细的比例，低于 100% 时扣减偏小、净利估偏高 · "
+        "「回款率」= 已到账订单比例，发货后拨款需 1~2 周，故月内偏低属正常"
     ))
 
     @st.cache_data(ttl=300, show_spinner=False)
@@ -831,7 +832,7 @@ with tab_deduct:
             _low = d[(d["orders"] > 0) & (d["matched_pct"] < 90)]
             if not _low.empty:
                 st.warning(_u(
-                    f"⚠️ {len(_low)} 家店铺的手续费突合率不足 90%"
+                    f"⚠️ {len(_low)} 家店铺的费用匹配率不足 90%"
                     f"（{', '.join(_low.nlargest(3,'sales_jpy')['shop'].tolist())} 等）· "
                     "这些店的扣减偏小、净利估偏高 · 补齐: pull_escrow --country <店> --since/--until",
                     f"⚠️ 突合率 90% 未満の店舗が {len(_low)} 件あります（控除が過少・純利が過大に出ます）"))
@@ -861,7 +862,7 @@ with tab_deduct:
                         _u("已回款", "入金済"): _y(r["payout_jpy"]),
                         _u("回款率", "入金済率"):
                             f"{(r['settled_orders'] / r['orders'] * 100):.0f}%" if r["orders"] else "—",
-                        _u("突合率", "突合率"):
+                        _u("费用匹配率", "突合率"):
                             f"{(r['matched_orders'] / r['orders'] * 100):.0f}%" if r["orders"] else "—",
                     })
                     out.append(row)
