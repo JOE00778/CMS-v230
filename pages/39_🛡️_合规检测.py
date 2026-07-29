@@ -124,17 +124,29 @@ def _is_jan(s: str) -> bool:
 
 
 def resolve_by_jan(jan: str) -> dict:
-    """JAN → 已知的商品名/成分。成分主源=Shopify 收录;NST 只补日文名,**不是门槛**。"""
+    """JAN → 已知的商品名/成分。
+
+    优先级:**飞书内容表 → Shopify 收录 → NST(仅补日文名,不是门槛)**。
+    飞书表是人按固定列规范填的上架内容表,JAN 行成分充足率≈100%,且含大量未上架品,
+    精度高于任何外部抓取,故排最前。
+    """
+    sh = _rows("SELECT title, ingredient_text, sheet_name FROM compliance.sheet_item "
+               "WHERE jan = ?", [jan])
     sp = _rows("SELECT title, ingredient_text, product_status FROM compliance.shopify_item "
                "WHERE jan = ?", [jan])
     ns = _rows("SELECT display_name, maker FROM nst.item_master_raw WHERE jan = ? LIMIT 1", [jan])
     out = {"jan": jan, "name_en": "", "name_ja": "", "maker": "", "ingredient": "", "sources": []}
+    if sh:
+        out["name_ja"] = sh[0][0] or ""
+        out["ingredient"] = sh[0][1] or ""
+        out["sources"].append(_dl(f"飞书内容表({sh[0][2] or '-'})", f"飛書コンテンツ表({sh[0][2] or '-'})"))
     if sp:
         out["name_en"] = sp[0][0] or ""
-        out["ingredient"] = sp[0][1] or ""
+        # 飞书表の成分が既にあれば上書きしない(優先度: 飞书 > Shopify)
+        out["ingredient"] = out["ingredient"] or (sp[0][1] or "")
         out["sources"].append(_dl("Shopify 已上架", "Shopify 出品済"))
     if ns:
-        out["name_ja"] = ns[0][0] or ""
+        out["name_ja"] = out["name_ja"] or (ns[0][0] or "")
         out["maker"] = ns[0][1] or ""
         out["sources"].append(_dl("NST 商品主档", "NST 商品マスタ"))
     return out
