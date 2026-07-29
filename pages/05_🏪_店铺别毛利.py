@@ -1004,9 +1004,11 @@ with tab_loss:
 
     st.caption(t(
         "发货了但没收到钱的订单 · 以【发货日】为基准 · "
-        "「零结算」= 平台侧查到该单、但实收明确 ≤ 0（退款 / 丢件 / 全额相抵）→ **唯一可判定为损失的一类** · "
+        "「已取消」= NST 已计销售额，但平台侧订单是 CANCELLED → 损失，且销售额可能虚高 · "
+        "「零结算」= 订单没取消、但实收明确 ≤ 0（退款 / 丢件 / 全额相抵）→ 损失 · "
+        "这两类合计才是**确认损失** · "
         "「未匹配」= 平台明细里没有这个订单号 → 三种原因混在一起（拉取范围没覆盖 / 平台确认周期未到 / 该平台没接明细API），"
-        "要先按平台排除才能谈损失 · 「金额缺失」= 匹配上了但金额字段为空 → 数据缺口，需补拉 · "
+        "要先按平台排除才能谈损失 · 「金额缺失」= 匹配上了、既没取消也查不到金额 → 数据缺口，需补拉 · "
         "「未入金」是发货后正常的等待期，不算损失"
     ))
 
@@ -1023,8 +1025,8 @@ with tab_loss:
 
     _lo, _lo_err = _lq(
         "SELECT ym, ship_date, market, platform, country, shop, order_no, "
-        "invoice_no, order_ym_prefix, settle_status, gmv_local, received_local, "
-        "gmv_jpy, received_jpy, nst_amount_jpy "
+        "invoice_no, order_ym_prefix, settle_status, order_status, "
+        "gmv_local, received_local, gmv_jpy, received_jpy, nst_amount_jpy "
         f"FROM nst.v_shipped_order WHERE ym = '{ym}'")
 
     if _lo_err:
@@ -1053,30 +1055,39 @@ with tab_loss:
         st.info(t("当前市场筛选下无数据"))
 
     if _lo is not None and not _lo.empty and not L.empty:
-        # 損失額: zero はプラットフォーム金額、unmatched は NST 按分でしか測れない
+        # 損失額: 突合できた注文はプラットフォーム金額、unmatched は NST 按分でしか測れない
+        _LOSS_ST = ("zero", "cancelled")
         L["loss_jpy"] = L.apply(
             lambda r: r["nst_amount_jpy"] if r["settle_status"] == "unmatched"
-            else (r["gmv_jpy"] if r["settle_status"] == "zero" else 0.0), axis=1)
+            else (r["gmv_jpy"] if r["settle_status"] in _LOSS_ST else 0.0), axis=1)
 
         _zero = L[L["settle_status"] == "zero"]
+        _canc = L[L["settle_status"] == "cancelled"]
+        _loss = L[L["settle_status"].isin(_LOSS_ST)]
         _unm = L[L["settle_status"] == "unmatched"]
         _noamt = L[L["settle_status"] == "no_amount"]
-        _risk = L[L["settle_status"].isin(("zero", "unmatched"))]
+        _risk = L[L["settle_status"].isin(_LOSS_ST + ("unmatched",))]
         _n_all = len(L)
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric(_ll("🩸 零结算（确认损失）", "🩸 実収≤0（損失確定）"), f"{len(_zero):,}",
+        k1.metric(_ll("🩸 确认损失（取消+零结算）", "🩸 損失確定（取消+実収≤0）"),
+                  f"{len(_loss):,}", f"¥{_loss['loss_jpy'].sum():,.0f}",
+                  delta_color="inverse")
+        k2.metric(_ll("🚫 平台已取消", "🚫 プラットフォーム側で取消"), f"{len(_canc):,}",
+                  f"¥{_canc['loss_jpy'].sum():,.0f}", delta_color="inverse")
+        k3.metric(_ll("💸 零结算（实收≤0）", "💸 実収≤0"), f"{len(_zero):,}",
                   f"¥{_zero['loss_jpy'].sum():,.0f}", delta_color="inverse")
-        k2.metric(_ll("❓ 未匹配（待排除）", "❓ 未突合（要調査）"), f"{len(_unm):,}",
-                  f"¥{_unm['loss_jpy'].sum():,.0f}", delta_color="off")
-        k3.metric(_ll("🧩 金额缺失（数据缺口）", "🧩 金額欠落（データ欠損）"),
-                  f"{len(_noamt):,}",
-                  _ll("需补拉明细", "要再取得") if len(_noamt) else None,
-                  delta_color="off")
         k4.metric(_ll("已入金 / 发货订单", "入金済 / 出荷注文"),
                   f"{len(L[L['settle_status'] == 'settled']):,} / {_n_all:,}",
-                  f"{(len(_zero) / _n_all * 100):.2f}% " + _ll("损失率", "損失率")
+                  f"{(len(_loss) / _n_all * 100):.2f}% " + _ll("损失率", "損失率")
                   if _n_all else None, delta_color="off")
+
+        if len(_noamt):
+            st.caption(_ll(
+                f"🧩 另有 {len(_noamt):,} 单匹配上了、但既没取消也查不到金额 → 数据缺口，"
+                "补拉 escrow/logistics 明细后才能定性",
+                f"🧩 他に {len(_noamt):,} 件、突合済みだが取消でも金額取得済でもない注文があります"
+                "（データ欠落 · 明細の再取得が必要）"))
 
         # 未匹配は原因が 3 つ混在する。プラットフォーム別に出さないと誤読される
         if not _unm.empty:
@@ -1108,15 +1119,15 @@ with tab_loss:
         else:
             _LDL = _ll("⬇️ 下载 CSV", "⬇️ CSV ダウンロード")
 
-            # 集計表は **zero のみ**。unmatched を混ぜると未接続プラットフォームの
-            # 件数に埋もれて、実際に金を落としている店舗が見えなくなる
+            # 集計表は **確定損失（取消 + 実収≤0）のみ**。unmatched を混ぜると
+            # 未接続プラットフォームの件数に埋もれ、実際に金を落としている店舗が消える
             def _grp(keys, label_cols, key):
-                g = (_zero.groupby(keys, as_index=False)
+                g = (_loss.groupby(keys, as_index=False)
                      .agg(orders=("order_no", "nunique"),
                           loss_jpy=("loss_jpy", "sum"))
                      .sort_values("loss_jpy", ascending=False))
                 if g.empty:
-                    st.caption(_ll("（无零结算订单）", "（実収≤0 の注文なし）"))
+                    st.caption(_ll("（无确认损失订单）", "（損失確定の注文なし）"))
                     return
                 # 分母は同じ切り口の全出荷注文（率で読めるように）
                 base = (L.groupby(keys, as_index=False)
@@ -1141,27 +1152,28 @@ with tab_loss:
                                    file_name=f"loss_{key}_{ym}.csv",
                                    mime="text/csv", key=f"loss_dl_{key}")
 
-            st.markdown("**" + _ll("零结算 · 平台", "実収≤0 · プラットフォーム") + "**")
+            st.markdown("**" + _ll("确认损失 · 平台", "損失確定 · プラットフォーム") + "**")
             _grp(["platform"], [("platform", _ll("平台", "プラットフォーム"))], "platform")
 
-            st.markdown("**" + _ll("零结算 · 国家", "実収≤0 · 国別") + "**")
+            st.markdown("**" + _ll("确认损失 · 国家", "損失確定 · 国別") + "**")
             _grp(["platform", "country"],
                  [("platform", _ll("平台", "プラットフォーム")),
                   ("country", _ll("国家", "国"))], "country")
 
-            st.markdown("**" + _ll("零结算 · 店铺", "実収≤0 · 店舗") + "**")
+            st.markdown("**" + _ll("确认损失 · 店铺", "損失確定 · 店舗") + "**")
             _grp(["platform", "country", "shop"],
                  [("platform", _ll("平台", "プラットフォーム")),
                   ("country", _ll("国家", "国")),
                   ("shop", _ll("店铺", "店舗"))], "shop")
 
             st.markdown("**" + _ll("明细清单", "明細一覧") + "**")
-            _STATUS = {"zero": _ll("零结算（实收≤0）", "実収≤0"),
+            _STATUS = {"cancelled": _ll("已取消（平台侧 CANCELLED）", "取消（CANCELLED）"),
+                       "zero": _ll("零结算（实收≤0）", "実収≤0"),
                        "unmatched": _ll("未匹配（平台无此单）", "未突合"),
                        "no_amount": _ll("金额缺失（数据缺口）", "金額欠落")}
             _pick = st.multiselect(
                 _ll("状态", "状態"), list(_STATUS.values()),
-                default=[_STATUS["zero"]], key="loss_status")
+                default=[_STATUS["cancelled"], _STATUS["zero"]], key="loss_status")
             _sel = [k for k, v in _STATUS.items() if v in _pick]
             _det = L[L["settle_status"].isin(_sel)].copy()
             _det["settle_status"] = _det["settle_status"].map(_STATUS)
