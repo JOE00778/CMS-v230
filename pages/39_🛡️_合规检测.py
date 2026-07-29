@@ -378,11 +378,15 @@ def _batch_tab(rules):
                          "maker": _dl("厂商", "メーカー")}.get(c, c) for c in wide.columns]
         n = {v: int((saved["verdict"] == v).sum()) for v in ("red", "yellow", "green", "unknown")}
         pool_n = len(_nst_candidates()) + len(wide)   # 未判定 + 判定済み ≒ 候補プール全体
+        # 畳んだままでも「対応が要るか」が見出しで分かるようにする
+        n_todo = int(saved[saved["verdict"].isin(["red", "yellow"])]["jan"].nunique())
         last = pd.to_datetime(saved["screened_at"]).max()
         with st.expander(
-                _dl(f"📑 已保存的筛查结果 {len(wide)}/{pool_n} 件(每周一自动跑·最近 {last:%m-%d %H:%M})",
-                    f"📑 保存済み判定 {len(wide)}/{pool_n} 件(毎週月曜·最終 {last:%m-%d %H:%M})"),
-                expanded=True):
+                _dl(f"📑 存量体检结果:已判定 {len(wide)}/{pool_n} 件 · 需处理 {n_todo} 件"
+                    f"(每周一自动跑·最近 {last:%m-%d %H:%M})",
+                    f"📑 在庫点検:判定済 {len(wide)}/{pool_n} 件 · 要対応 {n_todo} 件"
+                    f"(毎週月曜·最終 {last:%m-%d %H:%M})"),
+                expanded=False):
             st.caption(_dl(
                 f"判定数(国別合計):🔴 {n['red']} · 🟡 {n['yellow']} · 🟢 {n['green']} · ⚪ {n['unknown']}"
                 " —— 绿=可进上架准备 / 红=不可 / 黄·灰=需人工判断",
@@ -404,6 +408,13 @@ def _batch_tab(rules):
                                key="dl_saved")
         st.divider()
 
+    manual = st.expander(_dl("🔎 手动筛一批(供应商报价单/临时清单)",
+                             "🔎 手動スクリーニング(見積リスト等)"), expanded=False)
+    with manual:
+        _manual_screen(kw_rules, ing_rules, cat_rules)
+
+
+def _manual_screen(kw_rules, ing_rules, cat_rules):
     src = st.radio(
         _dl("候选来源", "候補ソース"),
         [_dl("NST 在库·未录入候选", "NST 在庫·未記入候補"), _dl("粘贴 JAN 列表", "JAN リスト貼付")],
