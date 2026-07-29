@@ -619,9 +619,10 @@ with tab_sku:
 #   判定ロジックは shared/price_alert.py（純関数·tests/test_price_alert.py）
 # ============================================================
 with tab_alert:
+    # key は中文に統一（旧版は 1 文字列に中日混在で、どちらの言語でも読めなかった）
     st.caption(t(
-        "各店「当日」(最新确认日) を 近7日平均 と比べて毛利异常を检知 · "
-        "🔴=規則1/2/3(毛利侵蚀/降价冲量/破红线) · 🟡=規則4(収益↑だが毛利率↓) · 閾値は下で可変"
+        "把各店「当日」(最新确认日) 与 近7日平均 对比，检出毛利异常 · "
+        "🔴=规则1/2/3(毛利侵蚀 / 降价冲量 / 破红线) · 🟡=规则4(收益涨了但毛利率跌) · 阈值可在下方调整"
     ))
     _pc1, _pc2, _pc3, _pc4 = st.columns(4)
     _p_dev = _pc1.number_input(t("①跌破近7日均(pp)"), 0.0, 50.0, 5.0, 0.5, key="pa_dev")
@@ -660,8 +661,9 @@ with tab_alert:
         _dd["margin"] = (_dd["gross_profit"]
                          / _dd["revenue"].where(_dd["revenue"] != 0)).fillna(0) * 100
 
-        _RULE_LBL = {pa.R1: "①跌破7日均", pa.R2: "②降价冲量",
-                     pa.R3: "③破红线", pa.R4: "④收益涨毛利没跟"}
+        # 発火した規則名。t() を通していなかったため ja 表示でも中文が出ていた
+        _RULE_LBL = {pa.R1: t("①跌破7日均"), pa.R2: t("②降价冲量"),
+                     pa.R3: t("③破红线"), pa.R4: t("④收益涨毛利没跟")}
         _EMO = {pa.ALERT_RED: "🔴", pa.ALERT_YELLOW: "🟡", pa.ALERT_OK: "✅"}
         _rows = []
         for _shop, _g in _dd.groupby("shop"):
