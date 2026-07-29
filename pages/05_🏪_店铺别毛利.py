@@ -321,9 +321,10 @@ m5.metric(t("粗利率"), f"{margin:.2f}%")
 st.divider()
 
 _owner_tab = "👤 担当者別" if get_lang() == "ja" else "👤 店铺负责人"
-tab_day, tab_owner, tab_shop, tab_market, tab_sku, tab_alert, tab_deduct = st.tabs(
+(tab_day, tab_owner, tab_shop, tab_market, tab_sku, tab_alert, tab_deduct,
+ tab_payout) = st.tabs(
     [t("📈 月内日次推移"), _owner_tab, t("🏪 店舗別"), t("🌐 市場別"),
-     t("🏆 TOP SKU"), t("⚠️ 价格预警"), t("🧾 店铺扣减")]
+     t("🏆 TOP SKU"), t("⚠️ 价格预警"), t("🧾 店铺扣减"), t("💵 拨款明细")]
 )
 
 # ============================================================
@@ -730,6 +731,215 @@ with tab_alert:
 #   KRW 建て・Coupang 韓国店のみ → 上部の市場フィルタ / 対象月とは独立。
 # ============================================================
 with tab_deduct:
+
+    # ============================================================
+    # Shopee（ASEAN）· **現金主義** = 入金(payout)ベース
+    #   Boss 2026-07-29: 財務は必ず現金主義。注文発生日ではなく着金した回で括る。
+    #   官方エクスポート（我的收入 > 已完成拨款）の Summary と数値一致を確認済み。
+    # ============================================================
+    from shared.markets import MARKET_SEA as _MK_SEA
+
+    _sp_ja = get_lang() == "ja"
+
+    def _spl(zh: str, ja: str) -> str:
+        return ja if _sp_ja else zh
+
+    if mk and _MK_SEA not in mk:
+        st.info(t("Shopee（东南亚）扣减 · 请在市场筛选中包含东南亚或清空筛选"))
+    else:
+        st.markdown("#### " + _spl("🌏 ASEAN · Shopee", "🌏 ASEAN · Shopee"))
+        st.caption(t(
+            "Shopee 各店「已完成拨款」· 现金主义（与 Shopee 后台 我的收入 > 已完成拨款 同口径）· "
+            "按拨款批次归集而非下单日 · 结算币 USD · 每日自动拉取（page 27 可手动同步）"
+        ))
+
+        @st.cache_data(ttl=300, show_spinner=False)
+        def _shopee_ver() -> str:
+            """shopee 域の缓存版本。
+
+            回填は docker exec 直起動で pull_schedule を更新しないため、
+            pull_schedule ではなく pull_log の最終書き込み時刻を版本にする
+            （さもないと回填直後も古いキャッシュを 1 時間返し続ける）。
+            """
+            try:
+                row = get_readonly_connection().execute(
+                    "SELECT max(finished_at) FROM shopee.pull_log").fetchone()
+                if row and row[0]:
+                    return str(row[0])
+            except Exception:
+                pass
+            return dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d %H")
+
+        def _sq(sql: str, params: tuple = ()):
+            try:
+                from shared.cache import cached_df
+                return cached_df(conn, sql, params or None, ver=_shopee_ver()), None
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None, str(e)
+
+        _sp_all, _sp_err = _sq(
+            "SELECT ym, market, country_code, shop_key, shop_name, currency, "
+            "payouts, orders, commission_fee, service_fee, transaction_fee, "
+            "ams_commission, seller_shipping, shopee_shipping_rebate, "
+            "deduction_total, escrow_total, adjustment_total, ads_fee, "
+            "from_amount, payout_amount, matched_pct, pulled_at "
+            "FROM shopee.v_payout_monthly ORDER BY ym DESC, country_code, shop_key")
+
+        if _sp_err:
+            st.error(t("shopee 财务视图未取得 or 连接错误: ") + _sp_err)
+            st.info(t("需在元川 PG 执行 shopee_api/sql/008,009（建表与视图）"))
+        elif _sp_all is None or _sp_all.empty:
+            st.info(t("Shopee 拨款数据为空 · 请在 page 27 手动同步或等待每日自动拉取"))
+        else:
+            _sp = _sp_all[_sp_all["ym"] == str(ym)].copy()
+            if _sp.empty:
+                st.info(t("当月尚无已完成拨款 · 以下趋势为全期间"))
+
+            # --- 表示通貨: USD（Shopee の決済通貨）/ JPY 換算 -------------
+            _spc = st.radio(_spl("展示货币", "表示通貨"), ["USD", "JPY"],
+                            horizontal=True, key="sp_ded_cur")
+            from shared.forex import usd_export_rate
+            _sp_rate = 1.0 if _spc == "USD" else usd_export_rate(str(ym))
+            _sp_sym = "$" if _spc == "USD" else "¥"
+
+            # 費用は現地通貨建て → 入金の実効レート(USD/現地)で USD 化してから表示通貨へ
+            def _to_disp(d: "pd.DataFrame") -> "pd.DataFrame":
+                d = d.copy()
+                _r = (d["payout_amount"] / d["from_amount"].replace(0, pd.NA)).fillna(0)
+                for c in ("commission_fee", "service_fee", "transaction_fee",
+                          "ams_commission", "seller_shipping", "shopee_shipping_rebate",
+                          "deduction_total", "escrow_total", "adjustment_total",
+                          "ads_fee"):
+                    d[c] = (pd.to_numeric(d[c], errors="coerce").fillna(0) * _r
+                            * _sp_rate).round(0)
+                d["payout_disp"] = (pd.to_numeric(d["payout_amount"], errors="coerce")
+                                    .fillna(0) * _sp_rate).round(0)
+                return d
+
+            _spd = _to_disp(_sp) if not _sp.empty else _sp
+
+            def _m(v) -> str:
+                return f"{_sp_sym}{v:,.0f}"
+
+            # --- KPI ---------------------------------------------------
+            if not _spd.empty:
+                _tot_payout = _spd["payout_disp"].sum()
+                _tot_ded = _spd["deduction_total"].sum()
+                _tot_esc = _spd["escrow_total"].sum()
+                _tot_ads = _spd["ads_fee"].sum()
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric(_spl("总拨款额", "総入金額"), _m(_tot_payout))
+                k2.metric(_spl("扣减合计", "控除合計"), _m(_tot_ded))
+                k3.metric(_spl("扣减率", "控除率"),
+                          f"{(_tot_ded / _tot_esc * 100):.1f}%" if _tot_esc else "—")
+                k4.metric(_spl("广告费", "広告費"), _m(_tot_ads))
+
+                _mp = _spd["matched_pct"].astype(float).mean()
+                if _mp < 95:
+                    st.warning(_spl(
+                        f"⚠️ 费用明细覆盖率 {_mp:.0f}% — 拨款中含尚未取得明细的订单，"
+                        "扣减各项偏小（拨款额本身准确）。补齐: pull_escrow --from-payout",
+                        f"⚠️ 費用内訳のカバー率 {_mp:.0f}% — 入金に未取得の注文が含まれます"))
+
+            _DL = _spl("⬇️ 下载 CSV", "⬇️ CSV ダウンロード")
+
+            def _dl_btn(d: "pd.DataFrame", fname: str, key: str) -> None:
+                st.download_button(
+                    _DL, d.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=fname, mime="text/csv", key=key)
+
+            _FEE_COLS = [
+                ("commission_fee", _spl("佣金", "手数料")),
+                ("service_fee", _spl("服务费", "サービス料")),
+                ("transaction_fee", _spl("交易手续费", "取引手数料")),
+                ("ams_commission", _spl("联盟营销佣金", "アフィリエイト報酬")),
+                ("seller_shipping", _spl("卖家支付运费", "売り手負担送料")),
+                ("ads_fee", _spl("广告费", "広告費")),
+            ]
+
+            # --- ① 市場層 ------------------------------------------------
+            if not _spd.empty:
+                st.markdown("**" + _spl("① 市场", "① 市場") + "**")
+                _g1 = _spd.groupby("market", as_index=False).agg(
+                    {"orders": "sum", "escrow_total": "sum", "deduction_total": "sum",
+                     "ads_fee": "sum", "payout_disp": "sum"})
+                _r1 = [{
+                    _spl("市场", "市場"): r["market"],
+                    _spl("订单数", "注文数"): f"{int(r['orders']):,}",
+                    _spl("订单收入", "注文収入"): _m(r["escrow_total"]),
+                    _spl("扣减合计", "控除合計"): _m(r["deduction_total"]),
+                    _spl("扣减率", "控除率"): f"{(r['deduction_total']/r['escrow_total']*100):.1f}%" if r["escrow_total"] else "—",
+                    _spl("广告费", "広告費"): _m(r["ads_fee"]),
+                    _spl("拨款额", "入金額"): _m(r["payout_disp"]),
+                } for _, r in _g1.iterrows()]
+                html_table(pd.DataFrame(_r1))
+                _dl_btn(_g1, f"shopee_market_{ym}.csv", "sp_dl_market")
+
+                # --- ② 国家層 --------------------------------------------
+                st.markdown("**" + _spl("② 国家", "② 国別") + "**")
+                _g2 = _spd.groupby("country_code", as_index=False).agg(
+                    {"shop_key": "nunique", "orders": "sum", "escrow_total": "sum",
+                     "deduction_total": "sum", "ads_fee": "sum", "payout_disp": "sum",
+                     **{c: "sum" for c, _ in _FEE_COLS if c != "ads_fee"}})
+                _g2 = _g2.sort_values("payout_disp", ascending=False)
+                _r2 = [{
+                    _spl("国家", "国"): r["country_code"],
+                    _spl("店铺数", "店舗数"): int(r["shop_key"]),
+                    _spl("订单数", "注文数"): f"{int(r['orders']):,}",
+                    _spl("订单收入", "注文収入"): _m(r["escrow_total"]),
+                    **{lbl: _m(r[c]) for c, lbl in _FEE_COLS},
+                    _spl("扣减合计", "控除合計"): _m(r["deduction_total"]),
+                    _spl("拨款额", "入金額"): _m(r["payout_disp"]),
+                } for _, r in _g2.iterrows()]
+                html_table(pd.DataFrame(_r2))
+                _dl_btn(_g2, f"shopee_country_{ym}.csv", "sp_dl_country")
+
+                # --- ③ 店舗層 --------------------------------------------
+                st.markdown("**" + _spl("③ 店铺", "③ 店舗") + "**")
+                _g3 = _spd.sort_values("payout_disp", ascending=False)
+                _r3 = [{
+                    _spl("国家", "国"): r["country_code"],
+                    _spl("店铺", "店舗"): r["shop_name"] or r["shop_key"],
+                    _spl("拨款次数", "入金回数"): int(r["payouts"]),
+                    _spl("订单数", "注文数"): f"{int(r['orders']):,}",
+                    _spl("订单收入", "注文収入"): _m(r["escrow_total"]),
+                    **{lbl: _m(r[c]) for c, lbl in _FEE_COLS},
+                    _spl("扣减合计", "控除合計"): _m(r["deduction_total"]),
+                    _spl("拨款额", "入金額"): _m(r["payout_disp"]),
+                } for _, r in _g3.iterrows()]
+                html_table(pd.DataFrame(_r3))
+                _dl_btn(_g3, f"shopee_shop_{ym}.csv", "sp_dl_shop")
+
+            # --- ④ 12ヶ月トレンド ---------------------------------------
+            st.markdown("**" + _spl("④ 近 12 个月趋势", "④ 直近 12 ヶ月推移") + "**")
+            _trend = _to_disp(_sp_all).groupby("ym", as_index=False).agg(
+                {c: "sum" for c, _ in _FEE_COLS}).sort_values("ym").tail(12)
+            _long = _trend.melt(id_vars="ym", var_name="item", value_name="amount")
+            _lbl_map = dict(_FEE_COLS)
+            _long["item"] = _long["item"].map(_lbl_map)
+            if not _long.empty:
+                _ch = (alt.Chart(_long).mark_bar()
+                       .encode(x=alt.X("ym:N", title=None),
+                               y=alt.Y("amount:Q", title=None),
+                               color=alt.Color("item:N", title=None,
+                                               legend=alt.Legend(orient="top")),
+                               tooltip=["ym", "item", alt.Tooltip("amount:Q", format=",.0f")])
+                       .properties(height=280)
+                       .configure_axis(labelFontSize=_CHART_LABEL_FS,
+                                       titleFontSize=_CHART_TITLE_FS))
+                st.altair_chart(_ch, use_container_width=True)
+            _dl_btn(_trend, "shopee_trend.csv", "sp_dl_trend")
+
+            if _sp_all is not None and not _sp_all.empty:
+                _pa = pd.to_datetime(_sp_all["pulled_at"], errors="coerce").max()
+                if pd.notna(_pa):
+                    st.caption(t("データ更新: ") + str(_pa)[:19])
+
+    st.divider()
     # 扣減は Coupang（韓国店）の売上に対応するもの。東南亜/日本は扣減データ未接続
     # → 市場フィルタが韓国を含まない場合は表示しない（Boss 2026-07-07）。
     from shared.markets import MARKET_KOREA
@@ -940,6 +1150,100 @@ with tab_deduct:
                 _dl("扣减率", "控除率"): _mg["rate"].apply(lambda x: f"{x:.2f}%"),
                 _dl("最终支付额", "最終支払額"): _mg["final_amount"].apply(lambda x: f"{_sym}{x:,.0f}"),
             }))
+
+
+# ============================================================
+# Tab 7：拨款明细（注文 1 件 = 1 行 · 官方「已完成拨款」相当）
+# ============================================================
+with tab_payout:
+    _pj = get_lang() == "ja"
+
+    def _pl(zh: str, ja: str) -> str:
+        return ja if _pj else zh
+
+    st.caption(t(
+        "Shopee 各笔拨款包含的订单明细（现金主义）· 与 Shopee 后台「我的收入 > 已完成拨款 > 导出」同口径 · "
+        "金额为当地币原值 · 费用为空表示该单明细尚未取得"
+    ))
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _po_ver() -> str:
+        try:
+            row = get_readonly_connection().execute(
+                "SELECT max(finished_at) FROM shopee.pull_log").fetchone()
+            if row and row[0]:
+                return str(row[0])
+        except Exception:
+            pass
+        return dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d %H")
+
+    def _poq(sql: str, params: tuple = ()):
+        try:
+            from shared.cache import cached_df
+            return cached_df(conn, sql, params or None, ver=_po_ver()), None
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None, str(e)
+
+    _po_opt, _po_err = _poq(
+        "SELECT DISTINCT payout_date, country_code, shop_key, shop_name "
+        "FROM shopee.v_payout_order ORDER BY payout_date DESC, shop_key")
+
+    if _po_err:
+        st.error(t("shopee 财务视图未取得 or 连接错误: ") + _po_err)
+    elif _po_opt is None or _po_opt.empty:
+        st.info(t("Shopee 拨款数据为空 · 请在 page 27 手动同步或等待每日自动拉取"))
+    else:
+        c1, c2 = st.columns([1, 2])
+        _dates = _po_opt["payout_date"].dropna().unique().tolist()
+        _sel_d = c1.selectbox(_pl("拨款日", "入金日"), _dates, key="po_date")
+        _shops = _po_opt[_po_opt["payout_date"] == _sel_d]
+        _shop_labels = {
+            f"{r['country_code']} · {r['shop_name'] or r['shop_key']}": r["shop_key"]
+            for _, r in _shops.iterrows()}
+        _sel_s = c2.multiselect(_pl("店铺（空=全部）", "店舗（空=全部）"),
+                                list(_shop_labels), key="po_shop")
+        _keys = [_shop_labels[k] for k in _sel_s] or list(_shop_labels.values())
+
+        _ph = ",".join(["%s"] * len(_keys))
+        _po, _e2 = _poq(
+            "SELECT country_code, shop_name, currency, payout_date, order_sn, "
+            "order_create_time, buyer_payment_method, order_original_price, "
+            "order_seller_discount, voucher_from_seller, buyer_paid_shipping_fee, "
+            "shopee_shipping_rebate, actual_shipping_fee, commission_fee, "
+            "service_fee, seller_transaction_fee, credit_card_transaction_fee, "
+            "order_ams_commission_fee, seller_return_refund, payout_amount, "
+            "fee_missing FROM shopee.v_payout_order "
+            f"WHERE payout_date = %s AND shop_key IN ({_ph}) ORDER BY order_sn",
+            tuple([_sel_d] + _keys))
+
+        if _e2:
+            st.error(_e2)
+        elif _po is None or _po.empty:
+            st.info(t("该拨款日无明细"))
+        else:
+            _miss = int(_po["fee_missing"].sum())
+            m1, m2, m3 = st.columns(3)
+            m1.metric(_pl("订单数", "注文数"), f"{len(_po):,}")
+            m2.metric(_pl("拨款合计（当地币）", "入金合計（現地通貨）"),
+                      f"{_po['payout_amount'].sum():,.0f}")
+            # 取得できていない明細を必ず件数で見せる（黙って 0 円扱いしない）
+            m3.metric(_pl("费用明细缺失", "費用内訳の欠落"), f"{_miss:,}",
+                      delta=None if not _miss else _pl("需补拉", "要再取得"),
+                      delta_color="inverse")
+
+            _view = _po.drop(columns=["fee_missing"])
+            st.dataframe(_view, use_container_width=True, height=460,
+                         hide_index=True)
+            st.download_button(
+                _pl("⬇️ 下载 CSV（本次拨款全明细）", "⬇️ CSV ダウンロード"),
+                _view.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"shopee_payout_{_sel_d}.csv", mime="text/csv",
+                key="po_dl")
+
 
 st.divider()
 st.caption(
