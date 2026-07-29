@@ -1004,9 +1004,9 @@ with tab_loss:
 
     st.caption(t(
         "发货了但没收到钱的订单 · 以【发货日】为基准 · "
-        "「已取消」= NST 已计销售额，但平台侧订单是 CANCELLED → 损失，且销售额可能虚高 · "
-        "「零结算」= 订单没取消、但实收明确 ≤ 0（退款 / 丢件 / 全额相抵）→ 损失 · "
-        "这两类合计才是**确认损失** · "
+        "判定分界是**货有没有出日本**（物流状态到「已揽收」以后就算出了）· "
+        "「损失」= 出货后被取消 / 退款 / 实收≤0 → 商品和运费都回不来，这才是真损失 · "
+        "「出货前取消」= 还没揽收就取消 → 库存能回收，**不计入损失**，单独看数量就行 · "
         "「未匹配」= 平台明细里没有这个订单号 → 三种原因混在一起（拉取范围没覆盖 / 平台确认周期未到 / 该平台没接明细API），"
         "要先按平台排除才能谈损失 · 「金额缺失」= 匹配上了、既没取消也查不到金额 → 数据缺口，需补拉 · "
         "「未入金」是发货后正常的等待期，不算损失"
@@ -1026,6 +1026,8 @@ with tab_loss:
     _lo, _lo_err = _lq(
         "SELECT ym, ship_date, market, platform, country, shop, order_no, "
         "invoice_no, order_ym_prefix, settle_status, order_status, "
+        "logistics_status, shipped_out, cancel_reason, refund_reason, "
+        "refund_status, refund_amount_local, "
         "gmv_local, received_local, gmv_jpy, received_jpy, nst_amount_jpy "
         f"FROM nst.v_shipped_order WHERE ym = '{ym}'")
 
@@ -1055,32 +1057,33 @@ with tab_loss:
         st.info(t("当前市场筛选下无数据"))
 
     if _lo is not None and not _lo.empty and not L.empty:
-        # 損失額: 突合できた注文はプラットフォーム金額、unmatched は NST 按分でしか測れない
-        _LOSS_ST = ("zero", "cancelled")
+        # 損失は **出荷後のみ**（JO 2026-07-30）。出荷前の取消は在庫が戻るので
+        # 金額を損失に積まない —— 積むと 7 月実測で 2.85 倍に膨らむ
+        _LOSS_ST = ("loss",)
         L["loss_jpy"] = L.apply(
             lambda r: r["nst_amount_jpy"] if r["settle_status"] == "unmatched"
             else (r["gmv_jpy"] if r["settle_status"] in _LOSS_ST else 0.0), axis=1)
 
-        _zero = L[L["settle_status"] == "zero"]
-        _canc = L[L["settle_status"] == "cancelled"]
-        _loss = L[L["settle_status"].isin(_LOSS_ST)]
+        _loss = L[L["settle_status"] == "loss"]
+        _pre = L[L["settle_status"] == "preship_void"]
         _unm = L[L["settle_status"] == "unmatched"]
         _noamt = L[L["settle_status"] == "no_amount"]
         _risk = L[L["settle_status"].isin(_LOSS_ST + ("unmatched",))]
         _n_all = len(L)
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric(_ll("🩸 确认损失（取消+零结算）", "🩸 損失確定（取消+実収≤0）"),
+        k1.metric(_ll("🩸 损失（出货后）", "🩸 損失（出荷後）"),
                   f"{len(_loss):,}", f"¥{_loss['loss_jpy'].sum():,.0f}",
                   delta_color="inverse")
-        k2.metric(_ll("🚫 平台已取消", "🚫 プラットフォーム側で取消"), f"{len(_canc):,}",
-                  f"¥{_canc['loss_jpy'].sum():,.0f}", delta_color="inverse")
-        k3.metric(_ll("💸 零结算（实收≤0）", "💸 実収≤0"), f"{len(_zero):,}",
-                  f"¥{_zero['loss_jpy'].sum():,.0f}", delta_color="inverse")
+        k2.metric(_ll("↩️ 出货前取消（不算损失）", "↩️ 出荷前の取消（損失外）"),
+                  f"{len(_pre):,}",
+                  _ll("库存可回收", "在庫は戻る"), delta_color="off")
+        k3.metric(_ll("损失率（对发货单）", "損失率（出荷注文比）"),
+                  f"{(len(_loss) / _n_all * 100):.2f}%" if _n_all else "—",
+                  f"{len(_loss):,} / {_n_all:,}", delta_color="off")
         k4.metric(_ll("已入金 / 发货订单", "入金済 / 出荷注文"),
                   f"{len(L[L['settle_status'] == 'settled']):,} / {_n_all:,}",
-                  f"{(len(_loss) / _n_all * 100):.2f}% " + _ll("损失率", "損失率")
-                  if _n_all else None, delta_color="off")
+                  None, delta_color="off")
 
         if len(_noamt):
             st.caption(_ll(
@@ -1152,6 +1155,46 @@ with tab_loss:
                                    file_name=f"loss_{key}_{ym}.csv",
                                    mime="text/csv", key=f"loss_dl_{key}")
 
+            # 損失の内訳。7 月実測では「送達失敗」1 項目に 63% が集中していた。
+            # 店舗別より先にこれを出す —— 打つ手が変わるのは理由の側だから
+            st.markdown("**" + _ll("损失原因构成（出货后）", "損失の内訳（出荷後）") + "**")
+            _LS = {"LOGISTICS_DELIVERY_FAILED": _ll("送达失败", "配達失敗"),
+                   "LOGISTICS_DELIVERY_DONE": _ll("已送达", "配達完了"),
+                   "LOGISTICS_PICKUP_DONE": _ll("已揽收在途", "集荷済・輸送中"),
+                   "LOGISTICS_LOST": _ll("丢件", "紛失")}
+            _RS = {"ITEM_MISSING": _ll("少件", "商品不足"),
+                   "WRONG_ITEM": _ll("发错货", "商品違い"),
+                   "SPILLED_CONTENTS": _ll("内容物漏出", "内容物漏れ"),
+                   "NOT_RECEIPT": _ll("买家称未收到", "未受領の申告"),
+                   "DAMAGED_OTHERS": _ll("破损", "破損"),
+                   "FUNCTIONAL_DMG": _ll("功能损坏", "機能不良"),
+                   "SUSPICIOUS_PARCEL": _ll("包裹异常", "不審な小包"),
+                   "EXPIRED_PRODUCT": _ll("过期品", "期限切れ"),
+                   "SLIGHT_SCRATCH_DENTS": _ll("轻微划痕/凹陷", "軽微な傷・凹み"),
+                   "CHANGE_MIND": _ll("买家改变主意", "気が変わった"),
+                   "EXPECTATION_FAILED": _ll("与预期不符", "期待と違う")}
+            _cz = _loss.copy()
+            _cz["_ls"] = _cz["logistics_status"].map(
+                lambda x: _LS.get(x, x or "—"))
+            _cz["_rs"] = _cz["refund_reason"].map(
+                lambda x: _RS.get(x, x) if x else _ll("无退款申请", "返金申請なし"))
+            _cg = (_cz.groupby(["_ls", "_rs"], as_index=False)
+                   .agg(orders=("order_no", "nunique"), jpy=("loss_jpy", "sum"))
+                   .sort_values("jpy", ascending=False))
+            _tot = _cg["jpy"].sum()
+            html_table(pd.DataFrame({
+                _ll("物流状态", "配送状態"): _cg["_ls"],
+                _ll("退款原因", "返金理由"): _cg["_rs"],
+                _ll("订单", "注文"): _cg["orders"].map(lambda v: f"{int(v):,}"),
+                _ll("损失额", "損失額"): _cg["jpy"].map(lambda v: f"¥{v:,.0f}"),
+                _ll("占比", "構成比"): _cg["jpy"].map(
+                    lambda v: f"{v / _tot * 100:.1f}%" if _tot else "—"),
+            }))
+            st.download_button(
+                _LDL, _cg.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"loss_reason_{ym}.csv", mime="text/csv",
+                key="loss_dl_reason")
+
             st.markdown("**" + _ll("确认损失 · 平台", "損失確定 · プラットフォーム") + "**")
             _grp(["platform"], [("platform", _ll("平台", "プラットフォーム"))], "platform")
 
@@ -1167,18 +1210,23 @@ with tab_loss:
                   ("shop", _ll("店铺", "店舗"))], "shop")
 
             st.markdown("**" + _ll("明细清单", "明細一覧") + "**")
-            _STATUS = {"cancelled": _ll("已取消（平台侧 CANCELLED）", "取消（CANCELLED）"),
-                       "zero": _ll("零结算（实收≤0）", "実収≤0"),
+            _STATUS = {"loss": _ll("损失（出货后）", "損失（出荷後）"),
+                       "preship_void": _ll("出货前取消（不算损失）", "出荷前の取消（損失外）"),
                        "unmatched": _ll("未匹配（平台无此单）", "未突合"),
                        "no_amount": _ll("金额缺失（数据缺口）", "金額欠落")}
             _pick = st.multiselect(
                 _ll("状态", "状態"), list(_STATUS.values()),
-                default=[_STATUS["cancelled"], _STATUS["zero"]], key="loss_status")
+                default=[_STATUS["loss"]], key="loss_status")
             _sel = [k for k, v in _STATUS.items() if v in _pick]
             _det = L[L["settle_status"].isin(_sel)].copy()
             _det["settle_status"] = _det["settle_status"].map(_STATUS)
+            _det["logistics_status"] = _det["logistics_status"].map(
+                lambda x: _LS.get(x, x or "—"))
+            _det["refund_reason"] = _det["refund_reason"].map(
+                lambda x: _RS.get(x, x) if x else "—")
             _det = (_det[["ship_date", "platform", "country", "shop", "order_no",
-                          "invoice_no", "settle_status", "gmv_local",
+                          "invoice_no", "settle_status", "logistics_status",
+                          "refund_reason", "cancel_reason", "gmv_local",
                           "received_local", "loss_jpy"]]
                     .rename(columns={
                         "ship_date": _ll("发货日", "出荷日"),
@@ -1188,6 +1236,9 @@ with tab_loss:
                         "order_no": _ll("订单号", "注文番号"),
                         "invoice_no": _ll("NST 请求书", "NST 請求書"),
                         "settle_status": _ll("状态", "状態"),
+                        "logistics_status": _ll("物流状态", "配送状態"),
+                        "refund_reason": _ll("退款原因", "返金理由"),
+                        "cancel_reason": _ll("取消原因", "取消理由"),
                         "gmv_local": _ll("订单金额(当地币)", "注文金額(現地)"),
                         "received_local": _ll("实收(当地币)", "実収(現地)"),
                         "loss_jpy": _ll("损失额(估算 ¥)", "損失額(推定 ¥)")})
