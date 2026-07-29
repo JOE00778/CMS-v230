@@ -91,3 +91,14 @@ def test_rakuten_api_returns_empty_without_credentials(monkeypatch):
     monkeypatch.delenv("RAKUTEN_APPLICATION_ID", raising=False)
     monkeypatch.delenv("RAKUTEN_ACCESS_KEY", raising=False)
     assert jan_lookup.rakuten_api("4909978147105") == {}
+
+
+FOOD_PAGE = """<html><body><p>原材料名 大麦若葉粉末、還元麦芽糖水飴、乳酸菌(殺菌)、抹茶、
+デキストリン、香料 内容量 150g</p></body></html>"""
+
+
+def test_parse_ingredient_handles_food_raw_material_label():
+    """全品類判定なので食品の「原材料名」も成分表として扱う。"""
+    ing = parse_ingredient(FOOD_PAGE)
+    assert ing.startswith("大麦若葉粉末")
+    assert "内容量" not in ing
