@@ -546,8 +546,14 @@ with tab0:
         if not changed.empty:
             for r in changed.itertuples():
                 meta = SOURCE_META.get(r.source_key, (r.source_key, "", ""))
-                st.error(_dl(f"🔔 数据源有更新待核对:{meta[0]} — {r.diff_note or ''}",
-                             f"🔔 ソース更新あり(要確認):{meta[0]}"))
+                # 変化内容は長くなり得る:見出しは 1 行に固定し、本文は畳んで出す
+                # (2026-07-29:ページ全文が赤枠に流れ込む不具合の再発防止)
+                st.error(_dl(f"🔔 数据源有更新,规则表待人工核对:{meta[0]}",
+                             f"🔔 ソース更新あり(ルール表の要確認):{meta[0]}"))
+                note = (r.diff_note or "").strip()
+                if note:
+                    with st.expander(_dl("变化内容(前 8 项)", "変更内容(先頭 8 件)")):
+                        st.text(note[:1500] + ("…" if len(note) > 1500 else ""))
         rows = []
         snap_by_key = {r.source_key: r for r in snap.itertuples()} if not snap.empty else {}
         for key, (label, url, mode) in SOURCE_META.items():
