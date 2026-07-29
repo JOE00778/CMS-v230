@@ -741,8 +741,16 @@ with tab_deduct:
     # ============================================================
     from shared.forex import FX_TO_JPY, usd_export_rate
 
-    _uj = usd_export_rate(str(ym))          # USD → JPY（出口レート）
-    _kj = FX_TO_JPY.get("KRW", 0.095)       # KRW → JPY
+    # USD は会社口径の出口レート（page36 の「米ドル(出口)」· NST の 160 は輸入レート）
+    _uj = usd_export_rate(str(ym))
+    # KRW は **三金レート**（nst.currency_rate の月次）。従来の Coupang セクションと
+    # 同じ換算根拠にする。取れない場合のみ FX_TO_JPY の固定値にフォールバック
+    try:
+        from shared.forex import nst_monthly_rates
+        _kj = nst_monthly_rates(conn, "KRW", [str(ym)]).get(
+            str(ym), FX_TO_JPY.get("KRW", 0.095))
+    except Exception:
+        _kj = FX_TO_JPY.get("KRW", 0.095)
     _ja0 = get_lang() == "ja"
 
     def _u(zh: str, ja: str) -> str:
@@ -792,9 +800,15 @@ with tab_deduct:
                    "downloadable_coupon + store_fee_discount + courantee_fee + "
                    "courantee_customer_reward + deduction_amount + "
                    "debt_of_last_week + dedicated_delivery_amount")
+    # ⚠️ **着金日(settlement_date)で括る** — 認知月ではない。
+    #    Coupang は「認知月 2026-06 → 着金 2026-07-22」のように 1 ヶ月ずれる。
+    #    Shopee 側を入金日で括っている以上、ここを認知月にすると同じ表の中で
+    #    現金主義と発生主義が混ざり、当月の KOREA が常に 0 になる（実際そうなっていた）。
     _cp_u, _cp_ue = _uq(
-        f"SELECT total_sale, final_amount, deduction_amount, ({_CP_DED_SQL}) AS ded_total "
-        f"FROM coupang.settlement WHERE revenue_recognition_year_month = '{ym}'")
+        f"SELECT total_sale, final_amount, deduction_amount, ({_CP_DED_SQL}) AS ded_total, "
+        "revenue_recognition_year_month AS recog_ym, settlement_date "
+        "FROM coupang.settlement WHERE to_char(settlement_date, 'YYYY-MM') = "
+        f"'{ym}'")
 
     _uni_rows = []
     if _sp_u is not None and not _sp_u.empty:
@@ -849,9 +863,9 @@ with tab_deduct:
 
     st.markdown("#### " + _u("市场 · 国家 · 店铺", "市場 · 国 · 店舗"))
     st.caption(t(
-        "ASEAN(Shopee) + KOREA(Coupang) 合并（日元换算）· ⚠️ 口径不同：Shopee=按拨款日"
-        "（现金主义）· Coupang=按销售认知月的结算单（月末后生成，当月为空属正常）· "
-        "两者对应期间不同，不可直接相减"
+        "ASEAN(Shopee) + KOREA(Coupang) 合并 · 均按【实际到账日】归集（现金主义）· "
+        "日元换算：美元用公司出口汇率、韩元用三金汇率（月次）· "
+        "⚠️ Coupang 结算单为月次发行（如 6 月销售于 7/22 到账），故其金额对应的销售期间比 Shopee 更早"
     ))
 
     if _sp_ue or _cp_ue:
@@ -869,7 +883,7 @@ with tab_deduct:
 
         _t = _uni[["income", "ded", "ads", "net"]].sum()
         u1, u2, u3, u4 = st.columns(4)
-        u1.metric(t("收入合计"), _y(_t["income"]))
+        u1.metric(t("结算收入（到账口径）"), _y(_t["income"]))
         u2.metric(t("扣减合计"), _y(_t["ded"]))
         u3.metric(t("扣减率"), _rate(_t["ded"], _t["income"]))
         u4.metric(t("广告费"), _y(_t["ads"]))
@@ -884,7 +898,7 @@ with tab_deduct:
             return [{
                 label: r[name_col],
                 _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
-                _u("收入", "収入"): _y(r["income"]),
+                _u("结算收入", "決済収入"): _y(r["income"]),
                 _u("扣减合计", "控除合計"): _y(r["ded"]),
                 _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
                 _u("广告费", "広告費"): _y(r["ads"]),
@@ -916,7 +930,7 @@ with tab_deduct:
             _u("市场", "市場"): r["market"],
             _u("国家", "国"): r["country"],
             _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
-            _u("收入", "収入"): _y(r["income"]),
+            _u("结算收入", "決済収入"): _y(r["income"]),
             _u("扣减合计", "控除合計"): _y(r["ded"]),
             _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
             _u("广告费", "広告費"): _y(r["ads"]),
@@ -933,7 +947,7 @@ with tab_deduct:
             _u("国家", "国"): r["country"],
             _u("店铺", "店舗"): r["shop"],
             _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
-            _u("收入", "収入"): _y(r["income"]),
+            _u("结算收入", "決済収入"): _y(r["income"]),
             _u("扣减合计", "控除合計"): _y(r["ded"]),
             _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
             _u("广告费", "広告費"): _y(r["ads"]),
