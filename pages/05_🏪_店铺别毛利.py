@@ -867,21 +867,21 @@ with tab_deduct:
                     out.append(row)
                 return pd.DataFrame(out)
 
-            st.markdown("**" + _u("市场", "市場") + "**")
-            _g1 = d.groupby("market", as_index=False).agg(_AGG).sort_values("sales_jpy", ascending=False)
-            html_table(_rows(_g1, [("market", _u("市场", "市場"))]))
-            _dl(_g1, f"ship_market_{ym}.csv", "sh_dl_m")
+            st.markdown("**" + _u("平台", "プラットフォーム") + "**")
+            _g1 = d.groupby("platform", as_index=False).agg(_AGG).sort_values("sales_jpy", ascending=False)
+            html_table(_rows(_g1, [("platform", _u("平台", "プラットフォーム"))]))
+            _dl(_g1, f"ship_platform_{ym}.csv", "sh_dl_m")
 
             st.markdown("**" + _u("国家", "国別") + "**")
-            _g2 = (d.groupby(["market", "country"], as_index=False).agg(_AGG)
+            _g2 = (d.groupby(["platform", "country"], as_index=False).agg(_AGG)
                    .sort_values("sales_jpy", ascending=False))
-            html_table(_rows(_g2, [("market", _u("市场", "市場")),
+            html_table(_rows(_g2, [("platform", _u("平台", "プラットフォーム")),
                                    ("country", _u("国家", "国"))]))
             _dl(_g2, f"ship_country_{ym}.csv", "sh_dl_c")
 
             st.markdown("**" + _u("店铺", "店舗") + "**")
             _g3 = d.sort_values("sales_jpy", ascending=False)
-            html_table(_rows(_g3, [("market", _u("市场", "市場")),
+            html_table(_rows(_g3, [("platform", _u("平台", "プラットフォーム")),
                                    ("country", _u("国家", "国")),
                                    ("shop", _u("店铺", "店舗"))]))
             _dl(_g3, f"ship_shop_{ym}.csv", "sh_dl_s")
