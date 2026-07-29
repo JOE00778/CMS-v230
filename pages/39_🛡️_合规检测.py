@@ -11,6 +11,9 @@
 """
 from __future__ import annotations
 
+import re
+import time
+
 import pandas as pd
 import streamlit as st
 
@@ -280,9 +283,98 @@ def _country_tab(country: str, rules):
         st.markdown(COUNTRY_NOTES[country])
 
 
+BATCH_CAP = 150          # 1 件あたり外部取得 ~1.3 秒 → 上限を超える分は次回に回す
+BATCH_SLEEP = 1.3        # 楽天 API のレート(429)対策
+
+
+def resolve_for_judge(jan: str) -> dict:
+    """判定に必要な 商品名/成分 を 社内DB → 外部 の順に解決(単品・一括で共用)。"""
+    item = resolve_by_jan(jan)
+    if not item.get("sources") or not item["ingredient"]:
+        ext = _external(jan)
+        if ext:
+            item["name_ja"] = item["name_ja"] or ext["name"]
+            item["ingredient"] = item["ingredient"] or ext["ingredient"]
+            item["sources"].append(ext["source"])
+    return item
+
+
+def _batch_tab(rules):
+    """上架前の一括ゲート:合規判定は内容制作(飞书表記入)より**前**に走らせる。
+
+    候補 JAN の段階で落とせれば、売れない品に内容工数を掛けずに済む。
+    """
+    st.markdown(_dl("##### 上架前批量筛查(内容制作前的闸门)",
+                    "##### 出品前一括スクリーニング(コンテンツ制作前のゲート)"))
+    if not rules:      # ローカル/未マイグレーション環境
+        st.info(_dl("compliance schema 未接入——批量筛查不可用",
+                    "compliance schema 未接続——一括スクリーニングは利用できません"))
+        return
+    kw_rules, ing_rules = rules
+    st.caption(_dl(
+        "合规判定应在投入内容工时**之前**跑:候选 JAN 阶段就筛掉不能卖的品。"
+        f"数据按 社内DB → 楽天/Yahoo 顺序自动取,每次最多 {BATCH_CAP} 件(外部取数限速),"
+        "结果可下载 CSV。",
+        f"データは 社内DB → 楽天/Yahoo の順に自動取得。1 回最大 {BATCH_CAP} 件。"))
+    raw = st.text_area(_dl("JAN 列表(每行一个,或逗号/空格分隔)", "JAN リスト(改行/カンマ区切り)"),
+                       height=120, key="batch_raw", placeholder="4909978147105\n4550516486028")
+    countries = st.multiselect(_dl("判定市场", "判定市場"), ["US", "PH", "CA"],
+                               default=["US", "PH", "CA"], key="batch_countries")
+    if not st.button(_dl("▶ 开始筛查", "▶ スクリーニング開始"), key="batch_run"):
+        return
+
+    jans = [x for x in re.split(r"[\s,、;]+", raw or "") if _is_jan(x)]
+    jans = list(dict.fromkeys(jans))
+    if not jans:
+        st.warning(_dl("没有识别到有效 JAN(8 位以上数字)", "有効な JAN がありません"))
+        return
+    over = max(0, len(jans) - BATCH_CAP)
+    jans = jans[:BATCH_CAP]
+
+    bar = st.progress(0.0)
+    out = []
+    for i, jan in enumerate(jans, 1):
+        item = resolve_for_judge(jan)
+        row = {"JAN": jan,
+               _dl("商品名", "商品名"): (item["name_ja"] or item["name_en"])[:60],
+               _dl("来源", "データ元"): " + ".join(item["sources"]) or "-",
+               _dl("成分", "成分"): _dl("有", "有") if item["ingredient"] else _dl("無", "無")}
+        for c in countries:
+            res = judge(kw_rules, ing_rules, c,
+                        {_dl("商品名", "商品名"): item["name_ja"] or item["name_en"]},
+                        item["ingredient"] or None)
+            # 成分が無いのに緑は出さない(単品判定と同じ規律)
+            mark = {"red": "🔴", "yellow": "🟡",
+                    "green": "🟢" if res["ingredient_checked"] else "⚪"}[res["verdict"]]
+            note = res["hits"][0]["note"][:40] if res["hits"] else ""
+            row[c] = f"{mark} {note}".strip()
+        out.append(row)
+        bar.progress(i / len(jans))
+        if i < len(jans):
+            time.sleep(BATCH_SLEEP)
+    bar.empty()
+
+    df = pd.DataFrame(out)
+    n_red = int(df[countries].apply(lambda s: s.str.startswith("🔴")).any(axis=1).sum()) if countries else 0
+    n_gray = int(df[_dl("成分", "成分")].eq(_dl("無", "無")).sum())
+    st.success(_dl(
+        f"完成 {len(df)} 件:🔴 有禁止项 {n_red} 件 · ⚪ 成分未取得(判定未完成) {n_gray} 件"
+        + (f" · 超出上限未处理 {over} 件" if over else ""),
+        f"完了 {len(df)} 件:🔴 {n_red} 件 · ⚪ 成分未取得 {n_gray} 件"
+        + (f" · 上限超過 {over} 件未処理" if over else "")))
+    st.dataframe(df, width="stretch", hide_index=True)
+    st.download_button(_dl("⬇ 下载 CSV", "⬇ CSV ダウンロード"),
+                       df.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="compliance_screen.csv", mime="text/csv")
+
+
 rules = _load_rules()
-tab0, tab_us, tab_ph, tab_ca = st.tabs(
-    [_dl("📚 判定标准", "📚 判定基準"), "🇺🇸 US", "🇵🇭 PH", "🇨🇦 CA"])
+tab0, tab_batch, tab_us, tab_ph, tab_ca = st.tabs(
+    [_dl("📚 判定标准", "📚 判定基準"), _dl("📋 批量筛查", "📋 一括スクリーニング"),
+     "🇺🇸 US", "🇵🇭 PH", "🇨🇦 CA"])
+
+with tab_batch:
+    _batch_tab(rules)
 
 with tab0:
     ov = _load_overview()
