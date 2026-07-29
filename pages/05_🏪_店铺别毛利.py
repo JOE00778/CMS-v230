@@ -842,11 +842,27 @@ with tab_deduct:
                     c["deduction_amount"].sum() * _kj, c["final_amount"].sum() * _kj)
     else:
         _cp_vals = (0.0, 0.0, 0.0, 0.0)
+    # Coupang の結算書は 24 列すべて金額で **数量を持たない**。
+    # 数量は NST 売上（nst.sales_daily）から補うが、注意点が 2 つある:
+    #   (a) NST が持つのは注文数ではなく **販売件数(qty_sold)**
+    #   (b) 期間は着金月ではなく **結算が対応する認知月** に合わせる必要がある
+    #       （7 月着金の結算書は 6 月販売分。着金月の数量を当てると 1 ヶ月ずれる）
+    _cp_qty = 0
+    if _cp_u is not None and not _cp_u.empty and "recog_ym" in _cp_u.columns:
+        _recogs = [str(x)[:7] for x in _cp_u["recog_ym"].dropna().unique()]
+        if _recogs:
+            _in = ",".join(f"'{r}'" for r in _recogs)
+            _q, _qe = _uq(
+                "SELECT coalesce(sum(qty_sold),0) qty FROM nst.sales_daily "
+                f"WHERE shop ILIKE '%coupang%' AND to_char(sale_date,'YYYY-MM') IN ({_in})")
+            if _q is not None and not _q.empty:
+                _cp_qty = int(_f(_q["qty"]).sum())
+
     _uni_rows.append({
         "market": _u("🇰🇷 KOREA (Coupang)", "🇰🇷 KOREA (Coupang)"),
         "country": "KR",
         "shop": _u("Coupang 韩国店", "Coupang 韓国店"),
-        "orders": 0,   # Coupang 結算書は注文数を持たない
+        "orders": _cp_qty,   # ※ 販売件数（結算書に注文数が無いため NST 由来）
         "income": _cp_vals[0], "ded": _cp_vals[1],
         "ads": _cp_vals[2], "net": _cp_vals[3],
     })
@@ -865,7 +881,8 @@ with tab_deduct:
     st.caption(t(
         "ASEAN(Shopee) + KOREA(Coupang) 合并 · 均按【实际到账日】归集（现金主义）· "
         "日元换算：美元用公司出口汇率、韩元用三金汇率（月次）· "
-        "⚠️ Coupang 结算单为月次发行（如 6 月销售于 7/22 到账），故其金额对应的销售期间比 Shopee 更早"
+        "⚠️ Coupang 结算单为月次发行（如 6 月销售于 7/22 到账），故其金额对应的销售期间比 Shopee 更早 · "
+        "数量列：Shopee=订单数（拨款所含）· Coupang=销售件数（结算单无订单数，取自 NST 对应销售月）"
     ))
 
     if _sp_ue or _cp_ue:
@@ -897,7 +914,7 @@ with tab_deduct:
         def _rows_of(g, name_col, label):
             return [{
                 label: r[name_col],
-                _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
+                _u("订单数/件数", "注文数/販売件数"): f"{int(r['orders']):,}" if r["orders"] else "—",
                 _u("结算收入", "決済収入"): _y(r["income"]),
                 _u("扣减合计", "控除合計"): _y(r["ded"]),
                 _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
@@ -929,7 +946,7 @@ with tab_deduct:
         _r2 = [{
             _u("市场", "市場"): r["market"],
             _u("国家", "国"): r["country"],
-            _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
+            _u("订单数/件数", "注文数/販売件数"): f"{int(r['orders']):,}" if r["orders"] else "—",
             _u("结算收入", "決済収入"): _y(r["income"]),
             _u("扣减合计", "控除合計"): _y(r["ded"]),
             _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
@@ -946,7 +963,7 @@ with tab_deduct:
             _u("市场", "市場"): r["market"],
             _u("国家", "国"): r["country"],
             _u("店铺", "店舗"): r["shop"],
-            _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
+            _u("订单数/件数", "注文数/販売件数"): f"{int(r['orders']):,}" if r["orders"] else "—",
             _u("结算收入", "決済収入"): _y(r["income"]),
             _u("扣减合计", "控除合計"): _y(r["ded"]),
             _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
