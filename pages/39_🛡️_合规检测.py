@@ -161,6 +161,23 @@ def resolve_by_jan(jan: str) -> dict:
     return out
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def _nst_candidates() -> pd.DataFrame:
+    """合規判定を掛けるべき候補=NST 在庫にあり、飞书にも Shopify にも未登場の品。
+
+    「合規判定 → 飛書記入 → 出品」の順序上、判定対象はこのプール(下流の飛書表ではない)。
+    """
+    try:
+        return pd.read_sql_query(
+            "SELECT n.jan, n.display_name, n.maker FROM nst.item_master_raw n "
+            "WHERE n.jan IS NOT NULL AND n.jan <> '' AND COALESCE(n.is_inactive, FALSE) = FALSE "
+            "  AND NOT EXISTS (SELECT 1 FROM compliance.sheet_item s WHERE s.jan = n.jan) "
+            "  AND NOT EXISTS (SELECT 1 FROM compliance.shopify_item p WHERE p.jan = n.jan) "
+            "ORDER BY n.maker, n.jan", _conn())
+    except Exception:
+        return pd.DataFrame(columns=["jan", "display_name", "maker"])
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def _external(jan: str) -> dict:
     """外部按 JAN 取商品名/全成分(楽天24→楽天スーパー→Yahoo)。缓存 1 天。"""
@@ -323,18 +340,46 @@ def _batch_tab(rules):
         return
     kw_rules, ing_rules, cat_rules = rules
     st.caption(_dl(
-        "合规判定应在投入内容工时**之前**跑:候选 JAN 阶段就筛掉不能卖的品。"
-        f"数据按 社内DB → 楽天/Yahoo 顺序自动取,每次最多 {BATCH_CAP} 件(外部取数限速),"
-        "结果可下载 CSV。",
-        f"データは 社内DB → 楽天/Yahoo の順に自動取得。1 回最大 {BATCH_CAP} 件。"))
-    raw = st.text_area(_dl("JAN 列表(每行一个,或逗号/空格分隔)", "JAN リスト(改行/カンマ区切り)"),
-                       height=120, key="batch_raw", placeholder="4909978147105\n4550516486028")
+        "工作顺序:**候选品 → 合规判定(本页) → 通过的才录入飞书表 → 上架**。"
+        f"每次最多 {BATCH_CAP} 件(外部取数限速),结果可下载 CSV 交给内容组。",
+        "手順:**候補品 → 合規判定(本頁) → 通ったものだけ飛書表へ記入 → 出品**。"
+        f"1 回最大 {BATCH_CAP} 件。"))
+
+    src = st.radio(
+        _dl("候选来源", "候補ソース"),
+        [_dl("NST 在库·未录入候选", "NST 在庫·未記入候補"), _dl("粘贴 JAN 列表", "JAN リスト貼付")],
+        horizontal=True, key="batch_src")
+    from_nst = src.startswith(("NST", "N"))
+
+    raw, makers, want = "", [], 50
+    if from_nst:
+        pool = _nst_candidates()
+        if pool.empty:
+            st.info(_dl("候选池为空(或 NST 未接入)", "候補プールが空です"))
+            return
+        st.caption(_dl(
+            f"候选池 {len(pool)} 件 = NST 商品主档里**既未录入飞书、也未上架**的在售品——"
+            "正是接下来要投内容工时的对象。",
+            f"候補プール {len(pool)} 件 = NST にあり飛書未記入·未出品の品。"))
+        opts = [m for m in pool["maker"].dropna().unique().tolist() if m]
+        makers = st.multiselect(_dl("按厂商筛(留空=全部)", "メーカー絞込(空=全部)"),
+                                sorted(opts)[:300], key="batch_makers")
+        want = st.number_input(_dl("本次筛查件数", "今回の件数"), 1, BATCH_CAP, 50, key="batch_n")
+    else:
+        raw = st.text_area(_dl("JAN 列表(每行一个,或逗号/空格分隔)", "JAN リスト(改行/カンマ区切り)"),
+                           height=120, key="batch_raw", placeholder="4909978147105\n4550516486028")
     countries = st.multiselect(_dl("判定市场", "判定市場"), ["US", "PH", "CA"],
                                default=["US", "PH", "CA"], key="batch_countries")
     if not st.button(_dl("▶ 开始筛查", "▶ スクリーニング開始"), key="batch_run"):
         return
 
-    jans = [x for x in re.split(r"[\s,、;]+", raw or "") if _is_jan(x)]
+    if from_nst:
+        pool = _nst_candidates()
+        if makers:
+            pool = pool[pool["maker"].isin(makers)]
+        jans = [j for j in pool["jan"].tolist() if _is_jan(str(j))][:int(want)]
+    else:
+        jans = [x for x in re.split(r"[\s,、;]+", raw or "") if _is_jan(x)]
     jans = list(dict.fromkeys(jans))
     if not jans:
         st.warning(_dl("没有识别到有效 JAN(8 位以上数字)", "有効な JAN がありません"))
@@ -380,10 +425,13 @@ def _batch_tab(rules):
     n_red = int(df[countries].apply(lambda s: s.str.startswith("🔴")).any(axis=1).sum()) if countries else 0
     n_gray = int(df[_dl("成分", "成分")].eq(_dl("無", "無")).sum())
     st.success(_dl(
-        f"完成 {len(df)} 件:🔴 有禁止项 {n_red} 件 · ⚪ 成分未取得(判定未完成) {n_gray} 件"
+        f"完成 {len(df)} 件:🔴 不可录入 {n_red} 件 · ⚪ 判定未完成(成分未取得) {n_gray} 件"
         + (f" · 超出上限未处理 {over} 件" if over else ""),
-        f"完了 {len(df)} 件:🔴 {n_red} 件 · ⚪ 成分未取得 {n_gray} 件"
+        f"完了 {len(df)} 件:🔴 記入不可 {n_red} 件 · ⚪ 判定未完了 {n_gray} 件"
         + (f" · 上限超過 {over} 件未処理" if over else "")))
+    st.caption(_dl("🔴=该市场不可上架(不必录入) · 🟡=可录入但有条件需确认 · 🟢=可录入 · "
+                   "⚪=成分未取得,判定未完成",
+                   "🔴=出品不可 · 🟡=条件付き · 🟢=可 · ⚪=成分未取得で判定未完了"))
     st.dataframe(df, width="stretch", hide_index=True)
     st.download_button(_dl("⬇ 下载 CSV", "⬇ CSV ダウンロード"),
                        df.to_csv(index=False).encode("utf-8-sig"),
