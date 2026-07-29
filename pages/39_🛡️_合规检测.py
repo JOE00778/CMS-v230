@@ -223,7 +223,14 @@ def _render_result(res: dict):
         return
     fn, label = VERDICT_UI[res["verdict"]]
     getattr(st, fn)(label)
-    if not res["ingredient_checked"]:
+    # 品類段で確定した場合は「なぜここで打ち切ったか」を明示(成分を見ていない理由)
+    if res.get("stopped_at") == "category":
+        top = res["hits"][0] if res["hits"] else {}
+        st.error(_dl(f"**原因:{top.get('category', '')}** —— {top.get('note', '')}",
+                     f"**理由:{top.get('category', '')}** —— {top.get('note', '')}"))
+        st.caption(_dl("品类阶段即已确定,后续的名称/宣称与成分判定不再进行(结论不会改变)",
+                       "品類段で確定したため、名称/表現·成分の判定は行っていません"))
+    if not res["ingredient_checked"] and res.get("stopped_at") != "category":
         st.caption(_dl("⚠️ 成分未取得——以上仅为名称/宣称判定,成分维度未覆盖",
                        "⚠️ 成分未取得——名称/表現判定のみ,成分は未カバー"))
     if res["hits"]:
@@ -405,6 +412,8 @@ def _batch_tab(rules):
                _dl("商品名", "商品名"): (item["name_ja"] or item["name_en"])[:60],
                _dl("来源", "データ元"): " + ".join(item["sources"]) or "-",
                _dl("成分", "成分"): _dl("有", "有") if item["ingredient"] else _dl("無", "無")}
+        # 理由は country ごとに溜め、同文は国をまとめて 1 行に(医薬品等は三国同文)
+        reasons: dict[str, list[str]] = {}
         for c in countries:
             res = judge(kw_rules, ing_rules, c,
                         {_dl("商品名", "商品名"): item["name_ja"] or item["name_en"]},
@@ -413,8 +422,21 @@ def _batch_tab(rules):
             # 成分が無いのに緑は出さない(単品判定と同じ規律)
             mark = {"red": "🔴", "yellow": "🟡",
                     "green": "🟢" if res["ingredient_checked"] else "⚪"}[res["verdict"]]
-            note = res["hits"][0]["note"][:40] if res["hits"] else ""
-            row[c] = f"{mark} {note}".strip()
+            row[c] = mark
+            # 原因は切り詰めない:なぜ不可/何を確認すべきかが分からないと判断できない
+            if res["verdict"] in ("red", "yellow"):
+                for h in res["hits"]:
+                    if h["severity"] not in ("red", "yellow"):
+                        continue
+                    body = (f"{mark}〔{h['kind']}〕{h['note']}"
+                            + (f"(命中:{h['matched'][:24]})" if h.get("matched") else ""))
+                    reasons.setdefault(body, []).append(c)
+            elif not res["ingredient_checked"]:
+                body = _dl("⚪ 成分未取得,成分维度未判定——需人工补成分表",
+                           "⚪ 成分未取得のため成分は未判定")
+                reasons.setdefault(body, []).append(c)
+        row[_dl("原因/需确认事项", "理由·確認事項")] = " ｜ ".join(
+            f"{'/'.join(cs)} {body}" for body, cs in reasons.items())
         out.append(row)
         bar.progress(i / len(jans))
         if i < len(jans):
