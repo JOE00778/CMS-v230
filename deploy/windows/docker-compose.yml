@@ -319,9 +319,11 @@ services:
   #   DATABASE_URL は明示的に空 → 超級ユーザー接続串は採集器に渡らない
   # ------------------------------------------------------------
   compliance_scheduler:
-    build:
-      context: ../../../database
-      dockerfile: deploy/compliance-scheduler.Dockerfile
+    # nst_scheduler の既存イメージを流用(依存は psycopg のみで同一)。専用 Dockerfile を
+    # build しないのは、SSH 経由の docker compose build が wincred で失敗するため
+    # (jdl_scheduler と同じ回避策)。コードは volume mount なので scp 直送で更新可。
+    image: windows-nst_scheduler
+    command: ["python", "-m", "data_warehouse.compliance_api.dispatcher"]
     container_name: cms_compliance_scheduler
     restart: unless-stopped
     depends_on:
