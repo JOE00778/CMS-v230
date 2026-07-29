@@ -80,3 +80,53 @@ def test_empty_everything_green():
 
 def test_check_ingredients_country_filter():
     assert check_ingredients(ING, "CA", "hydroquinone cream", None) == []
+
+
+# ── 品类优先(Boss 2026-07-29:品类没问题才继续往下判)──
+
+CAT_RULES = [
+    dict(country="US", category="ベビー・児童用品",
+         match_terms=["pigeon", "ピジョン", "ベビー", "pacifier"], severity="red",
+         note="US:児童製品は CPSC の CPC が必須。当社は保有しないため出品不可。",
+         blocking=True, enabled=True),
+    dict(country="US", category="食品・サプリ", match_terms=["食品", "サプリ"], severity="yellow",
+         note="US:FDA 施設登録+Prior Notice が必要。", blocking=False, enabled=True),
+    dict(country="ALL", category="化粧品", match_terms=["化粧品", "beauty"], severity="info",
+         note="化粧品:品類自体は問題なし。", blocking=False, enabled=True),
+]
+
+
+def test_category_blocking_stops_before_ingredients():
+    """ピジョン(ベビー)は US で品類確定 → 成分を見に行かない。"""
+    res = judge([], [], "US", {"商品名": "ピジョン 哺乳びん"}, None,
+                category_rules=CAT_RULES, category_signals={"品牌": "Pigeon", "L1": "Baby & Family"})
+    assert res["verdict"] == "red"
+    assert res["stopped_at"] == "category"
+    assert res["hits"][0]["kind"] == "品类"
+    assert "CPC" in res["hits"][0]["note"]
+
+
+def test_category_blocking_ignores_other_countries():
+    """同じ品でも PH には該当ルールが無い → 品類で止まらず通常判定へ。"""
+    res = judge([], [], "PH", {"商品名": "ピジョン 哺乳びん"}, None,
+                category_rules=CAT_RULES, category_signals={"品牌": "Pigeon"})
+    assert res["stopped_at"] == "full"
+    assert res["verdict"] == "green"
+
+
+def test_category_non_blocking_continues_to_ingredients():
+    """食品(yellow·非 blocking)は止めずに成分判定まで進む。"""
+    ing = [dict(country="US", ingredient="Mercury", match_terms=["mercury"], cas=None,
+                rule_type="prohibited", condition_note=None, source="eCFR",
+                source_ref="21 CFR 700.13")]
+    res = judge([], ing, "US", {"商品名": "健康食品 グミ"}, "mercury, water",
+                category_rules=CAT_RULES, category_signals={"L1": "食品"})
+    assert res["stopped_at"] == "full"
+    assert res["verdict"] == "red"                       # 成分側で red
+    kinds = {h["kind"] for h in res["hits"]}
+    assert {"品类", "成分"} <= kinds                      # 品類 yellow と成分 red の両方が出る
+
+
+def test_judge_without_category_rules_is_backward_compatible():
+    res = judge([], [], "US", {"商品名": "ただの化粧水"}, "水、グリセリン")
+    assert res["verdict"] == "green" and res["stopped_at"] == "full"

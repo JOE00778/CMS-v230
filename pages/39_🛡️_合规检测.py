@@ -86,7 +86,10 @@ def _load_rules():
         ing = pd.read_sql_query(
             "SELECT country, ingredient, match_terms, cas, rule_type, condition_note, "
             "source, source_ref, source_version FROM compliance.ingredient_rule", conn)
-        return kw.to_dict("records"), ing.to_dict("records")
+        cat = pd.read_sql_query(
+            "SELECT country, category, match_terms, severity, note, blocking, enabled "
+            "FROM compliance.category_rule WHERE enabled = TRUE", conn)
+        return kw.to_dict("records"), ing.to_dict("records"), cat.to_dict("records")
     except Exception:
         return None
 
@@ -133,15 +136,18 @@ def resolve_by_jan(jan: str) -> dict:
     飞书表是人按固定列规范填的上架内容表,JAN 行成分充足率≈100%,且含大量未上架品,
     精度高于任何外部抓取,故排最前。
     """
-    sh = _rows("SELECT title, ingredient_text, sheet_name FROM compliance.sheet_item "
-               "WHERE jan = ?", [jan])
+    sh = _rows("SELECT title, ingredient_text, sheet_name, vendor, l1, l2 "
+               "FROM compliance.sheet_item WHERE jan = ?", [jan])
     sp = _rows("SELECT title, ingredient_text, product_status FROM compliance.shopify_item "
                "WHERE jan = ?", [jan])
     ns = _rows("SELECT display_name, maker FROM nst.item_master_raw WHERE jan = ? LIMIT 1", [jan])
-    out = {"jan": jan, "name_en": "", "name_ja": "", "maker": "", "ingredient": "", "sources": []}
+    out = {"jan": jan, "name_en": "", "name_ja": "", "maker": "", "ingredient": "",
+           "l1": "", "l2": "", "sources": []}
     if sh:
         out["name_ja"] = sh[0][0] or ""
         out["ingredient"] = sh[0][1] or ""
+        out["maker"] = sh[0][3] or ""
+        out["l1"], out["l2"] = sh[0][4] or "", sh[0][5] or ""
         out["sources"].append(_dl(f"飞书内容表({sh[0][2] or '-'})", f"飛書コンテンツ表({sh[0][2] or '-'})"))
     if sp:
         out["name_en"] = sp[0][0] or ""
@@ -150,7 +156,7 @@ def resolve_by_jan(jan: str) -> dict:
         out["sources"].append(_dl("Shopify 已上架", "Shopify 出品済"))
     if ns:
         out["name_ja"] = out["name_ja"] or (ns[0][0] or "")
-        out["maker"] = ns[0][1] or ""
+        out["maker"] = out["maker"] or (ns[0][1] or "")
         out["sources"].append(_dl("NST 商品主档", "NST 商品マスタ"))
     return out
 
@@ -219,7 +225,7 @@ def _country_tab(country: str, rules):
 
     商品是否在 NST/Shopify 里**不作门槛**——上架前的新品本来就不在任何库。
     """
-    kw_rules, ing_rules = rules
+    kw_rules, ing_rules, cat_rules = rules
     st.markdown(_dl(f"##### {country} 单品判定", f"##### {country} 単品判定"))
     q = st.text_input(
         _dl("① 输入 JAN 码 → 自动取商品名与成分并判定", "① JANコード入力 → 商品名と成分を自動取得して判定"),
@@ -277,7 +283,10 @@ def _country_tab(country: str, rules):
         fields = {_dl("商品名", "商品名"): name}
         if name_alt:
             fields[_dl("商品名(EN)", "商品名(EN)")] = name_alt
-        _render_result(judge(kw_rules, ing_rules, country, fields, ing or None))
+        _render_result(judge(kw_rules, ing_rules, country, fields, ing or None,
+                             category_rules=cat_rules,
+                             category_signals={_dl("品牌", "ブランド"): item.get("maker", ""),
+                                               "L1": item.get("l1", ""), "L2": item.get("l2", "")}))
 
     with st.expander(_dl(f"📌 {country} 通用注意事项", f"📌 {country} 共通注意事項"), expanded=False):
         st.markdown(COUNTRY_NOTES[country])
@@ -287,9 +296,11 @@ BATCH_CAP = 150          # 1 件あたり外部取得 ~1.3 秒 → 上限を超�
 BATCH_SLEEP = 1.3        # 楽天 API のレート(429)対策
 
 
-def resolve_for_judge(jan: str) -> dict:
+def resolve_for_judge(jan: str, skip_external: bool = False) -> dict:
     """判定に必要な 商品名/成分 を 社内DB → 外部 の順に解決(単品・一括で共用)。"""
     item = resolve_by_jan(jan)
+    if skip_external:
+        return item
     if not item.get("sources") or not item["ingredient"]:
         ext = _external(jan)
         if ext:
@@ -310,7 +321,7 @@ def _batch_tab(rules):
         st.info(_dl("compliance schema 未接入——批量筛查不可用",
                     "compliance schema 未接続——一括スクリーニングは利用できません"))
         return
-    kw_rules, ing_rules = rules
+    kw_rules, ing_rules, cat_rules = rules
     st.caption(_dl(
         "合规判定应在投入内容工时**之前**跑:候选 JAN 阶段就筛掉不能卖的品。"
         f"数据按 社内DB → 楽天/Yahoo 顺序自动取,每次最多 {BATCH_CAP} 件(外部取数限速),"
@@ -334,7 +345,17 @@ def _batch_tab(rules):
     bar = st.progress(0.0)
     out = []
     for i, jan in enumerate(jans, 1):
-        item = resolve_for_judge(jan)
+        pre = resolve_by_jan(jan)
+        cat_signals = {_dl("品牌", "ブランド"): pre.get("maker", ""),
+                       "L1": pre.get("l1", ""), "L2": pre.get("l2", ""),
+                       _dl("商品名", "商品名"): pre.get("name_ja") or pre.get("name_en", "")}
+        # 品类が blocking(例:ピジョン=US 児童製品)なら成分を取りに行く必要が無い
+        blocked = any(
+            judge([], [], c, {"n": ""}, None, category_rules=cat_rules,
+                  category_signals=cat_signals)["stopped_at"] == "category"
+            for c in countries)
+        item = resolve_for_judge(jan, skip_external=blocked)
+        cat_signals[_dl("商品名", "商品名")] = item["name_ja"] or item["name_en"]
         row = {"JAN": jan,
                _dl("商品名", "商品名"): (item["name_ja"] or item["name_en"])[:60],
                _dl("来源", "データ元"): " + ".join(item["sources"]) or "-",
@@ -342,7 +363,8 @@ def _batch_tab(rules):
         for c in countries:
             res = judge(kw_rules, ing_rules, c,
                         {_dl("商品名", "商品名"): item["name_ja"] or item["name_en"]},
-                        item["ingredient"] or None)
+                        item["ingredient"] or None,
+                        category_rules=cat_rules, category_signals=cat_signals)
             # 成分が無いのに緑は出さない(単品判定と同じ規律)
             mark = {"red": "🔴", "yellow": "🟡",
                     "green": "🟢" if res["ingredient_checked"] else "⚪"}[res["verdict"]]
