@@ -358,9 +358,9 @@ def _batch_tab(rules):
         return
     kw_rules, ing_rules, cat_rules = rules
     st.caption(_dl(
-        "工作顺序:**候选品 → 合规判定(本页) → 通过的才录入飞书表 → 上架**。"
+        "工作顺序:**候选品 → 合规判定(本页) → 通过的才投入上架准备**。"
         f"每次最多 {BATCH_CAP} 件(外部取数限速),结果可下载 CSV 交给内容组。",
-        "手順:**候補品 → 合規判定(本頁) → 通ったものだけ飛書表へ記入 → 出品**。"
+        "手順:**候補品 → 合規判定(本頁) → 通ったものだけ出品準備へ**。"
         f"1 回最大 {BATCH_CAP} 件。"))
 
     saved = _screen_results()
@@ -377,14 +377,15 @@ def _batch_tab(rules):
         wide.columns = [{"jan": "JAN", "title": _dl("商品名", "商品名"),
                          "maker": _dl("厂商", "メーカー")}.get(c, c) for c in wide.columns]
         n = {v: int((saved["verdict"] == v).sum()) for v in ("red", "yellow", "green", "unknown")}
+        pool_n = len(_nst_candidates()) + len(wide)   # 未判定 + 判定済み ≒ 候補プール全体
         last = pd.to_datetime(saved["screened_at"]).max()
         with st.expander(
-                _dl(f"📑 已保存的筛查结果 {len(wide)} 件(每周自动更新·最近 {last:%m-%d %H:%M})",
-                    f"📑 保存済み判定 {len(wide)} 件(週次自動·最終 {last:%m-%d %H:%M})"),
+                _dl(f"📑 已保存的筛查结果 {len(wide)}/{pool_n} 件(每周一自动跑·最近 {last:%m-%d %H:%M})",
+                    f"📑 保存済み判定 {len(wide)}/{pool_n} 件(毎週月曜·最終 {last:%m-%d %H:%M})"),
                 expanded=True):
             st.caption(_dl(
                 f"判定数(国別合計):🔴 {n['red']} · 🟡 {n['yellow']} · 🟢 {n['green']} · ⚪ {n['unknown']}"
-                " —— 内容组按此表决定录不录入飞书表",
+                " —— 绿=可进上架准备 / 红=不可 / 黄·灰=需人工判断",
                 f"判定数:🔴 {n['red']} · 🟡 {n['yellow']} · 🟢 {n['green']} · ⚪ {n['unknown']}"))
             only = st.checkbox(_dl("只看需处理(🔴/🟡)", "要対応のみ表示"), value=True, key="scr_only")
             view = wide
@@ -392,7 +393,11 @@ def _batch_tab(rules):
                 m = wide[[c for c in ("US", "PH", "CA") if c in wide]].apply(
                     lambda r: r.astype(str).str.contains("🔴|🟡").any(), axis=1)
                 view = wide[m]
-            st.dataframe(view, width="stretch", hide_index=True, height=340)
+            if view.empty:
+                st.success(_dl(f"已判定的 {len(wide)} 件里没有需处理项(🔴/🟡)——全部可进上架准备",
+                               f"判定済み {len(wide)} 件に要対応はありません"))
+            else:
+                st.dataframe(view, width="stretch", hide_index=True, height=340)
             st.download_button(_dl("⬇ 下载全量结果 CSV", "⬇ 全件 CSV"),
                                wide.to_csv(index=False).encode("utf-8-sig"),
                                file_name="compliance_screen_all.csv", mime="text/csv",
