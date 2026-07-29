@@ -785,10 +785,10 @@ with tab_deduct:
         f"FROM nst.v_shipped_settlement WHERE ym = '{ym}'")
 
     if _sh_err:
-        st.error(t("出荷日基准视图未取得 or 连接错误: ") + _sh_err)
+        st.error(t("发货日基准视图未取得或连接错误: ") + _sh_err)
         st.info(t("需在元川 PG 执行 nst_api/sql/023,024 并跑 pull_sales_invoice"))
     elif _sh is None or _sh.empty:
-        st.info(t("当月无出荷数据 · 请先跑 nst_api.pull_sales_invoice"))
+        st.info(t("当月无发货数据 · 请先跑 nst_api.pull_sales_invoice"))
     else:
         d = _sh.copy()
         # PG の NUMERIC は decimal.Decimal で載るため演算前に float 化
@@ -930,7 +930,7 @@ with tab_payout:
         "FROM shopee.v_payout_order ORDER BY payout_date DESC, shop_key")
 
     if _po_err:
-        st.error(t("shopee 财务视图未取得 or 连接错误: ") + _po_err)
+        st.error(t("Shopee 财务视图未取得或连接错误: ") + _po_err)
     elif _po_opt is None or _po_opt.empty:
         st.info(t("Shopee 拨款数据为空 · 请在 page 27 手动同步或等待每日自动拉取"))
     else:
@@ -1026,10 +1026,10 @@ with tab_loss:
         f"FROM nst.v_shipped_order WHERE ym = '{ym}'")
 
     if _lo_err:
-        st.error(t("注文単位ビュー未取得 or 连接错误: ") + _lo_err)
+        st.error(t("订单级视图未取得或连接错误: ") + _lo_err)
         st.info(t("需在元川 PG 执行 nst_api/sql/025_create_shipped_order_view.sql"))
     elif _lo is None or _lo.empty:
-        st.info(t("当月无出荷数据 · 请先跑 nst_api.pull_sales_invoice"))
+        st.info(t("当月无发货数据 · 请先跑 nst_api.pull_sales_invoice"))
     else:
         L = _lo.copy()
         for c in ("gmv_local", "received_local", "gmv_jpy", "received_jpy",
@@ -1046,6 +1046,11 @@ with tab_loss:
             if _kp:
                 L = L[L["market"].isin(_kp)]
 
+    if _lo is not None and not _lo.empty and L.empty:
+        # 市場フィルタで全部落ちた場合。この先の groupby / 除算が壊れる
+        st.info(t("当前市场筛选下无数据"))
+
+    if _lo is not None and not _lo.empty and not L.empty:
         # 損失額: zero はプラットフォーム金額、unmatched は NST 按分でしか測れない
         L["loss_jpy"] = L.apply(
             lambda r: r["nst_amount_jpy"] if r["settle_status"] == "unmatched"
@@ -1062,7 +1067,7 @@ with tab_loss:
                   f"¥{_zero['loss_jpy'].sum():,.0f}", delta_color="inverse")
         k2.metric(_ll("❓ 未匹配（待排除）", "❓ 未突合（要調査）"), f"{len(_unm):,}",
                   f"¥{_unm['loss_jpy'].sum():,.0f}", delta_color="off")
-        k3.metric(_ll("🧩 金额缺失（数据缺口）", "🧩 金額欠落（データ穴）"),
+        k3.metric(_ll("🧩 金额缺失（数据缺口）", "🧩 金額欠落（データ欠損）"),
                   f"{len(_noamt):,}",
                   _ll("需补拉明细", "要再取得") if len(_noamt) else None,
                   delta_color="off")
@@ -1082,21 +1087,22 @@ with tab_loss:
                 _rate = r["orders"] / r["all_o"] * 100 if r["all_o"] else 0
                 if _rate > 95:
                     _why = _ll("该平台明细 API 未接入 → 全部未匹配是必然，不是损失",
-                               "明細 API 未接続 → 全件未突合は当然")
+                               "明細 API 未接続のため全件が未突合になります（損失ではありません）")
                 elif r["platform"] == "Coupang":
-                    _why = _ll("Coupang 売上认识日在配送完成后才立 → 本月发货的下月才认，属结构性滞后",
-                               "売上認識日は配送完了後 → 構造的なラグ")
+                    _why = _ll("Coupang 的销售确认日在配送完成后才生成 → 本月发货的下月才确认，属结构性滞后",
+                               "売上認識日は配送完了後に立つため、構造的なラグです")
                 else:
                     _why = _ll("多为跨月下单，费用明细只拉了本月 → 回填上月即可消除",
-                               "前月注文。明細の取得範囲の穴")
+                               "前月の注文が多く、費用明細を当月分しか取得していません → 前月を回填すれば解消します")
                 _lines.append(f"- **{r['platform']}** {int(r['orders']):,} "
                               + _ll("单", "件") + f"（¥{r['jpy']:,.0f}）· {_why}")
-            st.info(_ll("**未匹配 ≠ 损失。按平台拆开看原因：**\n", "**未突合の内訳：**\n")
+            st.info(_ll("**未匹配 ≠ 损失。按平台拆开看原因：**\n",
+                       "**未突合 ≠ 損失です。プラットフォーム別に原因を切り分けます：**\n")
                     + "\n".join(_lines))
 
         if _risk.empty:
             st.success(_ll("✅ 本月发货订单全部有结算记录，无损失候选",
-                           "✅ 当月の出荷注文はすべて結算済み"))
+                           "✅ 当月の出荷注文はすべて精算済みです"))
         else:
             _LDL = _ll("⬇️ 下载 CSV", "⬇️ CSV ダウンロード")
 
@@ -1123,11 +1129,13 @@ with tab_loss:
                         _ll("发生率", "発生率"):
                             f"{(r['orders'] / r['all_orders'] * 100):.2f}%"
                             if r["all_orders"] else "—",
-                        _ll("损失额(推定)", "損失額(推定)"): f"¥{r['loss_jpy']:,.0f}",
+                        _ll("损失额(估算)", "損失額(推定)"): f"¥{r['loss_jpy']:,.0f}",
                     })
                     rows.append(row)
-                html_table(pd.DataFrame(rows))
-                st.download_button(_LDL, g.to_csv(index=False).encode("utf-8-sig"),
+                # 画面と CSV の列見出しを揃える（英語の生列名で落とさない）
+                _tbl = pd.DataFrame(rows)
+                html_table(_tbl)
+                st.download_button(_LDL, _tbl.to_csv(index=False).encode("utf-8-sig"),
                                    file_name=f"loss_{key}_{ym}.csv",
                                    mime="text/csv", key=f"loss_dl_{key}")
 
@@ -1168,8 +1176,8 @@ with tab_loss:
                         "settle_status": _ll("状态", "状態"),
                         "gmv_local": _ll("订单金额(当地币)", "注文金額(現地)"),
                         "received_local": _ll("实收(当地币)", "実収(現地)"),
-                        "loss_jpy": _ll("损失额(推定 ¥)", "損失額(推定 ¥)")})
-                    .sort_values(_ll("损失额(推定 ¥)", "損失額(推定 ¥)"),
+                        "loss_jpy": _ll("损失额(估算 ¥)", "損失額(推定 ¥)")})
+                    .sort_values(_ll("损失额(估算 ¥)", "損失額(推定 ¥)"),
                                  ascending=False))
             st.dataframe(_det, use_container_width=True, height=460,
                          hide_index=True)
