@@ -322,9 +322,10 @@ st.divider()
 
 _owner_tab = "👤 担当者別" if get_lang() == "ja" else "👤 店铺负责人"
 (tab_day, tab_owner, tab_shop, tab_market, tab_sku, tab_alert, tab_deduct,
- tab_payout) = st.tabs(
+ tab_payout, tab_loss) = st.tabs(
     [t("📈 月内日次推移"), _owner_tab, t("🏪 店舗別"), t("🌐 市場別"),
-     t("🏆 TOP SKU"), t("⚠️ 价格预警"), t("🧾 店铺扣减"), t("💵 拨款明细")]
+     t("🏆 TOP SKU"), t("⚠️ 价格预警"), t("🧾 店铺扣减"), t("💵 拨款明细"),
+     t("🩸 未结算/损失")]
 )
 
 # ============================================================
@@ -984,6 +985,199 @@ with tab_payout:
                 _view.to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"shopee_payout_{_sel_d}.csv", mime="text/csv",
                 key="po_dl")
+
+
+# ============================================================
+# Tab 8：未结算/损失（発送したのに入金が立たない注文）
+#   JO 2026-07-29:「0 で計上されているのは返金や紛失で結算されなかった可能性。
+#                   これは当社の純損失。KPI にして一覧も出す」
+#   nst.v_shipped_order が注文 1 件 = 1 行で状態を 4 つに分類する:
+#     settled 入金済 / pending 未入金(正常) / zero 実収≤0 / unmatched 明細に無い
+# ============================================================
+with tab_loss:
+    _lj = get_lang() == "ja"
+
+    def _ll(zh: str, ja: str) -> str:
+        return ja if _lj else zh
+
+    st.caption(t(
+        "发货了但没收到钱的订单 · 以【发货日】为基准 · "
+        "「零结算」= 平台侧查到该单、但实收明确 ≤ 0（退款 / 丢件 / 全额相抵）→ **唯一可判定为损失的一类** · "
+        "「未匹配」= 平台明细里没有这个订单号 → 三种原因混在一起（拉取范围没覆盖 / 平台确认周期未到 / 该平台没接明细API），"
+        "要先按平台排除才能谈损失 · 「金额缺失」= 匹配上了但金额字段为空 → 数据缺口，需补拉 · "
+        "「未入金」是发货后正常的等待期，不算损失"
+    ))
+
+    def _lq(sql: str):
+        try:
+            from shared.cache import cached_df
+            return cached_df(conn, sql, None, ver=_ship_ver()), None
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None, str(e)
+
+    _lo, _lo_err = _lq(
+        "SELECT ym, ship_date, market, platform, country, shop, order_no, "
+        "invoice_no, order_ym_prefix, settle_status, gmv_local, received_local, "
+        "gmv_jpy, received_jpy, nst_amount_jpy "
+        f"FROM nst.v_shipped_order WHERE ym = '{ym}'")
+
+    if _lo_err:
+        st.error(t("注文単位ビュー未取得 or 连接错误: ") + _lo_err)
+        st.info(t("需在元川 PG 执行 nst_api/sql/025_create_shipped_order_view.sql"))
+    elif _lo is None or _lo.empty:
+        st.info(t("当月无出荷数据 · 请先跑 nst_api.pull_sales_invoice"))
+    else:
+        L = _lo.copy()
+        for c in ("gmv_local", "received_local", "gmv_jpy", "received_jpy",
+                  "nst_amount_jpy"):
+            L[c] = pd.to_numeric(L[c], errors="coerce").astype(float).fillna(0)
+
+        if mk:
+            from shared.markets import MARKET_KOREA as _MK2, MARKET_SEA as _MS2
+            _kp = set()
+            if _MS2 in mk:
+                _kp.add("ASEAN")
+            if _MK2 in mk:
+                _kp.add("KOREA")
+            if _kp:
+                L = L[L["market"].isin(_kp)]
+
+        # 損失額: zero はプラットフォーム金額、unmatched は NST 按分でしか測れない
+        L["loss_jpy"] = L.apply(
+            lambda r: r["nst_amount_jpy"] if r["settle_status"] == "unmatched"
+            else (r["gmv_jpy"] if r["settle_status"] == "zero" else 0.0), axis=1)
+
+        _zero = L[L["settle_status"] == "zero"]
+        _unm = L[L["settle_status"] == "unmatched"]
+        _noamt = L[L["settle_status"] == "no_amount"]
+        _risk = L[L["settle_status"].isin(("zero", "unmatched"))]
+        _n_all = len(L)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric(_ll("🩸 零结算（确认损失）", "🩸 実収≤0（損失確定）"), f"{len(_zero):,}",
+                  f"¥{_zero['loss_jpy'].sum():,.0f}", delta_color="inverse")
+        k2.metric(_ll("❓ 未匹配（待排除）", "❓ 未突合（要調査）"), f"{len(_unm):,}",
+                  f"¥{_unm['loss_jpy'].sum():,.0f}", delta_color="off")
+        k3.metric(_ll("🧩 金额缺失（数据缺口）", "🧩 金額欠落（データ穴）"),
+                  f"{len(_noamt):,}",
+                  _ll("需补拉明细", "要再取得") if len(_noamt) else None,
+                  delta_color="off")
+        k4.metric(_ll("已入金 / 发货订单", "入金済 / 出荷注文"),
+                  f"{len(L[L['settle_status'] == 'settled']):,} / {_n_all:,}",
+                  f"{(len(_zero) / _n_all * 100):.2f}% " + _ll("损失率", "損失率")
+                  if _n_all else None, delta_color="off")
+
+        # 未匹配は原因が 3 つ混在する。プラットフォーム別に出さないと誤読される
+        if not _unm.empty:
+            _up = (_unm.groupby("platform", as_index=False)
+                   .agg(orders=("order_no", "nunique"), jpy=("loss_jpy", "sum")))
+            _base = L.groupby("platform", as_index=False).agg(all_o=("order_no", "nunique"))
+            _up = _up.merge(_base, on="platform", how="left")
+            _lines = []
+            for _, r in _up.sort_values("orders", ascending=False).iterrows():
+                _rate = r["orders"] / r["all_o"] * 100 if r["all_o"] else 0
+                if _rate > 95:
+                    _why = _ll("该平台明细 API 未接入 → 全部未匹配是必然，不是损失",
+                               "明細 API 未接続 → 全件未突合は当然")
+                elif r["platform"] == "Coupang":
+                    _why = _ll("Coupang 売上认识日在配送完成后才立 → 本月发货的下月才认，属结构性滞后",
+                               "売上認識日は配送完了後 → 構造的なラグ")
+                else:
+                    _why = _ll("多为跨月下单，费用明细只拉了本月 → 回填上月即可消除",
+                               "前月注文。明細の取得範囲の穴")
+                _lines.append(f"- **{r['platform']}** {int(r['orders']):,} "
+                              + _ll("单", "件") + f"（¥{r['jpy']:,.0f}）· {_why}")
+            st.info(_ll("**未匹配 ≠ 损失。按平台拆开看原因：**\n", "**未突合の内訳：**\n")
+                    + "\n".join(_lines))
+
+        if _risk.empty:
+            st.success(_ll("✅ 本月发货订单全部有结算记录，无损失候选",
+                           "✅ 当月の出荷注文はすべて結算済み"))
+        else:
+            _LDL = _ll("⬇️ 下载 CSV", "⬇️ CSV ダウンロード")
+
+            # 集計表は **zero のみ**。unmatched を混ぜると未接続プラットフォームの
+            # 件数に埋もれて、実際に金を落としている店舗が見えなくなる
+            def _grp(keys, label_cols, key):
+                g = (_zero.groupby(keys, as_index=False)
+                     .agg(orders=("order_no", "nunique"),
+                          loss_jpy=("loss_jpy", "sum"))
+                     .sort_values("loss_jpy", ascending=False))
+                if g.empty:
+                    st.caption(_ll("（无零结算订单）", "（実収≤0 の注文なし）"))
+                    return
+                # 分母は同じ切り口の全出荷注文（率で読めるように）
+                base = (L.groupby(keys, as_index=False)
+                        .agg(all_orders=("order_no", "nunique")))
+                g = g.merge(base, on=keys, how="left")
+                rows = []
+                for _, r in g.iterrows():
+                    row = {lbl: r[c] for c, lbl in label_cols}
+                    row.update({
+                        _ll("损失订单", "損失注文"): f"{int(r['orders']):,}",
+                        _ll("发货订单", "出荷注文"): f"{int(r['all_orders']):,}",
+                        _ll("发生率", "発生率"):
+                            f"{(r['orders'] / r['all_orders'] * 100):.2f}%"
+                            if r["all_orders"] else "—",
+                        _ll("损失额(推定)", "損失額(推定)"): f"¥{r['loss_jpy']:,.0f}",
+                    })
+                    rows.append(row)
+                html_table(pd.DataFrame(rows))
+                st.download_button(_LDL, g.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name=f"loss_{key}_{ym}.csv",
+                                   mime="text/csv", key=f"loss_dl_{key}")
+
+            st.markdown("**" + _ll("零结算 · 平台", "実収≤0 · プラットフォーム") + "**")
+            _grp(["platform"], [("platform", _ll("平台", "プラットフォーム"))], "platform")
+
+            st.markdown("**" + _ll("零结算 · 国家", "実収≤0 · 国別") + "**")
+            _grp(["platform", "country"],
+                 [("platform", _ll("平台", "プラットフォーム")),
+                  ("country", _ll("国家", "国"))], "country")
+
+            st.markdown("**" + _ll("零结算 · 店铺", "実収≤0 · 店舗") + "**")
+            _grp(["platform", "country", "shop"],
+                 [("platform", _ll("平台", "プラットフォーム")),
+                  ("country", _ll("国家", "国")),
+                  ("shop", _ll("店铺", "店舗"))], "shop")
+
+            st.markdown("**" + _ll("明细清单", "明細一覧") + "**")
+            _STATUS = {"zero": _ll("零结算（实收≤0）", "実収≤0"),
+                       "unmatched": _ll("未匹配（平台无此单）", "未突合"),
+                       "no_amount": _ll("金额缺失（数据缺口）", "金額欠落")}
+            _pick = st.multiselect(
+                _ll("状态", "状態"), list(_STATUS.values()),
+                default=[_STATUS["zero"]], key="loss_status")
+            _sel = [k for k, v in _STATUS.items() if v in _pick]
+            _det = L[L["settle_status"].isin(_sel)].copy()
+            _det["settle_status"] = _det["settle_status"].map(_STATUS)
+            _det = (_det[["ship_date", "platform", "country", "shop", "order_no",
+                          "invoice_no", "settle_status", "gmv_local",
+                          "received_local", "loss_jpy"]]
+                    .rename(columns={
+                        "ship_date": _ll("发货日", "出荷日"),
+                        "platform": _ll("平台", "プラットフォーム"),
+                        "country": _ll("国家", "国"),
+                        "shop": _ll("店铺", "店舗"),
+                        "order_no": _ll("订单号", "注文番号"),
+                        "invoice_no": _ll("NST 请求书", "NST 請求書"),
+                        "settle_status": _ll("状态", "状態"),
+                        "gmv_local": _ll("订单金额(当地币)", "注文金額(現地)"),
+                        "received_local": _ll("实收(当地币)", "実収(現地)"),
+                        "loss_jpy": _ll("损失额(推定 ¥)", "損失額(推定 ¥)")})
+                    .sort_values(_ll("损失额(推定 ¥)", "損失額(推定 ¥)"),
+                                 ascending=False))
+            st.dataframe(_det, use_container_width=True, height=460,
+                         hide_index=True)
+            st.download_button(
+                _ll("⬇️ 下载 CSV（损失订单全明细）", "⬇️ CSV ダウンロード"),
+                _det.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"loss_orders_{ym}.csv", mime="text/csv",
+                key="loss_dl_detail")
 
 
 st.divider()
