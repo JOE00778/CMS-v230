@@ -337,6 +337,8 @@ services:
     volumes:
       - ../../../database:/app:ro       # compliance_api コード(scp 直送で更新)
       - C:/Users/smiki/secrets/compliance:/secrets:ro
+      # JAN 外部取得の実装は CMS 側にしか無い。コピーを作らず 1 ファイルだけ ro マウント。
+      - ../../shared/jan_lookup.py:/opt/cms_shared/jan_lookup.py:ro
     networks:
       - cms_net
     deploy:
