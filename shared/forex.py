@@ -27,6 +27,28 @@ FX_TO_JPY: dict[str, float] = {
     "BRL": 29.03,      # ブラジル
 }
 
+# 国コード → 通貨コード。
+# ⚠️ FX_TO_JPY のキーは **通貨コード**（PHP/VND…）。国コード（PH/VN…）で直接
+# 引くと全件 miss して fillna(1.0) に落ち、「現地通貨 1 = 1 円」という壊れた
+# 換算になる（2026-07-29 に page14 で実際に発生していた · VND は 180 倍過大）。
+# 国から円レートを得る時は必ず country_to_jpy() を使うこと。
+COUNTRY_TO_CURRENCY: dict[str, str] = {
+    "JP": "JPY", "PH": "PHP", "TW": "TWD", "MY": "MYR", "SG": "SGD",
+    "VN": "VND", "TH": "THB", "ID": "IDR", "KR": "KRW", "BR": "BRL",
+    "CN": "CNY", "US": "USD",
+}
+
+
+def country_to_jpy(country: str | None) -> float | None:
+    """国コード → 1 現地通貨あたりの円。未知なら **None**（1.0 に落とさない）。
+
+    None を返すのは意図的。呼び出し側で「換算できなかった件数」を可視化させ、
+    黙って等価換算するのを防ぐ。
+    """
+    cur = COUNTRY_TO_CURRENCY.get((country or "").upper())
+    return FX_TO_JPY.get(cur) if cur else None
+
+
 # 货币显示符号 + 日文名(用于首页展示对照 NetSuite)
 FX_SYMBOLS: dict[str, str] = {
     "JPY": "¥", "PHP": "₱", "TWD": "NT$", "MYR": "RM", "SGD": "S$",

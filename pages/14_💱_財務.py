@@ -457,7 +457,14 @@ def _process_income(df_income):
         df_income["nst_bill"] = 0.0
 
     # JPY 换算系数
-    df_income["_jpy_rate"] = df_income["country"].map(FX_TO_JPY).fillna(1.0)
+    # ⚠️ 旧実装は country(PH/VN…) を FX_TO_JPY(キーは PHP/VND…) で引いていたため
+    #    全件 miss → fillna(1.0) で「現地通貨 1 = 1 円」になっていた（VND は 180 倍過大）。
+    #    国→通貨→レートの 2 段引きに修正。未知国は 1.0 に落とすが件数を残す。
+    from shared.forex import country_to_jpy
+    _rate = df_income["country"].map(country_to_jpy)
+    df_income.attrs["fx_unmapped"] = sorted(
+        df_income.loc[_rate.isna(), "country"].dropna().unique().tolist())
+    df_income["_jpy_rate"] = _rate.fillna(1.0)
     return df_income
 
 
