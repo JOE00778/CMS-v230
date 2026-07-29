@@ -161,6 +161,17 @@ def resolve_by_jan(jan: str) -> dict:
     return out
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _screen_results() -> pd.DataFrame:
+    """週次ゲート(scheduler)の保存済み判定。内容チームはここを見て記入可否を決める。"""
+    try:
+        return pd.read_sql_query(
+            "SELECT jan, title, maker, country, verdict, reason, stopped_at, screened_at "
+            "FROM compliance.screen_result ORDER BY maker, jan", _conn())
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _nst_candidates() -> pd.DataFrame:
     """合規判定を掛けるべき候補=NST 在庫にあり、飞书にも Shopify にも未登場の品。
@@ -351,6 +362,42 @@ def _batch_tab(rules):
         f"每次最多 {BATCH_CAP} 件(外部取数限速),结果可下载 CSV 交给内容组。",
         "手順:**候補品 → 合規判定(本頁) → 通ったものだけ飛書表へ記入 → 出品**。"
         f"1 回最大 {BATCH_CAP} 件。"))
+
+    saved = _screen_results()
+    if not saved.empty:
+        wide = saved.pivot_table(index=["jan", "title", "maker"], columns="country",
+                                 values="verdict", aggfunc="first").reset_index()
+        mark = {"red": "🔴", "yellow": "🟡", "green": "🟢", "unknown": "⚪"}
+        for c in ("US", "PH", "CA"):
+            if c in wide:
+                wide[c] = wide[c].map(mark).fillna("")
+        rsn = (saved[saved["verdict"].isin(["red", "yellow"])]
+               .groupby("jan")["reason"].apply(lambda s: " ｜ ".join(dict.fromkeys(s))))
+        wide[_dl("原因/需确认事项", "理由·確認事項")] = wide["jan"].map(rsn).fillna("")
+        wide.columns = [{"jan": "JAN", "title": _dl("商品名", "商品名"),
+                         "maker": _dl("厂商", "メーカー")}.get(c, c) for c in wide.columns]
+        n = {v: int((saved["verdict"] == v).sum()) for v in ("red", "yellow", "green", "unknown")}
+        last = pd.to_datetime(saved["screened_at"]).max()
+        with st.expander(
+                _dl(f"📑 已保存的筛查结果 {len(wide)} 件(每周自动更新·最近 {last:%m-%d %H:%M})",
+                    f"📑 保存済み判定 {len(wide)} 件(週次自動·最終 {last:%m-%d %H:%M})"),
+                expanded=True):
+            st.caption(_dl(
+                f"判定数(国別合計):🔴 {n['red']} · 🟡 {n['yellow']} · 🟢 {n['green']} · ⚪ {n['unknown']}"
+                " —— 内容组按此表决定录不录入飞书表",
+                f"判定数:🔴 {n['red']} · 🟡 {n['yellow']} · 🟢 {n['green']} · ⚪ {n['unknown']}"))
+            only = st.checkbox(_dl("只看需处理(🔴/🟡)", "要対応のみ表示"), value=True, key="scr_only")
+            view = wide
+            if only:
+                m = wide[[c for c in ("US", "PH", "CA") if c in wide]].apply(
+                    lambda r: r.astype(str).str.contains("🔴|🟡").any(), axis=1)
+                view = wide[m]
+            st.dataframe(view, width="stretch", hide_index=True, height=340)
+            st.download_button(_dl("⬇ 下载全量结果 CSV", "⬇ 全件 CSV"),
+                               wide.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="compliance_screen_all.csv", mime="text/csv",
+                               key="dl_saved")
+        st.divider()
 
     src = st.radio(
         _dl("候选来源", "候補ソース"),
