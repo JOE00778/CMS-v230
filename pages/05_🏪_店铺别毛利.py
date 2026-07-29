@@ -733,6 +733,121 @@ with tab_alert:
 with tab_deduct:
 
     # ============================================================
+    # 全プラットフォーム集計（ASEAN=Shopee + KOREA=Coupang）
+    #   Boss 2026-07-29「coupang 店舗も足せばプラットフォーム側の全店舗が揃う」
+    #   ⚠️ 口径が違うものを 1 表に並べるので、必ず注記を出す:
+    #      Shopee = 入金日ベース（現金主義）· Coupang = 売上認知月の結算書
+    #      → 同じ月でも対象期間がずれる。Coupang は月末後に発行されるため当月は空が正常
+    # ============================================================
+    from shared.forex import FX_TO_JPY, usd_export_rate
+
+    st.markdown("#### " + ("① プラットフォーム集計" if get_lang() == "ja"
+                           else "① 平台汇总"))
+    st.caption(t(
+        "两平台合计（日元换算）· ⚠️ 口径不同：Shopee=按拨款日（现金主义）· "
+        "Coupang=按销售认知月的结算单（月末后生成，当月为空属正常）· 不可直接相减"
+    ))
+
+    def _plat_q(sql: str, ver: str):
+        try:
+            from shared.cache import cached_df
+            return cached_df(conn, sql, None, ver=ver), None
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None, str(e)
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _plat_ver() -> str:
+        try:
+            row = get_readonly_connection().execute(
+                "SELECT max(finished_at) FROM shopee.pull_log").fetchone()
+            if row and row[0]:
+                return str(row[0])
+        except Exception:
+            pass
+        return dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d %H")
+
+    _usd_jpy = usd_export_rate(str(ym))
+    _krw_jpy = FX_TO_JPY.get("KRW", 0.095)
+
+    _sp_sum, _sp_e = _plat_q(
+        "SELECT coalesce(sum(orders),0) orders, "
+        "coalesce(sum(payout_amount),0) payout_usd, "
+        "coalesce(sum(escrow_total * payout_amount / nullif(from_amount,0)),0) income_usd, "
+        "coalesce(sum(deduction_total * payout_amount / nullif(from_amount,0)),0) ded_usd, "
+        "coalesce(sum(ads_fee * payout_amount / nullif(from_amount,0)),0) ads_usd, "
+        "count(distinct shop_key) shops "
+        f"FROM shopee.v_payout_monthly WHERE ym = '{ym}'", _plat_ver())
+
+    _cp_sum, _cp_e = _plat_q(
+        "SELECT coalesce(sum(total_sale),0) sale_krw, "
+        "coalesce(sum(final_amount),0) final_krw, "
+        "coalesce(sum(total_sale - final_amount),0) ded_krw, "
+        "coalesce(sum(deduction_amount),0) ads_krw "
+        "FROM coupang.settlement WHERE revenue_recognition_year_month = "
+        f"'{ym}'", _plat_ver())
+
+    _plat_rows = []
+    if _sp_sum is not None and not _sp_sum.empty:
+        _r = _sp_sum.iloc[0]
+        _inc = float(_r["income_usd"]) * _usd_jpy
+        _ded = float(_r["ded_usd"]) * _usd_jpy
+        _plat_rows.append({
+            "market": "🌏 ASEAN (Shopee)", "shops": int(_r["shops"]),
+            "orders": int(_r["orders"]), "income": _inc, "ded": _ded,
+            "ads": float(_r["ads_usd"]) * _usd_jpy,
+            "net": float(_r["payout_usd"]) * _usd_jpy,
+        })
+    if _cp_sum is not None and not _cp_sum.empty:
+        _r = _cp_sum.iloc[0]
+        _plat_rows.append({
+            "market": "🇰🇷 KOREA (Coupang)", "shops": 1, "orders": 0,
+            "income": float(_r["sale_krw"]) * _krw_jpy,
+            "ded": float(_r["ded_krw"]) * _krw_jpy,
+            "ads": float(_r["ads_krw"]) * _krw_jpy,
+            "net": float(_r["final_krw"]) * _krw_jpy,
+        })
+
+    if not _plat_rows:
+        st.info(t("当月两平台均无数据"))
+    else:
+        _pdf = pd.DataFrame(_plat_rows)
+        _t = _pdf[["income", "ded", "ads", "net"]].sum()
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric(t("收入合计"), f"¥{_t['income']:,.0f}")
+        p2.metric(t("扣减合计"), f"¥{_t['ded']:,.0f}")
+        p3.metric(t("扣减率"),
+                  f"{(_t['ded'] / _t['income'] * 100):.1f}%" if _t["income"] else "—")
+        p4.metric(t("广告费"), f"¥{_t['ads']:,.0f}")
+
+        _ja0 = get_lang() == "ja"
+        _rows = [{
+            ("市場" if _ja0 else "市场"): r["market"],
+            ("店舗数" if _ja0 else "店铺数"): r["shops"],
+            ("注文数" if _ja0 else "订单数"): f"{r['orders']:,}" if r["orders"] else "—",
+            ("収入" if _ja0 else "收入"): f"¥{r['income']:,.0f}",
+            ("控除合計" if _ja0 else "扣减合计"): f"¥{r['ded']:,.0f}",
+            ("控除率" if _ja0 else "扣减率"):
+                f"{(r['ded'] / r['income'] * 100):.1f}%" if r["income"] else "—",
+            ("広告費" if _ja0 else "广告费"): f"¥{r['ads']:,.0f}",
+            ("入金/最終支払" if _ja0 else "拨款/最终支付"): f"¥{r['net']:,.0f}",
+        } for r in _plat_rows]
+        html_table(pd.DataFrame(_rows))
+        st.download_button(
+            ("⬇️ CSV ダウンロード" if _ja0 else "⬇️ 下载 CSV"),
+            _pdf.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"platform_summary_{ym}.csv", mime="text/csv",
+            key="plat_dl")
+        if _cp_sum is not None and _cp_sum.empty is False and float(
+                _cp_sum.iloc[0]["final_krw"]) == 0:
+            st.caption(t("※ Coupang 当月结算单尚未生成（月末后发行）· 上表 KOREA 行为 0"))
+
+    st.divider()
+
+    # ============================================================
     # Shopee（ASEAN）· **現金主義** = 入金(payout)ベース
     #   Boss 2026-07-29: 財務は必ず現金主義。注文発生日ではなく着金した回で括る。
     #   官方エクスポート（我的收入 > 已完成拨款）の Summary と数値一致を確認済み。
@@ -747,7 +862,7 @@ with tab_deduct:
     if mk and _MK_SEA not in mk:
         st.info(t("Shopee（东南亚）扣减 · 请在市场筛选中包含东南亚或清空筛选"))
     else:
-        st.markdown("#### " + _spl("🌏 ASEAN · Shopee", "🌏 ASEAN · Shopee"))
+        st.markdown("#### " + _spl("② 🌏 ASEAN · Shopee", "② 🌏 ASEAN · Shopee"))
         st.caption(t(
             "Shopee 各店「已完成拨款」· 现金主义（与 Shopee 后台 我的收入 > 已完成拨款 同口径）· "
             "按拨款批次归集而非下单日 · 结算币 USD · 每日自动拉取（page 27 可手动同步）"
