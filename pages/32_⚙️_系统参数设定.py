@@ -43,12 +43,13 @@ def _df(sql: str, params=None) -> pd.DataFrame:
 st.title(t("⚙️ 系统参数设定"))
 st.caption(t("仅授权人员可改 · 各业务模块阈值/白名单独立 tab 管理"))
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     t("💡 运营调整建议"),
     t("📦 発注 AI v2"),
     t("📊 NST vs JDL 账实对账"),
     t("🏷️ 货架用途指定"),
     t("🏢 输出供应商名单"),
+    t("🛡️ 合规数据源"),
 ])
 
 # ============================================================
@@ -386,3 +387,61 @@ with tab5:
                 st.rerun()
             else:
                 st.warning(t("请填供货商ID"))
+
+
+# ============================================================
+# tab6 · 合规数据源（官方源盯梢 / 候选品筛查 の手动更新）
+#   定时は scheduler が回すが、法規が動いた等で待てない時に人が押せる口。
+#   run_now を立てるだけ(実処理は cms_compliance_scheduler が拾う)。
+#   compliance schema 未接入の環境では静かに案内だけ出す。
+# ============================================================
+with tab6:
+    st.subheader(t("🛡️ 合规数据源 · 手动更新"))
+    st.caption(t(
+        "官方源(FDA/CPSC/Health Canada/ASEAN 等 8 源)与候选品筛查は自动定时执行。"
+        "法规有动静、想立刻确认时可在此手动触发——按下后由采集容器在 1 分钟内开始。"))
+
+    JOB_LABELS = {
+        "compliance_source_watch": t("官方数据源盯梢(8 源快照+变化检测)"),
+        "compliance_screen_candidates": t("候选品一括筛查(在库未上架品)"),
+        "compliance_shopify_sync": t("Shopify 成分同步"),
+    }
+    try:
+        jobs = pd.read_sql_query(
+            "SELECT job_key, frequency, run_time, run_day, run_weekday, enabled, run_now, "
+            "last_run_at, last_status FROM compliance.pull_schedule ORDER BY job_key", conn)
+    except Exception:
+        jobs = pd.DataFrame()
+
+    if jobs.empty:
+        st.info(t("compliance schema 未接入(本地环境或未迁移)"))
+    else:
+        freq_zh = {"daily": t("每日"), "weekly": t("每周"), "monthly": t("每月")}
+        for r in jobs.itertuples():
+            when = freq_zh.get(r.frequency, r.frequency)
+            if r.frequency == "monthly" and r.run_day:
+                when += t(" {d} 日").format(d=int(r.run_day))
+            elif r.frequency == "weekly" and r.run_weekday is not None:
+                when += t("週{w}").format(w="一二三四五六日"[int(r.run_weekday)])
+            when += f" {r.run_time}"
+            last = r.last_run_at.strftime("%m-%d %H:%M") if pd.notna(r.last_run_at) else "—"
+            mark = {"ok": "🟢", "partial": "🟡", "error": "🔴"}.get(r.last_status, "⚪")
+
+            c1, c2, c3 = st.columns([5, 3, 2])
+            c1.markdown(f"**{JOB_LABELS.get(r.job_key, r.job_key)}**")
+            c1.caption(t("排程:{w} · 最近执行:{l} {m}").format(w=when, l=last, m=mark)
+                       + ("" if r.enabled else t(" · ⏸ 已停用")))
+            if r.run_now:
+                c2.info(t("⏳ 已排队,采集器将在 1 分钟内开始"))
+            elif not r.enabled:
+                c2.caption(t("停用中(凭据未配置等)"))
+            if c3.button(t("▶ 立即更新"), key=f"cmp_run_{r.job_key}",
+                         disabled=bool(r.run_now) or not r.enabled):
+                conn.execute(
+                    "UPDATE compliance.pull_schedule SET run_now = TRUE, updated_at = NOW() "
+                    "WHERE job_key = %(k)s", {"k": r.job_key})
+                conn.commit()
+                st.success(t("✅ 已触发:{n}").format(n=JOB_LABELS.get(r.job_key, r.job_key)))
+                st.rerun()
+            st.divider()
+        st.caption(t("※ 触发后结果在「🛡️ 合规检测」页查看(判定标准 tab = 官方源状态/变化告警)"))
