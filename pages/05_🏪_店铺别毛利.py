@@ -733,35 +733,27 @@ with tab_alert:
 with tab_deduct:
 
     # ============================================================
-    # 統合ビュー: 市場 → 国 → 店舗（ASEAN=Shopee + KOREA=Coupang を 1 つの階層で）
-    #   Boss 2026-07-29「coupang と shopee のデータを合わせて表示 · 市場は ASEAN と KOREA」
-    #   ⚠️ 2 プラットフォームは口径が違う（Shopee=入金日/現金主義、Coupang=売上認知月の
-    #      結算書）。同じ表に並べる以上、注記を必ず出す。差分を取る使い方はできない。
-    #   通貨は日元に統一（両者の基準通貨が違うため · CMS の基準通貨でもある）。
+    # 出荷日基準の損益（市場 → 国 → 店舗）
+    #   JO 2026-07-29:「NST の注文番号を基準に、入金も注文番号で突合する。
+    #                   判断基準は出荷日の注文番号だけ」
+    #   nst.v_shipped_settlement は NST 請求書の注文番号を展開して
+    #   プラットフォーム側の手数料・入金を結んだもの。すべて出荷日で括る。
     # ============================================================
-    from shared.forex import FX_TO_JPY, usd_export_rate
-
-    # USD は会社口径の出口レート（page36 の「米ドル(出口)」· NST の 160 は輸入レート）
-    _uj = usd_export_rate(str(ym))
-    # KRW は **三金レート**（nst.currency_rate の月次）。従来の Coupang セクションと
-    # 同じ換算根拠にする。取れない場合のみ FX_TO_JPY の固定値にフォールバック
-    try:
-        from shared.forex import nst_monthly_rates
-        _kj = nst_monthly_rates(conn, "KRW", [str(ym)]).get(
-            str(ym), FX_TO_JPY.get("KRW", 0.095))
-    except Exception:
-        _kj = FX_TO_JPY.get("KRW", 0.095)
     _ja0 = get_lang() == "ja"
 
     def _u(zh: str, ja: str) -> str:
         return ja if _ja0 else zh
 
+    st.caption(t(
+        "以【出荷日】为唯一基准 · NST 销售额（出荷日）× 平台手数料/入金（按订单号突合）· "
+        "日元 · 出货后拨款需 1~2 周，故「已回款率」低属正常"
+    ))
+
     @st.cache_data(ttl=300, show_spinner=False)
-    def _uni_ver() -> str:
-        """両ドメインの最終取得時刻を版本に（どちらが更新されてもキャッシュが切れる）。"""
+    def _ship_ver() -> str:
         vs = []
-        for sql in ("SELECT max(finished_at) FROM shopee.pull_log",
-                    "SELECT max(last_run_at) FROM coupang.pull_schedule"):
+        for sql in ("SELECT max(pulled_at) FROM nst.sales_invoice",
+                    "SELECT max(finished_at) FROM shopee.pull_log"):
             try:
                 row = get_readonly_connection().execute(sql).fetchone()
                 if row and row[0]:
@@ -771,10 +763,10 @@ with tab_deduct:
         return "|".join(vs) or dt.datetime.now(
             dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d %H")
 
-    def _uq(sql: str):
+    def _shq(sql: str):
         try:
             from shared.cache import cached_df
-            return cached_df(conn, sql, None, ver=_uni_ver()), None
+            return cached_df(conn, sql, None, ver=_ship_ver()), None
         except Exception as e:
             try:
                 conn.rollback()
@@ -782,197 +774,117 @@ with tab_deduct:
                 pass
             return None, str(e)
 
-    def _f(series) -> "pd.Series":
-        """PG の NUMERIC は decimal.Decimal で載る → 演算前に必ず float 化。"""
-        return pd.to_numeric(series, errors="coerce").astype(float).fillna(0)
+    _sh, _sh_err = _shq(
+        "SELECT ym, market, platform, country, shop, invoices, orders, "
+        "matched_orders, settled_orders, matched_pct, settled_pct, "
+        "sales_jpy, deduction_jpy, shipping_jpy, payout_jpy, "
+        "gross_profit_jpy, gross_margin_pct, deduction_pct_with_shipping, "
+        "net_margin_est_pct "
+        f"FROM nst.v_shipped_settlement WHERE ym = '{ym}'")
 
-    # --- Shopee（ASEAN）· 入金ベース ------------------------------------
-    _sp_u, _sp_ue = _uq(
-        "SELECT country_code, shop_key, shop_name, orders, escrow_total, "
-        "deduction_total, ads_fee, from_amount, payout_amount "
-        f"FROM shopee.v_payout_monthly WHERE ym = '{ym}'")
-    # --- Coupang（KOREA）· 結算書ベース ---------------------------------
-    # ⚠️ 控除合計は「10 費目の合計」を使う（total_sale - final_amount ではない）。
-    #    Coupang 側の控除定義（10 費目の合計）に合わせる。total_sale - final_amount
-    #    だと 9.9%、10 費目合計だと 13.0% になる（final_amount には未清欠款など
-    #    費目以外の増減が入るため）。結算書の「控除」は費目合計が正。
-    _CP_DED_SQL = ("service_fee + seller_service_fee + seller_discount_coupon + "
-                   "downloadable_coupon + store_fee_discount + courantee_fee + "
-                   "courantee_customer_reward + deduction_amount + "
-                   "debt_of_last_week + dedicated_delivery_amount")
-    # ⚠️ **着金日(settlement_date)で括る** — 認知月ではない。
-    #    Coupang は「認知月 2026-06 → 着金 2026-07-22」のように 1 ヶ月ずれる。
-    #    Shopee 側を入金日で括っている以上、ここを認知月にすると同じ表の中で
-    #    現金主義と発生主義が混ざり、当月の KOREA が常に 0 になる（実際そうなっていた）。
-    _cp_u, _cp_ue = _uq(
-        f"SELECT total_sale, final_amount, deduction_amount, ({_CP_DED_SQL}) AS ded_total, "
-        "revenue_recognition_year_month AS recog_ym, settlement_date "
-        "FROM coupang.settlement WHERE to_char(settlement_date, 'YYYY-MM') = "
-        f"'{ym}'")
-
-    _uni_rows = []
-    if _sp_u is not None and not _sp_u.empty:
-        d = _sp_u.copy()
-        for c in ("orders", "escrow_total", "deduction_total", "ads_fee",
-                  "from_amount", "payout_amount"):
-            d[c] = _f(d[c])
-        # 費用は現地通貨建て → 入金の実効レートで USD 化 → 日元
-        _r = (d["payout_amount"] / d["from_amount"].replace(0, pd.NA)).fillna(0)
-        for _, r in d.iterrows():
-            _uni_rows.append({
-                "market": _u("🌏 ASEAN (Shopee)", "🌏 ASEAN (Shopee)"),
-                "country": r["country_code"],
-                "shop": r["shop_name"] or r["shop_key"],
-                "orders": r["orders"],
-                "income": r["escrow_total"] * (r["payout_amount"] / r["from_amount"]
-                                               if r["from_amount"] else 0) * _uj,
-                "ded": r["deduction_total"] * (r["payout_amount"] / r["from_amount"]
-                                               if r["from_amount"] else 0) * _uj,
-                "ads": r["ads_fee"] * (r["payout_amount"] / r["from_amount"]
-                                       if r["from_amount"] else 0) * _uj,
-                "net": r["payout_amount"] * _uj,
-            })
-    # KOREA は当月の結算書が無くても行を出す（結算書は認知月末後に発行されるため
-    # 当月は空になるのが正常。行ごと消すと「韓国が無い」ように見えてしまう）
-    if _cp_u is not None and not _cp_u.empty:
-        c = _cp_u.copy()
-        for col in ("total_sale", "final_amount", "deduction_amount", "ded_total"):
-            c[col] = _f(c[col])
-        _cp_vals = (c["total_sale"].sum() * _kj, c["ded_total"].sum() * _kj,
-                    c["deduction_amount"].sum() * _kj, c["final_amount"].sum() * _kj)
+    if _sh_err:
+        st.error(t("出荷日基准视图未取得 or 连接错误: ") + _sh_err)
+        st.info(t("需在元川 PG 执行 nst_api/sql/023,024 并跑 pull_sales_invoice"))
+    elif _sh is None or _sh.empty:
+        st.info(t("当月无出荷数据 · 请先跑 nst_api.pull_sales_invoice"))
     else:
-        _cp_vals = (0.0, 0.0, 0.0, 0.0)
-    # 結算書は 24 列すべて金額で **注文数を持たない**ため、注文 API から取った
-    # coupang.order_sheet を使う（2026-07-29 追加）。
-    # ⚠️ 期間は着金月ではなく **結算が対応する認知月**。7 月着金の結算書は
-    #    6 月受注分なので、着金月の注文数を当てると 1 ヶ月ずれる。
-    _cp_qty = 0
-    if _cp_u is not None and not _cp_u.empty and "recog_ym" in _cp_u.columns:
-        _recogs = [str(x)[:7] for x in _cp_u["recog_ym"].dropna().unique()]
-        if _recogs:
-            _in = ",".join(f"'{r}'" for r in _recogs)
-            _q, _qe = _uq("SELECT coalesce(sum(orders),0) orders "
-                          f"FROM coupang.v_order_monthly WHERE ym IN ({_in})")
-            if _q is not None and not _q.empty:
-                _cp_qty = int(_f(_q["orders"]).sum())
+        d = _sh.copy()
+        # PG の NUMERIC は decimal.Decimal で載るため演算前に float 化
+        for c in ("invoices", "orders", "matched_orders", "settled_orders",
+                  "matched_pct", "settled_pct", "sales_jpy", "deduction_jpy",
+                  "shipping_jpy", "payout_jpy", "gross_profit_jpy",
+                  "gross_margin_pct", "deduction_pct_with_shipping",
+                  "net_margin_est_pct"):
+            d[c] = pd.to_numeric(d[c], errors="coerce").astype(float).fillna(0)
+        d["ded_total"] = d["deduction_jpy"] + d["shipping_jpy"]
 
-    _uni_rows.append({
-        "market": _u("🇰🇷 KOREA (Coupang)", "🇰🇷 KOREA (Coupang)"),
-        "country": "KR",
-        "shop": _u("Coupang 韩国店", "Coupang 韓国店"),
-        "orders": _cp_qty,   # 注文数（coupang.order_sheet · 認知月ベース）
-        "income": _cp_vals[0], "ded": _cp_vals[1],
-        "ads": _cp_vals[2], "net": _cp_vals[3],
-    })
+        if mk:
+            from shared.markets import MARKET_KOREA as _MKK, MARKET_SEA as _MKS
+            _keep = set()
+            if _MKS in mk:
+                _keep.add("ASEAN")
+            if _MKK in mk:
+                _keep.add("KOREA")
+            if _keep:
+                d = d[d["market"].isin(_keep)]
 
-    # ページ上部の市場フィルタを反映（空選択 = 全市場）
-    if mk:
-        from shared.markets import MARKET_KOREA as _MKK, MARKET_SEA as _MKS
-        _keep = set()
-        if _MKS in mk:
-            _keep.add(_u("🌏 ASEAN (Shopee)", "🌏 ASEAN (Shopee)"))
-        if _MKK in mk:
-            _keep.add(_u("🇰🇷 KOREA (Coupang)", "🇰🇷 KOREA (Coupang)"))
-        _uni_rows = [r for r in _uni_rows if r["market"] in _keep]  # noqa
+        if d.empty:
+            st.info(t("当前市场筛选下无数据"))
+        else:
+            def _y(v) -> str:
+                return f"¥{v:,.0f}"
 
-    st.markdown("#### " + _u("市场 · 国家 · 店铺", "市場 · 国 · 店舗"))
-    st.caption(t(
-        "ASEAN(Shopee) + KOREA(Coupang) 合并 · 均按【实际到账日】归集（现金主义）· "
-        "日元换算：美元用公司出口汇率、韩元用三金汇率（月次）· "
-        "⚠️ Coupang 结算单为月次发行（如 6 月销售于 7/22 到账），故其金额对应的销售期间比 Shopee 更早 · "
-        "订单数：Shopee=拨款所含订单 · Coupang=对应销售月的下单数（结算单本身无订单数，取自订单 API）"
-    ))
+            def _pct(num, den) -> str:
+                return f"{(num / den * 100):.1f}%" if den else "—"
 
-    if _sp_ue or _cp_ue:
-        st.error(t("数据取得错误: ") + str(_sp_ue or _cp_ue))
-    elif not _uni_rows:
-        st.info(t("当月两平台均无数据"))
-    else:
-        _uni = pd.DataFrame(_uni_rows)
+            _tot = d[["sales_jpy", "ded_total", "payout_jpy", "gross_profit_jpy"]].sum()
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric(_u("销售额（出荷日）", "売上（出荷日）"), _y(_tot["sales_jpy"]))
+            k2.metric(_u("扣减合计", "控除合計"), _y(_tot["ded_total"]),
+                      _pct(_tot["ded_total"], _tot["sales_jpy"]), delta_color="inverse")
+            k3.metric(_u("粗利率", "粗利率"), _pct(_tot["gross_profit_jpy"], _tot["sales_jpy"]))
+            k4.metric(_u("净利估", "純利益(推定)"),
+                      f"{(_tot['gross_profit_jpy'] - _tot['ded_total']) / _tot['sales_jpy'] * 100:.1f}%"
+                      if _tot["sales_jpy"] else "—")
 
-        def _y(v) -> str:
-            return f"¥{v:,.0f}"
+            # 突合率が低い店は手数料が過少に出る → 数字を信じてよいか一目で分かるように
+            _low = d[(d["orders"] > 0) & (d["matched_pct"] < 90)]
+            if not _low.empty:
+                st.warning(_u(
+                    f"⚠️ {len(_low)} 家店铺的手续费突合率不足 90%"
+                    f"（{', '.join(_low.nlargest(3,'sales_jpy')['shop'].tolist())} 等）· "
+                    "这些店的扣减偏小、净利估偏高 · 补齐: pull_escrow --country <店> --since/--until",
+                    f"⚠️ 突合率 90% 未満の店舗が {len(_low)} 件あります（控除が過少・純利が過大に出ます）"))
 
-        def _rate(d, n) -> str:
-            return f"{(d / n * 100):.1f}%" if n else "—"
+            _DL = _u("⬇️ 下载 CSV", "⬇️ CSV ダウンロード")
 
-        _t = _uni[["income", "ded", "ads", "net"]].sum()
-        u1, u2, u3, u4 = st.columns(4)
-        u1.metric(t("结算收入（到账口径）"), _y(_t["income"]))
-        u2.metric(t("扣减合计"), _y(_t["ded"]))
-        u3.metric(t("扣减率"), _rate(_t["ded"], _t["income"]))
-        u4.metric(t("广告费"), _y(_t["ads"]))
+            def _dl(df_, name, key):
+                st.download_button(_DL, df_.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name=name, mime="text/csv", key=key)
 
-        _DLU = _u("⬇️ 下载 CSV", "⬇️ CSV ダウンロード")
+            _AGG = {"orders": "sum", "sales_jpy": "sum", "ded_total": "sum",
+                    "payout_jpy": "sum", "gross_profit_jpy": "sum",
+                    "matched_orders": "sum", "settled_orders": "sum"}
 
-        def _dlu(d, fname, key):
-            st.download_button(_DLU, d.to_csv(index=False).encode("utf-8-sig"),
-                               file_name=fname, mime="text/csv", key=key)
+            def _rows(g, cols):
+                out = []
+                for _, r in g.iterrows():
+                    row = {lbl: r[c] for c, lbl in cols}
+                    row.update({
+                        _u("订单数", "注文数"): f"{int(r['orders']):,}",
+                        _u("销售额", "売上"): _y(r["sales_jpy"]),
+                        _u("扣减合计", "控除合計"): _y(r["ded_total"]),
+                        _u("扣减率", "控除率"): _pct(r["ded_total"], r["sales_jpy"]),
+                        _u("粗利率", "粗利率"): _pct(r["gross_profit_jpy"], r["sales_jpy"]),
+                        _u("净利估", "純利(推定)"):
+                            _pct(r["gross_profit_jpy"] - r["ded_total"], r["sales_jpy"]),
+                        _u("已回款", "入金済"): _y(r["payout_jpy"]),
+                        _u("回款率", "入金済率"):
+                            f"{(r['settled_orders'] / r['orders'] * 100):.0f}%" if r["orders"] else "—",
+                        _u("突合率", "突合率"):
+                            f"{(r['matched_orders'] / r['orders'] * 100):.0f}%" if r["orders"] else "—",
+                    })
+                    out.append(row)
+                return pd.DataFrame(out)
 
-        def _rows_of(g, name_col, label):
-            return [{
-                label: r[name_col],
-                _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
-                _u("结算收入", "決済収入"): _y(r["income"]),
-                _u("扣减合计", "控除合計"): _y(r["ded"]),
-                _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
-                _u("广告费", "広告費"): _y(r["ads"]),
-                _u("拨款/最终支付", "入金/最終支払"): _y(r["net"]),
-            } for _, r in g.iterrows()]
+            st.markdown("**" + _u("市场", "市場") + "**")
+            _g1 = d.groupby("market", as_index=False).agg(_AGG).sort_values("sales_jpy", ascending=False)
+            html_table(_rows(_g1, [("market", _u("市场", "市場"))]))
+            _dl(_g1, f"ship_market_{ym}.csv", "sh_dl_m")
 
-        _AGG = {"orders": "sum", "income": "sum", "ded": "sum", "ads": "sum",
-                "net": "sum"}
+            st.markdown("**" + _u("国家", "国別") + "**")
+            _g2 = (d.groupby(["market", "country"], as_index=False).agg(_AGG)
+                   .sort_values("sales_jpy", ascending=False))
+            html_table(_rows(_g2, [("market", _u("市场", "市場")),
+                                   ("country", _u("国家", "国"))]))
+            _dl(_g2, f"ship_country_{ym}.csv", "sh_dl_c")
 
-        # ① 市場 — 2 市場は常に出す（データが無い月に行ごと消えると
-        #    「その市場が無い」ように見えるため。0 と欠損は区別して見せる）
-        st.markdown("**" + _u("市场", "市場") + "**")
-        _g1 = _uni.groupby("market", as_index=False).agg(_AGG)
-        for _mn in (_u("🌏 ASEAN (Shopee)", "🌏 ASEAN (Shopee)"),
-                    _u("🇰🇷 KOREA (Coupang)", "🇰🇷 KOREA (Coupang)")):
-            if _mn not in set(_g1["market"]):
-                _g1 = pd.concat([_g1, pd.DataFrame([{
-                    "market": _mn, "orders": 0, "income": 0.0,
-                    "ded": 0.0, "ads": 0.0, "net": 0.0}])], ignore_index=True)
-        _g1 = _g1.sort_values("net", ascending=False)
-        html_table(pd.DataFrame(_rows_of(_g1, "market", _u("市场", "市場"))))
-        _dlu(_g1, f"platform_market_{ym}.csv", "uni_dl_m")
-
-        # ② 国
-        st.markdown("**" + _u("国家", "国別") + "**")
-        _g2 = (_uni.groupby(["market", "country"], as_index=False).agg(_AGG)
-               .sort_values("net", ascending=False))
-        _r2 = [{
-            _u("市场", "市場"): r["market"],
-            _u("国家", "国"): r["country"],
-            _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
-            _u("结算收入", "決済収入"): _y(r["income"]),
-            _u("扣减合计", "控除合計"): _y(r["ded"]),
-            _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
-            _u("广告费", "広告費"): _y(r["ads"]),
-            _u("拨款/最终支付", "入金/最終支払"): _y(r["net"]),
-        } for _, r in _g2.iterrows()]
-        html_table(pd.DataFrame(_r2))
-        _dlu(_g2, f"platform_country_{ym}.csv", "uni_dl_c")
-
-        # ③ 店舗
-        st.markdown("**" + _u("店铺", "店舗") + "**")
-        _g3 = _uni.sort_values("net", ascending=False)
-        _r3 = [{
-            _u("市场", "市場"): r["market"],
-            _u("国家", "国"): r["country"],
-            _u("店铺", "店舗"): r["shop"],
-            _u("订单数", "注文数"): f"{int(r['orders']):,}" if r["orders"] else "—",
-            _u("结算收入", "決済収入"): _y(r["income"]),
-            _u("扣减合计", "控除合計"): _y(r["ded"]),
-            _u("扣减率", "控除率"): _rate(r["ded"], r["income"]),
-            _u("广告费", "広告費"): _y(r["ads"]),
-            _u("拨款/最终支付", "入金/最終支払"): _y(r["net"]),
-        } for _, r in _g3.iterrows()]
-        html_table(pd.DataFrame(_r3))
-        _dlu(_g3, f"platform_shop_{ym}.csv", "uni_dl_s")
-
-        if _cp_u is not None and _cp_u.empty:
-            st.caption(t("※ Coupang 当月结算单尚未生成（月末后发行）· 上表无 KOREA 行"))
+            st.markdown("**" + _u("店铺", "店舗") + "**")
+            _g3 = d.sort_values("sales_jpy", ascending=False)
+            html_table(_rows(_g3, [("market", _u("市场", "市場")),
+                                   ("country", _u("国家", "国")),
+                                   ("shop", _u("店铺", "店舗"))]))
+            _dl(_g3, f"ship_shop_{ym}.csv", "sh_dl_s")
 
 
 # ============================================================
