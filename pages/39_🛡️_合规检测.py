@@ -87,7 +87,7 @@ def _load_rules():
             "SELECT country, ingredient, match_terms, cas, rule_type, condition_note, "
             "source, source_ref, source_version FROM compliance.ingredient_rule", conn)
         cat = pd.read_sql_query(
-            "SELECT country, category, match_terms, severity, note, blocking, enabled "
+            "SELECT country, category, match_terms, exclude_terms, severity, note, blocking, enabled "
             "FROM compliance.category_rule WHERE enabled = TRUE", conn)
         return kw.to_dict("records"), ing.to_dict("records"), cat.to_dict("records")
     except Exception:

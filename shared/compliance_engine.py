@@ -100,6 +100,10 @@ def check_category(rules, country: str, signals: dict[str, str]) -> list[dict]:
         term = next((t for t in (r["match_terms"] or []) if t and t.lower() in haystack), None)
         if term is None:
             continue
+        # 除外語:判断が割れる品を 🔴 から外すための安全弁(Boss 2026-07-29:
+        # 「判断が難しいものは要确认にして人が判断する」)。別途 🟡 ルールが拾う。
+        if any(x and x.lower() in haystack for x in (r.get("exclude_terms") or [])):
+            continue
         idx = haystack.find(term.lower())
         hits.append({
             "kind": "品类", "field": "品类/品牌", "category": r["category"],

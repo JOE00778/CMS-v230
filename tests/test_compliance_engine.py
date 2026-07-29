@@ -130,3 +130,24 @@ def test_category_non_blocking_continues_to_ingredients():
 def test_judge_without_category_rules_is_backward_compatible():
     res = judge([], [], "US", {"商品名": "ただの化粧水"}, "水、グリセリン")
     assert res["verdict"] == "green" and res["stopped_at"] == "full"
+
+
+def test_category_exclude_terms_downgrades_ambiguous_items():
+    """判断が割れる品(子ども向けシャンプー)は 🔴 ルールを発火させず 🟡 ルールに委ねる。
+
+    Boss 2026-07-29:「判断が難しいものは要确认にして人が判断する」。
+    """
+    rules = [
+        dict(country="US", category="児童物品", match_terms=["キッズ", "ベビー"],
+             exclude_terms=["シャンプー", "ローション"], severity="red",
+             note="CPC 非保有のため不可", blocking=True, enabled=True),
+        dict(country="US", category="児童向け化粧品", match_terms=["キッズ", "ベビー"],
+             exclude_terms=None, severity="yellow", note="人が判断", blocking=False, enabled=True),
+    ]
+    # 物品(除外語なし)→ 品類段で確定
+    art = judge([], [], "US", {"商品名": "キッズプレート"}, None, category_rules=rules)
+    assert art["verdict"] == "red" and art["stopped_at"] == "category"
+    # 子ども向けシャンプー → 🔴 は発火せず 🟡 のみ
+    cos = judge([], [], "US", {"商品名": "キッズ シャンプー"}, None, category_rules=rules)
+    assert cos["verdict"] == "yellow" and cos["stopped_at"] == "full"
+    assert all(h["severity"] != "red" for h in cos["hits"])
