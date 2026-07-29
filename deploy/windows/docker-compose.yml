@@ -219,6 +219,35 @@ services:
   #   イメージは nst_scheduler と同一 · コードは volume mount（scp/git pull で更新）
   #   凭据 COUPANG_*（database/.env · WING key は斑马ERP と共用 · 180 日輪換注意）
   # ------------------------------------------------------------
+  # shopee_scheduler · Shopee 受注/配送/入金の日次拉取ディスパッチャ（常駐）
+  #   毎分 shopee.pull_schedule を見て daily_pull を起動
+  #     shopee_daily        04:00 JST … escrow + logistics を 20 店 × 直近 3 日
+  #     shopee_payout_daily 05:30 JST … payout を 30 日窓（週次入金 · UPSERT 冪等）
+  #   イメージは nst_scheduler と同一 · コードは volume mount（scp/git pull で更新）
+  #   ⚠️ refresh_token は轮换制。Mac 等で同じ token を同時に使うと相互に失効する
+  shopee_scheduler:
+    image: windows-nst_scheduler
+    container_name: cms_shopee_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../../../database/.env          # SHOPEE_* 凭据
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cms}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cms}
+      TZ: Asia/Tokyo
+    command: ["python", "-m", "data_warehouse.shopee_api.dispatcher"]
+    volumes:
+      - ../../../database:/app:ro       # shopee_api コード（scp で更新）
+      - ./data/shopee:/data/shopee      # token store（refresh_token 轮换の永続化）
+    networks:
+      - cms_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+
   coupang_scheduler:
     image: windows-nst_scheduler
     container_name: cms_coupang_scheduler
