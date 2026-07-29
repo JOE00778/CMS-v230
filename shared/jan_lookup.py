@@ -15,8 +15,12 @@
 from __future__ import annotations
 
 import html
+import json
+import os
 import re
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 UA = {
@@ -35,6 +39,15 @@ JAN_ADDRESSABLE = (
     ("https://netsuper.rakuten.co.jp/seiyu/item/{jan}/", "楽天全国スーパー"),
 )
 YAHOO_SEARCH = "https://shopping.yahoo.co.jp/search?p={jan}"
+
+# 楽天 ItemSearch API(page22 が既に使う資格情報を再利用·新規登録不要)。
+# 店舗ページ 4 つを叩くより 1 リクエストで楽天全店を横断でき、成分の当たりも良い。
+RAKUTEN_API = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260401"
+RAKUTEN_ORIGIN = "https://smikie-cms.cc"   # v2026-04 は Origin が許可リストと一致必須
+# 店側の販促装飾(先頭の記号や【送料無料】等)。【医薬部外品】は判定に必要なので消さない。
+_PROMO_HEAD = re.compile(
+    r"^(?:[●★☆◎♪■◆\s]+|【[^】]*(?:送料無料|ポイント|セール|クーポン|在庫|正規品|"
+    r"無くなり次第|限定|最大|お買い物マラソン|楽天)[^】]*】)+")
 
 # 成分の見出しは店ごとにバラバラ:【全成分】/ 全成分: / 成分／分量 / 原料・成分等【成分】
 _ING_RE = re.compile(
@@ -106,13 +119,63 @@ def parse_yahoo_name(page_text: str) -> str:
     return ""
 
 
+def clean_shop_name(name: str) -> str:
+    """店舗の販促装飾を落とす(【医薬部外品】等の判定に効く表記は残す)。"""
+    return _PROMO_HEAD.sub("", name or "").strip()
+
+
+def rakuten_api(jan: str) -> dict:
+    """楽天全店を JAN で横断検索。itemCaption から成分を拾えることが多い。
+
+    資格情報未設定(ローカル等)なら静かに空を返す。
+    """
+    app_id = (os.environ.get("RAKUTEN_APPLICATION_ID") or "").strip()
+    access_key = (os.environ.get("RAKUTEN_ACCESS_KEY") or "").strip()
+    if not (app_id and access_key):
+        return {}
+    params = {"applicationId": app_id, "accessKey": access_key,
+              "keyword": jan, "hits": "30", "format": "json"}
+    url = f"{RAKUTEN_API}?{urllib.parse.urlencode(params)}"
+    headers = {**UA, "Origin": RAKUTEN_ORIGIN}
+    payload = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=headers), timeout=TIMEOUT) as r:
+                payload = json.loads(r.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:   # 楽天は 1req/秒 程度
+                time.sleep(1.5)
+                continue
+            return {}
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            return {}
+    items = [x.get("Item", {}) for x in (payload or {}).get("Items", [])]
+    if not items:
+        return {}
+    name = clean_shop_name(items[0].get("itemName", ""))
+    best = ""
+    for it in items:   # 店ごとに説明が違う → 一番長い成分表を採用
+        cand = parse_ingredient(it.get("itemCaption", "") or "")
+        if len(cand) > len(best):
+            best = cand
+    return {"name": name, "ingredient": best, "source": "楽天API",
+            "url": f"https://search.rakuten.co.jp/search/mall/{jan}/"} if name else {}
+
+
 def lookup(jan: str) -> dict:
     """JAN → {name, ingredient, source, url}。何も取れなければ空 dict。"""
     jan = (jan or "").strip()
     if not (jan.isdigit() and len(jan) >= 8):
         return {}
 
-    best: dict = {}
+    # ① 楽天API:1 リクエストで全店横断。成分まで取れたら即決。
+    best: dict = rakuten_api(jan)
+    if best.get("ingredient"):
+        return best
+
+    # ② 個別店舗ページ:API が成分を持たない品でも商品ページ側にはある場合がある
     for url_tpl, label in JAN_ADDRESSABLE:
         url = url_tpl.format(jan=jan)
         raw = _get(url)

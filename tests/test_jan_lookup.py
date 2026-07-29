@@ -76,3 +76,18 @@ def test_parse_ingredient_handles_matsukiyo_label():
 def test_parse_ingredient_rejects_prose_without_separators():
     """「有効成分について…」のような散文を成分表と誤認しない。"""
     assert parse_ingredient(PROSE_PAGE) == ""
+
+
+def test_clean_shop_name_strips_promo_keeps_quasi_drug():
+    from shared.jan_lookup import clean_shop_name
+    assert clean_shop_name("●国内正規品 コスメデコルテ アイグロウジェム") == "国内正規品 コスメデコルテ アイグロウジェム"
+    assert clean_shop_name("【送料無料】【ポイント10倍】TSUBAKI シャンプー") == "TSUBAKI シャンプー"
+    # 医薬部外品は判定に必要 → 落とさない
+    assert clean_shop_name("【医薬部外品】ロート製薬 OXY").startswith("【医薬部外品】")
+
+
+def test_rakuten_api_returns_empty_without_credentials(monkeypatch):
+    from shared import jan_lookup
+    monkeypatch.delenv("RAKUTEN_APPLICATION_ID", raising=False)
+    monkeypatch.delenv("RAKUTEN_ACCESS_KEY", raising=False)
+    assert jan_lookup.rakuten_api("4909978147105") == {}
