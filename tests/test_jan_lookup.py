@@ -102,3 +102,17 @@ def test_parse_ingredient_handles_food_raw_material_label():
     ing = parse_ingredient(FOOD_PAGE)
     assert ing.startswith("大麦若葉粉末")
     assert "内容量" not in ing
+
+
+def test_lookup_fast_stops_after_rakuten_api(monkeypatch):
+    """fast=True は楽天 API だけで打ち切る(店舗ページ/Yahoo は叩かない)。"""
+    from shared import jan_lookup
+    monkeypatch.setattr(jan_lookup, "rakuten_api",
+                        lambda jan: {"name": "商品X", "ingredient": "", "source": "楽天API", "url": "u"})
+    called = []
+    monkeypatch.setattr(jan_lookup, "_get", lambda url: called.append(url) or None)
+    got = jan_lookup.lookup("4909978147105", fast=True)
+    assert got["name"] == "商品X" and called == []
+    # fast=False なら追加の取得を試みる
+    jan_lookup.lookup("4909978147105", fast=False)
+    assert called

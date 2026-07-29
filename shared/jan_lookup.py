@@ -166,15 +166,21 @@ def rakuten_api(jan: str) -> dict:
             "url": f"https://search.rakuten.co.jp/search/mall/{jan}/"} if name else {}
 
 
-def lookup(jan: str) -> dict:
-    """JAN → {name, ingredient, source, url}。何も取れなければ空 dict。"""
+def lookup(jan: str, fast: bool = False) -> dict:
+    """JAN → {name, ingredient, source, url}。何も取れなければ空 dict。
+
+    fast=True は**楽天 API の 1 リクエストだけ**で打ち切る。一括判定用:
+    店舗ページ 4 つ + Yahoo まで辿ると 1 件 10〜25 秒かかり、数千件では
+    現実的でない(2026-07-29 実測 27 秒/件·4 時間で 533 件しか進まなかった)。
+    単品判定は fast=False のまま全経路を使う(取りこぼしを減らす)。
+    """
     jan = (jan or "").strip()
     if not (jan.isdigit() and len(jan) >= 8):
         return {}
 
     # ① 楽天API:1 リクエストで全店横断。成分まで取れたら即決。
     best: dict = rakuten_api(jan)
-    if best.get("ingredient"):
+    if best.get("ingredient") or fast:
         return best
 
     # ② 個別店舗ページ:API が成分を持たない品でも商品ページ側にはある場合がある
