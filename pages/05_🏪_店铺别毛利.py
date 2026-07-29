@@ -922,17 +922,26 @@ with tab_deduct:
             _sp_sym = "$" if _spc == "USD" else "¥"
 
             # 費用は現地通貨建て → 入金の実効レート(USD/現地)で USD 化してから表示通貨へ
+            # PG の NUMERIC は pandas に decimal.Decimal で載る。float と混ぜると
+            # TypeError になるので、演算する列は**先に全部 float 化**してから扱う。
+            _SP_NUM = ("payout_amount", "from_amount", "commission_fee", "service_fee",
+                       "transaction_fee", "ams_commission", "seller_shipping",
+                       "shopee_shipping_rebate", "deduction_total", "escrow_total",
+                       "adjustment_total", "ads_fee", "orders", "payouts")
+
             def _to_disp(d: "pd.DataFrame") -> "pd.DataFrame":
                 d = d.copy()
+                for c in _SP_NUM:
+                    if c in d.columns:
+                        d[c] = pd.to_numeric(d[c], errors="coerce").astype(float).fillna(0)
+                # 入金の実効レート（現地通貨 → USD）
                 _r = (d["payout_amount"] / d["from_amount"].replace(0, pd.NA)).fillna(0)
                 for c in ("commission_fee", "service_fee", "transaction_fee",
                           "ams_commission", "seller_shipping", "shopee_shipping_rebate",
                           "deduction_total", "escrow_total", "adjustment_total",
                           "ads_fee"):
-                    d[c] = (pd.to_numeric(d[c], errors="coerce").fillna(0) * _r
-                            * _sp_rate).round(0)
-                d["payout_disp"] = (pd.to_numeric(d["payout_amount"], errors="coerce")
-                                    .fillna(0) * _sp_rate).round(0)
+                    d[c] = (d[c] * _r * _sp_rate).round(0)
+                d["payout_disp"] = (d["payout_amount"] * _sp_rate).round(0)
                 return d
 
             _spd = _to_disp(_sp) if not _sp.empty else _sp
@@ -1344,13 +1353,18 @@ with tab_payout:
             m1, m2, m3 = st.columns(3)
             m1.metric(_pl("订单数", "注文数"), f"{len(_po):,}")
             m2.metric(_pl("拨款合计（当地币）", "入金合計（現地通貨）"),
-                      f"{_po['payout_amount'].sum():,.0f}")
+                      f"{pd.to_numeric(_po['payout_amount'], errors='coerce').sum():,.0f}")
             # 取得できていない明細を必ず件数で見せる（黙って 0 円扱いしない）
             m3.metric(_pl("费用明细缺失", "費用内訳の欠落"), f"{_miss:,}",
                       delta=None if not _miss else _pl("需补拉", "要再取得"),
                       delta_color="inverse")
 
-            _view = _po.drop(columns=["fee_missing"])
+            _view = _po.drop(columns=["fee_missing"]).copy()
+            # Decimal のままだと Arrow 変換や書式化で落ちるため float 化
+            for _c in _view.columns:
+                if _c not in ("country_code", "shop_name", "currency", "payout_date",
+                              "order_sn", "buyer_payment_method", "order_create_time"):
+                    _view[_c] = pd.to_numeric(_view[_c], errors="coerce").astype(float)
             st.dataframe(_view, use_container_width=True, height=460,
                          hide_index=True)
             st.download_button(
