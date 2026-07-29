@@ -415,41 +415,16 @@ def _batch_tab(rules):
 
 
 def _manual_screen(kw_rules, ing_rules, cat_rules):
-    src = st.radio(
-        _dl("候选来源", "候補ソース"),
-        [_dl("NST 在库·未录入候选", "NST 在庫·未記入候補"), _dl("粘贴 JAN 列表", "JAN リスト貼付")],
-        horizontal=True, key="batch_src")
-    from_nst = src.startswith(("NST", "N"))
-
-    raw, makers, want = "", [], 50
-    if from_nst:
-        pool = _nst_candidates()
-        if pool.empty:
-            st.info(_dl("候选池为空(或 NST 未接入)", "候補プールが空です"))
-            return
-        st.caption(_dl(
-            f"候选池 {len(pool)} 件 = NST 商品主档里**既未录入飞书、也未上架**的在售品——"
-            "正是接下来要投内容工时的对象。",
-            f"候補プール {len(pool)} 件 = NST にあり飛書未記入·未出品の品。"))
-        opts = [m for m in pool["maker"].dropna().unique().tolist() if m]
-        makers = st.multiselect(_dl("按厂商筛(留空=全部)", "メーカー絞込(空=全部)"),
-                                sorted(opts)[:300], key="batch_makers")
-        want = st.number_input(_dl("本次筛查件数", "今回の件数"), 1, BATCH_CAP, 50, key="batch_n")
-    else:
-        raw = st.text_area(_dl("JAN 列表(每行一个,或逗号/空格分隔)", "JAN リスト(改行/カンマ区切り)"),
-                           height=120, key="batch_raw", placeholder="4909978147105\n4550516486028")
+    """臨時のリストを流す口。在庫分は週次で自動判定されるので、ここは貼付だけでよい
+    (Boss 2026-07-29:候補ソースの区別は不要)。"""
+    raw = st.text_area(_dl("JAN 列表(每行一个,或逗号/空格分隔)", "JAN リスト(改行/カンマ区切り)"),
+                       height=120, key="batch_raw", placeholder="4909978147105\n4550516486028")
     countries = st.multiselect(_dl("判定市场", "判定市場"), ["US", "PH", "CA"],
                                default=["US", "PH", "CA"], key="batch_countries")
     if not st.button(_dl("▶ 开始筛查", "▶ スクリーニング開始"), key="batch_run"):
         return
 
-    if from_nst:
-        pool = _nst_candidates()
-        if makers:
-            pool = pool[pool["maker"].isin(makers)]
-        jans = [j for j in pool["jan"].tolist() if _is_jan(str(j))][:int(want)]
-    else:
-        jans = [x for x in re.split(r"[\s,、;]+", raw or "") if _is_jan(x)]
+    jans = [x for x in re.split(r"[\s,、;]+", raw or "") if _is_jan(x)]
     jans = list(dict.fromkeys(jans))
     if not jans:
         st.warning(_dl("没有识别到有效 JAN(8 位以上数字)", "有効な JAN がありません"))
