@@ -325,7 +325,7 @@ _owner_tab = "👤 担当者別" if get_lang() == "ja" else "👤 店铺负责�
  tab_payout, tab_loss, tab_ff3) = st.tabs(
     [t("📈 月内日次推移"), _owner_tab, t("🏪 店舗別"), t("🌐 市場別"),
      t("🏆 TOP SKU"), t("⚠️ 价格预警"), t("🧾 店铺扣减"), t("💵 拨款明细"),
-     t("🩸 未结算/损失"), t("📦 FF-3 核对")]
+     t("🩸 未结算/损失"), t("💸 退款明细")]
 )
 
 # ============================================================
@@ -1257,7 +1257,7 @@ with tab_loss:
 
 
 # ============================================================
-# Tab 9：FF-3 核对（出荷後に入金が立たなかった在庫の仮置き棚）
+# Tab 9：退款明细 / 返金詳細（出荷後に入金が立たなかった注文 · 在庫は FF-3 棚に仮置き）
 #   JO 2026-07-30:「FF-3 は已发货未入金の注文に対応する在庫の仮置き棚。
 #                   戻ってきたら通常倉庫へ、戻らなければ処理（全損）。
 #                   Shopee は部分賠償なので賠償を引いた残りが全損。
@@ -1303,10 +1303,10 @@ with tab_ff3:
         f"FROM nst.v_ff3_reconcile WHERE ym = '{ym}'", _ship_ver())
 
     if _f3_err:
-        st.error(t("FF-3 核对视图未取得或连接错误: ") + _f3_err)
+        st.error(t("退款明细视图未取得或连接错误: ") + _f3_err)
         st.info(t("需在元川 PG 执行 nst_api/sql/026_create_ff3_reconcile_view.sql"))
     elif _f3 is None or _f3.empty:
-        st.info(t("当月无 FF-3 核对对象（出货后未入金的订单）"))
+        st.info(t("当月无退款明细对象（出货后未入金的订单）"))
     else:
         F = _f3.copy()
         # PG の NUMERIC は decimal.Decimal で載る → float × Decimal の TypeError 防止
@@ -1536,7 +1536,7 @@ with tab_ff3:
                 st.dataframe(D, use_container_width=True, height=460,
                              hide_index=True)
                 st.download_button(
-                    _fl("⬇️ 下载 CSV（FF-3 核对清单）", "⬇️ CSV ダウンロード（FF-3 照合リスト）"),
+                    _fl("⬇️ 下载 CSV（退款明细）", "⬇️ CSV ダウンロード（返金詳細）"),
                     D.to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"ff3_reconcile_{ym}.csv", mime="text/csv",
                     key="ff3_dl_detail")
