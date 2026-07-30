@@ -844,6 +844,36 @@ with tab_deduct:
                       f"{_gm - _dr:.1f}%" if (_gm is not None and _dr is not None) else "—")
 
             # 売上が 2 つあるのは正常。理由を出しておかないと「どちらかが壊れている」と読まれる
+            # 貸方票（返品の取消伝票）は月末に一括起票される。まだ起票されていない月は
+            # 売上が過大・控除率と損失率が過少に出る。実測の起票率で成熟度を判定する:
+            #   2026-03 5.78% / 04 5.38% / 05 5.75% ← 起票済み
+            #   2026-06 0.99% / 07 0.19%           ← 未起票（6 月は約 930 枚 ¥230 万が未反映）
+            # JO 確認済み「退货的票是有滞后的」。人が当月の数字を結論として読まないよう明示する。
+            _cred, _cred_err = _shq(
+                "SELECT count(*) FILTER (WHERE tran_type='CustInvc') AS invoices, "
+                "count(*) FILTER (WHERE tran_type='CustCred') AS creds "
+                f"FROM nst.sales_invoice WHERE to_char(ship_date,'YYYY-MM') = '{ym}'")
+            if _cred is not None and not _cred.empty:
+                _inv_n = int(pd.to_numeric(_cred["invoices"], errors="coerce").fillna(0).iloc[0])
+                _crd_n = int(pd.to_numeric(_cred["creds"], errors="coerce").fillna(0).iloc[0])
+                _rate = (_crd_n / _inv_n * 100) if _inv_n else 0.0
+                # 実測の常態は 5.4〜5.8%。4% を下回る月は未起票と判断する
+                if _inv_n > 100 and _rate < 4.0:
+                    st.warning(_u(
+                        f"⚠️ **本月数据未成熟** · 退货冲销票（贷方票）只起了 {_crd_n:,} 张，"
+                        f"占发票 {_rate:.2f}%（3–5 月的常态是 5.4~5.8%）· "
+                        "贷方票是**月末一括起票**且有滞后，未起完时"
+                        "**销售额虚高、扣减率和损失率虚低** · "
+                        "按常态率推算还有约 "
+                        f"{max(int(_inv_n * 0.056) - _crd_n, 0):,} 张未起 · "
+                        "请勿用本月数字下结论",
+                        f"⚠️ **当月は未成熟** · 貸方票（返品の取消伝票）が {_crd_n:,} 枚 = "
+                        f"請求書の {_rate:.2f}% しか起票されていません（3〜5 月の常態は 5.4〜5.8%）· "
+                        "貸方票は**月末に一括起票**され遅れが出るため、未起票の間は"
+                        "**売上が過大・控除率と損失率が過少**に出ます · "
+                        f"常態率からの推定で残り約 {max(int(_inv_n * 0.056) - _crd_n, 0):,} 枚 · "
+                        "当月の数字で結論を出さないでください"))
+
             _gap = float(_tot["revenue_jpy"] - _tot["sales_jpy"])
             if abs(_gap) > 1000:
                 st.caption(_u(
