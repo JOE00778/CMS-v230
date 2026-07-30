@@ -25,6 +25,7 @@ from shared.theme import inject_theme
 from shared.db import get_readonly_connection
 from shared.compliance_engine import judge
 from shared.jan_lookup import lookup as jan_lookup
+from shared.ca_registry import brand_query, dpd_by_brand
 
 require_password()
 inject_theme()
@@ -190,6 +191,50 @@ def _nst_candidates() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+def _ca_registration(name: str, maker: str) -> dict:
+    """加国の DIN/NPN 登録状況(事実の提示。判定色は変えない)。"""
+    brand = brand_query(name, maker)
+    if not brand:
+        return {"brand": "", "din": None, "npn": []}
+    din = dpd_by_brand(brand)
+    npn = _rows(
+        "SELECT licence_number, product_name, company_name, status_flag "
+        "FROM compliance.ca_npn_product "
+        "WHERE lower(product_name) LIKE ? OR lower(company_name) LIKE ? LIMIT 10",
+        [f"%{brand.lower()}%", f"%{brand.lower()}%"])
+    return {"brand": brand, "din": din, "npn": npn}
+
+
+def _render_ca_registration(name: str, maker: str) -> None:
+    reg = _ca_registration(name, maker)
+    with st.expander(_dl("🇨🇦 加拿大注册状况(DIN / NPN 实查)", "🇨🇦 加国登録状況(DIN/NPN 実照会)")):
+        if not reg["brand"]:
+            st.caption(_dl("商品名/厂商里没有可用于检索的英文品牌词——加拿大数据库是英文库,无法照会",
+                           "英字ブランド語が無いため照会できません(加国 DB は英語)"))
+            return
+        st.caption(_dl(f"检索词:**{reg['brand']}**(加拿大官方库为英文,按英文品牌词查)",
+                       f"検索語:**{reg['brand']}**"))
+        if reg["din"] is None:
+            st.warning(_dl("DIN(药品)照会失败——网络或官方 API 异常,**不代表未注册**",
+                           "DIN 照会失敗——未登録を意味しません"))
+        elif reg["din"]:
+            st.write(_dl(f"DIN(药品):**已注册 {len(reg['din'])} 件**", f"DIN:登録 {len(reg['din'])} 件"))
+            st.dataframe(pd.DataFrame(reg["din"]), width="stretch", hide_index=True)
+        else:
+            st.write(_dl("DIN(药品):**该品牌无注册**", "DIN:登録なし"))
+        if reg["npn"]:
+            st.write(_dl(f"NPN(天然健康产品):**{len(reg['npn'])} 件命中**", f"NPN:{len(reg['npn'])} 件"))
+            st.dataframe(pd.DataFrame(reg["npn"], columns=["NPN", "product", "company", "status"]),
+                         width="stretch", hide_index=True)
+        else:
+            st.write(_dl("NPN(天然健康产品):无命中(月次快照)", "NPN:該当なし(月次スナップショット)"))
+        st.caption(_dl(
+            "※ 登录**不等于**我们可卖:加拿大的 DIN/NPN 绑定当地持证方与该注册品,"
+            "不覆盖日本市场版的越境销售。此处仅作事实与渠道线索。",
+            "※ 登録は当社の販売可否を意味しません(現地保有者·当該登録品に紐づく)。"))
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def _external(jan: str) -> dict:
     """外部按 JAN 取商品名/全成分(楽天24→楽天スーパー→Yahoo)。缓存 1 天。"""
     return jan_lookup(jan)
@@ -322,6 +367,9 @@ def _country_tab(country: str, rules):
                              category_rules=cat_rules,
                              category_signals={_dl("品牌", "ブランド"): item.get("maker", ""),
                                                "L1": item.get("l1", ""), "L2": item.get("l2", "")}))
+        # CA だけ:DIN/NPN の実照会(登録は販売可否を意味しないので判定色とは分離して出す)
+        if country == "CA":
+            _render_ca_registration(name, item.get("maker", ""))
 
     with st.expander(_dl(f"📌 {country} 通用注意事项", f"📌 {country} 共通注意事項"), expanded=False):
         st.markdown(COUNTRY_NOTES[country])
