@@ -782,7 +782,8 @@ with tab_deduct:
         "SELECT ym, market, platform, country, shop, invoices, orders, "
         "matched_orders, settled_orders, matched_pct, settled_pct, "
         "sales_jpy, deduction_jpy, shipping_jpy, payout_jpy, "
-        "gross_profit_jpy, gross_margin_pct, deduction_pct_with_shipping, "
+        "gross_profit_jpy, revenue_jpy, gross_margin_pct, "
+        "deduction_pct_with_shipping, "
         "net_margin_est_pct "
         f"FROM nst.v_shipped_settlement WHERE ym = '{ym}'")
 
@@ -795,7 +796,7 @@ with tab_deduct:
         d = _sh.copy()
         # PG の NUMERIC は decimal.Decimal で載るため演算前に float 化
         for c in ("invoices", "orders", "matched_orders", "settled_orders",
-                  "matched_pct", "settled_pct", "sales_jpy", "deduction_jpy",
+                  "matched_pct", "settled_pct", "sales_jpy", "revenue_jpy", "deduction_jpy",
                   "shipping_jpy", "payout_jpy", "gross_profit_jpy",
                   "gross_margin_pct", "deduction_pct_with_shipping",
                   "net_margin_est_pct"):
@@ -821,15 +822,40 @@ with tab_deduct:
             def _pct(num, den) -> str:
                 return f"{(num / den * 100):.1f}%" if den else "—"
 
-            _tot = d[["sales_jpy", "ded_total", "payout_jpy", "gross_profit_jpy"]].sum()
+            _tot = d[["sales_jpy", "revenue_jpy", "ded_total", "payout_jpy",
+                      "gross_profit_jpy"]].sum()
+            # ⚠️ 率は **分子と分母を同じ表から** 取る。
+            #    粗利は nst.sales_daily 由来 → 分母も sales_daily の revenue_jpy。
+            #    控除は請求書額に対する割合 → 分母は sales_jpy（請求書由来）。
+            #    混ぜると 2026-06 で粗利率が 59.57% → 60.77% に虚高した（JO 指摘）。
+            _gm = _tot["gross_profit_jpy"] / _tot["revenue_jpy"] * 100 \
+                if _tot["revenue_jpy"] else None
+            _dr = _tot["ded_total"] / _tot["sales_jpy"] * 100 \
+                if _tot["sales_jpy"] else None
             k1, k2, k3, k4 = st.columns(4)
             k1.metric(_u("销售额（出荷日）", "売上（出荷日）"), _y(_tot["sales_jpy"]))
             k2.metric(_u("扣减合计", "控除合計"), _y(_tot["ded_total"]),
                       _pct(_tot["ded_total"], _tot["sales_jpy"]), delta_color="inverse")
-            k3.metric(_u("粗利率", "粗利率"), _pct(_tot["gross_profit_jpy"], _tot["sales_jpy"]))
+            k3.metric(_u("粗利率", "粗利率"),
+                      f"{_gm:.2f}%" if _gm is not None else "—",
+                      _u("分母=NST 日次売上", "分母=NST 日次売上"), delta_color="off")
+            # 净利估 = 粗利率 − 控除率。それぞれ自分の分母で出した率を引き算する
             k4.metric(_u("净利估", "純利益(推定)"),
-                      f"{(_tot['gross_profit_jpy'] - _tot['ded_total']) / _tot['sales_jpy'] * 100:.1f}%"
-                      if _tot["sales_jpy"] else "—")
+                      f"{_gm - _dr:.1f}%" if (_gm is not None and _dr is not None) else "—")
+
+            # 売上が 2 つあるのは正常。理由を出しておかないと「どちらかが壊れている」と読まれる
+            _gap = float(_tot["revenue_jpy"] - _tot["sales_jpy"])
+            if abs(_gap) > 1000:
+                st.caption(_u(
+                    f"ℹ️ 上方 KPI 的销售额（NST 日次 {_y(_tot['revenue_jpy'])}）与本 tab"
+                    f"（请求书 {_y(_tot['sales_jpy'])}）差 {_y(_gap)} · 两者都对，口径不同："
+                    "① 贷方票（退货冲销）只进请求书侧 ② 日次是 sale_date、请求书是 shipdate，"
+                    "跨月的部分会落在不同月（符号按月反转）· 粗利率用日次侧分母，扣减率用请求书侧分母",
+                    f"ℹ️ 上部 KPI の売上（NST 日次 {_y(_tot['revenue_jpy'])}）と本タブ"
+                    f"（請求書 {_y(_tot['sales_jpy'])}）の差 {_y(_gap)} は正常です："
+                    "① 貸方票（返品の取消伝票）は請求書側にのみ入る ② 日次は sale_date、"
+                    "請求書は shipdate なので月をまたぐ分がズレる（符号は月により反転）· "
+                    "粗利率は日次側、控除率は請求書側の分母で算出しています"))
 
             # 突合率が低い店は手数料が過少に出る → 数字を信じてよいか一目で分かるように
             _low = d[(d["orders"] > 0) & (d["matched_pct"] < 90)]
@@ -859,9 +885,13 @@ with tab_deduct:
                         _u("销售额", "売上"): _y(r["sales_jpy"]),
                         _u("扣减合计", "控除合計"): _y(r["ded_total"]),
                         _u("扣减率", "控除率"): _pct(r["ded_total"], r["sales_jpy"]),
-                        _u("粗利率", "粗利率"): _pct(r["gross_profit_jpy"], r["sales_jpy"]),
+                        # 分子(sales_daily)と分母(sales_daily)を揃える
+                        _u("粗利率", "粗利率"): _pct(r["gross_profit_jpy"],
+                                                   r["revenue_jpy"]),
                         _u("净利估", "純利(推定)"):
-                            _pct(r["gross_profit_jpy"] - r["ded_total"], r["sales_jpy"]),
+                            # 净利估 = 粗利率 − 控除率（各自の分母で出した率の差）
+                            f"{r['gross_profit_jpy'] / r['revenue_jpy'] * 100 - r['ded_total'] / r['sales_jpy'] * 100:.1f}%"
+                            if r["revenue_jpy"] and r["sales_jpy"] else "—",
                         _u("已回款", "入金済"): _y(r["payout_jpy"]),
                         _u("回款率", "入金済率"):
                             f"{(r['settled_orders'] / r['orders'] * 100):.0f}%" if r["orders"] else "—",
