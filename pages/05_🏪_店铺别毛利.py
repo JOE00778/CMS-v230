@@ -872,9 +872,22 @@ with tab_deduct:
                 st.download_button(_DL, df_.to_csv(index=False).encode("utf-8-sig"),
                                    file_name=name, mime="text/csv", key=key)
 
-            _AGG = {"orders": "sum", "sales_jpy": "sum", "ded_total": "sum",
-                    "payout_jpy": "sum", "gross_profit_jpy": "sum",
+            # ⚠️ 率の分母に使う列は必ず集計対象に入れる。revenue_jpy を入れ忘れて
+            #    分組表が KeyError で落ちた（2026-07-30 · KPI だけ直して集計を忘れた）
+            _AGG = {"orders": "sum", "sales_jpy": "sum", "revenue_jpy": "sum",
+                    "ded_total": "sum", "payout_jpy": "sum",
+                    "gross_profit_jpy": "sum",
                     "matched_orders": "sum", "settled_orders": "sum"}
+
+            # 参照する列が _AGG に無いと分組表だけが落ちる（KPI は d 全体を見るので通る）。
+            # 落ちてから気付くのを避けるため、描画前に一度だけ突き合わせる。
+            _need = {"orders", "sales_jpy", "revenue_jpy", "ded_total",
+                     "gross_profit_jpy", "payout_jpy", "matched_orders",
+                     "settled_orders"}
+            _missing = sorted(_need - set(_AGG))
+            if _missing:
+                st.error(_u(f"内部错误：分组聚合缺少列 {_missing}（_AGG 要和 _rows 对齐）",
+                            f"内部エラー: 集計に列が不足 {_missing}（_AGG と _rows の不一致）"))
 
             def _rows(g, cols):
                 out = []
