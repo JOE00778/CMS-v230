@@ -842,12 +842,29 @@ with tab_deduct:
             # 净利估 = 粗利率 − 控除率。それぞれ自分の分母で出した率を引き算する
             k4.metric(_u("净利估", "純利益(推定)"),
                       f"{_gm - _dr:.1f}%" if (_gm is not None and _dr is not None) else "—")
-            # 入金率（JO 2026-07-31 依頼）。当月は出荷直後で低いのが正常
-            # （実測 2026-07 は 43.5% · 過月は 96% 台）。金額ではなく **注文数ベース**
-            k5.metric(_u("入款率", "入金率"),
-                      _pct(_tot["settled_orders"], _tot["orders"]),
-                      _u(f"已回款 {_y(_tot['payout_jpy'])}",
-                         f"入金済 {_y(_tot['payout_jpy'])}"), delta_color="off")
+            # ============================================================
+            # 入金率（JO 2026-07-31 依頼）
+            #   分子 = その月に出荷した注文のうち、shopee.payout_escrow に
+            #          order_sn が載っている件数（Coupang は決済予定日が到来したもの）
+            #   分母 = その月に出荷した注文数（NST 請求書の注文番号 DISTINCT）
+            #   → **注文数ベース**。金額ではない。「入金に含まれたか」だけを見るので、
+            #      一部返金された注文も「入金済」に数える
+            # ⚠️ Lazada / Other は明細 API が無く payout_escrow に載らないため
+            #    **構造的に永久 0%**。分母に入れると全体が押し下がって誤読される
+            #    （2026-07 実測: 全平台混合 38.4% vs 判定可能な範囲だけ 43.5%）。
+            #    分母から外し、外した件数を明示する
+            # ⚠️ 当月は出荷直後で低いのが正常（2026-07 は 43.5% · 過月は 96% 台）
+            # ============================================================
+            _paycap = d[~d["platform"].isin(("Lazada", "Other"))]
+            _po_n = float(_paycap["orders"].sum())
+            _po_s = float(_paycap["settled_orders"].sum())
+            _po_x = int(_tot["orders"] - _po_n)     # 判定できない注文数
+            k5.metric(_u("入款率", "入金率"), _pct(_po_s, _po_n),
+                      _u(f"{_po_s:,.0f}/{_po_n:,.0f} 单"
+                         + (f" · 除外 {_po_x:,}（无明细API）" if _po_x else ""),
+                         f"{_po_s:,.0f}/{_po_n:,.0f} 件"
+                         + (f" · 除外 {_po_x:,}（明細API無し）" if _po_x else "")),
+                      delta_color="off")
 
             _base = float(_tot["revenue_jpy"]) or 1.0
             _gap = float(_tot["revenue_jpy"] - _tot["sales_jpy"])
