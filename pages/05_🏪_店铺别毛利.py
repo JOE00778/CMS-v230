@@ -781,7 +781,7 @@ with tab_deduct:
     _sh, _sh_err = _shq(
         "SELECT ym, market, platform, country, shop, invoices, orders, "
         "matched_orders, settled_orders, matched_pct, settled_pct, "
-        "sales_jpy, deduction_jpy, shipping_jpy, payout_jpy, "
+        "sales_jpy, deduction_jpy, shipping_jpy, payout_jpy, voucher_jpy, "
         "gross_profit_jpy, revenue_jpy, gross_margin_pct, "
         "deduction_pct_with_shipping, "
         "net_margin_est_pct "
@@ -797,7 +797,7 @@ with tab_deduct:
         # PG の NUMERIC は decimal.Decimal で載るため演算前に float 化
         for c in ("invoices", "orders", "matched_orders", "settled_orders",
                   "matched_pct", "settled_pct", "sales_jpy", "revenue_jpy", "deduction_jpy",
-                  "shipping_jpy", "payout_jpy", "gross_profit_jpy",
+                  "shipping_jpy", "payout_jpy", "voucher_jpy", "gross_profit_jpy",
                   "gross_margin_pct", "deduction_pct_with_shipping",
                   "net_margin_est_pct"):
             d[c] = pd.to_numeric(d[c], errors="coerce").astype(float).fillna(0)
@@ -893,15 +893,15 @@ with tab_deduct:
             # ⚠️ 率の分母に使う列は必ず集計対象に入れる。revenue_jpy を入れ忘れて
             #    分組表が KeyError で落ちた（2026-07-30 · KPI だけ直して集計を忘れた）
             _AGG = {"orders": "sum", "sales_jpy": "sum", "revenue_jpy": "sum",
-                    "ded_total": "sum", "payout_jpy": "sum",
+                    "ded_total": "sum", "payout_jpy": "sum", "voucher_jpy": "sum",
                     "gross_profit_jpy": "sum",
                     "matched_orders": "sum", "settled_orders": "sum"}
 
             # 参照する列が _AGG に無いと分組表だけが落ちる（KPI は d 全体を見るので通る）。
             # 落ちてから気付くのを避けるため、描画前に一度だけ突き合わせる。
             _need = {"orders", "sales_jpy", "revenue_jpy", "ded_total",
-                     "gross_profit_jpy", "payout_jpy", "matched_orders",
-                     "settled_orders"}
+                     "gross_profit_jpy", "payout_jpy", "voucher_jpy",
+                     "matched_orders", "settled_orders"}
             _missing = sorted(_need - set(_AGG))
             if _missing:
                 st.error(_u(f"内部错误：分组聚合缺少列 {_missing}（_AGG 要和 _rows 对齐）",
@@ -916,6 +916,9 @@ with tab_deduct:
                         _u("销售额", "売上"): _y(r["sales_jpy"]),
                         _u("扣减合计", "控除合計"): _y(r["ded_total"]),
                         _u("扣减率", "控除率"): _pct(r["ded_total"], r["sales_jpy"]),
+                        # 卖家券は 2026-08-03 に控除へ算入（JO 決定）。
+                        # 控除率が 4〜5pp 上がった理由が表から分かるように内訳を出す
+                        _u("其中卖家券", "うち卖家券"): _y(r["voucher_jpy"]),
                         # 分子(sales_daily)と分母(sales_daily)を揃える
                         _u("粗利率", "粗利率"): _pct(r["gross_profit_jpy"],
                                                    r["revenue_jpy"]),
