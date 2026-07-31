@@ -154,8 +154,40 @@ def _dl(df: pd.DataFrame, name: str, key: str) -> None:
                        file_name=name, mime="text/csv", key=key)
 
 
-tab1, tab2, tab3 = st.tabs([
+# ============================================================
+# 要対応の定義 — 「誰が何をするか」で割る（JO 2026-07-31）
+# ------------------------------------------------------------
+# JO「需要人处理的，单独做个tab用来判断」
+# バケット D（構造欠損でも当月でもラグ内でもない = 待っても解消しない）を
+# open_reasons ごとに割り、対応先と作業内容を明示する。
+# ⚠️ 1 注文が複数の理由を持ちうるので、区分の合計は D の件数を上回る。
+#    「どれか 1 つでも残っていればその注文は閉じない」ので、重複計上が正しい。
+# ============================================================
+_ACTIONS = [
+    ("赤伝未起票", _u("经理", "経理"),
+     _u("在 NST 起赤伝冲销销售额", "NST に取消伝票（赤伝）を起票する"),
+     _u("平台侧已扣款、NST 销售额还挂着 → 账面虚高",
+        "プラットフォーム側は控除済みだが NST の売上が残っている → 帳簿が過大")),
+    ("未入金", _u("运营", "運用"),
+     _u("查平台后台这笔钱到底来没来", "プラットフォーム後台で入金の有無を確認する"),
+     _u("过了正常拨款周期还没入金 → 可能漏拨或有争议",
+        "通常の入金サイクルを過ぎている → 未拨款 or 係争の可能性")),
+    ("賠償請求中", _u("运营", "運用"),
+     _u("提交/跟进平台赔偿申请", "賠償申請を出す / 進捗を追う"),
+     _u("丢件・破损等可向平台索赔，逾期不申请就拿不回来",
+        "紛失・破損等は平台に請求できる。期限を過ぎると回収不能")),
+    ("返金審査中", _u("运营", "運用"),
+     _u("回应买家退款交涉", "返金交渉に応答する"),
+     _u("平台在等卖家回应，不回应会自动判给买家",
+        "平台が出品者の応答を待っている。無応答だと買い手勝ちで確定")),
+]
+
+_TODO = (_OPEN[_OPEN["bucket"] == "D"].copy()
+         if not _OPEN.empty else _OPEN.copy())
+
+tab1, tab0, tab2, tab3 = st.tabs([
     _u("📊 总览", "📊 総覧"),
+    _u("🛠 需要人处理", "🛠 要対応"),
     _u("❓ 不确定明细", "❓ 不確定の内訳"),
     _u("💹 事业部利润与波动", "💹 事業部利益とブレ"),
 ])
@@ -219,6 +251,64 @@ with tab1:
     html_table(pd.DataFrame(_rows).sort_values(_u("平台", "プラットフォーム")))
 
     _dl(_DF, "order_finance_status.csv", "dl_all")
+
+# ============================================================
+# 🛠 要対応 — 待っても解消しないものだけ
+# ============================================================
+with tab0:
+    if _TODO.empty:
+        st.success(_u("没有需要人处理的订单 🎉", "要対応の注文はありません 🎉"))
+    else:
+        st.markdown(_u(
+            "**这里只放「等下去不会自己好」的单。** 当月发货、赤伝滞后 1~2 月内、"
+            "Lazada 无 API —— 这些都不在这里（去「不确定明细」看）。",
+            "**ここは「待っても解消しない」ものだけ。** 当月出荷・赤伝ラグ 1〜2ヶ月内・"
+            "Lazada（API 無し）は入れていない（「不確定の内訳」を参照）。"))
+
+        c = st.columns(3)
+        c[0].metric(_u("要处理订单", "要対応の注文"), f"{len(_TODO):,}")
+        c[1].metric(_u("挂账金额", "帳簿に残る金額"),
+                    _yen(_TODO["nst_amount_jpy"].sum()))
+        c[2].metric(_u("最老一单", "最古"), str(_TODO["ship_date"].min()))
+
+        for _reason, _who, _do, _why in _ACTIONS:
+            _sub = _TODO[_TODO["open_reasons"].str.contains(_reason, regex=False)]
+            if _sub.empty:
+                continue
+            _amt = _sub["nst_amount_jpy"].sum()
+            _old = _sub["ship_date"].min()
+            with st.expander(
+                    f"【{_who}】{_do} — {len(_sub):,} "
+                    + _u("单", "件") + f" {_yen(_amt)}"
+                    + _u(f" · 最老 {_old}", f" · 最古 {_old}"),
+                    expanded=True):
+                st.caption(f"⚠️ {_why}")
+                _g = (_sub.groupby(["shop"])
+                      .agg(orders=("order_no", "size"),
+                           amt=("nst_amount_jpy", "sum"),
+                           oldest=("ship_date", "min"))
+                      .reset_index().sort_values("amt", ascending=False))
+                html_table(pd.DataFrame([{
+                    _u("店铺", "店舗"): r["shop"],
+                    _u("订单", "注文"): f"{int(r['orders']):,}",
+                    _u("金额", "金額"): _yen(r["amt"]),
+                    _u("最老", "最古"): str(r["oldest"]),
+                } for _, r in _g.iterrows()]))
+                # 判断に要る列だけ。実収の有無と物流ステータスで「金が来ないのか
+                # 伝票が無いだけなのか」が分かる
+                st.dataframe(
+                    _sub[["ym", "ship_date", "shop", "order_no", "nst_amount_jpy",
+                          "order_status", "logistics_status", "is_paid_out",
+                          "refund_status", "credit_memos", "open_reasons"]]
+                    .sort_values("nst_amount_jpy", ascending=False),
+                    use_container_width=True, height=300)
+                _dl(_sub, f"todo_{_reason}.csv", f"dl_todo_{_reason}")
+
+        st.caption(_u(
+            "※ 一单可能同时开着多个条件，所以各区分之和会大于上面的订单总数 —— "
+            "只要还有一个没处理，这单就关不掉。",
+            "※ 1 注文が複数の条件を持ちうるため、区分の合計は上の注文総数を上回ります。"
+            "どれか 1 つでも残っていればその注文は閉じません。"))
 
 # ============================================================
 # ❓ 不確定の内訳

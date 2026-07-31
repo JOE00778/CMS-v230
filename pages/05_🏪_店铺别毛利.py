@@ -823,7 +823,7 @@ with tab_deduct:
                 return f"{(num / den * 100):.1f}%" if den else "—"
 
             _tot = d[["sales_jpy", "revenue_jpy", "ded_total", "payout_jpy",
-                      "gross_profit_jpy"]].sum()
+                      "gross_profit_jpy", "orders", "settled_orders"]].sum()
             # ⚠️ 率は **分子と分母を同じ表から** 取る。
             #    粗利は nst.sales_daily 由来 → 分母も sales_daily の revenue_jpy。
             #    控除は請求書額に対する割合 → 分母は sales_jpy（請求書由来）。
@@ -832,7 +832,7 @@ with tab_deduct:
                 if _tot["revenue_jpy"] else None
             _dr = _tot["ded_total"] / _tot["sales_jpy"] * 100 \
                 if _tot["sales_jpy"] else None
-            k1, k2, k3, k4 = st.columns(4)
+            k1, k2, k3, k4, k5 = st.columns(5)
             k1.metric(_u("销售额（出荷日）", "売上（出荷日）"), _y(_tot["sales_jpy"]))
             k2.metric(_u("扣减合计", "控除合計"), _y(_tot["ded_total"]),
                       _pct(_tot["ded_total"], _tot["sales_jpy"]), delta_color="inverse")
@@ -842,56 +842,13 @@ with tab_deduct:
             # 净利估 = 粗利率 − 控除率。それぞれ自分の分母で出した率を引き算する
             k4.metric(_u("净利估", "純利益(推定)"),
                       f"{_gm - _dr:.1f}%" if (_gm is not None and _dr is not None) else "—")
+            # 入金率（JO 2026-07-31 依頼）。当月は出荷直後で低いのが正常
+            # （実測 2026-07 は 43.5% · 過月は 96% 台）。金額ではなく **注文数ベース**
+            k5.metric(_u("入款率", "入金率"),
+                      _pct(_tot["settled_orders"], _tot["orders"]),
+                      _u(f"已回款 {_y(_tot['payout_jpy'])}",
+                         f"入金済 {_y(_tot['payout_jpy'])}"), delta_color="off")
 
-            # 売上が 2 つあるのは正常。理由を出しておかないと「どちらかが壊れている」と読まれる
-            # 貸方票（返品の取消伝票）は月末に一括起票される。まだ起票されていない月は
-            # 売上が過大・控除率と損失率が過少に出る。実測の起票率で成熟度を判定する:
-            #   2026-03 5.78% / 04 5.38% / 05 5.75% ← 起票済み
-            #   2026-06 0.99% / 07 0.19%           ← 未起票（6 月は約 930 枚 ¥230 万が未反映）
-            # JO 確認済み「退货的票是有滞后的」。人が当月の数字を結論として読まないよう明示する。
-            _cred, _cred_err = _shq(
-                "SELECT count(*) FILTER (WHERE tran_type='CustInvc') AS invoices, "
-                "count(*) FILTER (WHERE tran_type='CustCred') AS creds "
-                # ⚠️ 軸は tran_date。ship_date は発送日ではない（2026-07-31 実証 ·
-                #    nst.sales_invoice の列コメント参照）
-                f"FROM nst.sales_invoice WHERE to_char(tran_date,'YYYY-MM') = '{ym}'")
-            if _cred is not None and not _cred.empty:
-                _inv_n = int(pd.to_numeric(_cred["invoices"], errors="coerce").fillna(0).iloc[0])
-                _crd_n = int(pd.to_numeric(_cred["creds"], errors="coerce").fillna(0).iloc[0])
-                _rate = (_crd_n / _inv_n * 100) if _inv_n else 0.0
-                # 実測の常態は 5.4〜5.8%。4% を下回る月は未起票と判断する
-                if _inv_n > 100 and _rate < 4.0:
-                    st.warning(_u(
-                        f"⚠️ **本月数据未成熟** · 退货冲销票（贷方票）只起了 {_crd_n:,} 张，"
-                        f"占发票 {_rate:.2f}%（3–5 月的常态是 5.4~5.8%）· "
-                        "贷方票是**月末一括起票**且有滞后，未起完时"
-                        "**销售额虚高、扣减率和损失率虚低** · "
-                        "按常态率推算还有约 "
-                        f"{max(int(_inv_n * 0.056) - _crd_n, 0):,} 张未起 · "
-                        "请勿用本月数字下结论",
-                        f"⚠️ **当月は未成熟** · 貸方票（返品の取消伝票）が {_crd_n:,} 枚 = "
-                        f"請求書の {_rate:.2f}% しか起票されていません（3〜5 月の常態は 5.4〜5.8%）· "
-                        "貸方票は**月末に一括起票**され遅れが出るため、未起票の間は"
-                        "**売上が過大・控除率と損失率が過少**に出ます · "
-                        f"常態率からの推定で残り約 {max(int(_inv_n * 0.056) - _crd_n, 0):,} 枚 · "
-                        "当月の数字で結論を出さないでください"))
-
-            # ============================================================
-            # 2 つの売上は **同じ口径**（どちらも NST · tran_date 軸）。
-            # 一致するのが正常で、ズレたらそれ自体が異常シグナル。
-            # ------------------------------------------------------------
-            # JO 2026-07-31「口径は 1 つに統一。全部 NST に合わせる。店舗後台の
-            # 売上は毎日 NST に自動アップされ、全部発送日基準」
-            #   · 以前はここに「① 貸方票は請求書側にのみ入る ② 日次は sale_date、
-            #     請求書は shipdate」と書いていたが **両方とも誤り** だった:
-            #     ① 日次の SuiteQL も t.type IN (...,'CustCred') で貸方票を含む
-            #        （2026-07 の貸方票は −¥1,441 · 差額 ¥1,508,464 の説明にならない）
-            #     ② 差額は全額 ship_date 軸のせいだった。ship_date は発送日ではない
-            #        （Shopee の発送期限を 1,534 票が超過 · 最大 107 日遅れ）
-            #   → ビューを tran_date 軸に統一。2026-06/07 の差は 0.065% / 0.008% になった
-            #   残る微差は「行明細合計（日次）vs 伝票総額（請求書）」の丸め。
-            #   0.5% を超えるなら片側の再取得が古い（日次は当月+前月しか更新されない）
-            # ============================================================
             _base = float(_tot["revenue_jpy"]) or 1.0
             _gap = float(_tot["revenue_jpy"] - _tot["sales_jpy"])
             _gap_pct = 100.0 * _gap / _base
@@ -910,26 +867,6 @@ with tab_deduct:
                     "「当月＋前月」しか更新されず、それ以前の月は最後の取得時点で止まり、"
                     "その後に起票された貸方票が反映されません · "
                     "再取得: `daily_pull --domains sales --since <月初>`"))
-            elif abs(_gap) > 1000:
-                st.caption(_u(
-                    f"ℹ️ 上方 KPI（{_y(_tot['revenue_jpy'])}）と本 tab"
-                    f"（{_y(_tot['sales_jpy'])}）差 {_y(_gap)}（{_gap_pct:+.3f}%）· "
-                    "同一口径（NST · 发货日 tran_date 轴）· "
-                    "微差是「行明细合计 vs 伝票总额」的丸め差、正常范围",
-                    f"ℹ️ 上部 KPI（{_y(_tot['revenue_jpy'])}）と本タブ"
-                    f"（{_y(_tot['sales_jpy'])}）の差 {_y(_gap)}（{_gap_pct:+.3f}%）· "
-                    "同一口径（NST · 発送日 tran_date 軸）· "
-                    "微差は「行明細合計 vs 伝票総額」の丸め差で正常範囲です"))
-
-            # 突合率が低い店は手数料が過少に出る → 数字を信じてよいか一目で分かるように
-            _low = d[(d["orders"] > 0) & (d["matched_pct"] < 90)]
-            if not _low.empty:
-                st.warning(_u(
-                    f"⚠️ {len(_low)} 家店铺的费用匹配率不足 90%"
-                    f"（{', '.join(_low.nlargest(3,'sales_jpy')['shop'].tolist())} 等）· "
-                    "这些店的扣减偏小、净利估偏高 · 补齐: pull_escrow --country <店> --since/--until",
-                    f"⚠️ 突合率 90% 未満の店舗が {len(_low)} 件あります（控除が過少・純利が過大に出ます）"))
-
             _DL = _u("⬇️ 下载 CSV", "⬇️ CSV ダウンロード")
 
             def _dl(df_, name, key):
@@ -1061,7 +998,11 @@ with tab_payout:
             "order_seller_discount, voucher_from_seller, buyer_paid_shipping_fee, "
             "shopee_shipping_rebate, actual_shipping_fee, commission_fee, "
             "service_fee, seller_transaction_fee, credit_card_transaction_fee, "
-            "order_ams_commission_fee, seller_return_refund, payout_amount, "
+            "order_ams_commission_fee, seller_return_refund, "
+            # 税・関税・GST と返品運賃（JO 2026-07-31「拨款明细和入金表格的项目对齐了吗？」）
+            # ⚠️ これが無いと VN で帳尻が合わない（税は商品小計の約 9.9%）。
+            #    PH は全国ゼロなので PH だけ見ていると気付けない
+            "tax_total, reverse_shipping_fee, payout_amount, "
             "fee_missing FROM shopee.v_payout_order "
             f"WHERE payout_date = %s AND shop_key IN ({_ph}) ORDER BY order_sn",
             tuple([_sel_d] + _keys))
@@ -1072,12 +1013,25 @@ with tab_payout:
             st.info(t("该拨款日无明细"))
         else:
             _miss = int(_po["fee_missing"].sum())
-            m1, m2, m3 = st.columns(3)
+
+            def _sum(col: str) -> float:
+                return float(pd.to_numeric(_po[col], errors="coerce").fillna(0).sum())
+
+            # 控除合計は **官方対账で認定した費目だけ**（reconcile_official.FEE_COLUMNS）。
+            # credit_card_transaction_fee / seller_return_refund は控除ではないので入れない
+            _ded = sum(abs(_sum(c)) for c in (
+                "voucher_from_seller", "commission_fee", "service_fee",
+                "seller_transaction_fee", "order_ams_commission_fee",
+                "tax_total", "reverse_shipping_fee"))
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric(_pl("订单数", "注文数"), f"{len(_po):,}")
             m2.metric(_pl("拨款合计（当地币）", "入金合計（現地通貨）"),
-                      f"{pd.to_numeric(_po['payout_amount'], errors='coerce').sum():,.0f}")
+                      f"{_sum('payout_amount'):,.0f}")
+            m3.metric(_pl("扣减合计（当地币）", "控除合計（現地通貨）"), f"{_ded:,.0f}",
+                      _pl(f"其中税 {_sum('tax_total'):,.0f}",
+                          f"うち税 {_sum('tax_total'):,.0f}"), delta_color="off")
             # 取得できていない明細を必ず件数で見せる（黙って 0 円扱いしない）
-            m3.metric(_pl("费用明细缺失", "費用内訳の欠落"), f"{_miss:,}",
+            m4.metric(_pl("费用明细缺失", "費用内訳の欠落"), f"{_miss:,}",
                       delta=None if not _miss else _pl("需补拉", "要再取得"),
                       delta_color="inverse")
 
