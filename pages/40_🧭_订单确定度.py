@@ -103,12 +103,15 @@ if _DF is None or _DF.empty:
 
 _DF["nst_amount_jpy"] = pd.to_numeric(_DF["nst_amount_jpy"], errors="coerce").fillna(0.0)
 _LATEST_YM = _DF["ym"].max()
+# 赤伝ラグとして許容する月数（JO 確認済み「退货的票是有滞后的，大概 1〜2 ヶ月」）。
+# これより古い未起票は「待てば解消する」ではなく **経理の作業残** なので D に落とす。
+_LAG_OK_YM = sorted(_DF["ym"].unique())[-3:]   # 当月 + 直近 2 ヶ月
 
 
 def _bucket(r) -> str:
     """open の内訳を 4 つに割る（JO が対応要否を決めるための分類）。
 
-    A/B/C は放っておけば解消する。人が見るべきは D だけ。
+    A〜C は放っておけば解消する。人が見るべきは D だけ。
     """
     if r["platform"] in ("Lazada", "Other"):
         # Lazada は注文明細 API が無い（構造的欠損）。入金の有無を判定できない
@@ -116,8 +119,11 @@ def _bucket(r) -> str:
     if r["ym"] == _LATEST_YM:
         # 当月出荷 = 入金も返金期間もまだ走り切っていない
         return "B"
-    if r["open_reasons"] == "赤伝未起票":
-        # 赤伝ラグ 1〜2 ヶ月は JO 確認済みの既知挙動
+    if r["open_reasons"] == "赤伝未起票" and r["ym"] in _LAG_OK_YM:
+        # ⚠️ 月齢の条件は必須。2026-07-31 に条件無しで書いていたため、
+        #    3 月から 5 ヶ月放置されている 318 件（¥1,032,257）が
+        #    「待てば解消する」側に隠れていた。実態は配達完了 + 部分返金済みで
+        #    Shopee 側は控除済み、NST に赤伝が起票されていないだけ = 経理の作業残
         return "C"
     return "D"
 
@@ -125,8 +131,8 @@ def _bucket(r) -> str:
 _BK_LBL = {
     "A": _u("A. 数据缺口（无明细 API）", "A. 構造欠損（明細 API 無し）"),
     "B": _u("B. 未到期（当月发货）", "B. 未到期（当月出荷）"),
-    "C": _u("C. 赤伝待起票（已知 1~2 月滞后）", "C. 赤伝待ち（既知の 1〜2ヶ月ラグ）"),
-    "D": _u("D. 要盯（过月未入金）", "D. 要監視（過月の未入金）"),
+    "C": _u("C. 赤伝待起票（滞后 1~2 月内）", "C. 赤伝待ち（1〜2ヶ月ラグ内）"),
+    "D": _u("D. 要盯（超期未处理）", "D. 要監視（期限超過）"),
 }
 
 _OPEN = _DF[_DF["finality"] == "open"].copy()
@@ -257,6 +263,21 @@ with tab2:
         if _d.empty:
             st.success(_u("没有要盯的订单", "要監視の注文なし"))
         else:
+            # D は「入金が来ない」と「赤伝が起票されていない」の 2 種類が混ざる。
+            # 対応先が違う（前者は運用/プラットフォーム、後者は経理）ので分けて出す
+            _d_cred = _d[_d["open_reasons"].str.contains("赤伝未起票", regex=False)]
+            if not _d_cred.empty:
+                st.error(_u(
+                    f"🧾 **赤伝が {_LAG_OK_YM[0]} より前から未起票**: "
+                    f"{len(_d_cred):,} 单 {_yen(_d_cred['nst_amount_jpy'].sum())} · "
+                    "多为「已送达 + 买家部分退款、Shopee 侧已扣款」但 NST 没开冲销票 · "
+                    "**这批不会自己消解，要财务起票**（滞后 1~2 月内的在 C 类，不用管）",
+                    f"🧾 **{_LAG_OK_YM[0]} より前の赤伝が未起票**: "
+                    f"{len(_d_cred):,} 件 {_yen(_d_cred['nst_amount_jpy'].sum())} · "
+                    "多くは「配達完了＋買い手の部分返金」で Shopee 側は控除済みだが "
+                    "NST に取消伝票が無い状態 · "
+                    "**待っても解消しない。経理の起票が要る**（1〜2ヶ月ラグ内は C 分類）"))
+
             _g = (_d.groupby(["ym", "shop"])
                   .agg(orders=("order_no", "size"), amt=("nst_amount_jpy", "sum"))
                   .reset_index().sort_values("amt", ascending=False))
