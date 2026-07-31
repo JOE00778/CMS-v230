@@ -852,7 +852,9 @@ with tab_deduct:
             _cred, _cred_err = _shq(
                 "SELECT count(*) FILTER (WHERE tran_type='CustInvc') AS invoices, "
                 "count(*) FILTER (WHERE tran_type='CustCred') AS creds "
-                f"FROM nst.sales_invoice WHERE to_char(ship_date,'YYYY-MM') = '{ym}'")
+                # ⚠️ 軸は tran_date。ship_date は発送日ではない（2026-07-31 実証 ·
+                #    nst.sales_invoice の列コメント参照）
+                f"FROM nst.sales_invoice WHERE to_char(tran_date,'YYYY-MM') = '{ym}'")
             if _cred is not None and not _cred.empty:
                 _inv_n = int(pd.to_numeric(_cred["invoices"], errors="coerce").fillna(0).iloc[0])
                 _crd_n = int(pd.to_numeric(_cred["creds"], errors="coerce").fillna(0).iloc[0])
@@ -874,18 +876,50 @@ with tab_deduct:
                         f"常態率からの推定で残り約 {max(int(_inv_n * 0.056) - _crd_n, 0):,} 枚 · "
                         "当月の数字で結論を出さないでください"))
 
+            # ============================================================
+            # 2 つの売上は **同じ口径**（どちらも NST · tran_date 軸）。
+            # 一致するのが正常で、ズレたらそれ自体が異常シグナル。
+            # ------------------------------------------------------------
+            # JO 2026-07-31「口径は 1 つに統一。全部 NST に合わせる。店舗後台の
+            # 売上は毎日 NST に自動アップされ、全部発送日基準」
+            #   · 以前はここに「① 貸方票は請求書側にのみ入る ② 日次は sale_date、
+            #     請求書は shipdate」と書いていたが **両方とも誤り** だった:
+            #     ① 日次の SuiteQL も t.type IN (...,'CustCred') で貸方票を含む
+            #        （2026-07 の貸方票は −¥1,441 · 差額 ¥1,508,464 の説明にならない）
+            #     ② 差額は全額 ship_date 軸のせいだった。ship_date は発送日ではない
+            #        （Shopee の発送期限を 1,534 票が超過 · 最大 107 日遅れ）
+            #   → ビューを tran_date 軸に統一。2026-06/07 の差は 0.065% / 0.008% になった
+            #   残る微差は「行明細合計（日次）vs 伝票総額（請求書）」の丸め。
+            #   0.5% を超えるなら片側の再取得が古い（日次は当月+前月しか更新されない）
+            # ============================================================
+            _base = float(_tot["revenue_jpy"]) or 1.0
             _gap = float(_tot["revenue_jpy"] - _tot["sales_jpy"])
-            if abs(_gap) > 1000:
+            _gap_pct = 100.0 * _gap / _base
+            if abs(_gap_pct) >= 0.5:
+                st.warning(_u(
+                    f"⚠️ 上方 KPI 的销售额（{_y(_tot['revenue_jpy'])}）与本 tab"
+                    f"（{_y(_tot['sales_jpy'])}）差 {_y(_gap)}（{_gap_pct:+.2f}%）· "
+                    "两边现在是**同一口径**（都取 NST · 发货日 tran_date 轴），本应一致 · "
+                    "差这么多说明**有一侧数据陈旧**：日次（nst.sales_daily）只滚动更新"
+                    "「当月+前月」，更早的月份停在最后一次拉取的快照，之后开的贷方票不会被吸收 · "
+                    "补拉命令：`daily_pull --domains sales --since <月初>`",
+                    f"⚠️ 上部 KPI の売上（{_y(_tot['revenue_jpy'])}）と本タブ"
+                    f"（{_y(_tot['sales_jpy'])}）の差 {_y(_gap)}（{_gap_pct:+.2f}%）· "
+                    "両者は**同一口径**（どちらも NST · 発送日 tran_date 軸）で一致するはずです · "
+                    "これだけズレるのは**片側が古い**サイン：日次（nst.sales_daily）は"
+                    "「当月＋前月」しか更新されず、それ以前の月は最後の取得時点で止まり、"
+                    "その後に起票された貸方票が反映されません · "
+                    "再取得: `daily_pull --domains sales --since <月初>`"))
+            elif abs(_gap) > 1000:
                 st.caption(_u(
-                    f"ℹ️ 上方 KPI 的销售额（NST 日次 {_y(_tot['revenue_jpy'])}）与本 tab"
-                    f"（请求书 {_y(_tot['sales_jpy'])}）差 {_y(_gap)} · 两者都对，口径不同："
-                    "① 贷方票（退货冲销）只进请求书侧 ② 日次是 sale_date、请求书是 shipdate，"
-                    "跨月的部分会落在不同月（符号按月反转）· 粗利率用日次侧分母，扣减率用请求书侧分母",
-                    f"ℹ️ 上部 KPI の売上（NST 日次 {_y(_tot['revenue_jpy'])}）と本タブ"
-                    f"（請求書 {_y(_tot['sales_jpy'])}）の差 {_y(_gap)} は正常です："
-                    "① 貸方票（返品の取消伝票）は請求書側にのみ入る ② 日次は sale_date、"
-                    "請求書は shipdate なので月をまたぐ分がズレる（符号は月により反転）· "
-                    "粗利率は日次側、控除率は請求書側の分母で算出しています"))
+                    f"ℹ️ 上方 KPI（{_y(_tot['revenue_jpy'])}）と本 tab"
+                    f"（{_y(_tot['sales_jpy'])}）差 {_y(_gap)}（{_gap_pct:+.3f}%）· "
+                    "同一口径（NST · 发货日 tran_date 轴）· "
+                    "微差是「行明细合计 vs 伝票总额」的丸め差、正常范围",
+                    f"ℹ️ 上部 KPI（{_y(_tot['revenue_jpy'])}）と本タブ"
+                    f"（{_y(_tot['sales_jpy'])}）の差 {_y(_gap)}（{_gap_pct:+.3f}%）· "
+                    "同一口径（NST · 発送日 tran_date 軸）· "
+                    "微差は「行明細合計 vs 伝票総額」の丸め差で正常範囲です"))
 
             # 突合率が低い店は手数料が過少に出る → 数字を信じてよいか一目で分かるように
             _low = d[(d["orders"] > 0) & (d["matched_pct"] < 90)]
