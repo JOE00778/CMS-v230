@@ -314,8 +314,10 @@ services:
   #   ⚠️ 専用イメージ(psycopg3 のみ): 初回のみ元川デスクトップで:
   #      docker compose build compliance_scheduler
   #   凭据: database/.env の COMPLIANCE_INGEST_DATABASE_URL(compliance_ingest 角色)
-  #        + COMPLIANCE_SHOPIFY_TOKEN_FILE=/secrets/shopify_admin_token.txt
-  #        (C:\Users\smiki\secrets\compliance\ に配置 · read_products のみで可)
+  #        + Shopify は marketing と同じ Dev Dashboard アプリを流用(client_credentials
+  #          交換)。新しいトークンの発行・配置は不要——アプリ側に read_products を
+  #          付けるだけ。google 系まで晒さないよう shopify の 2 ファイルだけ ro マウント。
+  #        (静的トークンを使いたい場合のみ COMPLIANCE_SHOPIFY_TOKEN_FILE も可)
   #   DATABASE_URL は明示的に空 → 超級ユーザー接続串は採集器に渡らない
   # ------------------------------------------------------------
   compliance_scheduler:
@@ -334,9 +336,13 @@ services:
     environment:
       DATABASE_URL: ""                  # 遮断: env_file 由来の超級ユーザー URL を無効化
       TZ: Asia/Tokyo
+      COMPLIANCE_SHOPIFY_CLIENT_ID_FILE: /secrets_app/shopify-client-id
+      COMPLIANCE_SHOPIFY_CLIENT_SECRET_FILE: /secrets_app/shopify-client-secret
     volumes:
       - ../../../database:/app:ro       # compliance_api コード(scp 直送で更新)
       - C:/Users/smiki/secrets/compliance:/secrets:ro
+      - C:/Users/smiki/secrets/marketing/shopify-client-id:/secrets_app/shopify-client-id:ro
+      - C:/Users/smiki/secrets/marketing/shopify-client-secret:/secrets_app/shopify-client-secret:ro
       # JAN 外部取得の実装は CMS 側にしか無い。コピーを作らず 1 ファイルだけ ro マウント。
       - ../../shared/jan_lookup.py:/opt/cms_shared/jan_lookup.py:ro
     networks:
