@@ -48,9 +48,11 @@ SOURCE_META = {
     "fda_ia_53": ("US·FDA Import Alerts(53系+66-41)", "https://www.accessdata.fda.gov/cms_ia/industry_53.html", "HTML diff·全自动"),
     "cpsc_recalls": ("US·CPSC 召回", "https://www.saferproducts.gov/RestWebServices/Recall?format=json", "官方API·全自动"),
     "hsa_acd_pdf": ("PH·ASEAN 化妆品指令 Annexes(HSA 合并PDF)", "https://www.hsa.gov.sg/cosmetic-products/asean-cosmetic-directive", "PDF hash diff·变化后人工解析"),
-    "fdaph_circulars": ("PH·FDA Circular 列表(ACD 修订文号)", "https://www.fda.gov.ph/", "HTML·可失败源(反爬)"),
     "hc_hotlist": ("CA·Health Canada Hotlist", "https://www.canada.ca/en/health-canada/services/consumer-product-safety/cosmetics/cosmetic-ingredient-hotlist-prohibited-restricted-ingredients/hotlist.html", "Wayback diff·变化后人工解析"),
+    "hc_sunscreen_monograph": ("CA·防晒专论(许可 UV 滤剂+最大浓度)", "https://webprod.hc-sc.gc.ca/nhpid-bdipsn/dbImages/mono_primary-sunscreen-monograph_english.pdf", "PDF hash diff·变化后人工解析"),
 }
+# PH·FDA Circular 列表は 2026-08-04 に監視対象から外した:一覧が JS 描画で本文が取れず、
+# REST も WAF に弾かれる。PH の実質シグナルは上の hsa_acd_pdf(ASEAN 附録そのもの)。
 
 COUNTRY_NOTES = {
     "US": (
