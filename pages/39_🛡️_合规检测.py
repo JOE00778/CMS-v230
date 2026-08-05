@@ -111,10 +111,12 @@ def _load_overview():
             "SELECT source_key, fetched_at, http_status, changed, diff_note FROM ("
             "  SELECT s.*, ROW_NUMBER() OVER (PARTITION BY source_key ORDER BY fetched_at DESC) rn"
             "  FROM compliance.source_snapshot s) x WHERE rn = 1", conn)
+        # 成分の収録率は**全成分表**で数える(shopify_item は主成分紹介なので
+        # 数えても「判定に使える成分」の実態を表さない·2026-08-05)
         cov = pd.read_sql_query(
-            "SELECT COUNT(*) AS total, SUM(CASE WHEN ingredient_text IS NOT NULL "
-            "AND ingredient_text <> '' THEN 1 ELSE 0 END) AS with_ing, MAX(updated_at) AS last_sync "
-            "FROM compliance.shopify_item", conn)
+            "SELECT (SELECT COUNT(*) FROM compliance.sheet_item) AS total, "
+            "COUNT(*) AS with_ing, MAX(fetched_at) AS last_sync "
+            "FROM compliance.ingredient_full", conn)
         return {"ing": ing, "kw": kw, "snap": snap, "cov": cov}
     except Exception:
         return None
@@ -135,10 +137,24 @@ def _is_jan(s: str) -> bool:
 def resolve_by_jan(jan: str) -> dict:
     """JAN → 已知的商品名/成分。
 
-    优先级:**飞书内容表 → Shopify 收录 → NST(仅补日文名,不是门槛)**。
-    飞书表是人按固定列规范填的上架内容表,JAN 行成分充足率≈100%,且含大量未上架品,
-    精度高于任何外部抓取,故排最前。
+    **成分只认 compliance.ingredient_full(全成分表)**(Boss 2026-08-05
+    「把飞书去掉,改为刚灌的」)。
+
+    以前拿飞书 P 列当成分源,那是错的:P 列是「🔵上架·描述(成分)」=**主成分
+    介绍**,营销向,只挑几个能讲故事的成分配一句英文说明。实测 7,513 条里
+    能当全成分表用的只有 60 条(0.8%),其余长这样——
+
+        Zinc Oxide — broad-spectrum mineral UV filter that helps protect...
+
+    营销**只会选好成分**,而规则要卡的(有机 UV 吸收剂等)结构上不会被选进去。
+    于是 2,362 条成分规则全部打空、一律判 🟢 = **假绿,违规品被放行**。
+    基准案例 ANESSA 4909978147105 就这么从 US red 变成了 green。
+    compliance.shopify_item 与飞书同源(线上成分本就是从飞书灌过去的),一并不用。
+
+    飞书/Shopify 仍然提供**商品名与分类**——那部分没问题,只是不再供成分。
     """
+    fu = _rows("SELECT ingredient_text, source FROM compliance.ingredient_full "
+               "WHERE jan = ?", [jan])
     sh = _rows("SELECT title, ingredient_text, sheet_name, vendor, l1, l2 "
                "FROM compliance.sheet_item WHERE jan = ?", [jan])
     sp = _rows("SELECT title, ingredient_text, product_status FROM compliance.shopify_item "
@@ -146,17 +162,18 @@ def resolve_by_jan(jan: str) -> dict:
     ns = _rows("SELECT display_name, maker FROM nst.item_master_raw WHERE jan = ? LIMIT 1", [jan])
     out = {"jan": jan, "name_en": "", "name_ja": "", "maker": "", "ingredient": "",
            "l1": "", "l2": "", "sources": []}
+    if fu:
+        out["ingredient"] = fu[0][0] or ""
+        out["sources"].append(_dl(f"全成分表({fu[0][1] or '-'})", f"全成分表({fu[0][1] or '-'})"))
     if sh:
         out["name_ja"] = sh[0][0] or ""
-        out["ingredient"] = sh[0][1] or ""
         out["maker"] = sh[0][3] or ""
         out["l1"], out["l2"] = sh[0][4] or "", sh[0][5] or ""
-        out["sources"].append(_dl(f"飞书内容表({sh[0][2] or '-'})", f"飛書コンテンツ表({sh[0][2] or '-'})"))
+        out["sources"].append(_dl(f"飞书内容表({sh[0][2] or '-'})·名称/分类のみ",
+                                  f"飛書コンテンツ表({sh[0][2] or '-'})·名称/分類のみ"))
     if sp:
         out["name_en"] = sp[0][0] or ""
-        # 飞书表の成分が既にあれば上書きしない(優先度: 飞书 > Shopify)
-        out["ingredient"] = out["ingredient"] or (sp[0][1] or "")
-        out["sources"].append(_dl("Shopify 已上架", "Shopify 出品済"))
+        out["sources"].append(_dl("Shopify 已上架·名称のみ", "Shopify 出品済·名称のみ"))
     if ns:
         out["name_ja"] = out["name_ja"] or (ns[0][0] or "")
         out["maker"] = out["maker"] or (ns[0][1] or "")
@@ -576,9 +593,11 @@ with tab0:
         total = int(cov["total"] or 0) if cov is not None else 0
         with_ing = int(cov["with_ing"] or 0) if cov is not None else 0
         st.caption(_dl(
-            f"名称/宣称词表 {n_kw} 条(三国通用+国别) · Shopify 成分收录 {with_ing}/{total} 件"
-            + (f" · 成分同步 {pd.to_datetime(cov['last_sync']).strftime('%m-%d %H:%M')}" if cov is not None and cov["last_sync"] else ""),
-            f"名称/表現ルール {n_kw} 件 · Shopify 成分収録 {with_ing}/{total} 件"))
+            f"名称/宣称词表 {n_kw} 条(三国通用+国别) · **全成分表** {with_ing}/{total} 件"
+            + (f"(最终取得 {pd.to_datetime(cov['last_sync']).strftime('%m-%d %H:%M')})" if cov is not None and cov["last_sync"] else "")
+            + " —— 成分判定只用全成分表,飞书 P 列是主成分介绍不作数",
+            f"名称/表現ルール {n_kw} 件 · **全成分表** {with_ing}/{total} 件"
+            + " —— 成分判定は全成分表のみ(飛書 P 列は主成分紹介なので使わない)"))
 
         st.markdown(_dl("##### 官方数据源监控(月次自动快照,变化→人工核对入库)",
                         "##### 公式データソース監視(月次自動スナップショット)"))
