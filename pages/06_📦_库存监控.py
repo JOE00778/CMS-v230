@@ -138,25 +138,28 @@ def _render_composition():
     # 固定顺序: NEW / Aランク / Bランク / Cランク / 取扱中止 / 未分类 / 其他
     _RANK_ORDER = ["NEW", "Aランク", "Bランク", "Cランク", "取扱中止", t("未分类")]
 
-    # ----- 月次推移（各月の最終スナップショット日を月末点として採る） -----
-    # 金額 = その月の数量 × **現在の** cost_estimate。原価は日次スナップショットが
-    # 無いので、線は数量の増減だけを表す（原価改定のノイズが混ざらない）。
-    # ランクも同じく現在値での遡及ラベル（ランク履歴テーブルは無い）。
+    # ----- 月次推移 -----
+    # JD 主倉は nst.inventory_activity_monthly.closing_qty（月末在庫）を使う。
+    #   日次スナップショットは 2026-05-20 開始だが、この月次表は 2025-12 まで遡れる
+    #   （2026-01 以降 receipts_daily が毎日更新／2025-12〜2026-04 は nst_report 取込）。
+    #   4 ヶ月分を日次スナップショットの月末値と突合し数量・金額とも完全一致を確認済。
+    # 弁天は bin スナップショット（2026-05-27 開始）しか無いため、それ以前の月は
+    #   JD のみ＝返品/不良品/输出中国 の 3 線は 2026-05 より前に点が無い。
+    # 金額 = その月の数量 × **現在の** cost_estimate。原価は履歴を持たないので、
+    #   線は数量の増減だけを表す（原価改定のノイズが混ざらない）。ランクも現在値。
     st.markdown("##### " + t("📈 月次推移（近 12 个月）"))
     _TREND_SQL = """
     WITH win AS (
-        SELECT (date_trunc('month', CURRENT_DATE) - INTERVAL '11 months')::DATE AS d0
-    ), inv_me AS (
-        SELECT to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
-        FROM nst.inventory_snapshot, win WHERE snapshot_date >= win.d0 GROUP BY 1
+        SELECT (date_trunc('month', CURRENT_DATE) - INTERVAL '11 months')::DATE AS d0,
+               to_char(date_trunc('month', CURRENT_DATE) - INTERVAL '11 months', 'YYYY-MM') AS ym0
     ), bin_me AS (
         SELECT to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
         FROM nst.inventory_bin_snapshot, win WHERE snapshot_date >= win.d0 GROUP BY 1
     ), inv_all AS (
-        SELECT m.ym, m.d AS as_of, 'JD-物流-千葉' AS warehouse,
-               s.item_internal_id, s.qty_on_hand, NULL::TEXT AS bin_number
-        FROM nst.inventory_snapshot s JOIN inv_me m ON m.d = s.snapshot_date
-        WHERE s.warehouse = 'JD-物流-千葉'
+        SELECT a.year_month AS ym, NULL::DATE AS as_of, 'JD-物流-千葉' AS warehouse,
+               a.item_internal_id, a.closing_qty AS qty_on_hand, NULL::TEXT AS bin_number
+        FROM nst.inventory_activity_monthly a, win
+        WHERE a.year_month >= win.ym0 AND a.location = 'JD-物流-千葉'
         UNION ALL
         SELECT m.ym, m.d, '弁天倉庫', b.item_internal_id, b.qty_on_hand, b.bin_number
         FROM nst.inventory_bin_snapshot b JOIN bin_me m ON m.d = b.snapshot_date
@@ -241,9 +244,11 @@ def _render_composition():
                 a=_last, s="+" if _diff >= 0 else "-", d=abs(_diff), p=_pct,
                 lo=float(t_cat["amt"].min()), hi=float(t_cat["amt"].max())))
 
-        _as_of = tdf.groupby("ym")["as_of"].max().sort_index()
-        st.caption(t("各月＝该月最后一个快照日时点（最新 {ym}={d}）· 金额按当前定义原价换算").format(
-            ym=str(_as_of.index[-1]), d=str(_as_of.iloc[-1])))
+        # 弁天 bin スナップショットが始まった月＝それ以前は JD 主倉のみの線
+        _bn_from = tdf.loc[tdf["as_of"].notna(), "ym"].min()
+        st.caption(t("JD 主仓＝月末在库（月次入出库汇总）· 弁天＝bin 快照，{b} 起才有；"
+                     "在此之前只含 JD 主仓 · 当月为进行中月份 · 金额按当前定义原价换算").format(
+            b=str(_bn_from) if pd.notna(_bn_from) else "—"))
 
     st.divider()
 
