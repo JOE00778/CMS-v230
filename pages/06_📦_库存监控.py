@@ -179,25 +179,36 @@ def _render_composition():
     GROUP BY inv_all.ym, inv_all.warehouse, 4, im.item_rank
     """
 
-    def _trend_chart(d: pd.DataFrame, color_col: str, legend_title: str,
-                     scheme: str, order: list[str] | None = None) -> alt.Chart:
-        enc_color = alt.Color(f"{color_col}:N", title=legend_title,
-                              scale=alt.Scale(scheme=scheme),
-                              **({"sort": order} if order else {}))
-        return (
-            alt.Chart(d)
-            .mark_line(point=True, strokeWidth=2)
-            .encode(
-                x=alt.X("ym:O", title=t("月")),
-                y=alt.Y("amt:Q", title=t("库存金额(¥)"), axis=alt.Axis(format="~s")),
-                color=enc_color,
-                tooltip=[alt.Tooltip("ym:O", title=t("月")),
-                         alt.Tooltip(f"{color_col}:N", title=legend_title),
-                         alt.Tooltip("amt:Q", title=t("金额(¥)"), format=",.0f"),
-                         alt.Tooltip("qty:Q", title=t("数量"), format=",.0f")],
-            )
-            .properties(height=300)
+    def _trend_chart(d: pd.DataFrame, color_col: str | None, legend_title: str,
+                     scheme: str, order: list[str] | None = None,
+                     *, zero: bool = True, labels: bool = False) -> alt.Chart:
+        """月次推移の折れ線。
+
+        zero=False は Y 軸を 0 起点にしない＝振れ幅を拡大して見せる（単系列向け）。
+        複数系列で使うと系列間の大小関係が誤読されるので既定は 0 起点のまま。
+        labels=True は各点に金額を直書き（点が数個しかない月次なので成立する）。
+        """
+        tooltip = [alt.Tooltip("ym:O", title=t("月"))]
+        enc = {}
+        if color_col:
+            enc["color"] = alt.Color(f"{color_col}:N", title=legend_title,
+                                     scale=alt.Scale(scheme=scheme),
+                                     **({"sort": order} if order else {}))
+            tooltip.append(alt.Tooltip(f"{color_col}:N", title=legend_title))
+        tooltip += [alt.Tooltip("amt:Q", title=t("金额(¥)"), format=",.0f"),
+                    alt.Tooltip("qty:Q", title=t("数量"), format=",.0f")]
+        base = alt.Chart(d).encode(
+            x=alt.X("ym:O", title=t("月")),
+            y=alt.Y("amt:Q", title=t("库存金额(¥)"),
+                    scale=alt.Scale(zero=zero, nice=True), axis=alt.Axis(format="~s")),
+            tooltip=tooltip, **enc,
         )
+        line = base.mark_line(point=alt.OverlayMarkDef(size=70), strokeWidth=2)
+        if not labels:
+            return line.properties(height=300)
+        text = base.mark_text(dy=-14, fontSize=12, fontWeight="bold").encode(
+            text=alt.Text("amt:Q", format=",.0f"))
+        return (line + text).properties(height=300)
 
     try:
         tdf = _df(_TREND_SQL)
@@ -210,13 +221,25 @@ def _render_composition():
         tdf["amt"] = pd.to_numeric(tdf["amt"], errors="coerce").fillna(0)
 
         # 用途 推移（全仓库合算 · 上の構成 KPI カードと同じ口径）
-        t_cat = tdf.groupby(["ym", "category"], as_index=False).agg(
-            qty=("qty", "sum"), amt=("amt", "sum"))
-        t_cat["label"] = t_cat["category"].map(lambda c: _labels.get(c, c))
+        # 4 類別を重ねると 通常输出(¥70M) が他(¥0.5〜2.4M)を潰して平線に見えるため、
+        # 1 類別ずつ表示 + Y 軸 0 起点なし で振れ幅を拡大する（Boss 2026-08-07）。
+        sel_cat = st.radio(
+            t("用途类别（推移）"), list(CATEGORIES), horizontal=True, index=0,
+            format_func=lambda c: _labels.get(c, c), key="trend_cat_sel",
+        )
+        t_cat = (tdf[tdf["category"] == sel_cat]
+                 .groupby("ym", as_index=False).agg(qty=("qty", "sum"), amt=("amt", "sum")))
         st.altair_chart(
-            _trend_chart(t_cat, "label", t("用途"), "tableau10",
-                         [_labels[c] for c in CATEGORIES]).properties(title=t("用途别 推移")),
+            _trend_chart(t_cat, None, t("用途"), "tableau10", zero=False, labels=True)
+            .properties(title=f"{_labels.get(sel_cat, sel_cat)} {t('推移')}"),
             use_container_width=True)
+        if len(t_cat) >= 2:
+            _prev, _last = float(t_cat["amt"].iloc[-2]), float(t_cat["amt"].iloc[-1])
+            _diff = _last - _prev
+            _pct = (_diff / _prev * 100) if _prev else 0.0
+            st.caption(t("最新月 ¥{a:,.0f} · 环比 {s}¥{d:,.0f}（{p:+.1f}%）· 期间内 最小 ¥{lo:,.0f} / 最大 ¥{hi:,.0f}").format(
+                a=_last, s="+" if _diff >= 0 else "-", d=abs(_diff), p=_pct,
+                lo=float(t_cat["amt"].min()), hi=float(t_cat["amt"].max())))
 
         _as_of = tdf.groupby("ym")["as_of"].max().sort_index()
         st.caption(t("各月＝该月最后一个快照日时点（最新 {ym}={d}）· 金额按当前定义原价换算").format(
