@@ -135,3 +135,138 @@ def test_all_known_ingest_tables_register():
     registered = set(_PostgresAdapter._UPSERT_CONFLICT.keys())
     missing = expected_tables - registered
     assert not missing, f"未登记的表：{missing}"
+
+
+# ============================================================
+# 只読オートフィニッシュ（2026-08-07 · idle in transaction 対策）
+# ============================================================
+from shared.db import _AutoFinishCursor  # noqa: E402
+
+_TXN_IDLE, _TXN_INTRANS = 0, 2  # psycopg2: PQTRANS_IDLE / PQTRANS_INTRANS
+
+
+class _FakeCursor:
+    def __init__(self, raw):
+        self._raw = raw
+        self.executed: list[tuple] = []
+        self.closed = False
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        self._raw.status = _TXN_INTRANS  # 実 psycopg2 同様、実行で事務が開く
+
+    def executemany(self, sql, seq):
+        self.executed.append((sql, list(seq)))
+        self._raw.status = _TXN_INTRANS
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeRaw:
+    def __init__(self, status=_TXN_IDLE):
+        self.status = status
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self, *a, **k):
+        return _FakeCursor(self)
+
+    def get_transaction_status(self):
+        return self.status
+
+    def commit(self):
+        self.commits += 1
+        self.status = _TXN_IDLE
+
+    def rollback(self):
+        self.rollbacks += 1
+        self.status = _TXN_IDLE
+
+
+def _adapter(status=_TXN_IDLE):
+    raw = _FakeRaw(status)
+    return _PostgresAdapter(raw), raw
+
+
+def test_readonly_select_autocommits_and_leaves_no_txn():
+    conn, raw = _adapter()
+    conn.execute("SELECT jan FROM nst.item_master_raw WHERE jan = ?", ("4901",))
+    assert raw.commits == 1 and raw.status == _TXN_IDLE
+
+
+def test_write_does_not_autocommit():
+    conn, raw = _adapter()
+    conn.execute("INSERT OR IGNORE INTO _schema_version (version, applied_at) VALUES (?, ?)", (1, 2))
+    assert raw.commits == 0 and raw.status == _TXN_INTRANS
+
+
+def test_select_inside_write_txn_is_untouched():
+    """page34 保存フロー回帰：UPDATE の合間に挟む SELECT で事務を切ってはいけない。"""
+    conn, raw = _adapter()
+    conn.execute("UPDATE sourcing.supplier SET note=? WHERE supplier_name=?", ("x", "y"))
+    assert raw.status == _TXN_INTRANS
+    conn.execute("SELECT 1 FROM sourcing.supplier WHERE supplier_name=?", ("z",))
+    assert raw.commits == 0 and raw.status == _TXN_INTRANS  # まだ事務中
+    conn.commit()
+    assert raw.commits == 1
+
+
+def test_with_cte_readonly_autocommits():
+    conn, raw = _adapter()
+    conn.execute("WITH win AS (SELECT 1 AS x) SELECT * FROM win")
+    assert raw.commits == 1
+
+
+def test_with_cte_containing_write_is_untouched():
+    conn, raw = _adapter()
+    conn.execute("WITH ins AS (INSERT INTO t (a) VALUES (1) RETURNING a) SELECT * FROM ins")
+    assert raw.commits == 0
+
+
+def test_locking_and_multi_statement_and_select_into_not_finished():
+    for sql in (
+        "SELECT * FROM t FOR UPDATE",
+        "SELECT * FROM t FOR NO KEY UPDATE",
+        "SELECT 1; UPDATE t SET a=1",
+        "SELECT * INTO newtab FROM t",
+    ):
+        conn, raw = _adapter()
+        conn.execute(sql)
+        assert raw.commits == 0, sql
+
+
+def test_readonly_with_comment_prefix_and_trailing_semicolon():
+    conn, raw = _adapter()
+    conn.execute("-- KPI 集計\nSELECT count(*) FROM t;")
+    assert raw.commits == 1
+
+
+def test_is_readonly_sql_word_boundaries():
+    # updated_at 等の列名で書き込み扱いに誤爆しない
+    assert _PostgresAdapter._is_readonly_sql(
+        "WITH x AS (SELECT updated_at, deleted_flag FROM t) SELECT * FROM x")
+    # 文字列内の ';' や 'delete' は書き扱いに倒れる（無害側）
+    assert not _PostgresAdapter._is_readonly_sql("SELECT * FROM t WHERE note = 'a;b'")
+    assert not _PostgresAdapter._is_readonly_sql("WITH x AS (SELECT 1) SELECT 'delete me'")
+
+
+def test_pandas_cursor_path_autocommits_readonly():
+    """pd.read_sql は conn.cursor() 経由 → wrapper が同じ判定で事務を閉じる。"""
+    conn, raw = _adapter()
+    cur = conn.cursor()
+    assert isinstance(cur, _AutoFinishCursor)
+    cur.execute("SELECT * FROM marketing.v_marketing_data_freshness")
+    assert raw.commits == 1 and raw.status == _TXN_IDLE
+    assert cur.fetchall() == []          # 透過委譲
+    cur.close()
+
+
+def test_pandas_cursor_path_write_untouched():
+    conn, raw = _adapter()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO t (a) VALUES (%s)", (1,))
+    assert raw.commits == 0 and raw.status == _TXN_INTRANS

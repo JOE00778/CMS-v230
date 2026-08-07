@@ -128,6 +128,51 @@ def _get_postgres_connection():
     return adapter
 
 
+# psycopg2 の定数（未インストール環境＝SQLite/テストでも db.py を import できるよう
+# フォールバックを持つ。0 = PQTRANS_IDLE：トランザクション外）。
+try:
+    from psycopg2.extensions import TRANSACTION_STATUS_IDLE as _TXN_IDLE
+except ImportError:
+    _TXN_IDLE = 0
+
+
+class _AutoFinishCursor:
+    """pandas read_sql 等が conn.cursor() 経由で流す SELECT でも事務を残さないための wrapper。
+
+    素の psycopg2 cursor に透過委譲しつつ、execute() だけ横取りして
+    「トランザクション外から発行された単発の只読 SQL」なら実行直後に commit で
+    事務を閉じる（判定は _PostgresAdapter.execute と同一）。SQL の書き換えは
+    しない（従来の透過挙動そのまま）。
+    """
+
+    def __init__(self, cur, raw):
+        self._cur, self._conn_raw = cur, raw
+
+    def execute(self, sql, params=None):
+        finish = (self._conn_raw.get_transaction_status() == _TXN_IDLE
+                  and _PostgresAdapter._is_readonly_sql(sql))
+        self._cur.execute(sql, params or ())
+        if finish:
+            self._conn_raw.commit()
+        return self._cur
+
+    def executemany(self, sql, params_seq):
+        return self._cur.executemany(sql, params_seq)
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+    def __iter__(self):
+        return iter(self._cur)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._cur.close()
+        return False
+
+
 class _PostgresAdapter:
     """psycopg2 连接的 SQLite-like wrapper.
 
@@ -140,6 +185,15 @@ class _PostgresAdapter:
         → `INSERT INTO X (cols) VALUES (...) ON CONFLICT (pk) DO UPDATE SET col=EXCLUDED.col, ...`
     - `INSERT OR IGNORE INTO X (cols) VALUES (...)`
         → `INSERT INTO X (cols) VALUES (...) ON CONFLICT DO NOTHING`
+
+    只読オートフィニッシュ（2026-08-07·Boss 拍板 B案）：
+    ページの大半は書き込み接続で只読 SELECT を流し、commit も rollback もしない
+    → 接続が idle in transaction のままロックを持ち続け、DDL や autovacuum を
+    ブロックしていた（page34 無言フリーズの温床）。対策として execute() は
+    「トランザクション外から発行された単発の只読 SQL」に限り、実行直後に
+    commit してトランザクションを閉じる。書き込みトランザクションの途中
+    （get_transaction_status() != IDLE）では従来どおり何もしない＝
+    UPDATE の合間に SELECT を挟むフロー（page34 保存処理等）は壊れない。
     """
 
     # 表 → conflict 列（PK 或 UNIQUE 约束的列），用于 INSERT OR REPLACE 改写。
@@ -194,6 +248,33 @@ class _PostgresAdapter:
     # 命名占位符 :name → %(name)s （psycopg2 pyformat 风格）
     # (?<!:) 跳过 ::text 类型转换；(?<!\w) 跳过单词中间的冒号（如 'http://'）
     _RE_NAMED_PARAM = re.compile(r"(?<!:)(?<!\w):([a-zA-Z_]\w*)\b")
+    _RE_SQL_COMMENT = re.compile(r"(--[^\n]*|/\*.*?\*/)", re.S)
+    _RE_LOCKING_CLAUSE = re.compile(r"\bfor\s+(update|share|no\s+key\s+update|key\s+share)\b")
+    _RE_WRITE_WORD = re.compile(r"\b(insert|update|delete|merge)\b")
+
+    @classmethod
+    def _is_readonly_sql(cls, sql: str) -> bool:
+        """単発で発行しても安全に commit で閉じられる只読 SQL かの保守判定。
+
+        誤判定の方向を「読を書と誤る（→従来挙動のまま・無害）」に倒してある：
+        - 文字列リテラル内の 'update' や ';' で False になっても、何も変わらないだけ
+        - True と誤ると書き込み事務を分断しかねないので、迷う形は全部 False：
+          複文（;）/ SELECT ... INTO（実は建表）/ ロック読（FOR UPDATE 等）/
+          CTE 内に書き込み動詞を含む WITH
+        """
+        s = cls._RE_SQL_COMMENT.sub(" ", sql).strip().lower()
+        core = s.rstrip(";").strip()          # 末尾の空 ; は許容
+        if ";" in core:                        # 複文は不判定
+            return False
+        if core.startswith("select"):
+            if cls._RE_LOCKING_CLAUSE.search(core):
+                return False
+            if re.search(r"\binto\b", core):   # SELECT INTO は建表＝書き込み
+                return False
+            return True
+        if core.startswith("with"):
+            return not cls._RE_WRITE_WORD.search(core)
+        return False
 
     def __init__(self, raw):
         self._raw = raw
@@ -244,8 +325,14 @@ class _PostgresAdapter:
         return sql.replace("?", "%s")
 
     def execute(self, sql, params=None):
+        # 実行**前**の状態で判定：既に事務中（＝直前に書き込みがある）なら触らない。
+        finish = (self._raw.get_transaction_status() == _TXN_IDLE
+                  and self._is_readonly_sql(sql))
         cur = self._raw.cursor()
         cur.execute(self._adapt_sql(sql), params or ())
+        if finish:
+            # client-side cursor は結果を取得済みなので commit 後も fetchall 可能
+            self._raw.commit()
         return cur
 
     def executemany(self, sql, params_seq):
@@ -260,8 +347,8 @@ class _PostgresAdapter:
 
     # pandas / 其他库直接调 conn.cursor() 时透传到底层 psycopg2
     def cursor(self, *args, **kwargs):
-        """暴露 cursor 接口供 pandas read_sql_query 等使用。"""
-        return self._raw.cursor(*args, **kwargs)
+        """暴露 cursor 接口供 pandas read_sql_query 等使用（只読は自動で事務を閉じる）。"""
+        return _AutoFinishCursor(self._raw.cursor(*args, **kwargs), self._raw)
 
     @property
     def con(self):
