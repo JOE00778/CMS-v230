@@ -132,11 +132,15 @@ def _render_composition():
     sel_wh_rank = st.radio(
         t("仓库范围（等级构成）"), _wh_opts_rank, horizontal=True, index=0, key="rank_wh_sel",
     )
+    def _rank_label(d: pd.DataFrame) -> pd.Series:
+        """item_rank → 表示用ラベル（NULL / 'nan' は「未分类」に寄せる）。"""
+        return d["item_rank"].astype(str).where(
+            d["item_rank"].notna() & (d["item_rank"].astype(str) != "nan"),
+            t("未分类"),
+        )
+
     df_rank = df.copy() if sel_wh_rank == t("全部") else df[df["warehouse"] == sel_wh_rank].copy()
-    df_rank["rank_label"] = df_rank["item_rank"].astype(str).where(
-        df_rank["item_rank"].notna() & (df_rank["item_rank"].astype(str) != "nan"),
-        t("未分类"),
-    )
+    df_rank["rank_label"] = _rank_label(df_rank)
     by_rank = (df_rank.groupby("rank_label", as_index=False)
                .agg(qty=("qty_on_hand", "sum"), amt=("amt", "sum")))
     # 固定顺序: NEW / Aランク / Bランク / Cランク / 取扱中止 / 未分类 / 其他
@@ -155,8 +159,106 @@ def _render_composition():
                            delta=f"{pct_r:.0f}% {t('占比')} · {float(r['qty']):,.0f} {t('数量')}",
                            delta_color="off")
 
-    # ----- 环状图（用途 + 等级 并排） -----
     import altair as alt
+
+    # ----- 月次推移（各月の最終スナップショット日を月末点として採る） -----
+    # 金額 = その月の数量 × **現在の** cost_estimate。原価は日次スナップショットが
+    # 無いので、線は数量の増減だけを表す（原価改定のノイズが混ざらない）。
+    # ランクも同じく現在値での遡及ラベル（ランク履歴テーブルは無い）。
+    st.markdown("##### " + t("📈 月次推移（近 12 个月）"))
+    _TREND_SQL = """
+    WITH win AS (
+        SELECT (date_trunc('month', CURRENT_DATE) - INTERVAL '11 months')::DATE AS d0
+    ), inv_me AS (
+        SELECT to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
+        FROM nst.inventory_snapshot, win WHERE snapshot_date >= win.d0 GROUP BY 1
+    ), bin_me AS (
+        SELECT to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
+        FROM nst.inventory_bin_snapshot, win WHERE snapshot_date >= win.d0 GROUP BY 1
+    ), inv_all AS (
+        SELECT m.ym, m.d AS as_of, 'JD-物流-千葉' AS warehouse,
+               s.item_internal_id, s.qty_on_hand, NULL::TEXT AS bin_number
+        FROM nst.inventory_snapshot s JOIN inv_me m ON m.d = s.snapshot_date
+        WHERE s.warehouse = 'JD-物流-千葉'
+        UNION ALL
+        SELECT m.ym, m.d, '弁天倉庫', b.item_internal_id, b.qty_on_hand, b.bin_number
+        FROM nst.inventory_bin_snapshot b JOIN bin_me m ON m.d = b.snapshot_date
+    )
+    SELECT
+        inv_all.ym, max(inv_all.as_of) AS as_of, inv_all.warehouse,
+        CASE
+            WHEN inv_all.warehouse = 'JD-物流-千葉' THEN '输出'
+            WHEN COALESCE(bc.is_return, FALSE) THEN '返品'
+            WHEN COALESCE(bc.is_defect, FALSE) THEN '不良品'
+            WHEN COALESCE(bc.is_cb,     FALSE) THEN '输出中国'
+            ELSE '输出'
+        END AS category,
+        im.item_rank,
+        SUM(inv_all.qty_on_hand)::NUMERIC(16,2) AS qty,
+        SUM(inv_all.qty_on_hand * COALESCE(im.cost_estimate, 0))::NUMERIC(16,2) AS amt
+    FROM inv_all
+    LEFT JOIN nst.item_master_raw im ON im.internal_id = inv_all.item_internal_id
+    LEFT JOIN nst.bin_category bc     ON bc.bin_number  = inv_all.bin_number
+    GROUP BY inv_all.ym, inv_all.warehouse, 4, im.item_rank
+    """
+
+    def _trend_chart(d: pd.DataFrame, color_col: str, legend_title: str,
+                     scheme: str, order: list[str] | None = None) -> alt.Chart:
+        enc_color = alt.Color(f"{color_col}:N", title=legend_title,
+                              scale=alt.Scale(scheme=scheme),
+                              **({"sort": order} if order else {}))
+        return (
+            alt.Chart(d)
+            .mark_line(point=True, strokeWidth=2)
+            .encode(
+                x=alt.X("ym:O", title=t("月")),
+                y=alt.Y("amt:Q", title=t("库存金额(¥)"), axis=alt.Axis(format="~s")),
+                color=enc_color,
+                tooltip=[alt.Tooltip("ym:O", title=t("月")),
+                         alt.Tooltip(f"{color_col}:N", title=legend_title),
+                         alt.Tooltip("amt:Q", title=t("金额(¥)"), format=",.0f"),
+                         alt.Tooltip("qty:Q", title=t("数量"), format=",.0f")],
+            )
+            .properties(height=300)
+        )
+
+    try:
+        tdf = _df(_TREND_SQL)
+    except Exception as e:                                    # SQLite 空态 / schema 未部署
+        tdf = pd.DataFrame()
+        st.caption(t("📈 月次推移暂不可用") + f"（{e}）")
+
+    if not tdf.empty:
+        tdf["qty"] = pd.to_numeric(tdf["qty"], errors="coerce").fillna(0)
+        tdf["amt"] = pd.to_numeric(tdf["amt"], errors="coerce").fillna(0)
+
+        m1, m2 = st.columns(2)
+        # 用途 推移（全仓库合算 · 上の構成 KPI カードと同じ口径）
+        t_cat = tdf.groupby(["ym", "category"], as_index=False).agg(
+            qty=("qty", "sum"), amt=("amt", "sum"))
+        t_cat["label"] = t_cat["category"].map(lambda c: _labels.get(c, c))
+        m1.altair_chart(
+            _trend_chart(t_cat, "label", t("用途"), "tableau10",
+                         [_labels[c] for c in CATEGORIES]).properties(title=t("用途别 推移")),
+            use_container_width=True)
+
+        # 等级 推移（上の「仓库范围」ラジオに追従）
+        t_rank_src = tdf.copy() if sel_wh_rank == t("全部") else tdf[tdf["warehouse"] == sel_wh_rank].copy()
+        t_rank_src["rank_label"] = _rank_label(t_rank_src)
+        t_rank = t_rank_src.groupby(["ym", "rank_label"], as_index=False).agg(
+            qty=("qty", "sum"), amt=("amt", "sum"))
+        m2.altair_chart(
+            _trend_chart(t_rank, "rank_label", t("等级"), "set2",
+                         _RANK_ORDER).properties(title=t("等级别 推移")),
+            use_container_width=True)
+
+        _as_of = tdf.groupby("ym")["as_of"].max().sort_index()
+        st.caption(t("各月＝该月最后一个快照日时点（最新 {ym}={d}）· 金额按当前定义原价换算").format(
+            ym=str(_as_of.index[-1]), d=str(_as_of.iloc[-1])))
+
+    st.divider()
+
+    # ----- 环状图（用途 + 等级 并排） -----
     st.markdown("##### " + t("🍩 构成 环状图"))
     g1, g2 = st.columns(2)
 
