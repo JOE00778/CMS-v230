@@ -218,16 +218,6 @@ def _render_composition():
                          [_labels[c] for c in CATEGORIES]).properties(title=t("用途别 推移")),
             use_container_width=True)
 
-        # 等级 推移（全仓库合算 · 下の「仓库范围」ラジオには追従しない）
-        t_rank_src = tdf.copy()
-        t_rank_src["rank_label"] = _rank_label(t_rank_src)
-        t_rank = t_rank_src.groupby(["ym", "rank_label"], as_index=False).agg(
-            qty=("qty", "sum"), amt=("amt", "sum"))
-        st.altair_chart(
-            _trend_chart(t_rank, "rank_label", t("等级"), "set2",
-                         _RANK_ORDER).properties(title=t("等级别 推移")),
-            use_container_width=True)
-
         _as_of = tdf.groupby("ym")["as_of"].max().sort_index()
         st.caption(t("各月＝该月最后一个快照日时点（最新 {ym}={d}）· 金额按当前定义原价换算").format(
             ym=str(_as_of.index[-1]), d=str(_as_of.iloc[-1])))
@@ -257,6 +247,17 @@ def _render_composition():
                 col.metric(f"{r['rank_label']} (¥)", f"¥{float(r['amt']):,.0f}",
                            delta=f"{pct_r:.0f}% {t('占比')} · {float(r['qty']):,.0f} {t('数量')}",
                            delta_color="off")
+
+    # ----- 等级别 月次推移（上の「仓库范围」ラジオに追従） -----
+    if not tdf.empty:
+        t_rank_src = tdf.copy() if sel_wh_rank == t("全部") else tdf[tdf["warehouse"] == sel_wh_rank].copy()
+        t_rank_src["rank_label"] = _rank_label(t_rank_src)
+        t_rank = t_rank_src.groupby(["ym", "rank_label"], as_index=False).agg(
+            qty=("qty", "sum"), amt=("amt", "sum"))
+        st.altair_chart(
+            _trend_chart(t_rank, "rank_label", t("等级"), "set2",
+                         _RANK_ORDER).properties(title=t("等级别 推移")),
+            use_container_width=True)
 
     # ----- 环状图（用途 + 等级 并排） -----
     st.markdown("##### " + t("🍩 构成 环状图"))
