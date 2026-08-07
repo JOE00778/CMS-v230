@@ -126,12 +126,8 @@ def _render_composition():
 
     st.caption(t("库存合計 ¥{a:,.0f} · 总数量 {q:,.0f}").format(a=tot_amt, q=tot_qty))
 
-    # ----- 各 ランク 库存金额（A/B/C/NEW/取扱中止/未分类 等） -----
-    st.markdown("##### " + t("📊 各等级 库存金额"))
-    _wh_opts_rank = [t("全部")] + sorted(df["warehouse"].dropna().unique().tolist())
-    sel_wh_rank = st.radio(
-        t("仓库范围（等级构成）"), _wh_opts_rank, horizontal=True, index=0, key="rank_wh_sel",
-    )
+    import altair as alt
+
     def _rank_label(d: pd.DataFrame) -> pd.Series:
         """item_rank → 表示用ラベル（NULL / 'nan' は「未分类」に寄せる）。"""
         return d["item_rank"].astype(str).where(
@@ -139,27 +135,8 @@ def _render_composition():
             t("未分类"),
         )
 
-    df_rank = df.copy() if sel_wh_rank == t("全部") else df[df["warehouse"] == sel_wh_rank].copy()
-    df_rank["rank_label"] = _rank_label(df_rank)
-    by_rank = (df_rank.groupby("rank_label", as_index=False)
-               .agg(qty=("qty_on_hand", "sum"), amt=("amt", "sum")))
     # 固定顺序: NEW / Aランク / Bランク / Cランク / 取扱中止 / 未分类 / 其他
     _RANK_ORDER = ["NEW", "Aランク", "Bランク", "Cランク", "取扱中止", t("未分类")]
-    by_rank["_ord"] = by_rank["rank_label"].map(
-        lambda x: _RANK_ORDER.index(x) if x in _RANK_ORDER else len(_RANK_ORDER))
-    by_rank = by_rank.sort_values(["_ord", "rank_label"]).drop(columns=["_ord"])
-    if not by_rank.empty:
-        _per_row = 3
-        _rank_rows = list(by_rank.iterrows())
-        for _i in range(0, len(_rank_rows), _per_row):
-            rank_cols = st.columns(_per_row)
-            for col, (_, r) in zip(rank_cols, _rank_rows[_i:_i + _per_row]):
-                pct_r = (float(r["amt"]) / tot_amt * 100) if tot_amt else 0.0
-                col.metric(f"{r['rank_label']} (¥)", f"¥{float(r['amt']):,.0f}",
-                           delta=f"{pct_r:.0f}% {t('占比')} · {float(r['qty']):,.0f} {t('数量')}",
-                           delta_color="off")
-
-    import altair as alt
 
     # ----- 月次推移（各月の最終スナップショット日を月末点として採る） -----
     # 金額 = その月の数量 × **現在の** cost_estimate。原価は日次スナップショットが
@@ -241,8 +218,8 @@ def _render_composition():
                          [_labels[c] for c in CATEGORIES]).properties(title=t("用途别 推移")),
             use_container_width=True)
 
-        # 等级 推移（上の「仓库范围」ラジオに追従）
-        t_rank_src = tdf.copy() if sel_wh_rank == t("全部") else tdf[tdf["warehouse"] == sel_wh_rank].copy()
+        # 等级 推移（全仓库合算 · 下の「仓库范围」ラジオには追従しない）
+        t_rank_src = tdf.copy()
         t_rank_src["rank_label"] = _rank_label(t_rank_src)
         t_rank = t_rank_src.groupby(["ym", "rank_label"], as_index=False).agg(
             qty=("qty", "sum"), amt=("amt", "sum"))
@@ -256,6 +233,30 @@ def _render_composition():
             ym=str(_as_of.index[-1]), d=str(_as_of.iloc[-1])))
 
     st.divider()
+
+    # ----- 各 ランク 库存金额（A/B/C/NEW/取扱中止/未分类 等） -----
+    st.markdown("##### " + t("📊 各等级 库存金额"))
+    _wh_opts_rank = [t("全部")] + sorted(df["warehouse"].dropna().unique().tolist())
+    sel_wh_rank = st.radio(
+        t("仓库范围（等级构成）"), _wh_opts_rank, horizontal=True, index=0, key="rank_wh_sel",
+    )
+    df_rank = df.copy() if sel_wh_rank == t("全部") else df[df["warehouse"] == sel_wh_rank].copy()
+    df_rank["rank_label"] = _rank_label(df_rank)
+    by_rank = (df_rank.groupby("rank_label", as_index=False)
+               .agg(qty=("qty_on_hand", "sum"), amt=("amt", "sum")))
+    by_rank["_ord"] = by_rank["rank_label"].map(
+        lambda x: _RANK_ORDER.index(x) if x in _RANK_ORDER else len(_RANK_ORDER))
+    by_rank = by_rank.sort_values(["_ord", "rank_label"]).drop(columns=["_ord"])
+    if not by_rank.empty:
+        _per_row = 3
+        _rank_rows = list(by_rank.iterrows())
+        for _i in range(0, len(_rank_rows), _per_row):
+            rank_cols = st.columns(_per_row)
+            for col, (_, r) in zip(rank_cols, _rank_rows[_i:_i + _per_row]):
+                pct_r = (float(r["amt"]) / tot_amt * 100) if tot_amt else 0.0
+                col.metric(f"{r['rank_label']} (¥)", f"¥{float(r['amt']):,.0f}",
+                           delta=f"{pct_r:.0f}% {t('占比')} · {float(r['qty']):,.0f} {t('数量')}",
+                           delta_color="off")
 
     # ----- 环状图（用途 + 等级 并排） -----
     st.markdown("##### " + t("🍩 构成 环状图"))
