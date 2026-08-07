@@ -83,18 +83,9 @@ def _ensure_schema() -> str | None:
             "CREATE TABLE IF NOT EXISTS sourcing.item_main_supplier ("
             "jan TEXT PRIMARY KEY, supplier_name TEXT NOT NULL, price NUMERIC(14,2), "
             "source TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())")
-        conn.execute("ALTER TABLE sourcing.supplier "
-                     "ADD COLUMN IF NOT EXISTS free_ship_threshold NUMERIC(14,2)")
-        conn.execute("ALTER TABLE sourcing.supplier "
-                     "ADD COLUMN IF NOT EXISTS official_name TEXT")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sourcing.supplier_alias ("
             "alias TEXT PRIMARY KEY, canonical TEXT NOT NULL)")
-        # ── v2 第一期新增（spec 2026-07-15）──
-        conn.execute("ALTER TABLE sourcing.supplier_quote "
-                     "ADD COLUMN IF NOT EXISTS valid_from DATE")
-        conn.execute("ALTER TABLE sourcing.supplier_quote "
-                     "ADD COLUMN IF NOT EXISTS valid_to DATE")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sourcing.supplier_brand_rule ("
             "supplier_name TEXT NOT NULL, maker TEXT NOT NULL, "
@@ -104,6 +95,24 @@ def _ensure_schema() -> str | None:
             "effective_to DATE, note TEXT, updated_by TEXT, "
             "updated_at TIMESTAMPTZ DEFAULT NOW(), "
             "PRIMARY KEY (supplier_name, maker, effective_from))")
+        # 後付け列（v2 第一期 spec 2026-07-15）。
+        # ALTER TABLE は列が既に在っても先に ACCESS EXCLUSIVE ロックを取りに行くため、
+        # 毎回発行すると他タブの居残りトランザクション（idle in transaction）に
+        # ブロックされてページごと無言で固まる（2026-08-07 実障害）。
+        # カタログを見て足りない時だけ発行する＝通常運転では DDL ゼロ。
+        _cur = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'sourcing'")
+        _have = {f"{r[0]}.{r[1]}" for r in _cur.fetchall()}
+        for _tbl, _col, _typ in (
+            ("supplier", "free_ship_threshold", "NUMERIC(14,2)"),
+            ("supplier", "official_name", "TEXT"),
+            ("supplier_quote", "valid_from", "DATE"),
+            ("supplier_quote", "valid_to", "DATE"),
+        ):
+            if f"{_tbl}.{_col}" not in _have:
+                conn.execute(f"ALTER TABLE sourcing.{_tbl} "
+                             f"ADD COLUMN IF NOT EXISTS {_col} {_typ}")
         conn.commit()
         return None
     except Exception as e:  # noqa: BLE001
