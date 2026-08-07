@@ -232,12 +232,11 @@ def _render_composition():
         tdf["qty"] = pd.to_numeric(tdf["qty"], errors="coerce").fillna(0)
         tdf["amt"] = pd.to_numeric(tdf["amt"], errors="coerce").fillna(0)
 
-        m1, m2 = st.columns(2)
         # 用途 推移（全仓库合算 · 上の構成 KPI カードと同じ口径）
         t_cat = tdf.groupby(["ym", "category"], as_index=False).agg(
             qty=("qty", "sum"), amt=("amt", "sum"))
         t_cat["label"] = t_cat["category"].map(lambda c: _labels.get(c, c))
-        m1.altair_chart(
+        st.altair_chart(
             _trend_chart(t_cat, "label", t("用途"), "tableau10",
                          [_labels[c] for c in CATEGORIES]).properties(title=t("用途别 推移")),
             use_container_width=True)
@@ -247,7 +246,7 @@ def _render_composition():
         t_rank_src["rank_label"] = _rank_label(t_rank_src)
         t_rank = t_rank_src.groupby(["ym", "rank_label"], as_index=False).agg(
             qty=("qty", "sum"), amt=("amt", "sum"))
-        m2.altair_chart(
+        st.altair_chart(
             _trend_chart(t_rank, "rank_label", t("等级"), "set2",
                          _RANK_ORDER).properties(title=t("等级别 推移")),
             use_container_width=True)
