@@ -151,3 +151,34 @@ def judge(keyword_rules, ingredient_rules, country: str,
         "ingredient_checked": bool(ingredient_text and ingredient_text.strip()),
         "stopped_at": "full",
     }
+
+
+def lint_results(rows) -> dict:
+    """判定产出的出厂检验(2026-08-09,霜降合格条件的机器侧)· 纯函数。
+
+    rows: 判定结果的可迭代。每行 dict,认两种形态:
+      - judge() 返回值(verdict / hits / ingredient_checked)
+      - screen_result 持久化行(verdict / reason,可带 jan)
+    返回 {"counts": {verdict: n}, "problems": [str, ...]};problems 空 = 通过。
+
+    查两类硬伤(都是数数,不复判合规本身):
+      ① 假绿:成分未判定却 verdict=green(ingredient_checked=False,
+         或 reason 自称「未取得/未実施」)——⚪ 被误标 🟢 会被读成「安全」
+      ② 缺原因:🔴/🟡 而 hits 与 reason 均空,无法复核
+    counts 供收尾报数「绿=N 黄=M 红=K 未完成=J」与表内实数核对。
+    """
+    counts: dict[str, int] = {}
+    problems: list[str] = []
+    for i, r in enumerate(rows):
+        v = r.get("verdict", "")
+        counts[v] = counts.get(v, 0) + 1
+        rid = r.get("jan") or f"row{i}"
+        reason = (r.get("reason") or "").strip()
+        if v == "green":
+            if r.get("ingredient_checked") is False:
+                problems.append(f"{rid}: 假绿——成分未判定却 green(应作 ⚪)")
+            elif "未取得" in reason or "未実施" in reason:
+                problems.append(f"{rid}: 假绿——green 但 reason 自称成分未取得")
+        elif v in ("red", "yellow") and not (r.get("hits") or reason):
+            problems.append(f"{rid}: {v} 无命中原因(hits/reason 均空)")
+    return {"counts": counts, "problems": problems}

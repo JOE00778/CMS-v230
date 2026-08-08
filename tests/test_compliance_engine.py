@@ -151,3 +151,36 @@ def test_category_exclude_terms_downgrades_ambiguous_items():
     cos = judge([], [], "US", {"商品名": "キッズ シャンプー"}, None, category_rules=rules)
     assert cos["verdict"] == "yellow" and cos["stopped_at"] == "full"
     assert all(h["severity"] != "red" for h in cos["hits"])
+
+
+def test_lint_catches_fake_green():
+    """假绿两种形态都要拦:ingredient_checked=False 与 reason 自称未取得。"""
+    from shared.compliance_engine import lint_results
+    rows = [
+        {"verdict": "green", "ingredient_checked": False, "hits": []},
+        {"jan": "4901234567890", "verdict": "green",
+         "reason": "成分未取得のため成分判定は未実施"},
+        {"verdict": "green", "ingredient_checked": True, "hits": []},
+    ]
+    out = lint_results(rows)
+    assert len(out["problems"]) == 2
+    assert out["counts"]["green"] == 3
+
+
+def test_lint_catches_missing_reason():
+    from shared.compliance_engine import lint_results
+    rows = [
+        {"verdict": "red", "hits": [], "reason": ""},
+        {"verdict": "yellow", "reason": "美白宣称观察级"},
+        {"verdict": "unknown", "reason": ""},
+    ]
+    out = lint_results(rows)
+    assert out["problems"] == ["row0: red 无命中原因(hits/reason 均空)"]
+    assert out["counts"] == {"red": 1, "yellow": 1, "unknown": 1}
+
+
+def test_lint_clean_pass():
+    from shared.compliance_engine import lint_results
+    r = judge(KW, ING, "US", {"商品名": "SPF 50 sunscreen"}, "water, mercury")
+    out = lint_results([r])
+    assert out["problems"] == [] and out["counts"] == {"red": 1}
