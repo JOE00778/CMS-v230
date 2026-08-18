@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import io
 
 import altair as alt
@@ -134,7 +135,9 @@ def _read(sql: str, params: tuple = ()) -> pd.DataFrame:
         cur = conn.execute(sql, params)
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description] if cur.description else []
-        return pd.DataFrame([dict(zip(cols, r)) for r in rows], columns=cols)
+        # 行ごとに dict を作ると 4 万行で無視できない Python コストになる。
+        # DictRow / sqlite3.Row とも tuple() で列順の値列になる（2026-08-18）。
+        return pd.DataFrame([tuple(r) for r in rows], columns=cols)
     except Exception:
         try:
             conn.rollback()
@@ -143,6 +146,33 @@ def _read(sql: str, params: tuple = ()) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+_MEMO: dict = {}
+
+
+def _memo(fn):
+    """同一 rerun 内の重複読取を消す（川崎さん 2026-07-24「全部が重すぎる」）。
+
+    このページは 7 タブすべてが毎 rerun 実行され、`_sku_frame` が 4 回・`_po12`
+    が 3 回呼ばれる。中で読む `nst.purchase_order_line`(3.9 万行) /
+    `sourcing.supplier_quote`(4.6 万行) / `nst.item_master_raw`(1.6 万行) を毎回
+    取り直していたため 1 rerun で約 40 万行を転送していた。
+
+    キャッシュは**モジュール変数**なので rerun のたびに空から始まる＝書き込み後に
+    古い値が残る事故は原理的に起きない（`st.cache_data` を使わない理由）。
+    呼び出し側が返り値の DataFrame を書き換える箇所があるので必ず copy を返す。
+    """
+    @functools.wraps(fn)
+    def _wrapped(*args):
+        key = (fn.__name__, tuple(tuple(a) if isinstance(a, list) else a
+                                  for a in args))
+        if key not in _MEMO:
+            _MEMO[key] = fn(*args)
+        val = _MEMO[key]
+        return val.copy() if isinstance(val, pd.DataFrame) else val
+    return _wrapped
+
+
+@_memo
 def _alias_map() -> dict:
     """供货商别名表（NST 長名 → Boss 短名·整理相同供货商用）。"""
     _al = _read("SELECT alias, canonical FROM sourcing.supplier_alias")
@@ -204,6 +234,7 @@ def _ym_label(ym: str) -> str:
     return ym + _dl("(截至今日)", "(本日まで)") if ym == _CUR_YM else ym
 
 
+@_memo
 def _items_all(ranks: list[str] | None = None) -> pd.DataFrame:
     _sql = ("SELECT internal_id, jan, display_name, maker, item_rank, last_purchase_cost "
             "FROM nst.item_master_raw WHERE jan IS NOT NULL")
@@ -218,6 +249,7 @@ def _items_all(ranks: list[str] | None = None) -> pd.DataFrame:
     return _d
 
 
+@_memo
 def _msrp() -> pd.DataFrame:
     """jan → msrp_taxex（税抜換算 · shared/sourcing.msrp_taxex）。"""
     _d = _read("SELECT jan, msrp_jpy, msrp_jpy_taxin FROM nst.item_msrp")
@@ -227,6 +259,7 @@ def _msrp() -> pd.DataFrame:
     return _d[["jan", "msrp_taxex"]].drop_duplicates("jan")
 
 
+@_memo
 def _po12() -> pd.DataFrame:
     """近12完整月+当月の PO 行（実際PO/折扣率の唯一ソース）。
 
@@ -260,14 +293,19 @@ def _po12() -> pd.DataFrame:
     return _d
 
 
+@_memo
 def _latest_po_vendor() -> pd.DataFrame:
     """internal_id → NST 直近 PO 行の仕入先/単価（MAX(trandate)·簡称へ正規化）."""
-    _p = _read("SELECT item_internal_id, trandate, vendor_name AS supplier_name, rate "
+    # 3.9 万行を全部持ってきて pandas で最新行を選っていた → DB 側で 1 商品 1 行に
+    # 絞る（1.04 万行）。同日複数 PO の並びは元実装では未定義だったので、ここで
+    # (発注日, PO番号, 行番号) の降順に固定して再現性を持たせる（2026-08-18）。
+    _p = _read("SELECT DISTINCT ON (item_internal_id) "
+               "       item_internal_id, trandate, vendor_name AS supplier_name, rate "
                "FROM nst.purchase_order_line "
-               "WHERE item_internal_id IS NOT NULL AND vendor_name IS NOT NULL")
+               "WHERE item_internal_id IS NOT NULL AND vendor_name IS NOT NULL "
+               "ORDER BY item_internal_id, trandate DESC, po_internal_id DESC, line_id DESC")
     if _p.empty:
         return pd.DataFrame(columns=["internal_id", "cur_supplier", "cur_rate"])
-    _p = _p.sort_values("trandate").drop_duplicates("item_internal_id", keep="last")
     _p = sc.apply_supplier_alias(_p, _alias_map())
     _p = _p.rename(columns={"item_internal_id": "internal_id",
                             "supplier_name": "cur_supplier", "rate": "cur_rate"})
@@ -276,6 +314,7 @@ def _latest_po_vendor() -> pd.DataFrame:
     return _p[["internal_id", "cur_supplier", "cur_rate"]]
 
 
+@_memo
 def _quotes_status() -> pd.DataFrame:
     """最新报价 + 有效性判定（sc.quote_status）。列に validity / eligible。"""
     _q = _read("SELECT id, supplier_name, jan, price, quote_date, valid_from, valid_to, "
@@ -293,6 +332,7 @@ def _quotes_status() -> pd.DataFrame:
     return sc.quote_status(sc.latest_quotes(_q), active=_act, today=pd.Timestamp(_TODAY))
 
 
+@_memo
 def _sales_m13() -> pd.DataFrame:
     """internal_id × ym の販売数（nst.sales_daily 集計 · 近12完整月+当月）。"""
     _d = _read(
@@ -308,6 +348,7 @@ def _sales_m13() -> pd.DataFrame:
     return _d
 
 
+@_memo
 def _inventory() -> pd.DataFrame:
     """jan → JD在库 / 在途（nst.inventory_snapshot 最新快照 · purchase_engine 同口径）。"""
     _d = _read(
@@ -326,6 +367,7 @@ def _inventory() -> pd.DataFrame:
     return _d
 
 
+@_memo
 def _sku_frame(ranks: list[str]) -> pd.DataFrame:
     """SKU 統一明細（tab 驾驶舱/SKU明细/优化机会 共用 → 跨 tab 数字一致）。
 
@@ -410,6 +452,7 @@ def _sku_frame(ranks: list[str]) -> pd.DataFrame:
     return f
 
 
+@_memo
 def _supplier_rules() -> pd.DataFrame:
     return _read("SELECT supplier_name, min_order_amount, free_ship_threshold, "
                  "default_lead_days, is_prepay, active FROM sourcing.supplier")
@@ -1069,20 +1112,22 @@ with tab_up:
         else:
             _valid = sc.apply_supplier_alias(_valid, _alias_map())
             _ensure_suppliers(_valid["supplier_name"].tolist())
+            _hand_payload = []
             for _, _r in _valid.iterrows():
                 _iname = _r.get("item_name")
                 _iname = (None if pd.isna(_iname)
                           else (str(_iname).strip() or None))
-                conn.execute(
-                    "INSERT INTO sourcing.supplier_quote "
-                    "(supplier_name, jan, item_name, price, moq, order_lot, "
-                    " lead_days, quote_date, valid_from, valid_to, source) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                _hand_payload.append(
                     (str(_r["supplier_name"]).strip(), str(_r["jan"]).strip(),
                      _iname, sc_num(_r.get("price")), sc_num(_r.get("moq")),
                      sc_num(_r.get("order_lot")), sc_int(_r.get("lead_days")),
                      _hdate.isoformat(), _date_or_none(_r.get("valid_from")),
                      _date_or_none(_r.get("valid_to")), "manual"))
+            conn.executemany(
+                "INSERT INTO sourcing.supplier_quote "
+                "(supplier_name, jan, item_name, price, moq, order_lot, "
+                " lead_days, quote_date, valid_from, valid_to, source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", _hand_payload)
             conn.commit()
             _msg = t("✅ 已写入 {n} 条报价").format(n=len(_valid))
             if _skip:
@@ -1117,23 +1162,30 @@ with tab_up:
                 if "supplier_name" in _norm.columns and st.button(
                         t("✅ 写入报价库"), key="sq_write"):
                     _ensure_suppliers(_norm["supplier_name"].tolist())
-                    _ins = 0
+                    # 1 行 1 往復だと見積書 1 本で数千往復＝体感 5〜10 分の主因
+                    #（川崎さん 2026-07-24）→ executemany 一括に変更
+                    _payload = []
                     for _, _r in _norm.iterrows():
                         _sup = str(_r.get("supplier_name", "")).strip()
                         _jan = str(_r.get("jan", "")).strip()
                         if not _sup or not _jan:
                             continue
-                        conn.execute(
-                            "INSERT INTO sourcing.supplier_quote "
-                            "(supplier_name, jan, item_name, price, moq, order_lot, lead_days, "
-                            " quote_date, source) VALUES (?,?,?,?,?,?,?,?,?)",
+                        _payload.append(
                             (_sup, _jan, _r.get("item_name"),
                              sc_num(_r.get("price")), sc_num(_r.get("moq")),
                              sc_num(_r.get("order_lot")), sc_int(_r.get("lead_days")),
                              _qdate.isoformat(), "upload"))
-                        _ins += 1
+                    if _payload:
+                        conn.executemany(
+                            "INSERT INTO sourcing.supplier_quote "
+                            "(supplier_name, jan, item_name, price, moq, order_lot, lead_days, "
+                            " quote_date, source) VALUES (?,?,?,?,?,?,?,?,?)", _payload)
                     conn.commit()
-                    st.success(t("✅ 已写入 {n} 条报价").format(n=_ins))
+                    _ins = len(_payload)
+                    _drop = len(_norm) - _ins
+                    st.success(t("✅ 已写入 {n} 条报价").format(n=_ins)
+                               + (" · " + t("跳过 {m} 行（缺 供货商/JAN/单价）").format(m=_drop)
+                                  if _drop else ""))
             else:
                 st.error(t("缺少必要列：") + "、".join(_miss)
                          + "｜" + t("实际列：") + "、".join(map(str, _raw.columns)))
@@ -1239,16 +1291,16 @@ with tab_up:
             _po_seed = _po_seed.sort_values("year_month").drop_duplicates(
                 subset=["supplier_name", "jan"], keep="last")
             _ensure_suppliers(_po_seed["supplier_name"].tolist())
-            _n = 0
-            for _, _r in _po_seed.iterrows():
-                _qd = str(_r["year_month"]) + "-01"
-                conn.execute(
-                    "INSERT INTO sourcing.supplier_quote "
-                    "(supplier_name, jan, item_name, price, quote_date, source) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (str(_r["supplier_name"]).strip(), str(_r["jan"]).strip(),
-                     _r.get("item_name"), sc_num(_r.get("price")), _qd, "po"))
-                _n += 1
+            _seed_payload = [
+                (str(_r["supplier_name"]).strip(), str(_r["jan"]).strip(),
+                 _r.get("item_name"), sc_num(_r.get("price")),
+                 str(_r["year_month"]) + "-01", "po")
+                for _, _r in _po_seed.iterrows()]
+            conn.executemany(
+                "INSERT INTO sourcing.supplier_quote "
+                "(supplier_name, jan, item_name, price, quote_date, source) "
+                "VALUES (?,?,?,?,?,?)", _seed_payload)
+            _n = len(_seed_payload)
             conn.commit()
             st.success(t("✅ 从 PO 实绩导入 {n} 条").format(n=_n))
 
