@@ -38,3 +38,4 @@ deploy/n8n/stock_monitor/reports/
 deploy/n8n/stock_monitor/logs/
 deploy/n8n/stock_monitor/cookies/*.txt
 deploy/n8n/stock_monitor/cookies/*.json
+.gstack/
