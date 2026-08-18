@@ -88,7 +88,7 @@ def _q(sql: str):
 #    タブごとに投げず **1 回だけ全件取って** 以降は pandas で集計する
 #    （cached_df がデータ同期まで保持するので、1 日 1 回だけ 12 秒）。
 _DF, _ERR = _q(
-    "SELECT ym, ship_date, shop, platform, order_no, nst_amount_jpy, "
+    "SELECT ym, ship_date, trim(shop) AS shop, platform, order_no, nst_amount_jpy, "
     "is_paid_out, order_status, logistics_status, shipped_out, "
     "refund_status, credit_memos, finality, "
     "array_to_string(open_reasons, ' + ') AS open_reasons "
@@ -397,7 +397,7 @@ with tab2:
 # ============================================================
 with tab3:
     _S, _SE = _q(
-        "SELECT ym, platform, shop, orders, sales_jpy, revenue_jpy, "
+        "SELECT ym, platform, trim(shop) AS shop, orders, sales_jpy, revenue_jpy, "
         "gross_profit_jpy, deduction_jpy FROM nst.v_shipped_settlement")
     if _SE:
         st.error(_u("结算视图读取失败: ", "決算ビュー取得エラー: ") + _SE)

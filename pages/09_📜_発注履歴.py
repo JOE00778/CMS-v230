@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.db import get_readonly_connection
+from shared import period
 from shared.i18n import lang_selector, t
 
 st.set_page_config(page_title=t("発注履歴"), page_icon="📜", layout="wide")
@@ -47,16 +48,20 @@ with col2:
     vendor_filter = st.text_input(t("🔍 仕入先名（部分匹配）"), "")
     po_filter = st.text_input(t("🔍 PO 番号（部分匹配）"), "")
 with col3:
-    sel_month = st.selectbox(t("発注月"), [ALL] + months, index=(1 if months else 0))
+    # 単月/期間 切替（川崎さん 2026-07-24「期間で絞れるように」· 既定は従来どおり前月）
+    _ym_from, _ym_to = period.month_range_selector(
+        months, key="po_hist", label=t("発注月"),
+        index=(1 if months else 0), all_label=ALL, container=st)
     only_open = st.checkbox(t("仅看未完了（在途）"), value=False)
 
 # --- 动态 WHERE（命名占位符 · 照 page28 PG 模式）---
 where = ["pol.item_internal_id IS NOT NULL"]
 params: dict = {}
 
-if sel_month != ALL:
-    where.append("to_char(pol.trandate, 'YYYY-MM') = %(ym)s")
-    params["ym"] = sel_month
+if _ym_from:
+    # 'YYYY-MM' は固定長なので文字列比較がそのまま日付順になる（単月なら両端同値）
+    where.append("to_char(pol.trandate, 'YYYY-MM') BETWEEN %(ym_from)s AND %(ym_to)s")
+    params["ym_from"], params["ym_to"] = _ym_from, _ym_to
 jan_list = [j.strip() for j in re.split(r"[,\n\r]+", jan_filter_multi) if j.strip()]
 if jan_list:
     where.append("im.jan = ANY(%(jans)s)")
@@ -107,7 +112,7 @@ if df.empty:
 
 # 选了具体月 → 当月概览 KPI（这个月做了哪些発注書）
 n = len(df)
-if sel_month != ALL:
+if _ym_from:
     amt = pd.to_numeric(df["金額"], errors="coerce").fillna(0).sum()
     k1, k2, k3, k4 = st.columns(4)
     k1.metric(t("発注書 件数"), f"{df['PO番号'].nunique():,}")

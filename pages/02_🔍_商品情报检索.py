@@ -363,7 +363,7 @@ with _tab_search:
         # 店舗×月 売上明細
         st.markdown(f"**{_L('店铺×月 销售明细', '店舗×月 売上明細')}**")
         sd, _ = _query(
-            "SELECT shop, year_month, qty_sold, revenue FROM nst.sales_monthly "
+            "SELECT trim(shop) AS shop, year_month, qty_sold, revenue FROM nst.sales_monthly "
             "WHERE item_internal_id = ? ORDER BY year_month DESC, revenue DESC",
             (row["internal_id"],),
         )

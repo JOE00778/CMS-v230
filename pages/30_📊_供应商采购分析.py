@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.db import get_connection
+from shared import period
 from shared.i18n import lang_selector, t
 from shared.inventory_risk import RANK_TARGET_KEYS  # NST 标准等级 A/B/C/NEW（复用·单一来源）
 
@@ -95,13 +96,14 @@ def _render_analysis():
     sm["po_count"] = pd.to_numeric(sm["po_count"], errors="coerce").fillna(0).astype(int)
 
     months = sorted(sm["year_month"].dropna().unique().tolist(), reverse=True)
-    sel_month = st.selectbox(t("月份"), months, index=0)
+    # 単月/期間 切替（川崎さん 2026-07-24）。期間なら同じ長さの直前期間と比較する。
+    _ym_from, _ym_to = period.month_range_selector(
+        months, key="po_vendor", label=t("月份"))
 
-    # --- KPI（当月）---
-    cur = sm[sm["year_month"] == sel_month]
-    prev_idx = months.index(sel_month) + 1
-    prev_month = months[prev_idx] if prev_idx < len(months) else None
-    prev = sm[sm["year_month"] == prev_month] if prev_month else pd.DataFrame()
+    # --- KPI（選択期間 · 単月なら従来どおり当月）---
+    cur = sm[(sm["year_month"] >= _ym_from) & (sm["year_month"] <= _ym_to)]
+    _p_from, _p_to = period.prev_range(_ym_from, _ym_to)
+    prev = sm[(sm["year_month"] >= _p_from) & (sm["year_month"] <= _p_to)]
 
     tot_cur = float(cur["total_amount"].sum())
     tot_prev = float(prev["total_amount"].sum()) if not prev.empty else 0.0
@@ -146,9 +148,8 @@ def _render_analysis():
     #   is_prepay 仍取 vendor 级（po_export_vendor）· only_export → INNER JOIN 白名单过滤
     #   取当月 + 上月两月（算环比）· 整体占比分母 = 当月全体总额 tot_cur（与顶部 KPI 同口径）
     _join = "JOIN" if only_export else "LEFT JOIN"
-    _rk_months = [sel_month] + ([prev_month] if prev_month else [])
-    _rk_ph = ", ".join(f"%(rkm{_i})s" for _i in range(len(_rk_months)))
-    _rk_p = {f"rkm{_i}": _m for _i, _m in enumerate(_rk_months)}
+    # 選択期間 + 直前の同じ長さの期間（環比用）をまとめて 1 本で取る
+    _rk_p = {"cf": _ym_from, "ct": _ym_to, "pf": _p_from, "pt": _p_to}
     try:
         rk = _df(
             "SELECT im.item_rank AS rank, q.year_month AS year_month, "
@@ -156,7 +157,8 @@ def _render_analysis():
             "FROM nst.po_item_supplier_monthly q "
             "JOIN nst.item_master_raw im ON im.internal_id = q.item_internal_id "
             f"{_join} nst.po_export_vendor ev ON ev.vendor_id = q.vendor_id "
-            f"WHERE q.year_month IN ({_rk_ph}) "
+            "WHERE (q.year_month BETWEEN %(cf)s AND %(ct)s) "
+            "   OR (q.year_month BETWEEN %(pf)s AND %(pt)s) "
             "GROUP BY im.item_rank, q.year_month, COALESCE(ev.is_prepay, FALSE)",
             _rk_p,
         )
@@ -165,15 +167,16 @@ def _render_analysis():
     rk["amount"] = pd.to_numeric(rk.get("amount", 0), errors="coerce").fillna(0.0)
     rk["is_prepay"] = rk.get("is_prepay", False).astype(bool)
 
-    st.markdown("##### " + t("📦 各等级采购金额（{ym}）").format(ym=sel_month))
+    st.markdown("##### " + t("📦 各等级采购金额（{ym}）").format(ym=period.range_caption(_ym_from, _ym_to)))
     _rank_cards = st.columns(len(RANK_TARGET_KEYS))
     for _c, _rk in zip(_rank_cards, RANK_TARGET_KEYS):
-        _cur = rk[(rk["rank"] == _rk) & (rk["year_month"] == sel_month)]
+        _cur = rk[(rk["rank"] == _rk) & (rk["year_month"] >= _ym_from)
+                  & (rk["year_month"] <= _ym_to)]
         _tot = float(_cur["amount"].sum())
         _cr = float(_cur.loc[~_cur["is_prepay"], "amount"].sum())   # 挂账（掛け払い）
         _pp = float(_cur.loc[_cur["is_prepay"], "amount"].sum())    # 预付款（現金払い）
-        _tot_prev = (float(rk[(rk["rank"] == _rk) & (rk["year_month"] == prev_month)]["amount"].sum())
-                     if prev_month else 0.0)
+        _tot_prev = float(rk[(rk["rank"] == _rk) & (rk["year_month"] >= _p_from)
+                             & (rk["year_month"] <= _p_to)]["amount"].sum())
         _share = (_tot / tot_cur * 100) if tot_cur else 0.0
         _parts = []
         if _tot_prev:
@@ -246,7 +249,7 @@ def _render_analysis():
     st.divider()
 
     # --- 当月供应商排行 ---
-    st.subheader(t("🏆 仕入先总订货金额排行（{ym}）").format(ym=sel_month))
+    st.subheader(t("🏆 仕入先总订货金额排行（{ym}）").format(ym=period.range_caption(_ym_from, _ym_to)))
     rank = (cur.groupby(["vendor_name", "is_prepay"], as_index=False)
             .agg(amount=("total_amount", "sum"), po=("po_count", "sum"), qty=("qty_ordered", "sum"))
             .sort_values("amount", ascending=False))
@@ -258,7 +261,7 @@ def _render_analysis():
     st.dataframe(rank, hide_index=True, use_container_width=True, height=400,
                  column_config={t("总订货金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
     st.download_button(t("📥 CSV 下载"), rank.to_csv(index=False).encode("utf-8-sig"),
-                       file_name=f"po_supplier_{sel_month}.csv", mime="text/csv")
+                       file_name=f"po_supplier_{_ym_from}_{_ym_to}.csv", mime="text/csv")
 
     st.divider()
 
@@ -341,7 +344,7 @@ def _render_analysis():
     st.divider()
 
     # --- 预付款 PO 明细（当月） ---
-    st.subheader(t("💰 预付款 PO 明细（{ym}）").format(ym=sel_month))
+    st.subheader(t("💰 预付款 PO 明细（{ym}）").format(ym=period.range_caption(_ym_from, _ym_to)))
     st.caption(t("仅列出「输出供应商名单」里勾了「预付款」的供货商 PO·按 PO 单聚合·用于现金流管理"))
     try:
         prepay_po = _df(
@@ -350,10 +353,10 @@ def _render_analysis():
             "FROM nst.purchase_order_line pol "
             "JOIN nst.po_export_vendor ev ON ev.vendor_id = pol.vendor_id "
             "WHERE ev.is_prepay = TRUE "
-            "  AND to_char(pol.trandate, 'YYYY-MM') = %(ym)s "
+            "  AND to_char(pol.trandate, 'YYYY-MM') BETWEEN %(ymf)s AND %(ymt)s "
             "GROUP BY pol.po_number, pol.vendor_name "
             "ORDER BY amount DESC NULLS LAST",
-            {"ym": sel_month},
+            {"ymf": _ym_from, "ymt": _ym_to},
         )
     except Exception as e:
         st.error(t("⚠️ 预付款 PO 读取失败") + f"\n\n{e}")
@@ -381,7 +384,7 @@ def _render_analysis():
                      column_config={t("金额(¥)"): st.column_config.NumberColumn(format="¥%,.0f")})
         st.download_button(t("📥 预付款 PO CSV 下载"),
                            disp.to_csv(index=False).encode("utf-8-sig"),
-                           file_name=f"po_prepay_{sel_month}.csv", mime="text/csv",
+                           file_name=f"po_prepay_{_ym_from}_{_ym_to}.csv", mime="text/csv",
                            key="prepay_csv")
 
     st.divider()

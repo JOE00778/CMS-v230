@@ -259,7 +259,7 @@ with top_nst:
     
             if view == t("店舗別"):
                 df, e2 = _query(
-                    "SELECT s.shop, im.jan, im.display_name, im.maker, im.item_rank, "
+                    "SELECT trim(s.shop) AS shop, im.jan, im.display_name, im.maker, im.item_rank, "
                     "s.qty_sold, s.revenue, "
                     "(COALESCE(im.cost_estimate,0) * s.qty_sold) AS teigi_genka "
                     "FROM nst.sales_monthly s "

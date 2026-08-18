@@ -168,7 +168,7 @@ def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31) -> pd.Data
       - 当月(未完结) → max_day=当月の最終データ日(=前一日) で同日範囲対比。
     """
     dfp, _ = _query(
-        "SELECT s.shop, s.sale_date, s.qty_sold, s.revenue, s.gross_profit "
+        "SELECT trim(s.shop) AS shop, s.sale_date, s.qty_sold, s.revenue, s.gross_profit "
         "FROM nst.sales_daily s "
         "WHERE to_char(s.sale_date,'YYYY-MM') = ?",
         (prev_ym,),
@@ -257,7 +257,7 @@ mk = c2.multiselect(t("市場"), ALL_MARKETS, placeholder=t("全部市场"))  # 
 # クエリ（当月の日次明細 + 商品マスタ join）
 # ============================================================
 df, e2 = _query(
-    "SELECT s.shop, s.sale_date, s.item_internal_id, "
+    "SELECT trim(s.shop) AS shop, s.sale_date, s.item_internal_id, "
     "im.display_name, im.maker, im.item_rank, "
     "s.qty_sold, s.revenue, "
     "s.gross_profit "
@@ -644,7 +644,7 @@ with tab_alert:
     _cur_day = pd.to_datetime(df["sale_date"]).max().date()
     _win_start = _cur_day - dt.timedelta(days=7)
     _aw, _ae = _query(
-        "SELECT s.shop, s.sale_date, s.qty_sold, s.revenue, s.gross_profit "
+        "SELECT trim(s.shop) AS shop, s.sale_date, s.qty_sold, s.revenue, s.gross_profit "
         "FROM nst.sales_daily s WHERE s.sale_date >= ? AND s.sale_date <= ?",
         (_win_start.isoformat(), _cur_day.isoformat()),
     )
@@ -787,7 +787,7 @@ with tab_deduct:
             return None, str(e)
 
     _sh, _sh_err = _shq(
-        "SELECT ym, market, platform, country, shop, invoices, orders, "
+        "SELECT ym, market, platform, country, trim(shop) AS shop, invoices, orders, "
         "matched_orders, settled_orders, matched_pct, settled_pct, "
         "sales_jpy, deduction_jpy, shipping_jpy, payout_jpy, voucher_jpy, "
         "gross_profit_jpy, revenue_jpy, gross_margin_pct, "
@@ -1113,7 +1113,7 @@ with tab_loss:
             return None, str(e)
 
     _lo, _lo_err = _lq(
-        "SELECT ym, ship_date, market, platform, country, shop, order_no, "
+        "SELECT ym, ship_date, market, platform, country, trim(shop) AS shop, order_no, "
         "invoice_no, order_ym_prefix, settle_status, order_status, "
         "logistics_status, shipped_out, cancel_reason, refund_reason, "
         "refund_status, refund_amount_local, "
@@ -1381,7 +1381,7 @@ with tab_ff3:
             return None, str(e)
 
     _f3, _f3_err = _f3q(
-        "SELECT ym, ship_date, shop, platform, country, order_no, invoice_no, "
+        "SELECT ym, ship_date, trim(shop) AS shop, platform, country, order_no, invoice_no, "
         "item_internal_id, jan, display_name, qty, cost_estimate, "
         "cost_total_jpy, ff3_qty_now, order_status, logistics_status, "
         "shipped_out, cancel_reason, cancel_by, refund_reason, refund_status, "

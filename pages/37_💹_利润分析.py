@@ -97,7 +97,7 @@ ym = st.selectbox(t("対象月"), months_df["ym"].tolist())
 # 総収益 / 定義原価（市場別 · nst.sales_daily）
 # ============================================================
 df, e2 = _query(
-    "SELECT s.shop, s.sale_date, s.revenue, s.gross_profit "
+    "SELECT trim(s.shop) AS shop, s.sale_date, s.revenue, s.gross_profit "
     "FROM nst.sales_daily s "
     "WHERE to_char(s.sale_date,'YYYY-MM') = ?",
     (ym,),

@@ -19,6 +19,7 @@ import altair as alt
 import streamlit as st
 
 from shared.db import get_readonly_connection
+from shared import period
 from shared.owners import classify_market, classify_owner, OWNER_EXCLUDED
 from shared.i18n import lang_selector, t, get_lang
 
@@ -161,8 +162,8 @@ def _render_sales_delta(_period_kind, _key):
                                   min_value=0, value=5, step=1, key=_key + "_min")
     _cur_s, _cur_e, _prev_s, _prev_e = _bounds(_sel)
     _shops = [_r["shop"] for _r in _wconn.execute(
-        "SELECT DISTINCT shop FROM nst.sales_daily "
-        "WHERE sale_date BETWEEN ? AND ? ORDER BY shop",
+        "SELECT DISTINCT trim(shop) AS shop FROM nst.sales_daily "
+        "WHERE sale_date BETWEEN ? AND ? ORDER BY 1",
         (_prev_s.isoformat(), _cur_e.isoformat()),
     ).fetchall()]
     _ALLW = _L("（全部店铺）", "（全店舗）")
@@ -175,7 +176,7 @@ def _render_sales_delta(_period_kind, _key):
                      if _owner_sel != _ALLO else _shops)
     _shop_sel = _shc.selectbox(_L("店铺", "店舗"), [_ALLW] + _shop_choices, key=_key + "_shop")
     _sql = (
-        "SELECT s.shop AS shop, MIN(im.jan) AS jan, MIN(im.display_name) AS name, "
+        "SELECT trim(s.shop) AS shop, MIN(im.jan) AS jan, MIN(im.display_name) AS name, "
         "MIN(im.item_rank) AS item_rank, "
         "SUM(CASE WHEN s.sale_date BETWEEN ? AND ? THEN s.qty_sold ELSE 0 END) AS qty_cur, "
         "SUM(CASE WHEN s.sale_date BETWEEN ? AND ? THEN s.qty_sold ELSE 0 END) AS qty_prev, "
@@ -193,16 +194,16 @@ def _render_sales_delta(_period_kind, _key):
         _prev_s.isoformat(), _cur_e.isoformat(),
     ]
     if _shop_sel != _ALLW:
-        _sql += "AND s.shop = ? "
+        _sql += "AND trim(s.shop) = ? "
         _params.append(_shop_sel)
     elif _owner_sel != _ALLO:
         _osh = [_s for _s in _shops if classify_owner(_s) == _owner_sel]
         if _osh:
-            _sql += "AND s.shop IN (" + ",".join(["?"] * len(_osh)) + ") "
+            _sql += "AND trim(s.shop) IN (" + ",".join(["?"] * len(_osh)) + ") "
             _params.extend(_osh)
         else:
             _sql += "AND 1=0 "
-    _sql += "GROUP BY s.shop, s.item_internal_id"
+    _sql += "GROUP BY trim(s.shop), s.item_internal_id"
     try:
         _wrows = _wconn.execute(_sql, tuple(_params)).fetchall()
     except Exception as _ew2:
@@ -366,7 +367,7 @@ def _render_sales_delta(_period_kind, _key):
                   "4 軸は任意組合せ可 · 空欄=指定なし · 周次=直近10週 / 月次=直近6ヶ月"))
     _ALL = _L("（全部）", "（全て）")
     _all_shops = [_sr["shop"] for _sr in _wconn.execute(
-        "SELECT DISTINCT shop FROM nst.sales_daily WHERE shop IS NOT NULL ORDER BY shop"
+        "SELECT DISTINCT trim(shop) AS shop FROM nst.sales_daily WHERE shop IS NOT NULL ORDER BY 1"
     ).fetchall()]
     _market_of = {_s: classify_market(_s) for _s in _all_shops}
     _markets = sorted(set(_market_of.values()))
@@ -394,18 +395,18 @@ def _render_sales_delta(_period_kind, _key):
     if _f_owner != _ALLO_T and _f_shop == _ALL:
         _osh_t = [_s for _s in _all_shops if classify_owner(_s) == _f_owner]
         if _osh_t:
-            _wc.append("s.shop IN (" + ",".join(["?"] * len(_osh_t)) + ")")
+            _wc.append("trim(s.shop) IN (" + ",".join(["?"] * len(_osh_t)) + ")")
             _wp.extend(_osh_t); _caps.append(_f_owner)
         else:
             _wc.append("1=0")
     if _f_market:
         _mshops = [_s for _s in _all_shops if _market_of.get(_s) in _f_market]
         if _mshops:
-            _wc.append("s.shop IN (" + ",".join(["?"] * len(_mshops)) + ")")
+            _wc.append("trim(s.shop) IN (" + ",".join(["?"] * len(_mshops)) + ")")
             _wp.extend(_mshops)
             _caps.append("/".join(_f_market))
     if _f_shop != _ALL:
-        _wc.append("s.shop = ?"); _wp.append(_f_shop); _caps.append(_f_shop)
+        _wc.append("trim(s.shop) = ?"); _wp.append(_f_shop); _caps.append(_f_shop)
     if _f_maker:
         _wc.append("im.maker IN (" + ",".join(["?"] * len(_f_maker)) + ")")
         _wp.extend(_f_maker); _caps.append("/".join(_f_maker))
@@ -453,16 +454,21 @@ with _q_tab:
     # フィルタ
     # ============================================================
     c1, c2 = st.columns([1, 3])
-    ym = c1.selectbox(t("対象月"), months_df["year_month"].tolist())
+    # 単月/期間 切替（川崎さん 2026-07-24）。ym は「期間の最終月」＝在庫 KPI の基準日、
+    # 売上は _ym_from〜_ym_to の合計。単月モードでは両端が同値で従来と完全同一。
+    _ym_from, _ym_to = period.month_range_selector(
+        months_df["year_month"].tolist(), key="sales_q", label=t("対象月"),
+        container=c1)
+    ym = _ym_to
     kw = c2.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
 
     # 当月売上商品の各次元 distinct → 絞り込み候補
     _opt_df, _ = _query(
-        "SELECT DISTINCT s.shop, im.item_rank, im.maker, im.handling_cd "
+        "SELECT DISTINCT trim(s.shop) AS shop, im.item_rank, im.maker, im.handling_cd "
         "FROM nst.sales_monthly s "
         "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
-        "WHERE s.year_month = ?",
-        (ym,),
+        "WHERE s.year_month BETWEEN ? AND ?",
+        (_ym_from, _ym_to),
     )
 
 
@@ -508,7 +514,7 @@ with _q_tab:
     if market_filter:
         _mshops = [_s for _s in _month_shops if classify_market(_s) in market_filter]
         if _mshops:
-            _filt.append("s.shop IN (" + ",".join(["?"] * len(_mshops)) + ")")
+            _filt.append("trim(s.shop) IN (" + ",".join(["?"] * len(_mshops)) + ")")
             _filtp.extend(_mshops)
         else:
             _filt.append("1=0")
@@ -527,8 +533,8 @@ with _q_tab:
             _ors.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
             _like = f"%{_term}%"; _filtp += [_like, _like]
         _filt.append("(" + " OR ".join(_ors) + ")")
-    where = ["s.year_month = ?"] + _filt
-    params: list = [ym] + _filtp
+    where = ["s.year_month BETWEEN ? AND ?"] + _filt
+    params: list = [_ym_from, _ym_to] + _filtp
     where_sql = " AND ".join(where)
 
     def _enrich(_d, with_stock):
@@ -576,8 +582,8 @@ with _q_tab:
             "SUM(a.opening_qty) AS st_open, SUM(a.received_qty) AS st_recv "
             "FROM nst.inventory_activity_monthly a "
             "JOIN nst.item_master_raw im ON im.internal_id = a.item_internal_id "
-            "WHERE a.year_month = ? GROUP BY im.jan",
-            (ym,),
+            "WHERE a.year_month BETWEEN ? AND ? GROUP BY im.jan",
+            (_ym_from, _ym_to),
         )
         if _st_df is not None and not _st_df.empty:
             for _c in ("st_sold", "st_open", "st_recv"):
@@ -642,19 +648,18 @@ with _q_tab:
         _ssr = (tot_sv / tot_r) if tot_r else 0                # 存销比 = 库存金额 / 销售额
         cur_margin = (tot_g / tot_r) if tot_r else 0
 
-        # ── 上月同比（同筛选 _filt·销售=上月 sales_monthly·库存=上月末快照）──
-        import datetime as _dt
-        _pym = (_dt.datetime.strptime(ym, "%Y-%m").replace(day=1)
-                - _dt.timedelta(days=1)).strftime("%Y-%m")
-        _pwhere = " AND ".join(["s.year_month = ?"] + _filt)
+        # ── 前期比（同筛选 _filt · 売上=直前の同じ長さの期間 · 在庫=その期末スナップ）──
+        #   単月モードなら「前月 vs 当月」で従来と完全に同じ
+        _p_from, _p_to = period.prev_range(_ym_from, _ym_to)
+        _pwhere = " AND ".join(["s.year_month BETWEEN ? AND ?"] + _filt)
         _pv, _ = _query(
             "SELECT SUM(s.qty_sold) q, SUM(s.revenue) r, SUM(s.gross_profit) g "
             "FROM nst.sales_monthly s "
             "LEFT JOIN nst.item_master_raw im ON im.internal_id = s.item_internal_id "
             f"WHERE {_pwhere}",
-            tuple([_pym] + _filtp),
+            tuple([_p_from, _p_to] + _filtp),
         )
-        _pinv, _ = _query(_INV_KPI_SQL + _inv_extra, tuple([_pym] + _filtp_im))
+        _pinv, _ = _query(_INV_KPI_SQL + _inv_extra, tuple([_p_to] + _filtp_im))
 
         def _g0(_dfp, _c):
             if _dfp is None or _dfp.empty or _dfp.iloc[0][_c] is None:
@@ -691,7 +696,8 @@ with _q_tab:
             st.caption(t("库存类 KPI = 所选月的最终库存快照（当月＝最新日）· "
                          "2026-05-20 以前无快照，显示 —"))
 
-        st.caption(t("表示件数: ") + f"{len(df):,}" + t("（粗利率/利润贡献率=%, 回転率=月販売/当前在庫·近似）"))
+        st.caption(period.range_caption(_ym_from, _ym_to) + " · "
+                   + t("表示件数: ") + f"{len(df):,}" + t("（粗利率/利润贡献率=%, 回転率=月販売/当前在庫·近似）"))
         _colcfg = dict(_cc(*cols))
         for _pc in ("cross_ratio", "sellthrough", "profit_contrib"):
             if _pc in _colcfg:
@@ -706,7 +712,8 @@ with _q_tab:
         st.download_button(
             "📥 CSV ダウンロード" if _ja_dl else "📥 下载 CSV",
             _csv,
-            file_name=(f"売上データ_{ym}.csv" if _ja_dl else f"销售数据_{ym}.csv"),
+            file_name=(f"売上データ_{_ym_from}_{_ym_to}.csv" if _ja_dl
+                       else f"销售数据_{_ym_from}_{_ym_to}.csv"),
             mime="text/csv",
         )
 
