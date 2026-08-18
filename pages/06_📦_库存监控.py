@@ -55,13 +55,14 @@ def _render_composition():
         d1=str(inv_date), d2=str(bin_date) if bin_date else t("（暂无）")))
 
     # 全仓库 × item × bin level → 加 category 列（item × cost_estimate → 金额）
-    # JD: bin_number=NULL → 类别='输出'（JD 不分 bin）
+    # JD:  bin_number=NULL → 类别='输出'（JD 不分 bin）
+    # CGF: 同上（Coupang 海外仓·2026-08 新设·bin 无し）
     # 弁天: LEFT JOIN nst.bin_category 按 bool 标识判定（优先级 返品 > 不良品 > 输出中国 > 输出）
     _SQL = """
     WITH inv_all AS (
-        SELECT 'JD-物流-千葉' AS warehouse, item_internal_id, qty_on_hand, NULL::TEXT AS bin_number
+        SELECT warehouse, item_internal_id, qty_on_hand, NULL::TEXT AS bin_number
         FROM nst.inventory_snapshot
-        WHERE snapshot_date = %(d_jd)s AND warehouse = 'JD-物流-千葉'
+        WHERE snapshot_date = %(d_jd)s AND warehouse <> '弁天倉庫'
         UNION ALL
         SELECT '弁天倉庫' AS warehouse, item_internal_id, qty_on_hand, bin_number
         FROM nst.inventory_bin_snapshot
@@ -71,7 +72,7 @@ def _render_composition():
         inv_all.warehouse,
         inv_all.bin_number,
         CASE
-            WHEN inv_all.warehouse = 'JD-物流-千葉' THEN '输出'
+            WHEN inv_all.warehouse <> '弁天倉庫' THEN '输出'
             WHEN COALESCE(bc.is_return, FALSE) THEN '返品'
             WHEN COALESCE(bc.is_defect, FALSE) THEN '不良品'
             WHEN COALESCE(bc.is_cb,     FALSE) THEN '输出中国'
@@ -155,6 +156,12 @@ def _render_composition():
     ), bin_me AS (
         SELECT to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
         FROM nst.inventory_bin_snapshot, win WHERE snapshot_date >= win.d0 GROUP BY 1
+    ), snap_me AS (
+        -- 月次入出庫の集計が無い倉庫（CGF）は日次スナップショットの月末で代用
+        SELECT warehouse, to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
+        FROM nst.inventory_snapshot, win
+        WHERE snapshot_date >= win.d0 AND warehouse NOT IN ('JD-物流-千葉', '弁天倉庫')
+        GROUP BY 1, 2
     ), inv_all AS (
         SELECT a.year_month AS ym, NULL::DATE AS as_of, 'JD-物流-千葉' AS warehouse,
                a.item_internal_id, a.closing_qty AS qty_on_hand, NULL::TEXT AS bin_number
@@ -163,11 +170,15 @@ def _render_composition():
         UNION ALL
         SELECT m.ym, m.d, '弁天倉庫', b.item_internal_id, b.qty_on_hand, b.bin_number
         FROM nst.inventory_bin_snapshot b JOIN bin_me m ON m.d = b.snapshot_date
+        UNION ALL
+        SELECT m.ym, m.d, s.warehouse, s.item_internal_id, s.qty_on_hand, NULL::TEXT
+        FROM nst.inventory_snapshot s
+        JOIN snap_me m ON m.d = s.snapshot_date AND m.warehouse = s.warehouse
     )
     SELECT
         inv_all.ym, max(inv_all.as_of) AS as_of, inv_all.warehouse,
         CASE
-            WHEN inv_all.warehouse = 'JD-物流-千葉' THEN '输出'
+            WHEN inv_all.warehouse <> '弁天倉庫' THEN '输出'
             WHEN COALESCE(bc.is_return, FALSE) THEN '返品'
             WHEN COALESCE(bc.is_defect, FALSE) THEN '不良品'
             WHEN COALESCE(bc.is_cb,     FALSE) THEN '输出中国'

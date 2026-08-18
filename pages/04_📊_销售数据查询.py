@@ -505,7 +505,7 @@ with _q_tab:
     _INV = ("(SELECT item_internal_id, SUM(qty_on_hand) AS qty_on_hand "
             "FROM nst.inventory_snapshot "
             "WHERE snapshot_date=(SELECT max(snapshot_date) FROM nst.inventory_snapshot) "
-            "  AND warehouse IN ('JD-物流-千葉', '弁天倉庫') "
+            "  AND warehouse IN ('JD-物流-千葉', '弁天倉庫', 'CGF倉庫（COUPANG）') "
             "GROUP BY item_internal_id)")
 
     # 月份以外の筛选（下方の推移図 = 全月集計で再利用するため分離）
@@ -631,7 +631,7 @@ with _q_tab:
             "SELECT SUM(inv.qty_on_hand * im.cost_estimate) sv, SUM(inv.qty_on_hand) soh "
             "FROM nst.inventory_snapshot inv "
             "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
-            "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫') "
+            "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫', 'CGF倉庫（COUPANG）') "
             "  AND im.department = '輸出事業' "
             "  AND inv.snapshot_date = " + _SNAP_OF_MONTH
         )

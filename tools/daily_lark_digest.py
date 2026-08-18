@@ -1,7 +1,8 @@
 """每日库存构成 飞书汇报 · 复用 CMS page06「构成 KPI（全仓库合算）」单一事实源.
 
 数据口径与 pages/06_📦_库存监控.py 的 _render_composition() 完全一致:
-  · 全仓库 = JD-物流-千葉(nst.inventory_snapshot) + 弁天倉庫(nst.inventory_bin_snapshot)
+  · 全仓库 = nst.inventory_snapshot（JD-物流-千葉 / CGF倉庫（COUPANG））
+    + 弁天倉庫(nst.inventory_bin_snapshot · bin 単位で用途判定)
   · 金额 = qty_on_hand × item_master_raw.cost_estimate
   · 用途分类 CASE: JD 全归「输出」; 弁天按 nst.bin_category 标识(优先级 返品>不良品>输出中国>输出)
 
@@ -42,9 +43,9 @@ from psycopg2.extras import DictCursor
 # 在原 4 类别分组上多带一列 item_rank，用于「通常输出」内部按等级细分。
 _SQL = """
 WITH inv_all AS (
-    SELECT 'JD-物流-千葉' AS warehouse, item_internal_id, qty_on_hand, NULL::TEXT AS bin_number
+    SELECT warehouse, item_internal_id, qty_on_hand, NULL::TEXT AS bin_number
     FROM nst.inventory_snapshot
-    WHERE snapshot_date = %(d_jd)s AND warehouse = 'JD-物流-千葉'
+    WHERE snapshot_date = %(d_jd)s AND warehouse <> '弁天倉庫'
     UNION ALL
     SELECT '弁天倉庫' AS warehouse, item_internal_id, qty_on_hand, bin_number
     FROM nst.inventory_bin_snapshot
@@ -52,7 +53,7 @@ WITH inv_all AS (
 )
 SELECT
     CASE
-        WHEN inv_all.warehouse = 'JD-物流-千葉' THEN '输出'
+        WHEN inv_all.warehouse <> '弁天倉庫' THEN '输出'
         WHEN COALESCE(bc.is_return, FALSE) THEN '返品'
         WHEN COALESCE(bc.is_defect, FALSE) THEN '不良品'
         WHEN COALESCE(bc.is_cb,     FALSE) THEN '输出中国'
