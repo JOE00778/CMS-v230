@@ -444,7 +444,7 @@ with top_v2:
             st.info(t("「🔍 発注計算実行」を押すと推奨清单が出ます"))
         elif df.empty:
             st.warning(t(
-                "⚠️ 発注対象 0 件 — shop_sales に export_item データがないか、supplier_quote に報価がありません。"
+                "⚠️ 発注対象 0 件 — nst.sales_monthly に販売実績がないか、supplier_quote に報価がありません。"
                 "page 99 で【輸出】アイテム別売上（概要）_JO をアップロードしてください。"
             ))
         else:
@@ -665,9 +665,12 @@ with top_v2:
                     name = df_c["display_name"].dropna().iloc[0] if df_c["display_name"].notna().any() else "(名称不明)"
                     st.markdown(f"**{name}** — {len(df_c)} 仕入先で取扱")
                     # 月販 (輸出概要)
+                    # nst.sales_monthly（輸出月次）へ置換。旧 shop_sales は 0 行で
+                    # 月販が常に出ていなかった（2026-08-18）。JAN → internal_id は主档経由。
                     ms = conn.execute(
-                        "SELECT period_start, SUM(qty_sold) q FROM shop_sales "
-                        "WHERE jan = ? AND source = 'export_item' GROUP BY period_start ORDER BY period_start", (jan,)
+                        "SELECT sm.year_month, SUM(sm.qty_sold) q FROM nst.sales_monthly sm "
+                        "JOIN nst.item_master_raw im ON im.internal_id = sm.item_internal_id "
+                        "WHERE im.jan = ? GROUP BY sm.year_month ORDER BY sm.year_month", (jan,)
                     ).fetchall()
                     if ms:
                         st.caption(t("月販 (輸出概要): " + " / ".join(f"{r[0]}:{int(r[1] or 0)}" for r in ms)))
@@ -690,18 +693,20 @@ with top_v2:
         if not _has_supplier_quotes():
             st.info(t("先に「📊 発注計算」タブで仕入先管理リストをアップロード"))
         else:
-            # item_v2 から maker → jan のマップ; supplier_quote と JOIN
+            # nst.item_master_raw から maker → jan のマップ; supplier_quote と JOIN
+            # （旧 item_v2 は 2026-05 に置換済みで更新が止まっていた · 2026-08-18 切替）
             makers = [r[0] for r in conn.execute(
-                "SELECT DISTINCT maker FROM item_v2 WHERE maker IS NOT NULL AND maker <> '' ORDER BY maker"
+                "SELECT DISTINCT maker FROM nst.item_master_raw "
+                "WHERE maker IS NOT NULL AND maker <> '' ORDER BY maker"
             ).fetchall()]
             if not makers:
-                st.warning(t("item_v2 に maker データがありません (商品主档を先にインポート)"))
+                st.warning(t("商品主档に maker データがありません (NST 同期を先に実行)"))
             else:
                 sel_mk = st.selectbox(t("メーカー"), makers, key="maker_view_sel")
                 rows = conn.execute(
                     "SELECT i.jan, i.display_name, q.supplier_name, q.unit_price, q.lot_size, "
                     "q.zone, q.zone_rank, q.min_order_amount "
-                    "FROM item_v2 i JOIN supplier_quote q ON q.jan = i.jan "
+                    "FROM nst.item_master_raw i JOIN supplier_quote q ON q.jan = i.jan "
                     "WHERE i.maker = ? ORDER BY i.jan, q.zone_rank, q.unit_price", (sel_mk,)
                 ).fetchall()
                 if not rows:

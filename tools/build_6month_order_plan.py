@@ -90,7 +90,7 @@ def build_plan() -> pd.DataFrame:
         optimize="zone",
     )
     if df.empty:
-        raise SystemExit("発注推奨が 0 件 — shop_sales / supplier_quote のデータを確認")
+        raise SystemExit("発注推奨が 0 件 — nst.sales_monthly / supplier_quote のデータを確認")
 
     # 状態 recommended + needs_review (出はするが要確認) を含める
     df = df[df["status"].isin(["recommended", "needs_review"])].copy().reset_index(drop=True)

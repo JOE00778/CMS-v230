@@ -128,7 +128,8 @@ def health():
     try:
         with _conn() as c:
             cur = c.cursor() if IS_PG else c
-            cur.execute("SELECT COUNT(*) AS n FROM item_v2")
+            # 単一事実源へ切替（旧 item_v2 は廃止予定 · 2026-08-18）
+            cur.execute("SELECT COUNT(*) AS n FROM nst.item_master_raw")
             row = cur.fetchone()
             item_count = row["n"] if row else None
     except Exception as e:
@@ -138,7 +139,7 @@ def health():
     return {
         "status": "ok" if ok else "degraded",
         "backend": backend,
-        "item_v2_count": item_count,
+        "item_count": item_count,
         "error": err,
         "outputs_dir": str(OUTPUTS_DIR),
     }

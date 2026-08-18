@@ -126,8 +126,7 @@ inv_amount = _safe_scalar(
     default=0,
 )
 
-# 本月 YYYY-MM（_ym 给 KPI #3/#4 的 nst.sales_daily · period_start 保留给下方 TOP10/趋势区）
-period_start = f"{now.year}-{now.month:02d}-01"
+# 本月 YYYY-MM（KPI #3/#4 の nst.sales_daily と、下の TOP10/趨勢/市場分布で共用）
 _ym = f"{now.year}-{now.month:02d}"
 
 # 3) 本月营业额（nst.sales_daily 当月 SUM(revenue) · 对齐店铺毛利页05）
@@ -295,8 +294,8 @@ st.divider()
 # ============================================================
 if int(sku_total) == 0:
     st.info(
-        f"📭 {t('item_v2 表暂无数据。请先到')} **⚙️ 数据导入与设置** "
-        f"{t('上传 6 份 NST 报表')}（NetSuite Item / Sales / Inventory / Cost / Status / Daily Sales）。"
+        f"📭 {t('商品主档暂无数据。请到')} **📥 数据获取** "
+        f"{t('执行 NST 商品主档同步（nst.item_master_raw）。')}"
     )
 
 # ============================================================
@@ -308,37 +307,36 @@ with chart_l:
     st.markdown(f"##### 📈 {t('月度销售趋势 (近 6 个月)')}")
     trend_df = _safe_df(
         """
-        SELECT period_start, COALESCE(SUM(revenue_jpy), 0) AS revenue
-        FROM shop_sales
-        WHERE granularity = 'monthly'
-        GROUP BY period_start
-        ORDER BY period_start DESC
+        SELECT year_month, COALESCE(SUM(revenue), 0) AS revenue
+        FROM nst.sales_monthly
+        GROUP BY year_month
+        ORDER BY year_month DESC
         LIMIT 6
         """
     )
     if not trend_df.empty:
-        trend_df = trend_df.sort_values("period_start")
-        trend_df["month"] = pd.to_datetime(trend_df["period_start"]).dt.strftime("%Y-%m")
-        chart_data = trend_df.set_index("month")[["revenue"]]
+        trend_df = trend_df.sort_values("year_month")
+        chart_data = trend_df.set_index("year_month")[["revenue"]]
         chart_data.columns = [t("销售额 (JPY)")]
         st.line_chart(chart_data, height=260)
     else:
         st.info(t("暂无销售数据"))
 
 with chart_r:
-    st.markdown(f"##### 🏪 {t('市场分布 (按 shop_id)')}")
+    st.markdown(f"##### 🏪 {t('市场分布 (按店铺)')}")
+    # 店舗名は NetSuite 由来で末尾に空白が混じる（3 店）ので trim して集約する
     market_df = _safe_df(
         f"""
-        SELECT shop_id, COALESCE(SUM(revenue_jpy), 0) AS revenue
-        FROM shop_sales
-        WHERE granularity = 'monthly' AND period_start = '{period_start}'
-        GROUP BY shop_id
+        SELECT trim(shop) AS shop, COALESCE(SUM(revenue), 0) AS revenue
+        FROM nst.sales_monthly
+        WHERE year_month = '{_ym}'
+        GROUP BY trim(shop)
         ORDER BY revenue DESC
         LIMIT 8
         """
     )
     if not market_df.empty:
-        chart_data = market_df.set_index("shop_id")[["revenue"]]
+        chart_data = market_df.set_index("shop")[["revenue"]]
         chart_data.columns = [t("销售额 (JPY)")]
         st.bar_chart(chart_data, height=260)
     else:
@@ -349,23 +347,23 @@ st.divider()
 
 
 # ============================================================
-# TOP 10 当月销售（shop_sales JOIN item_v2 取 maker / rank）
+# TOP 10 当月销售（nst.sales_monthly JOIN nst.item_master_raw 取 maker / rank）
 # ============================================================
 st.markdown(f"##### 🏆 {t('TOP 10 当月销售')}")
 
 top10 = _safe_df(
     f"""
     SELECT
-      ss.jan,
-      COALESCE(iv.display_name, '') AS display_name,
-      COALESCE(iv.maker, '')        AS maker,
-      COALESCE(iv.rank, '')         AS rank,
-      COALESCE(SUM(ss.qty_sold), 0)     AS qty_sold,
-      COALESCE(SUM(ss.revenue_jpy), 0)  AS revenue
-    FROM shop_sales ss
-    LEFT JOIN item_v2 iv ON iv.jan = ss.jan
-    WHERE ss.granularity = 'monthly' AND ss.period_start = '{period_start}'
-    GROUP BY ss.jan
+      COALESCE(im.jan, '')          AS jan,
+      COALESCE(im.display_name, '') AS display_name,
+      COALESCE(im.maker, '')        AS maker,
+      COALESCE(im.item_rank, '')    AS rank,
+      COALESCE(SUM(sm.qty_sold), 0) AS qty_sold,
+      COALESCE(SUM(sm.revenue), 0)  AS revenue
+    FROM nst.sales_monthly sm
+    JOIN nst.item_master_raw im ON im.internal_id = sm.item_internal_id
+    WHERE sm.year_month = '{_ym}'
+    GROUP BY im.jan, im.display_name, im.maker, im.item_rank
     ORDER BY revenue DESC
     LIMIT 10
     """
@@ -385,9 +383,12 @@ st.divider()
 
 
 # ============================================================
-# v2 数据快查（保留原有 expander, 折叠到底部）
+# 底层数据量快查（折叠到底部）
+# 旧 v1/v2 表（item / supplier / sales / inventory / purchase / lot）を見ていたが、
+# うち sales は既に存在せず他も更新が止まっており、実態と無関係な数字が出ていた。
+# 単一事実源である nst.* の行数に差し替え（2026-08-18）。
 # ============================================================
-with st.expander(f"📦 {t('v2 数据快查 (raw counts)')}"):
+with st.expander(f"📦 {t('底层数据量 (raw counts)')}"):
     def _count(table: str) -> int:
         try:
             row = conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
@@ -396,12 +397,12 @@ with st.expander(f"📦 {t('v2 数据快查 (raw counts)')}"):
             return 0
 
     cc1, cc2, cc3, cc4, cc5, cc6 = st.columns(6)
-    cc1.metric(t("商品"), f"{_count('item'):,}")
-    cc2.metric(t("供应商"), f"{_count('supplier'):,}")
-    cc3.metric(t("销售记录"), f"{_count('sales'):,}")
-    cc4.metric(t("库存快照"), f"{_count('inventory'):,}")
-    cc5.metric(t("采购记录"), f"{_count('purchase'):,}")
-    cc6.metric(t("批次"), f"{_count('lot'):,}")
+    cc1.metric(t("商品主档"), f"{_count('nst.item_master_raw'):,}")
+    cc2.metric(t("仕入先"), f"{_count('nst.vendor_master'):,}")
+    cc3.metric(t("日次売上"), f"{_count('nst.sales_daily'):,}")
+    cc4.metric(t("月次売上"), f"{_count('nst.sales_monthly'):,}")
+    cc5.metric(t("在庫快照"), f"{_count('nst.inventory_snapshot'):,}")
+    cc6.metric(t("発注明细"), f"{_count('nst.purchase_order_line'):,}")
 
 
 # ============================================================
