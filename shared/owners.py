@@ -35,7 +35,8 @@ def classify_market(shop: str | None) -> str:
 # 负责人 → 担当店舗（「一元管理导出改」2026/5 最终版 · Boss 権威マッピング）
 _SHOP_OWNER: dict[str, list[str]] = {
     "邓晓庆": ["Lazada MY", "Lazada PH", "Lazada SG", "Shopee TW", "Shopee toy TW"],
-    "尹雪莉": ["Shopee Cosme VN", "Shopee VN", "Shopee TH"],
+    # japan_finds.PH は 2026-08-03 尹雪莉さん申請で「未分配」から移管
+    "尹雪莉": ["Shopee Cosme VN", "Shopee VN", "Shopee TH", "Shopee japan_finds.PH"],
     "许慧杰": ["Smikiejapan COUPANG"],
     "刘颖":   ["Shopee Kurashi-Mart.PH", "Shopee Mall PH", "Shopee PH"],
     "裴晓晗": ["Shopee BR", "Shopee Cosme PH", "Shopee Cosme SG",

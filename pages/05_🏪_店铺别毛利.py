@@ -516,9 +516,17 @@ with tab_shop:
     ).fillna(0) * 100
     g = g.sort_values("gross_profit", ascending=False)
 
-    shop_cols = ("shop", "owner", "qty", "revenue", "defined_cost",
-                 "gross_profit", "gross_margin", "n_sku")
-    html_table(_disp(g, shop_cols, mom_prev=_prev_shop, dim="shop"))
+    # 列順は尹雪莉さん 2026-08-03 依頼: owner を最終列へ · SKU数 は表から外す
+    #（SKU数 は 日次/担当者/市場別 タブには残してある）
+    shop_cols = ("shop", "qty", "revenue", "defined_cost",
+                 "gross_profit", "gross_margin", "owner")
+    _shop_disp = _disp(g, shop_cols, mom_prev=_prev_shop, dim="shop")
+    html_table(_shop_disp)
+    st.download_button(
+        "⬇️ CSV ダウンロード" if get_lang() == "ja" else "⬇️ 下载 CSV",
+        _shop_disp.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"店舗別粗利_{ym}.csv", mime="text/csv", key="dl_shop_tab",
+    )
     st.altair_chart(_hbar(g, "shop"), use_container_width=True)
 
     st.divider()

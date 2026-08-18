@@ -92,21 +92,37 @@ def _parse_uploaded(file) -> pd.DataFrame | None:
 
 
 # 订货单 meta（dropdown）— SUPPLIERS 定义提前供文件名预选用
-SUPPLIERS = [
-    "0020 エンパイヤ自動車株式会社（KONNGU'S）", "0025 株式会社オンダ", "0029 K・BLUE株式会社",
-    "0072 新富士バーナー株式会社", "0073 株式会社　エィチ・ケイ", "0077 大分共和株式会社",
-    "0085 中央物産株式会社", "0106 西川株式会社", "0197 大木化粧品株式会社", "0201 現金仕入れ",
-    "0202 トラスコ中山株式会社", "0256 株式会社 グランジェ", "0258 株式会社 ファイン",
-    "0263 株式会社メディファイン", "0285 有限会社オーザイ首藤", "0343 株式会社森フォレスト",
-    "0376 菅野株式会社", "0402 ハリマ共和物産株式会社", "0411 株式会社ラクーンコマース（スーパーデリバリー）",
-    "0435 株式会社 流久商事", "0444 ハナモンワークス 合同会社", "0445 富森商事 株式会社",
-    "0457 カネイシ株式会社", "0468 王子国際貿易株式会社", "0469 株式会社 新日配薬品",
-    "0474 株式会社　五洲", "0475 株式会社シゲマツ", "0476 カード仕入れ",
-    "0479 スケーター株式会社", "0482 風雲商事株式会社", "0484 ZSA商事株式会社",
-    "0486 Maple International株式会社", "0490 NEW WIND株式会社", "0491 アプライド株式会社",
-    "0504 京浜商事株式会社", "0510 株式会社タジマヤ", "C000510 太田物産 株式会社",
-    "0042 ビクトリノックス・ジャパン株式会社",
-]
+def _load_suppliers() -> list[str]:
+    """仕入先ドロップダウン = NetSuite Vendor マスタ（`nst.vendor_master`）が唯一の源。
+
+    以前は 38 件をソースにベタ書きしていた（2026 年のある時点のスナップショット）。
+    NetSuite 側で改名・新規追加があってもコードを直さない限り反映されず、古い名前の
+    まま出した CSV が取込エラーになっていた（隋艶偉さん 2026-07-21 指摘）。
+    `nst.vendor_master` は vendor_daily ジョブが毎日 06:50 JST に全件 UPSERT する
+    ので、ここを見れば改名も追加も自動で追従する。表記は `vendor_code + 空白 +
+    company_name`＝NetSuite の表示名そのもの（旧ベタ書きと同一書式なので
+    `_guess_supplier()` の 4 桁プレフィックス照合はそのまま動く）。
+    company_name 空欄（経理用ダミー等 17 件）は CSV に出しても無意味なので除外。
+    """
+    rows = conn.execute(
+        "SELECT vendor_code, company_name FROM nst.vendor_master "
+        "WHERE company_name IS NOT NULL AND company_name <> '' "
+        "  AND vendor_code IS NOT NULL AND vendor_code <> '' "
+        "ORDER BY vendor_code"
+    ).fetchall()
+    return [f"{r['vendor_code']} {r['company_name']}" for r in rows]
+
+
+try:
+    SUPPLIERS = _load_suppliers()
+except Exception as _e_sup:  # noqa: BLE001
+    SUPPLIERS = []
+    st.error(t("仕入先マスタ取得失敗: ") + str(_e_sup))
+if not SUPPLIERS:
+    # 空のまま進むと 仕入先 が空欄の CSV を作ってしまい NetSuite 取込で落ちる
+    st.error(t("⚠️ 仕入先マスタが空です。page 27「📥 NST 取得データ」→ "
+               "「🏭 仕入先マスタ」で更新してください。"))
+    st.stop()
 EMPLOYEES = ["079 隋艶偉", "005 川崎里子", "037 米澤和敏", "043 徐越"]
 DEPARTMENTS = ["輸出事業", "輸出事業 : 輸出（中国）"]
 LOCATIONS = ["JD-物流-千葉", "弁天倉庫"]
