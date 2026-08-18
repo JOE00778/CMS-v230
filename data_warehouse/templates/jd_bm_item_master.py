@@ -187,7 +187,9 @@ JD_HEADER = [
 assert len(JD_GROUP) == 75, f"JD_GROUP={len(JD_GROUP)}"
 assert len(JD_HEADER) == 75, f"JD_HEADER={len(JD_HEADER)}"
 
-DEFAULT_JD_CUSTOMER_CODE = "KH20000009340"   # 货主ID（新模板可不填·单货主）· 默认输入留空
+DEFAULT_JD_CUSTOMER_CODE = "KH20000009340"   # 货主ID · 複数貨主になった時用に保持。
+# 単一貨主の現状では A 列に値が入ると JD 取込がエラーになるため、既定値としては使わない
+# （隋艶偉さん #28 / 川崎さん #31 · 2026-08-18）。
 DEFAULT_JD_SALES_CHANNEL = "sc-三金商事株式会社"
 DEFAULT_JD_PLATFORM_CODE = "Lazada/Shopee/coupang"
 
@@ -249,7 +251,7 @@ def nst_to_jd_row(
     nst_row: dict,
     *,
     image_url: str = "",
-    jd_customer_code: str = DEFAULT_JD_CUSTOMER_CODE,
+    jd_customer_code: str = "",   # 既定は空欄（単一貨主は不要 · #28/#31 2026-08-18）
     sales_channel: str = DEFAULT_JD_SALES_CHANNEL,
     platform_code: str = DEFAULT_JD_PLATFORM_CODE,
 ) -> list:
@@ -344,7 +346,7 @@ def build_jd_xlsx(
     nst_rows: Iterable[dict],
     *,
     image_url_map: dict[str, str] | None = None,
-    jd_customer_code: str = DEFAULT_JD_CUSTOMER_CODE,
+    jd_customer_code: str = "",   # 既定は空欄（単一貨主は不要 · #28/#31 2026-08-18）
     sales_channel: str = DEFAULT_JD_SALES_CHANNEL,
     platform_code: str = DEFAULT_JD_PLATFORM_CODE,
 ) -> bytes:

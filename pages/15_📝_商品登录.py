@@ -277,7 +277,10 @@ with tab_native:
                 jd_xlsx = JBM.build_jd_xlsx(
                     nst_rows,
                     image_url_map=image_url_map,
-                    jd_customer_code=jd_customer_code.strip() or JBM.DEFAULT_JD_CUSTOMER_CODE,
+                    # 空欄は空欄のまま出す（隋艶偉さん #28 / 川崎さん #31 · 2026-08-18）。
+                    # 既定値へフォールバックしていたため A 列（貨主ID）に必ず値が入り、
+                    # 単一貨主の JD 取込がエラーになっていた。UI も既定=空・注記も「空欄可」。
+                    jd_customer_code=jd_customer_code.strip(),
                     sales_channel=sales_channel.strip() or JBM.DEFAULT_JD_SALES_CHANNEL,
                     platform_code=platform_code.strip() or JBM.DEFAULT_JD_PLATFORM_CODE,
                 )

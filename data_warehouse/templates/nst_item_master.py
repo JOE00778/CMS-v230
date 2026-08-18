@@ -108,8 +108,22 @@ NST_MASTER_COLUMNS: list[tuple[str | None, str]] = [
     (None, '原価計算法'),
 ]
 
-VALID_COLUMNS = {name for _, name in NST_MASTER_COLUMNS}
-_COL_ORDER = {name: i for i, (_, name) in enumerate(NST_MASTER_COLUMNS)}
+# 列名は前後空白を落として突き合わせる（隋艶偉さん #27 / 川崎さん #30 · 2026-08-18）。
+# テンプレ原文には `'サポート提供 '`（末尾半角空白）と `' 直送アイテム　'`（前後空白+全角）
+# の 2 列があり、page15 が取込時に header を `.str.strip()` するため、素の名前で照合すると
+# この 2 列が「非テンプレ列」として捨てられ、CSV から丸ごと消えていた（NST 取込エラーの原因）。
+# 照合・受け渡しは正規化名、出力ヘッダは**テンプレ原文のまま**（NST 側が原文を期待するため）。
+def _norm(col: str) -> str:
+    """列名の突き合わせキー（前後の半角/全角空白を落とす）。"""
+    return str(col).strip().strip("　").strip()
+
+
+_ORIG_NAME = {_norm(name): name for _, name in NST_MASTER_COLUMNS}
+VALID_COLUMNS = set(_ORIG_NAME)
+_COL_ORDER = {_norm(name): i for i, (_, name) in enumerate(NST_MASTER_COLUMNS)}
+
+# 値が無くても必ず出力し、空なら既定値を入れる列（川崎さん #30「デフォルトで T」）。
+FORCED_DEFAULTS: dict[str, str] = {"サポート提供": "T"}
 
 
 def build_nst_master_csv(
@@ -120,6 +134,9 @@ def build_nst_master_csv(
 ) -> bytes:
     """生成 NST 上传模板格式 CSV（bytes, UTF-8 BOM）。
 
+    列名は前後空白の有無を問わず受け付ける（`'サポート提供'` でも `'サポート提供 '` でも可）。
+    出力ヘッダは常にテンプレ原文（空白込み）で書く。
+
     Args:
         rows: 每行 dict, 含 id_label(Internal ID) + 各 field_columns 的值
         field_columns: 本次输出的模板列名(只传有数据的列 = 已删空列)
@@ -127,16 +144,26 @@ def build_nst_master_csv(
     Returns:
         CSV bytes(utf-8-sig), 表头 = [id_label] + field_columns(按模板列序)
     """
-    bad = [c for c in field_columns if c not in VALID_COLUMNS]
+    bad = [c for c in field_columns if _norm(c) not in VALID_COLUMNS]
     if bad:
         raise ValueError(f"非模板列名: {bad}")
-    ordered = sorted(field_columns, key=lambda c: _COL_ORDER[c])
-    header = [id_label] + ordered
+    # 正規化キーで重複排除しつつ、既定値必須の列（サポート提供=T）は必ず足す
+    keys = list(dict.fromkeys([_norm(c) for c in field_columns] + list(FORCED_DEFAULTS)))
+    ordered = sorted(keys, key=lambda c: _COL_ORDER[c])
+    header = [id_label] + [_ORIG_NAME[c] for c in ordered]
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(header)
     for r in rows:
-        w.writerow([r.get(id_label, "")] + [r.get(c, "") for c in ordered])
+        # 呼び出し側が原文キー/正規化キーどちらで持っていても引けるようにする
+        _row = {_norm(k): v for k, v in r.items()}
+        cells = []
+        for c in ordered:
+            v = _row.get(c, "")
+            if (v is None or str(v).strip() == "") and c in FORCED_DEFAULTS:
+                v = FORCED_DEFAULTS[c]
+            cells.append(v)
+        w.writerow([r.get(id_label, "")] + cells)
     return buf.getvalue().encode("utf-8-sig")
 
 
