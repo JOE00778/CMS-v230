@@ -614,18 +614,30 @@ with _q_tab:
                 _filtp_im.extend(_filtp[_pi:_pi + n])
             _pi += n
         _inv_extra = (" AND " + " AND ".join(_filt_im)) if _filt_im else ""
-        _invn, _ = _query(
+        # 在庫 KPI は「選択月の最終スナップショット」基準（2026-08-18 修正）。
+        # 旧実装は全表 max(snapshot_date)＝常に今日 → 月を切り替えても在庫総額が
+        # 1 円も動かず、しかも同比だけ前月末と比べていて分子分母の日付が食い違って
+        # いた（川崎さん 2026-08-05 指摘「毎月の数字が変わらない」）。
+        # スナップショットは 2026-05-20 以降しか無い → 無い月は 0 でなく「—」表示。
+        _SNAP_OF_MONTH = ("(SELECT max(snapshot_date) FROM nst.inventory_snapshot "
+                          "WHERE to_char(snapshot_date,'YYYY-MM') = ?)")
+        _INV_KPI_SQL = (
             "SELECT SUM(inv.qty_on_hand * im.cost_estimate) sv, SUM(inv.qty_on_hand) soh "
             "FROM nst.inventory_snapshot inv "
             "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
             "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫') "
             "  AND im.department = '輸出事業' "
-            "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
-            + _inv_extra,
-            tuple(_filtp_im),
+            "  AND inv.snapshot_date = " + _SNAP_OF_MONTH
         )
-        tot_sv = float(_invn.iloc[0]["sv"] or 0) if _invn is not None and not _invn.empty else 0
-        tot_soh = float(_invn.iloc[0]["soh"] or 0) if _invn is not None and not _invn.empty else 0
+        _invn, _ = _query(_INV_KPI_SQL + _inv_extra, tuple([ym] + _filtp_im))
+
+        def _sv_soh(_dfi):
+            """(在庫金額, 在庫数, スナップショット有無)。NULL=その月のスナップ無し。"""
+            if _dfi is None or _dfi.empty or _dfi.iloc[0]["sv"] is None:
+                return 0.0, 0.0, False
+            return float(_dfi.iloc[0]["sv"]), float(_dfi.iloc[0]["soh"] or 0), True
+
+        tot_sv, tot_soh, _has_snap = _sv_soh(_invn)
         _turnover = (tot_r / tot_sv) if tot_sv else 0          # 月周转 = 销售额 / 库存金额
         _ssr = (tot_sv / tot_r) if tot_r else 0                # 存销比 = 库存金额 / 销售额
         cur_margin = (tot_g / tot_r) if tot_r else 0
@@ -642,17 +654,7 @@ with _q_tab:
             f"WHERE {_pwhere}",
             tuple([_pym] + _filtp),
         )
-        _pinv, _ = _query(
-            "SELECT SUM(inv.qty_on_hand * im.cost_estimate) sv, SUM(inv.qty_on_hand) soh "
-            "FROM nst.inventory_snapshot inv "
-            "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
-            "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫') "
-            "  AND im.department = '輸出事業' "
-            "  AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot "
-            "      WHERE to_char(snapshot_date,'YYYY-MM') = ?)"
-            + _inv_extra,
-            tuple([_pym] + _filtp_im),
-        )
+        _pinv, _ = _query(_INV_KPI_SQL + _inv_extra, tuple([_pym] + _filtp_im))
 
         def _g0(_dfp, _c):
             if _dfp is None or _dfp.empty or _dfp.iloc[0][_c] is None:
@@ -679,9 +681,15 @@ with _q_tab:
             m3.metric(t("粗利 計"), f"¥{tot_g:,.0f}", _dpct(tot_g, prev_g))
             m4.metric(t("粗利率"), f"{cur_margin:.1%}", _dpp(cur_margin, prev_margin))
             n1, n2, n3 = st.columns(3)
-            n1.metric(t("库存总金额"), f"¥{tot_sv:,.0f}", _dpct(tot_sv, prev_sv), delta_color="inverse")
-            n2.metric(t("平均月周转率"), f"{_turnover:.2f}", _dpct(_turnover, prev_turn))
-            n3.metric(t("整体库存销售比"), f"{_ssr:.2f}", _dpct(_ssr, prev_ssr), delta_color="inverse")
+            _NA = "—"
+            n1.metric(t("库存总金额"), f"¥{tot_sv:,.0f}" if _has_snap else _NA,
+                      _dpct(tot_sv, prev_sv) if _has_snap else None, delta_color="inverse")
+            n2.metric(t("平均月周转率"), f"{_turnover:.2f}" if _has_snap else _NA,
+                      _dpct(_turnover, prev_turn) if _has_snap else None)
+            n3.metric(t("整体库存销售比"), f"{_ssr:.2f}" if _has_snap else _NA,
+                      _dpct(_ssr, prev_ssr) if _has_snap else None, delta_color="inverse")
+            st.caption(t("库存类 KPI = 所选月的最终库存快照（当月＝最新日）· "
+                         "2026-05-20 以前无快照，显示 —"))
 
         st.caption(t("表示件数: ") + f"{len(df):,}" + t("（粗利率/利润贡献率=%, 回転率=月販売/当前在庫·近似）"))
         _colcfg = dict(_cc(*cols))
