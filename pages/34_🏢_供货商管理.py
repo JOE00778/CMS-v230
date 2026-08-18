@@ -376,7 +376,8 @@ def _sku_frame(ranks: list[str]) -> pd.DataFrame:
         cur_price(主供价>最近PO单价), cur_src, plan_supplier(计划归属),
         msrp_taxex, best_supplier, best_price, best_validity, n_eligible, n_backup,
         n_quotes, qty_lm(直近完整月販), qty_3m(近3完整月合計), jd_on_hand, on_order,
-        saving_unit, saving_amt(×qty_lm), flags。
+        buy_price(現仕入価=NST最終購入原価→直近PO単価), buy_src,
+        buy_saving, buy_saving_amt(×qty_lm · 現仕入価基準·最適化余地の判定), flags。
     """
     f = _items_all(ranks)
     if f.empty:
@@ -393,6 +394,15 @@ def _sku_frame(ranks: list[str]) -> pd.DataFrame:
         ["main" if pd.notna(mp) else ("po" if pd.notna(cr) else None)
          for mp, cr in zip(f["main_price"], f["cur_rate"])], index=f.index)
     f["plan_supplier"] = f["main_supplier"].fillna(f["cur_supplier"])
+    # 現仕入価（NST 実績ベース · 川崎さん #36 · Boss 2026-08-18「現仕入価と見積の 2 列で対比」）。
+    # NST の last_purchase_cost（最終購入原価）が正。毎日 03:02 の items_daily で自動同期される
+    # ので、③SKU明細 Excel を手で上げ直す必要はない（＝二度手間の解消）。
+    # 0 は NST 側の未入力を意味するので欠測扱い。無い時は直近 PO 単価で埋める（同じく NST 実績）。
+    _lpc = f["last_purchase_cost"].where(f["last_purchase_cost"] > 0)
+    f["buy_price"] = _lpc.fillna(f["cur_rate"])
+    f["buy_src"] = pd.Series(
+        ["nst" if pd.notna(v) else ("po" if pd.notna(r) else None)
+         for v, r in zip(_lpc, f["cur_rate"])], index=f.index)
     f = f.merge(_msrp(), on="jan", how="left")
     f["msrp_taxex"] = pd.to_numeric(f["msrp_taxex"], errors="coerce")
     # 最低有效报价 + 备用候选数
@@ -428,22 +438,26 @@ def _sku_frame(ranks: list[str]) -> pd.DataFrame:
     f = f.merge(_inventory(), on="jan", how="left")
     for _c in ("jd_on_hand", "on_order"):
         f[_c] = pd.to_numeric(f.get(_c), errors="coerce").fillna(0)
-    # 理论节省（機会測算 · spec: (当前采购价−最低有效报价)×対応需要）
-    _diff = f["cur_price"] - f["best_price"]
-    f["saving_unit"] = _diff.where(_diff > 0)
-    f["saving_amt"] = (f["saving_unit"] * f["qty_lm"]).fillna(0.0)
+    # 理论节省（機会測算 · spec: (現仕入価−最低有効見積)×対応需要）。
+    # 「まだ下げる余地があるか」を見るのが目的なので、基準は人手 Excel の指定価ではなく
+    # NST 実績の現仕入価（Boss 2026-08-18）。cur_price は tab_opp ① の掛率（対 MSRP）専用。
+    _bdiff = f["buy_price"] - f["best_price"]
+    f["buy_saving"] = _bdiff.where(_bdiff > 0)
+    f["buy_saving_amt"] = (f["buy_saving"] * f["qty_lm"]).fillna(0.0)
 
     def _flags(r) -> str:
         fl = []
-        if pd.notna(r["best_price"]) and pd.notna(r["cur_price"]) \
-                and r["best_price"] < r["cur_price"]:
+        # 「交渉余地」は現仕入価（NST 実績）基準に統一（Boss 2026-08-18）。
+        # 以前は cur_price（人手 Excel 優先）基準で、SKU 明細タブの対比列と数が合わなかった。
+        if pd.notna(r["best_price"]) and pd.notna(r["buy_price"]) \
+                and r["best_price"] < r["buy_price"]:
             fl.append(_dl("可谈价", "交渉余地"))
         if r["n_backup"] == 0:
             fl.append(_dl("无备用", "予備なし"))
         if r["n_quotes"] > 0 and pd.isna(r["best_price"]):
             fl.append(_dl("报价过期/无效", "見積失効"))
-        if pd.isna(r["cur_price"]):
-            fl.append(_dl("数据不足(无当前价)", "データ不足(現行価なし)"))
+        if pd.isna(r["buy_price"]):
+            fl.append(_dl("数据不足(无进货价)", "データ不足(現仕入価なし)"))
         if r.get("best_validity") == "unconfirmed":
             fl.append(sc.VALIDITY_LABELS["unconfirmed"] if not _ja else "有効性未確認")
         return "·".join(fl)
@@ -498,7 +512,7 @@ with tab_cp:
         _fm = _f.merge(_qm, on="internal_id", how="left")
         _fm["qty_m"] = pd.to_numeric(_fm["qty_m"], errors="coerce").fillna(0)
         _fm["plan_amt"] = (_fm["qty_m"] * _fm["cur_price"]).fillna(0.0)
-        _fm["saving_m"] = (_fm["saving_unit"] * _fm["qty_m"]).fillna(0.0)
+        _fm["saving_m"] = (_fm["buy_saving"] * _fm["qty_m"]).fillna(0.0)
         _fm["short_risk"] = ((_fm["jd_on_hand"] + _fm["on_order"]) < _fm["qty_m"]) \
             & (_fm["qty_m"] > 0)
         _has_sup = _fm[_fm["plan_supplier"].notna()
@@ -655,9 +669,9 @@ with tab_bs:
             # 最低报价差异 = 该品牌 SKU 中计划归属该供应商的理论节省合计
             _fb = _sku_frame(_RANK_OPTS)
             _fb = _fb[_fb["maker"].astype(str) == _bk]
-            _sv = (_fb.groupby("plan_supplier", as_index=False)["saving_amt"].sum()
+            _sv = (_fb.groupby("plan_supplier", as_index=False)["buy_saving_amt"].sum()
                    .rename(columns={"plan_supplier": "supplier_name",
-                                    "saving_amt": "saving"})
+                                    "buy_saving_amt": "saving"})
                    if not _fb.empty else pd.DataFrame(columns=["supplier_name", "saving"]))
             _gb = _gb.merge(_sv, on="supplier_name", how="left")
             _gb["saving"] = pd.to_numeric(_gb["saving"], errors="coerce").fillna(0)
@@ -839,10 +853,10 @@ with tab_wr:
 # ============================================================
 with tab_sku:
     st.caption(_dl(
-        "每 SKU：主供应商 / 最近PO供应商 / 最低有效报价 / 当前价（主供价否则最近PO单价）/ "
-        "价差 / 近三月销量 / 库存 / 在途 · 状态标记：可谈价·无备用·报价过期·数据不足·有效性未确认。",
-        "SKU ごと：主仕入先 / 直近PO仕入先 / 最安有効見積 / 現行価（主仕入先価→直近PO単価）/ "
-        "価差 / 直近3ヶ月販売 / 在庫 / 発注残 · 状態タグ：交渉余地·予備なし·見積失効·データ不足·有効性未確認。"))
+        "每 SKU：**现进货价（NST 自动）** 与 **供货商报价** 两列对比 · 价差>0=有更便宜的有效报价。"
+        "现进货价取 NST 最终购入原价（每日 03:02 自动同步），无值时用最近 PO 单价 —— 都不需要手动上传。",
+        "SKU ごと：**現仕入価（NST 自動）** と **仕入先見積** の 2 列で対比 · 価差>0=より安い有効見積あり。"
+        "現仕入価は NST の最終購入原価（毎日 03:02 自動同期）、無い場合は直近 PO 単価 —— どちらも手動アップ不要。"))
     _ranks_s = st.multiselect(t("等级"), _RANK_OPTS,
                               default=["Aランク", "Bランク", "Cランク"], key="sku_ranks")
     _fs = _sku_frame(_ranks_s or _RANK_OPTS[:3])
@@ -855,7 +869,7 @@ with tab_sku:
         _kw_s = _c3.text_input(t("🔍 JAN / 商品名 搜索"), key="sku_kw")
         _v = _fs
         if _only_op:
-            _v = _v[_v["saving_unit"].notna()]
+            _v = _v[_v["buy_saving"].notna()]
         if _only_qt:
             _v = _v[_v["n_quotes"] > 0]
         if _kw_s.strip():
@@ -882,27 +896,33 @@ with tab_sku:
 
         k1, k2, k3, k4 = st.columns(4)
         k1.metric(t("商品数"), f"{len(_v):,}")
-        k2.metric(_dl("可谈价", "交渉余地"), f"{int(_v['saving_unit'].notna().sum()):,}")
+        k2.metric(_dl("可谈价", "交渉余地"), f"{int(_v['buy_saving'].notna().sum()):,}")
         k3.metric(_dl("无备用", "予備なし"), f"{int((_v['n_backup'] == 0).sum()):,}")
-        k4.metric(_dl("数据不足", "データ不足"), f"{int(_v['cur_price'].isna().sum()):,}")
+        k4.metric(_dl("无进货价", "現仕入価なし"), f"{int(_v['buy_price'].isna().sum()):,}")
 
-        _v = _v.sort_values("saving_amt", ascending=False)
+        _v = _v.sort_values("buy_saving_amt", ascending=False)
+        # 現仕入価（NST）と 仕入先見積 を隣り合わせにして、差額をその右に置く
         _cols_s = {"item_rank": t("RANK"), "jan": t("JAN"), "display_name": t("商品名"),
+                   "buy_price": _dl("现进货价", "現仕入価"),
+                   "buy_src": _dl("进货价来源", "現仕入価の出所"),
+                   "best_price": _dl("供货商报价", "仕入先見積"),
+                   "best_supplier": _dl("报价供应商", "見積先"),
+                   "buy_saving": _dl("价差", "価差"),
                    "main_supplier": t("主供货商"),
                    "cur_supplier": _dl("最近PO供应商", "直近PO仕入先"),
-                   "cur_price": _dl("当前价", "現行価"),
-                   "best_supplier": _dl("最低报价供应商", "最安見積先"),
-                   "best_price": _dl("最低有效报价", "最安有効見積"),
-                   "saving_unit": _dl("价差", "価差"),
                    "qty_3m": _dl("近三月销量", "直近3ヶ月販売"),
                    "jd_on_hand": _dl("库存", "在庫"), "on_order": _dl("在途", "発注残"),
                    "flags": _dl("状态", "状態")}
         _shows = _v[list(_cols_s.keys())].rename(columns=_cols_s)
+        _SRC_LABEL = {"nst": _dl("NST最终购入", "NST最終購入"),
+                      "po": _dl("最近PO单价", "直近PO単価")}
+        _shows[_dl("进货价来源", "現仕入価の出所")] = (
+            _shows[_dl("进货价来源", "現仕入価の出所")].map(lambda v: _SRC_LABEL.get(v, "")))
         st.dataframe(
             _shows, hide_index=True, use_container_width=True, height=560,
             column_config={
-                _dl("当前价", "現行価"): st.column_config.NumberColumn(format="¥%.0f"),
-                _dl("最低有效报价", "最安有効見積"): st.column_config.NumberColumn(format="¥%.0f"),
+                _dl("现进货价", "現仕入価"): st.column_config.NumberColumn(format="¥%.0f"),
+                _dl("供货商报价", "仕入先見積"): st.column_config.NumberColumn(format="¥%.0f"),
                 _dl("价差", "価差"): st.column_config.NumberColumn(format="¥%.0f"),
                 _dl("近三月销量", "直近3ヶ月販売"): st.column_config.NumberColumn(format="%.0f"),
                 _dl("库存", "在庫"): st.column_config.NumberColumn(format="%.0f"),
@@ -912,10 +932,12 @@ with tab_sku:
                            file_name="sku_sourcing_detail.csv", mime="text/csv",
                            key="sku_csv")
         st.caption(_dl(
-            "当前价=主供指定价否则最近PO单价（两者皆无=数据不足）· 最低有效报价仅含启用供应商的"
-            "有效/有效性未确认报价 · 价差>0=存在更便宜有效报价（理论机会,非指令）",
-            "現行価=主仕入先指定価→直近PO単価（両方なし=データ不足）· 最安有効見積は稼働仕入先の"
-            "有効/有効性未確認見積のみ · 価差>0=より安い有効見積あり（理論上の機会·指示ではない）"))
+            "现进货价=NST 最终购入原价（0/空则用最近 PO 单价）· 供货商报价=启用供应商里最低的"
+            "有效/有效性未确认报价 · 价差=现进货价−供货商报价，>0 表示有更便宜的报价"
+            "（理论机会,非指令）· 两列都不需要手动上传，NST 侧改价第二天自动反映",
+            "現仕入価=NST の最終購入原価（0/空なら直近 PO 単価）· 仕入先見積は稼働仕入先の"
+            "有効/有効性未確認見積のうち最安 · 価差=現仕入価−仕入先見積、>0 でより安い見積あり"
+            "（理論上の機会·指示ではない）· どちらも手動アップ不要、NST 側の改定は翌日自動反映"))
 
 # ============================================================
 # Tab 5：🔍 优化机会
@@ -923,9 +945,9 @@ with tab_sku:
 with tab_opp:
     st.caption(_dl(
         "两类问题分开：①毛利问题=采购折扣率过高（当前价÷MSRP税抜×10 ≥ 阈值）"
-        "②采购机会=当前价高于最低有效报价（可谈价/换报价）。",
+        "②采购机会=现进货价（NST 实绩）高于供货商报价（可谈价/换报价）。",
         "2 種類を区別：①粗利問題=仕入掛率が高すぎ（現行価÷MSRP税抜×10 ≥ 閾値）"
-        "②仕入機会=現行価が最安有効見積より高い（交渉/見積切替余地）。"))
+        "②仕入機会=現仕入価（NST 実績）が仕入先見積より高い（交渉/見積切替余地）。"))
     _ranks_o = st.multiselect(t("等级"), _RANK_OPTS,
                               default=["Aランク", "Bランク", "NEW"], key="opp_ranks")
     _fo = _sku_frame(_ranks_o or ["Aランク", "Bランク", "NEW"])
@@ -973,9 +995,11 @@ with tab_opp:
 
         st.divider()
         # ── ② 采购机会（当前价 > 最低有效报价）──
-        st.markdown("##### " + _dl("② 采购机会（当前价 > 最低有效报价）",
-                                   "② 仕入機会（現行価 > 最安有効見積）"))
-        _op = _fo[_fo["saving_unit"].notna()].sort_values("saving_amt", ascending=False)
+        st.markdown("##### " + _dl("② 采购机会（现进货价 > 供货商报价）",
+                                   "② 仕入機会（現仕入価 > 仕入先見積）"))
+        # SKU 明細タブと同じ現仕入価基準（Boss 2026-08-18）。①の掛率は MSRP との比較で
+        # 別口径なので cur_price のまま据え置き。
+        _op = _fo[_fo["buy_saving"].notna()].sort_values("buy_saving_amt", ascending=False)
         # 有效性代码 → 语言化标签（valid/unconfirmed 等不直出）
         _VLD_LBL = ({"valid": "有効", "unconfirmed": "有効性未確認", "expired": "失効",
                      "not_yet": "未生効", "incomplete": "データ不足", "inactive": "停用"}
@@ -985,24 +1009,24 @@ with tab_opp:
         k4, k5 = st.columns(2)
         k4.metric(_dl("机会SKU数", "機会SKU数"), f"{len(_op):,}")
         k5.metric(_dl("理论节省合计(按直近完整月销量)", "理論節約合計(直近完全月販売)"),
-                  f"¥{_op['saving_amt'].sum():,.0f}")
-        _show_p = _op[["item_rank", "jan", "display_name", "plan_supplier", "cur_price",
-                       "best_supplier", "best_price", "saving_unit", "qty_lm",
-                       "saving_amt", "best_validity", "flags"]].rename(columns={
+                  f"¥{_op['buy_saving_amt'].sum():,.0f}")
+        _show_p = _op[["item_rank", "jan", "display_name", "plan_supplier", "buy_price",
+                       "best_supplier", "best_price", "buy_saving", "qty_lm",
+                       "buy_saving_amt", "best_validity", "flags"]].rename(columns={
             "item_rank": t("RANK"), "jan": t("JAN"), "display_name": t("商品名"),
             "plan_supplier": _dl("归属供应商", "帰属仕入先"),
-            "cur_price": _dl("当前价", "現行価"),
-            "best_supplier": _dl("最低报价供应商", "最安見積先"),
-            "best_price": _dl("最低有效报价", "最安有効見積"),
-            "saving_unit": _dl("价差", "価差"),
+            "buy_price": _dl("现进货价", "現仕入価"),
+            "best_supplier": _dl("报价供应商", "見積先"),
+            "best_price": _dl("供货商报价", "仕入先見積"),
+            "buy_saving": _dl("价差", "価差"),
             "qty_lm": _dl("直近月销量", "直近月販売"),
-            "saving_amt": _dl("理论节省", "理論節約"),
+            "buy_saving_amt": _dl("理论节省", "理論節約"),
             "best_validity": _dl("报价有效性", "見積有効性"),
             "flags": _dl("状态", "状態")})
         st.dataframe(_show_p, hide_index=True, use_container_width=True, height=420,
                      column_config={
-                         _dl("当前价", "現行価"): st.column_config.NumberColumn(format="¥%.0f"),
-                         _dl("最低有效报价", "最安有効見積"): st.column_config.NumberColumn(format="¥%.0f"),
+                         _dl("现进货价", "現仕入価"): st.column_config.NumberColumn(format="¥%.0f"),
+                         _dl("供货商报价", "仕入先見積"): st.column_config.NumberColumn(format="¥%.0f"),
                          _dl("价差", "価差"): st.column_config.NumberColumn(format="¥%.0f"),
                          _dl("理论节省", "理論節約"): st.column_config.NumberColumn(format="localized"),
                          _dl("直近月销量", "直近月販売"): st.column_config.NumberColumn(format="%.0f"),
