@@ -685,7 +685,6 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
         ("pages/13_⚠️_改廃確認.py", "⚠️ 改废确认"),
         ("pages/12_🚫_入荷困難商品.py", "🚫 采购困难商品"),
         ("pages/03_💰_定義原価編集.py", "💰 定义原价编辑"),
-        ("pages/23_🏷️_Tag管理.py", "🏷️ Tag 管理"),
         ("pages/19_🧊_保质期管理.py", "🧊 保质期管理"),
         ("pages/36_💱_三金汇率.py", "💱 三金汇率"),
     ]),
