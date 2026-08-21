@@ -220,7 +220,7 @@ async def xlsx_upload(
 #
 # CMS page 13 按钮 → N8N webhook → 本端点：
 #   1) UPDATE discontinue_alerts (acknowledged_by/at/action)
-#   2) action == 取扱中止 → UPDATE item_master.rank = 停売（联动停售）
+#   2) action == 取扱中止 → 連動停売（⚠️ 現在機能していない。下の詳細コメント参照）
 #   3) 返回联动结果给 N8N（N8N 据此组装飞书消息）
 #
 # 原 page 13 直写 SQLite 的 handle_action() 逻辑已迁到这里，page 13 退化为 webhook 调用方。
@@ -262,7 +262,30 @@ def kaihai_confirm(req: KaihaiConfirmReq):
                                  req.source, req.signal_type, req.detected_at))
         updated_alerts = cur.rowcount
 
-        # 2) 联动停售（仅 取扱中止）
+        # 2) 連動停売（取扱中止 のときだけ）
+        #
+        # ⚠️ 2026-08-21 時点で**この連動は機能していない**。直し方が未決のため
+        #    ロジックは当時のまま残し、診断だけここに記録する。
+        #
+        #    現状の二重の壊れ:
+        #      ・public.item_master は 0 行の空テーブル（SQLite 時代の名残）。
+        #        rowcount は常に 0 → linkage_applied も常に false。例外は出ない。
+        #      ・値 '停売' は NST のランク語彙に無い。
+        #        実在するのは Aランク/Bランク/Cランク/NEW/取扱中止 の 5 種のみ。
+        #
+        #    実害: 2026-05-18 に 4901301447647（KAO ビオレUV アクアリッチ）を
+        #    取扱中止と判定したが、NST 側は Bランク のまま 3ヶ月放置されている。
+        #
+        #    宛先を nst.item_master_raw.item_rank に変えるのは**不可**。
+        #    ingester(items_daily · 毎日 03:02) が
+        #      ON CONFLICT (internal_id) DO UPDATE SET item_rank = EXCLUDED.item_rank
+        #    で NetSuite から全量上書きするため、書いた値は同日中に消える。
+        #
+        #    正しい形は nst.item_msrp と同じ「独立テーブル + jan で関連」方式
+        #    （015_create_item_msrp.sql の設計コメント参照:
+        #     「item_master_raw を汚さない」）。CMS 側の判定を別テーブルに持ち、
+        #    発注 AI・在庫健全度などの読み出し側で overlay する。
+        #    → テーブル設計と読み出し側の改修が要るため Boss 判断待ち。
         linkage_applied = False
         if req.action == "取扱中止":
             upd_rank = _qmark("UPDATE item_master SET rank = ? WHERE jan = ?")

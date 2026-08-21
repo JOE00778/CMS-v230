@@ -79,6 +79,12 @@ def _ensure_schema() -> str | None:
             "lead_days INTEGER, quote_date DATE NOT NULL, source TEXT, note TEXT, "
             "imported_at TIMESTAMPTZ DEFAULT NOW())")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sq_jan ON sourcing.supplier_quote (jan)")
+        # 同一 仕入先×JAN×見積日 は 1 本だけ（2026-08-21）。
+        # これが無かったため「PO 実績インポート/更新」を 4 回押した結果 45,280 行まで膨れ、
+        # うち 34,923 行が完全重複だった（2026-06-22 実測 → 2026-08-20 削除済）。
+        # 下の 4 箇所の INSERT はすべてこの索引を ON CONFLICT の対象にしている。
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_sq_sup_jan_date "
+                     "ON sourcing.supplier_quote (supplier_name, jan, quote_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sq_sup ON sourcing.supplier_quote (supplier_name)")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sourcing.item_main_supplier ("
@@ -1151,7 +1157,13 @@ with tab_up:
                 "INSERT INTO sourcing.supplier_quote "
                 "(supplier_name, jan, item_name, price, moq, order_lot, "
                 " lead_days, quote_date, valid_from, valid_to, source) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", _hand_payload)
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT (supplier_name, jan, quote_date) DO UPDATE SET "
+                "  item_name = EXCLUDED.item_name, price = EXCLUDED.price, "
+                "  moq = EXCLUDED.moq, order_lot = EXCLUDED.order_lot, "
+                "  lead_days = EXCLUDED.lead_days, valid_from = EXCLUDED.valid_from, "
+                "  valid_to = EXCLUDED.valid_to, source = EXCLUDED.source, "
+                "  imported_at = NOW()", _hand_payload)
             conn.commit()
             _msg = t("✅ 已写入 {n} 条报价").format(n=len(_valid))
             if _skip:
@@ -1203,7 +1215,12 @@ with tab_up:
                         conn.executemany(
                             "INSERT INTO sourcing.supplier_quote "
                             "(supplier_name, jan, item_name, price, moq, order_lot, lead_days, "
-                            " quote_date, source) VALUES (?,?,?,?,?,?,?,?,?)", _payload)
+                            " quote_date, source) VALUES (?,?,?,?,?,?,?,?,?) "
+                            "ON CONFLICT (supplier_name, jan, quote_date) DO UPDATE SET "
+                            "  item_name = EXCLUDED.item_name, price = EXCLUDED.price, "
+                            "  moq = EXCLUDED.moq, order_lot = EXCLUDED.order_lot, "
+                            "  lead_days = EXCLUDED.lead_days, source = EXCLUDED.source, "
+                            "  imported_at = NOW()", _payload)
                     conn.commit()
                     _ins = len(_payload)
                     _drop = len(_norm) - _ins
@@ -1250,7 +1267,11 @@ with tab_up:
                 conn.executemany(
                     "INSERT INTO sourcing.supplier_quote "
                     "(supplier_name, jan, item_name, price, order_lot, quote_date, source) "
-                    "VALUES (?,?,?,?,?,?,?)", _params)
+                    "VALUES (?,?,?,?,?,?,?) "
+                    "ON CONFLICT (supplier_name, jan, quote_date) DO UPDATE SET "
+                    "  item_name = EXCLUDED.item_name, price = EXCLUDED.price, "
+                    "  order_lot = EXCLUDED.order_lot, source = EXCLUDED.source, "
+                    "  imported_at = NOW()", _params)
                 # 注文最低金额（供货商级起订金额）→ supplier 主档（未设的才填，不覆盖手动）
                 _ma = _allq.copy()
                 _ma["min_order_amount"] = pd.to_numeric(_ma["min_order_amount"], errors="coerce")
@@ -1323,7 +1344,10 @@ with tab_up:
             conn.executemany(
                 "INSERT INTO sourcing.supplier_quote "
                 "(supplier_name, jan, item_name, price, quote_date, source) "
-                "VALUES (?,?,?,?,?,?)", _seed_payload)
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT (supplier_name, jan, quote_date) DO UPDATE SET "
+                "  item_name = EXCLUDED.item_name, price = EXCLUDED.price, "
+                "  source = EXCLUDED.source, imported_at = NOW()", _seed_payload)
             _n = len(_seed_payload)
             conn.commit()
             st.success(t("✅ 从 PO 实绩导入 {n} 条").format(n=_n))
