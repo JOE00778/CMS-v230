@@ -11,7 +11,6 @@
 
 端点：
   GET  /health
-  GET  /api/sku/master?jans=jan1,jan2,...
   POST /api/automation/callback
   POST /api/automation/xlsx-upload
 """
@@ -28,9 +27,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # psycopg2 在 SQLite 模式下不会被使用，但导入失败应是软错误（Mac 开发不强求装）
 try:
@@ -146,70 +145,13 @@ def health():
 
 
 # ────────────────────────────────────────────────────────────────
-# GET /api/sku/master?jans=jan1,jan2,...
+# GET /api/sku/master — 2026-08-21 削除
+#   唯一のデータ源 v_item_master → item_v2 が 2026-05-09 の一度きりの
+#   取込(3,854行)で以後未更新。全 SKU の 24% しか返せず、on_hand/on_order は
+#   5月9日時点の値だった。呼び出し元は CMS 27ページ・4リポジトリ・
+#   n8n 9 workflow のいずれにも無し(実測)。item_v2 の廃止に伴い削除。
+#   再び必要になれば nst.item_master_raw + nst.inventory_snapshot で作り直す。
 # ────────────────────────────────────────────────────────────────
-class SkuRow(BaseModel):
-    jan: str
-    sku: str | None = None
-    display_name: str | None = None
-    maker: str | None = None
-    rank: str | None = None
-    handling_status: str | None = None
-    on_hand: int | None = None
-    on_order: int | None = None
-    cat_l1: str | None = None
-    cat_l2: str | None = None
-    brand: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    main_image_url: str | None = None
-
-
-@app.get("/api/sku/master", response_model=list[SkuRow])
-def sku_master(jans: str = Query(..., description="逗号分隔 JAN 列表")):
-    jan_list = _safe_jan_list(jans)
-    if not jan_list:
-        return []
-    ph = _placeholders(len(jan_list))
-    sql = f"""
-        SELECT
-            v.jan, v.item_code AS sku, v.display_name, v.maker, v.rank,
-            v.handling_status, v.on_hand, v.on_order,
-            t.cat_l1, t.cat_l2, t.brand, t.tags_csv
-        FROM v_item_master v
-        LEFT JOIN item_shopify_tags t ON t.jan = v.jan
-        WHERE v.jan IN ({ph})
-    """
-    with _conn() as c:
-        cur = c.cursor() if IS_PG else c
-        cur.execute(sql, jan_list)
-        rows = cur.fetchall()
-
-    out: list[SkuRow] = []
-    for r in rows:
-        tags_raw = _row_get(r, "tags_csv", "") or ""
-        tags = [x.strip() for x in tags_raw.split(",") if x.strip()]
-        cat_l1 = _row_get(r, "cat_l1")
-        if cat_l1 and not any(t == cat_l1 for t in tags):
-            tags.insert(0, cat_l1)
-        out.append(
-            SkuRow(
-                jan=r["jan"],
-                sku=_row_get(r, "sku"),
-                display_name=_row_get(r, "display_name"),
-                maker=_row_get(r, "maker"),
-                rank=_row_get(r, "rank"),
-                handling_status=_row_get(r, "handling_status"),
-                on_hand=_row_get(r, "on_hand"),
-                on_order=_row_get(r, "on_order"),
-                cat_l1=cat_l1,
-                cat_l2=_row_get(r, "cat_l2"),
-                brand=_row_get(r, "brand"),
-                tags=tags,
-                main_image_url=f"{CMS_PUBLIC_BASE}/products/{r['jan']}/main.jpg",
-            )
-        )
-    return out
-
 
 # ────────────────────────────────────────────────────────────────
 # POST /api/automation/callback
