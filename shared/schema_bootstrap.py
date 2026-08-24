@@ -22,10 +22,6 @@ SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 ALTERS: list[tuple[str, str]] = [
     ("sales_line", "maker TEXT"),
     # Phase 4 v2 表字段扩展（旧库 ALTER 加列，新库 CREATE 已含）
-    ("item_v2", "department TEXT"),
-    ("item_v2", "qty_committed_total REAL"),
-    ("item_v2", "total_amount REAL"),
-    ("item_v2", "owner TEXT"),
     ("item_inventory_snapshot_v2", "item_code TEXT"),
     ("item_inventory_snapshot_v2", "internal_id TEXT"),
     ("item_inventory_snapshot_v2", "display_name TEXT"),
@@ -38,8 +34,6 @@ ALTERS: list[tuple[str, str]] = [
     ("item_inventory_snapshot_v2", "qty_waiting REAL"),
     ("item_inventory_snapshot_v2", "qty_in_transit REAL"),
     ("item_monthly_turnover", "rank TEXT"),
-    ("shop_sales", "granularity TEXT DEFAULT 'monthly'"),
-    ("shop_sales", "unit_price REAL"),
 ]
 
 # 废弃表清单 — 启动时 DROP TABLE IF EXISTS（仅一次性影响）
@@ -56,16 +50,16 @@ DEPRECATED_TABLES: list[str] = [
 PHASE4_REBUILD_TABLES: list[str] = []
 
 # Phase 4 桥接 VIEW · 旧表名 → 透传 v2 真表
-# 让现有 page / module SQL 不用改也能继续读到数据
 # (legacy_table_name, target_view) - target_view 在 schema.sql 末尾定义
+# 残るのは在庫スナップショット系 2 本のみ（item 主档・売上系は nst.* へ移行済）
 PHASE4_LEGACY_VIEWS: list[tuple[str, str]] = [
     ("inventory_snapshot",     "v_inventory_snapshot"),
     ("nst_inventory_snapshot", "v_nst_inventory_snapshot"),
-    ("sales_line",             "v_sales_line"),
-    ("nst_store_sales",        "v_nst_store_sales"),
-    ("nst_item_summary",       "v_nst_item_summary"),
-    ("item_master_netsuite",   "v_item_master_netsuite"),
-    ("item_master",            "v_item_master"),
+    # 2026-08-21 削除: sales_line / nst_store_sales / nst_item_summary /
+    #   item_master_netsuite / item_master の 5 本。
+    #   透過先の item_v2 / shop_sales を廃止したため橋も不要になった。
+    #   （schema.sql から定義を消さないと、実表を DROP しても
+    #     cms_streamlit 再起動時の init_db() で空表として復活する）
 ]
 
 # 启动时收集 schema 错误（不阻塞 init,但供调试）

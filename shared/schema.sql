@@ -1,3 +1,11 @@
+-- ── item_v2 / shop_sales とその legacy view は 2026-08-21 に廃止 ────────
+-- 単一事実源は nst.item_master_raw / nst.sales_monthly / nst.inventory_snapshot。
+-- 本番の実表を DROP しても、ここに定義が残っていると cms_streamlit の
+-- 再起動 → 初回ページロード → init_db() で空表として復活してしまうため、
+-- 定義ごと削除した（2026-08-21 に実際に復活したのを確認）。
+-- 対象: item_v2, shop_sales, v_item_master, v_item_master_netsuite,
+--       v_nst_item_summary, v_nst_store_sales, v_sales_line
+-- ──────────────────────────────────────────────────────────────────
 -- 商品信息管理平台 · 数据仓库 schema
 -- 6 张主表（共享）+ 各模块自有表
 -- 全表 UPSERT 兼容；时间字段使用 ISO 8601 字符串
@@ -894,46 +902,6 @@ CREATE INDEX IF NOT EXISTS idx_automation_runs_triggered ON automation_runs(trig
 --   · 旧 std_cost_history → item_cost_history（重命名）
 -- ============================================================
 
--- ⭐ item v2 主表 · PK = JAN
-CREATE TABLE IF NOT EXISTS item_v2 (
-  jan              TEXT PRIMARY KEY,        -- JAN (PK · 13位)
-  -- ID 区
-  item_code        TEXT,                    -- アイテム
-  internal_id      TEXT,                    -- 内部ID
-  upc              TEXT,                    -- UPCコード（同 jan，兼容老字段）
-  -- 基础区
-  display_name     TEXT,                    -- 表示名
-  maker            TEXT,                    -- メーカー
-  rank             TEXT,                    -- ランク
-  handling_status  TEXT,                    -- 取扱区分
-  department       TEXT,                    -- 部門（Phase 4 新加）
-  owner            TEXT,                    -- 商品担当者（v3 / 結果204 新加）
-  -- 進货区
-  std_cost         REAL,                    -- 定義原価
-  avg_cost         REAL,                    -- 平均原価
-  actual_cost      REAL,                    -- 実績原価
-  min_cost         REAL,                    -- 最安原価
-  case_qty         INTEGER,                 -- ケース入数
-  order_lot        INTEGER,                 -- 発注ロット
-  weight           REAL,                    -- 重量
-  supplier_default TEXT,                    -- 仕入先（默认）
-  supply_cycle_days INTEGER,                -- 仕入サイクル日数
-  bucket           TEXT,                    -- 仕入バケット（short/normal/long）
-  -- 库存汇总区
-  on_hand_total    REAL,                    -- 手持合計
-  on_order_total   REAL,                    -- 注文済合計
-  qty_committed_total REAL,                 -- 確保済合計（Phase 4 新加）
-  total_amount     REAL,                    -- 在庫金額合計（Phase 4 新加）
-  -- 元数据
-  source_priority  TEXT,                    -- nst > supplier > manual
-  imported_at      TEXT NOT NULL,
-  updated_at       TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_item_v2_code     ON item_v2(item_code);
-CREATE INDEX IF NOT EXISTS idx_item_v2_internal ON item_v2(internal_id);
-CREATE INDEX IF NOT EXISTS idx_item_v2_maker    ON item_v2(maker);
-CREATE INDEX IF NOT EXISTS idx_item_v2_rank     ON item_v2(rank);
-CREATE INDEX IF NOT EXISTS idx_item_v2_status   ON item_v2(handling_status);
 
 -- 维度 A · item × 时间序列（4 张子表）
 -- ────────────────────────────────────────────────────────────
@@ -1050,32 +1018,6 @@ CREATE TABLE IF NOT EXISTS shop (
 CREATE INDEX IF NOT EXISTS idx_shop_market   ON shop(market_id);
 CREATE INDEX IF NOT EXISTS idx_shop_platform ON shop(platform);
 
--- B2. shop × SKU 销售明细（含时间粒度）
-CREATE TABLE IF NOT EXISTS shop_sales (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  shop_id       TEXT NOT NULL,
-  jan           TEXT NOT NULL,
-  -- 时间维度（Boss 强调：销售必须按粒度切片）
-  granularity   TEXT NOT NULL DEFAULT 'monthly',  -- 'daily' / 'monthly' / 'cumulative'
-  period_start  TEXT NOT NULL,
-  period_end    TEXT NOT NULL,
-  -- 销售指标
-  qty_sold      REAL,
-  revenue       REAL,                   -- 当地币
-  revenue_jpy   REAL,                   -- 折算 JPY
-  unit_price    REAL,                   -- 単価（Phase 4 新加）
-  cost          REAL,                   -- 原価
-  gross_profit  REAL,                   -- 粗利
-  gross_margin  REAL,                   -- 粗利率
-  rank          TEXT,                   -- 商品ランク
-  source        TEXT,                   -- 'asean_monthly' / 'asean_daily' / 'export_item' / 'export_store' / 'shopee_orders'
-  imported_at   TEXT,
-  UNIQUE(shop_id, jan, granularity, period_start, period_end, source)
-);
-CREATE INDEX IF NOT EXISTS idx_ss_shop        ON shop_sales(shop_id);
-CREATE INDEX IF NOT EXISTS idx_ss_jan         ON shop_sales(jan);
-CREATE INDEX IF NOT EXISTS idx_ss_period      ON shop_sales(period_start);
-CREATE INDEX IF NOT EXISTS idx_ss_granularity ON shop_sales(granularity);
 
 -- B3. shop 月度 KPI（替代 store_monthly）
 CREATE TABLE IF NOT EXISTS shop_monthly (
@@ -1152,65 +1094,10 @@ FROM item_inventory_snapshot_v2;
 CREATE VIEW IF NOT EXISTS v_nst_inventory_snapshot AS
 SELECT * FROM v_inventory_snapshot;
 
--- sales_line：原 4 类销售统一表 → 桥到 shop_sales
-CREATE VIEW IF NOT EXISTS v_sales_line AS
-SELECT
-  id, shop_id AS store,
-  jan AS item_code, jan AS upc,
-  '' AS display_name, '' AS handling_status, '' AS maker,
-  rank, qty_sold, unit_price AS unit_purchase_price,
-  revenue, cost AS defined_cost,
-  gross_profit, gross_margin,
-  period_start, period_end, source,
-  '' AS source_file, imported_at
-FROM shop_sales;
 
--- nst_store_sales：店舗 × SKU 销售（FB_店舗 维度）→ shop_sales
-CREATE VIEW IF NOT EXISTS v_nst_store_sales AS
-SELECT
-  id, shop_id AS fb_store,
-  jan AS item_code, jan AS upc,
-  '' AS handling_status, '' AS display_name,
-  qty_sold, unit_price, revenue,
-  cost AS defined_cost, gross_profit, gross_margin,
-  rank, imported_at AS ingested_at
-FROM shop_sales;
 
--- nst_item_summary：8 列商品概要 → item_v2
-CREATE VIEW IF NOT EXISTS v_nst_item_summary AS
-SELECT
-  jan AS upc, item_code, display_name, handling_status,
-  std_cost,
-  NULL AS available, NULL AS available_on_hand,
-  avg_cost,
-  '' AS source_file, imported_at
-FROM item_v2;
 
--- item_master_netsuite：NetSuite 全量商品 → item_v2
-CREATE VIEW IF NOT EXISTS v_item_master_netsuite AS
-SELECT
-  internal_id, jan AS upc, display_name,
-  avg_cost, std_cost,
-  NULL AS last_purchase,
-  on_hand_total AS on_hand,
-  NULL AS available,
-  on_order_total AS on_order,
-  department, rank,
-  NULL AS sku_id, NULL AS created_at,
-  maker,
-  '' AS source_file, imported_at
-FROM item_v2;
 
--- item_master：供应商口径商品主档 → item_v2
-CREATE VIEW IF NOT EXISTS v_item_master AS
-SELECT
-  jan, item_code, rank, maker, display_name, handling_status,
-  on_hand_total AS on_hand,
-  on_order_total AS on_order,
-  actual_cost, min_cost,
-  case_qty, order_lot, weight,
-  '' AS source_file, imported_at
-FROM item_v2;
 
 
 -- ============================================================
