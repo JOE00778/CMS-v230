@@ -20,7 +20,8 @@ import streamlit as st
 
 from shared.db import get_readonly_connection
 from shared import period
-from shared.owners import classify_market, classify_owner, OWNER_EXCLUDED
+from shared.owners import (classify_market, has_owner, load_owner_map,
+                          owner_of)
 from shared.i18n import lang_selector, t, get_lang
 
 st.set_page_config(page_title=t("销售数据查询"), page_icon="📊", layout="wide")
@@ -30,6 +31,11 @@ require_password()
 inject_theme()
 lang_selector()
 conn = get_readonly_connection()
+
+# 担当者マップ（ops.shop_owner）は cms_reader に権限を出していないので、
+# page05 と同じく書き込み接続側から読む。読めなければ基線に落ちる（load_owner_map）。
+from shared.db import get_connection
+_oconn = get_connection()
 
 st.title(t("📊 销售数据查询"))
 st.caption(t(
@@ -168,11 +174,14 @@ def _render_sales_delta(_period_kind, _key):
     ).fetchall()]
     _ALLW = _L("（全部店铺）", "（全店舗）")
     _ALLO = _L("（全部负责人）", "（全担当者）")
-    _owner_opts = sorted({classify_owner(_s) for _s in _shops} - {OWNER_EXCLUDED})
+    # 対象期の末月時点の担当者（page05 の設定と同じソース。発効月以降のみ反映）
+    _omap = load_owner_map(_oconn, _cur_e.strftime("%Y-%m"))
+    _owner_opts = sorted({_o for _o in (owner_of(_s, _omap) for _s in _shops)
+                          if has_owner(_o)})
     _oc, _shc = st.columns(2)
     _owner_sel = _oc.selectbox(_L("店铺负责人", "担当者"), [_ALLO] + _owner_opts,
                                key=_key + "_owner")
-    _shop_choices = ([_s for _s in _shops if classify_owner(_s) == _owner_sel]
+    _shop_choices = ([_s for _s in _shops if owner_of(_s, _omap) == _owner_sel]
                      if _owner_sel != _ALLO else _shops)
     _shop_sel = _shc.selectbox(_L("店铺", "店舗"), [_ALLW] + _shop_choices, key=_key + "_shop")
     _sql = (
@@ -197,7 +206,7 @@ def _render_sales_delta(_period_kind, _key):
         _sql += "AND trim(s.shop) = ? "
         _params.append(_shop_sel)
     elif _owner_sel != _ALLO:
-        _osh = [_s for _s in _shops if classify_owner(_s) == _owner_sel]
+        _osh = [_s for _s in _shops if owner_of(_s, _omap) == _owner_sel]
         if _osh:
             _sql += "AND trim(s.shop) IN (" + ",".join(["?"] * len(_osh)) + ") "
             _params.extend(_osh)
@@ -376,11 +385,16 @@ def _render_sales_delta(_period_kind, _key):
         "WHERE maker IS NOT NULL AND maker <> '' ORDER BY maker"
     ).fetchall()]
     _ALLO_T = _L("（全部负责人）", "（全担当者）")
-    _owner_opts_t = sorted({classify_owner(_s) for _s in _all_shops} - {OWNER_EXCLUDED})
+    # 期間を横断する分析なので「今この担当者が持っている店舗」= 現在月のマップで引く
+    _now_ym = _dtw.datetime.now(
+        _dtw.timezone(_dtw.timedelta(hours=9))).strftime("%Y-%m")
+    _omap_now = load_owner_map(_oconn, _now_ym)
+    _owner_opts_t = sorted({_o for _o in (owner_of(_s, _omap_now) for _s in _all_shops)
+                            if has_owner(_o)})
     _f0, _f1, _f2, _f3, _f4 = st.columns(5)
     _f_owner = _f0.selectbox(_L("负责人", "担当者"), [_ALLO_T] + _owner_opts_t,
                              key=_key + "_towner")
-    _shop_opts_t = ([_s for _s in _all_shops if classify_owner(_s) == _f_owner]
+    _shop_opts_t = ([_s for _s in _all_shops if owner_of(_s, _omap_now) == _f_owner]
                     if _f_owner != _ALLO_T else _all_shops)
     _f_market = _f1.multiselect(_L("市场", "市場"), _markets, key=_key + "_tmarket",
                                 placeholder=_L("全部", "全件"))  # 空選＝不限
@@ -393,7 +407,7 @@ def _render_sales_delta(_period_kind, _key):
     )
     _wc, _wp, _caps = [], [], []
     if _f_owner != _ALLO_T and _f_shop == _ALL:
-        _osh_t = [_s for _s in _all_shops if classify_owner(_s) == _f_owner]
+        _osh_t = [_s for _s in _all_shops if owner_of(_s, _omap_now) == _f_owner]
         if _osh_t:
             _wc.append("trim(s.shop) IN (" + ",".join(["?"] * len(_osh_t)) + ")")
             _wp.extend(_osh_t); _caps.append(_f_owner)

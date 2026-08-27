@@ -346,6 +346,10 @@ df = add_owner_column(df, shop_col="shop", owner_map=_omap)
 # ★ 担当者が設定されていない店舗は、このページの全計算から除外する
 #   （Boss 2026-08-27: 総収益 KPI・市場統計・日次推移・TOP SKU・環比、いずれにも入れない）
 _no_owner = sorted(df.loc[~df["owner"].map(has_owner), "shop"].unique())
+# 除外分は捨てずに保持 → 市場タブ最下部で「担当者なし」として一本に集計して見せる
+# （数字が消えるのではなく、主計算に混ざらないだけ · Boss 2026-08-27）
+# 市場フィルタは掛けない：市場統計から外した店舗なので市場で絞る意味が無い
+_df_noowner = df[~df["owner"].map(has_owner)].copy()
 df = df[df["owner"].map(has_owner)]
 if df.empty:
     st.warning(t("⚠️ 担当者が設定されている店舗の売上データがありません。"
@@ -802,6 +806,48 @@ with tab_market:
                 "gross_profit", "gross_margin", "n_shop", "n_sku")
     html_table(_disp(g, mkt_cols))
     st.altair_chart(_hbar(g, "market"), use_container_width=True)
+
+    # ── 🚫 担当者なし（上の市場統計・KPI には入っていない分）──
+    #    Boss 2026-08-27:「単独で無担当ブロックを設けて統一計算」
+    #    市場で割らず一本にまとめる。上の市場フィルタも掛けない。
+    st.divider()
+    _nh = ("🚫 担当者なし（上の集計・KPI には含まれない）" if get_lang() == "ja"
+           else "🚫 无负责人（不含在上方统计与 KPI 内）")
+    st.markdown("##### " + _nh)
+    if _df_noowner.empty:
+        st.caption(t("全店舗に担当者が設定されています。"))
+    else:
+        _nr = _rhu(_df_noowner["revenue"].sum())
+        _nc = _rhu(_df_noowner["defined_cost"].sum())
+        _ng = _nr - _nc
+        _nm = (_ng / _nr * 100) if _nr else 0
+        _n1, _n2, _n3, _n4, _n5 = st.columns(5)
+        _n1.metric(_col("n_shop"), f"{_df_noowner['shop'].nunique()}")
+        _n2.metric(_col("revenue"), f"¥{_nr:,.0f}")
+        _n3.metric(_col("defined_cost"), f"¥{_nc:,.0f}")
+        _n4.metric(_col("gross_profit"), f"¥{_ng:,.0f}")
+        _n5.metric(_col("gross_margin"), f"{_nm:.2f}%")
+        _ng2 = _df_noowner.groupby(["shop", "market"], as_index=False).agg(
+            qty=("qty_sold", "sum"),
+            revenue=("revenue", "sum"),
+            defined_cost=("defined_cost", "sum"),
+            gross_profit=("gross_profit", "sum"),
+            n_sku=("item_internal_id", "nunique"),
+        )
+        _ng2 = _ns_round_money(_ng2)
+        _ng2["gross_margin"] = (
+            _ng2["gross_profit"] / _ng2["revenue"].where(_ng2["revenue"] != 0)
+        ).fillna(0) * 100
+        _ng2 = _ng2.sort_values("gross_profit", ascending=False)
+        html_table(_disp(_ng2, ("shop", "market", "qty", "revenue", "defined_cost",
+                                "gross_profit", "gross_margin", "n_sku")))
+        st.caption(
+            ("担当者を割り当てると、翌計算からは上の市場統計・KPI に入ります"
+             "（発効はシステム現在月から）。設定は「👤 担当者別」タブ最下部。"
+             if get_lang() == "ja" else
+             "给这些店设定负责人后，就会计入上方的市场统计与 KPI"
+             "（自系统当前月起生效）。设定入口在「👤 店铺负责人」tab 最下面。")
+        )
 
 # ============================================================
 # Tab 3：TOP SKU
