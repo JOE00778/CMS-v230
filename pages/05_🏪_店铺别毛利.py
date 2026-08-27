@@ -23,7 +23,8 @@ import streamlit as st
 from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t, get_lang
 from shared.markets import ALL_MARKETS, add_market_column
-from shared.owners import OWNER_EXCLUDED, add_owner_column
+from shared.owners import (OWNER_NONE, add_owner_column, has_owner,
+                          load_owner_map)
 from shared import price_alert as pa
 
 st.set_page_config(page_title=t("店铺毛利"), page_icon="🏪", layout="wide")
@@ -33,6 +34,52 @@ require_password()
 inject_theme()
 lang_selector()
 conn = get_readonly_connection()
+
+# 担当者マッピングは「設定 UI から書く」ため書き込み接続が別に要る。
+# 売上等の参照は上の cms_reader のまま（Boss 2026-07-27 収権指示を崩さない）。
+from shared.db import get_connection
+from shared.owners import OWNER_TABLE as _OWNER_TBL
+conn_w = get_connection()
+
+
+def _ensure_owner_schema() -> str | None:
+    """ops.shop_owner 幂等建表（PG 前提 · 本地 SQLite では失敗して基線運用に落ちる）。"""
+    try:
+        conn_w.execute("CREATE SCHEMA IF NOT EXISTS ops")
+        conn_w.execute(
+            "CREATE TABLE IF NOT EXISTS ops.shop_owner ("
+            "shop TEXT NOT NULL, "
+            "effective_ym TEXT NOT NULL, "        # 'YYYY-MM' 発効開始月
+            "owner TEXT, "                        # 空 = その月から担当者なし
+            "updated_at TIMESTAMPTZ DEFAULT NOW(), "
+            "PRIMARY KEY (shop, effective_ym))")
+        conn_w.commit()
+        return None
+    except Exception as e:  # noqa: BLE001
+        try:
+            conn_w.rollback()
+        except Exception:
+            pass
+        return str(e)
+
+
+_owner_schema_err = _ensure_owner_schema()
+
+
+def _read_w(sql: str, params: tuple = ()) -> pd.DataFrame:
+    """書き込み接続側の読み（ops.shop_owner 用）。失敗は空 DF + rollback。"""
+    try:
+        cur = conn_w.execute(sql, params)
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if cur.description else []
+        return pd.DataFrame([tuple(r) for r in rows], columns=cols)
+    except Exception:
+        try:
+            conn_w.rollback()
+        except Exception:
+            pass
+        return pd.DataFrame()
+
 
 st.title(t("🏪 店铺毛利"))
 # データ更新日時（sales_daily 最新 pulled_at · UTC→JST）
@@ -160,7 +207,8 @@ def _prev_month(ym: str) -> str:
     return prev.strftime("%Y-%m")
 
 
-def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31) -> pd.DataFrame:
+def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31,
+              owner_map: dict | None = None) -> pd.DataFrame:
     """上月 dim别 集計（index=dim）。环比の分母用。dim∈{'owner','shop'}。空なら空DF。
 
     环比口径(Boss 2026-05-25):
@@ -182,10 +230,13 @@ def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31) -> pd.Data
         dfp[c] = dfp[c].astype(float)
     dfp["defined_cost"] = dfp["revenue"] - dfp["gross_profit"]
     dfp = add_market_column(dfp, store_col="shop")
-    dfp = add_owner_column(dfp, shop_col="shop")
+    # 環比の分母も「その月の担当者」で引く（当月の変更が過去月を動かさない）
+    dfp = add_owner_column(dfp, shop_col="shop", owner_map=owner_map)
     if mk_sel:
         dfp = dfp[dfp["market"].isin(mk_sel)]
-    dfp = dfp[dfp["owner"] != OWNER_EXCLUDED]
+    dfp = dfp[dfp["owner"].map(has_owner)]   # 担当者未設定の店舗は集計対象外
+    if dfp.empty:
+        return pd.DataFrame()
     g = dfp.groupby(dim, as_index=False).agg(
         qty=("qty_sold", "sum"),
         revenue=("revenue", "sum"),
@@ -287,7 +338,19 @@ if df.empty:
     st.info(t("確定済みの売上データがまだありません（前日分は翌07:00に取得）"))
     st.stop()
 df = add_market_column(df, store_col="shop")
-df = add_owner_column(df, shop_col="shop")
+
+# 担当者マッピング（対象月時点 / 上月時点）。設定は発効月以降だけに効く。
+_omap = load_owner_map(conn_w, ym)
+df = add_owner_column(df, shop_col="shop", owner_map=_omap)
+
+# ★ 担当者が設定されていない店舗は、このページの全計算から除外する
+#   （Boss 2026-08-27: 総収益 KPI・市場統計・日次推移・TOP SKU・環比、いずれにも入れない）
+_no_owner = sorted(df.loc[~df["owner"].map(has_owner), "shop"].unique())
+df = df[df["owner"].map(has_owner)]
+if df.empty:
+    st.warning(t("⚠️ 担当者が設定されている店舗の売上データがありません。"
+                 "下の「👤 店铺负责人」タブ最下部の設定から担当者を割り当ててください。"))
+    st.stop()
 
 if mk:
     df = df[df["market"].isin(mk)]
@@ -301,8 +364,9 @@ if mk:
 _real_cur_ym = _today.strftime("%Y-%m")
 _max_day = int(pd.to_datetime(df["sale_date"]).dt.day.max()) if ym == _real_cur_ym else 31
 _prev_ym = _prev_month(ym)
-_prev_owner = _agg_prev(_prev_ym, mk, "owner", _max_day)
-_prev_shop = _agg_prev(_prev_ym, mk, "shop", _max_day)
+_omap_prev = load_owner_map(conn_w, _prev_ym)
+_prev_owner = _agg_prev(_prev_ym, mk, "owner", _max_day, owner_map=_omap_prev)
+_prev_shop = _agg_prev(_prev_ym, mk, "shop", _max_day, owner_map=_omap_prev)
 
 # ============================================================
 # KPI（総）
@@ -311,6 +375,11 @@ tot_r = _rhu(df["revenue"].sum())
 tot_c = _rhu(df["defined_cost"].sum())
 tot_g = tot_r - tot_c  # NST 表示丸め順(原価丸め→差)·半円境界の±1円ズレ防止
 margin = (tot_g / tot_r * 100) if tot_r else 0
+
+if _no_owner:
+    st.caption(("⚠️ 担当者未設定のため集計から除外: " if get_lang() == "ja"
+                else "⚠️ 未设定负责人，已从全部计算中剔除：")
+               + "、".join(_no_owner))
 
 m2, m3, m4, m5 = st.columns(4)
 m2.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
@@ -444,7 +513,7 @@ with tab_day:
 # Tab：担当者別（日本店=対象外 は除外）
 # ============================================================
 with tab_owner:
-    _od = df[df["owner"] != OWNER_EXCLUDED]
+    _od = df   # df は既に「担当者あり」のみに絞り込み済（上流でグローバル除外）
     if _od.empty:
         st.info(t("この条件のデータがありません"))
     else:
@@ -498,6 +567,139 @@ with tab_owner:
             sg_cols = ("shop", "qty", "revenue", "defined_cost",
                        "gross_profit", "gross_margin", "n_sku")
             html_table(_disp(sg, sg_cols, mom_prev=_prev_shop, dim="shop"))
+
+    # ============================================================
+    # ⚙️ 担当者の設定・変更（Boss 2026-08-27 依頼 · 担当者タブ最下部）
+    #   - 発効は「システム現在月」から。過去月の集計は一切動かない。
+    #   - 担当者を空にすると、その月からこのページの全計算から外れる。
+    # ============================================================
+    st.divider()
+    st.markdown("##### " + ("⚙️ 担当者の設定・変更" if get_lang() == "ja"
+                            else "⚙️ 店铺负责人 设定 / 更改"))
+    _set_ym = _today.strftime("%Y-%m")     # 発効月 = システム現在月（ページの対象月ではない）
+    st.caption(
+        (f"設定は **{_set_ym}** 以降にのみ発効し、過去月の数字は変わりません。"
+         "担当者を空欄にすると、その月からこのページの全集計（総収益 KPI・市場統計・"
+         "日次推移・TOP SKU・環比）から外れます。"
+         if get_lang() == "ja" else
+         f"设定自 **{_set_ym}** 起生效，之前月份的数据不受影响。"
+         "负责人留空 = 从该月起，该店铺不计入本页任何计算"
+         "（总收益 KPI / 市场统计 / 日次推移 / TOP SKU / 环比）。")
+    )
+
+    if _owner_schema_err:
+        st.info(t("⚠️ 担当者設定テーブル（ops.shop_owner）が使えません（PG 未接続？）"
+                  "— 現在はコードのハードコード基線で動作中。")
+                + f"\n\n{_owner_schema_err}")
+    else:
+        with st.expander(("担当者を設定・変更する" if get_lang() == "ja"
+                          else "设定 / 更改店铺负责人"), expanded=False):
+            _rec = _read_w("SELECT shop, effective_ym, owner FROM " + _OWNER_TBL)
+            _omap_now = load_owner_map(conn_w, _set_ym)
+
+            # 対象店舗 = 直近12ヶ月に売上のある店 ∪ 現マッピングに出てくる店
+            _sh12, _ = _query(
+                "SELECT DISTINCT trim(shop) AS shop FROM nst.sales_daily "
+                "WHERE sale_date >= ?",
+                ((_today - dt.timedelta(days=365)).isoformat(),))
+            _shops = set(_omap_now)
+            if _sh12 is not None and not _sh12.empty:
+                _shops |= {str(x).strip() for x in _sh12["shop"] if str(x).strip()}
+
+            # 発効月の表示（テーブルに履歴が無ければ「基線」）
+            _eff = {}
+            if not _rec.empty:
+                _r2 = _rec.copy()
+                _r2["shop"] = _r2["shop"].astype(str).str.strip()
+                _r2 = _r2[_r2["effective_ym"].astype(str) <= _set_ym]
+                if not _r2.empty:
+                    _eff = (_r2.sort_values("effective_ym")
+                            .drop_duplicates("shop", keep="last")
+                            .set_index("shop")["effective_ym"].to_dict())
+            _base_lbl = "基線（コード既定）" if get_lang() == "ja" else "基线（代码默认）"
+
+            _cur_tbl = pd.DataFrame([
+                {"shop": _s,
+                 "owner": _omap_now.get(_s, OWNER_NONE),
+                 "eff": _eff.get(_s, _base_lbl)}
+                for _s in sorted(_shops)
+            ])
+            _C_SHOP = _col("shop")
+            _C_OWNER = _col("owner")
+            _C_EFF = "発効開始月" if get_lang() == "ja" else "生效起始月"
+            _cur_tbl.columns = [_C_SHOP, _C_OWNER, _C_EFF]
+
+            _edited = st.data_editor(
+                _cur_tbl, hide_index=True, use_container_width=True,
+                num_rows="fixed", key="owner_editor",
+                column_config={
+                    _C_SHOP: st.column_config.TextColumn(_C_SHOP, disabled=True),
+                    _C_OWNER: st.column_config.TextColumn(
+                        _C_OWNER,
+                        help=("空欄 = 担当者なし（集計対象外）" if get_lang() == "ja"
+                              else "留空 = 无负责人（不计入任何计算）")),
+                    _C_EFF: st.column_config.TextColumn(_C_EFF, disabled=True),
+                },
+            )
+
+            def _cell(v) -> str:
+                """data_editor のセル → 文字列。空欄は NaN/None で返ってくる。"""
+                return "" if v is None or pd.isna(v) else str(v).strip()
+
+            _diff = [
+                (_cell(r[_C_SHOP]), _cell(r[_C_OWNER]))
+                for _, r in _edited.iterrows()
+                if _cell(r[_C_OWNER])
+                != str(_omap_now.get(_cell(r[_C_SHOP]), OWNER_NONE)).strip()
+            ]
+            if _diff:
+                st.warning(
+                    (f"{len(_diff)} 件の変更（{_set_ym} から発効）: " if get_lang() == "ja"
+                     else f"{len(_diff)} 处变更（自 {_set_ym} 起生效）：")
+                    + "、".join(
+                        f"{_s} → {_o or ('担当者なし' if get_lang() == 'ja' else '无负责人')}"
+                        for _s, _o in _diff)
+                )
+            if st.button(("💾 変更を保存" if get_lang() == "ja" else "💾 保存变更"),
+                         type="primary", disabled=not _diff, key="owner_save"):
+                _ok = _fail = 0
+                _errs = []
+                for _s, _o in _diff:
+                    try:
+                        conn_w.execute(
+                            "INSERT INTO " + _OWNER_TBL + " "
+                            "(shop, effective_ym, owner, updated_at) "
+                            "VALUES (?,?,?,NOW()) "
+                            "ON CONFLICT (shop, effective_ym) DO UPDATE SET "
+                            "  owner = EXCLUDED.owner, updated_at = NOW()",
+                            (_s, _set_ym, _o or None))
+                        _ok += 1
+                    except Exception as _e:  # noqa: BLE001
+                        _fail += 1
+                        _errs.append(f"{_s}: {_e}")
+                if _fail:
+                    conn_w.rollback()
+                    st.error(f"ok={_ok} fail={_fail} — " + " / ".join(_errs))
+                else:
+                    conn_w.commit()
+                    st.success(f"ok={_ok} fail=0 · {_set_ym} " +
+                               ("から発効" if get_lang() == "ja" else "起生效"))
+                    st.rerun()
+
+            # 変更履歴（過去分の追跡用 · 消さない）
+            _hist = _read_w(
+                "SELECT effective_ym, shop, owner, updated_at FROM " + _OWNER_TBL +
+                " ORDER BY effective_ym DESC, shop")
+            if not _hist.empty:
+                st.markdown("###### " + ("変更履歴" if get_lang() == "ja" else "变更历史"))
+                _h = _hist.copy()
+                _h["owner"] = _h["owner"].fillna("").replace(
+                    "", "—（担当者なし）" if get_lang() == "ja" else "—（无负责人）")
+                _h["updated_at"] = pd.to_datetime(
+                    _h["updated_at"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
+                _h.columns = [_C_EFF, _C_SHOP, _C_OWNER,
+                              "更新時刻" if get_lang() == "ja" else "更新时间"]
+                html_table(_h)
 
 # ============================================================
 # Tab 1：店舗別
@@ -657,8 +859,8 @@ with tab_alert:
             _aw[_c] = _aw[_c].astype(float)
         _aw["sale_date"] = pd.to_datetime(_aw["sale_date"]).dt.date
         _aw = add_market_column(_aw, store_col="shop")
-        _aw = add_owner_column(_aw, shop_col="shop")
-        _aw = _aw[_aw["owner"] != OWNER_EXCLUDED]
+        _aw = add_owner_column(_aw, shop_col="shop", owner_map=_omap)
+        _aw = _aw[_aw["owner"].map(has_owner)]
         if mk:
             _aw = _aw[_aw["market"].isin(mk)]
         _owner_map = (_aw.drop_duplicates("shop").set_index("shop")["owner"]
