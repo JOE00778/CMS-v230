@@ -71,6 +71,14 @@ services:
       # 需 applicationId + accessKey 配对(2012 后注册的新 UUID app 走此路径)
       RAKUTEN_APPLICATION_ID: ${RAKUTEN_APPLICATION_ID:-}
       RAKUTEN_ACCESS_KEY: ${RAKUTEN_ACCESS_KEY:-}
+      # page41 ECMS 発送 · 資格情報は deploy/windows/.env に置く(未設定でも頁は開き、
+      # ボタンを押した時だけ「未配置」と出る)。ECMS_ENV=uat|pro、pro は本番運送状。
+      ECMS_ENV: ${ECMS_ENV:-uat}
+      ECMS_CLIENT_ID: ${ECMS_CLIENT_ID:-}
+      ECMS_TOKEN: ${ECMS_TOKEN:-}
+      ECMS_ACCOUNT: ${ECMS_ACCOUNT:-}
+      ECMS_SERVICE_TYPE: ${ECMS_SERVICE_TYPE:-Warehouse}
+      ECMS_SHIPPER_JSON: ${ECMS_SHIPPER_JSON:-}
       TZ: Asia/Tokyo
     volumes:
       # 代码 bind mount（2026-05-19）: git pull 后立即生效，不需 --build
