@@ -1235,3 +1235,38 @@ SELECT
   case_qty, order_lot, weight,
   ''::TEXT AS source_file, imported_at
 FROM item_v2;
+
+-- ============================================================
+-- ECMS 发货（2026-08-28）· 与 shared/schema.sql 同步，字段全 TEXT
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ecms_shipment (
+  reference_code    TEXT NOT NULL,
+  env               TEXT NOT NULL,
+  shipment_id       TEXT,
+  tracking_no       TEXT,
+  status            TEXT NOT NULL,
+  receiver_name     TEXT,
+  receiver_country  TEXT,
+  label_url         TEXT,
+  request_json      TEXT,
+  response_json     TEXT,
+  created_by        TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT,
+  PRIMARY KEY (reference_code, env)         -- UAT 与 PRO 同号是两条记录，不能互相覆盖
+);
+CREATE INDEX IF NOT EXISTS idx_ecms_ship_tracking ON ecms_shipment(tracking_no);
+CREATE INDEX IF NOT EXISTS idx_ecms_ship_status   ON ecms_shipment(status);
+
+CREATE TABLE IF NOT EXISTS ecms_tracking_event (
+  tracking_no   TEXT NOT NULL,
+  event_code    TEXT NOT NULL,
+  reason_code   TEXT,
+  event_time    TEXT NOT NULL,
+  description   TEXT,
+  remark        TEXT,
+  location      TEXT,
+  fetched_at    TEXT NOT NULL,
+  PRIMARY KEY (tracking_no, event_code, event_time)
+);
+CREATE INDEX IF NOT EXISTS idx_ecms_evt_tracking ON ecms_tracking_event(tracking_no);

@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
 # 增量 ALTER（旧 db 已建过表,补充缺失列）

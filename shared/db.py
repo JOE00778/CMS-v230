@@ -235,6 +235,8 @@ class _PostgresAdapter:
         "item_supplier_link": ("jan", "supplier_name"),
         # KPI 月度快照（Phase 2C, 2026-05-09）
         "kpi_monthly_history": ("year_month",),
+        # ECMS 发货（2026-08-28）
+        "ecms_shipment": ("reference_code", "env"),
     }
 
     _RE_OR_REPLACE = re.compile(

@@ -1147,3 +1147,39 @@ CREATE INDEX IF NOT EXISTS idx_imt_jan      ON item_monthly_turnover(jan);
 CREATE INDEX IF NOT EXISTS idx_imt_ym       ON item_monthly_turnover(year_month);
 CREATE INDEX IF NOT EXISTS idx_imt_rate     ON item_monthly_turnover(sell_through_rate);
 CREATE INDEX IF NOT EXISTS idx_imt_risk     ON item_monthly_turnover(risk_label);
+
+-- ============================================================
+-- ECMS 发货（2026-08-28）· 核心发货链 4 接口的本地留痕
+-- manifest 非幂等：reference_code 做主键，建单前先查这张表拦重复
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ecms_shipment (
+  reference_code    TEXT NOT NULL,           -- 我方单号（= Shopify 订单号），发给 ECMS 的 referenceCode
+  env               TEXT NOT NULL,           -- uat / pro（UAT 单号与生产单号不能混看）
+  shipment_id       TEXT,                    -- ECMS 返回的 shipmentId
+  tracking_no       TEXT,                    -- ECMS 返回的 trackingNo（单箱只有一个）
+  status            TEXT NOT NULL,           -- created / cancelled / failed
+  receiver_name     TEXT,
+  receiver_country  TEXT,
+  label_url         TEXT,                    -- 面单下载 URL（ECMS 的 URL 带签名会过期）
+  request_json      TEXT,                    -- 发出去的 shipment 原文
+  response_json     TEXT,                    -- ECMS 返回原文（含失败时的错误）
+  created_by        TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT,
+  PRIMARY KEY (reference_code, env)         -- UAT 与 PRO 同号是两条记录，不能互相覆盖
+);
+CREATE INDEX IF NOT EXISTS idx_ecms_ship_tracking ON ecms_shipment(tracking_no);
+CREATE INDEX IF NOT EXISTS idx_ecms_ship_status   ON ecms_shipment(status);
+
+CREATE TABLE IF NOT EXISTS ecms_tracking_event (
+  tracking_no   TEXT NOT NULL,
+  event_code    TEXT NOT NULL,               -- 事件码表见规格书 v1.7 附录 3.3
+  reason_code   TEXT,
+  event_time    TEXT NOT NULL,               -- ECMS 原文时间（yyyy-MM-dd'T'HH:mm:ss.SSSZ）
+  description   TEXT,
+  remark        TEXT,
+  location      TEXT,
+  fetched_at    TEXT NOT NULL,
+  PRIMARY KEY (tracking_no, event_code, event_time)
+);
+CREATE INDEX IF NOT EXISTS idx_ecms_evt_tracking ON ecms_tracking_event(tracking_no);

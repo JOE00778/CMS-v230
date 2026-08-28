@@ -672,6 +672,7 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
     ("🌐 自建站", [
         ("pages/38_📣_广告状态看板.py", "📣 广告状态看板"),
         ("pages/39_🛡️_合规检测.py", "🛡️ 合规检测"),
+        ("pages/41_📮_ECMS发货.py", "📮 ECMS 发货"),
     ]),
     ("📦 订货管理", [
         ("pages/25_📦_発注AI_v2.py", "📦 发注AI v2 (多供货商)"),
