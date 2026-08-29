@@ -265,7 +265,9 @@ def test_chunk_by_budget_respects_char_limit_and_hard_max():
 def test_strip_seq_suffix():
     assert B.strip_seq_suffix("260723CNMX7QSX_1") == "260723CNMX7QSX"
     assert B.strip_seq_suffix("260713K1JXYHVW_3") == "260713K1JXYHVW"
+    assert B.strip_seq_suffix("4101058683725-2") == "4101058683725"   # 連字符版（Coupang）
     assert B.strip_seq_suffix("SO00504371_7458145") == "SO00504371_7458145"  # 7 位は剥がない
+    assert B.strip_seq_suffix("269580-20260607-0488932098") == "269580-20260607-0488932098"  # 楽天
     assert B.strip_seq_suffix("1965711036740812800") == "1965711036740812800"
 
 

@@ -408,6 +408,31 @@ with tab1:
                     pass
                 err_log.append(t("❌ SO 帰類失败（該当行は【不明】のまま）: ") + str(e))
 
+        # ── 佐川 12 位運単（斑马体系外の国内出荷）→ 佐川直送/EC ──
+        #    Boss 2026-08-30 拍板「佐川单都放在CB部门」。斑马/SO で拾えず
+        #    残った 12 位純数字はここで自動帰類（shop_dept_map に EC 登録済）。
+        if inv_months:
+            try:
+                sagawa = [k for k in banma_client.missing_join_keys(
+                              conn, sorted(inv_months))
+                          if re.fullmatch(r"\d{12}",
+                                          banma_client.strip_seq_suffix(k))]
+                if sagawa:
+                    conn.cursor().executemany(
+                        banma_client.UPSERT_SHOP_MAP,
+                        [{"parcel_no": k, "order_id": None, "waybill_no": k,
+                          "platform": "Sagawa", "shop": "佐川直送",
+                          "ship_date": None} for k in sagawa])
+                    conn.commit()
+                    bm_log.append(t("🚛 佐川直送(EC): {n} 運単を帰類").format(
+                        n=len(sagawa)))
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                err_log.append(t("❌ 佐川帰類失败: ") + str(e))
+
         with st.spinner(t("全月 重算中…")):
             run_recompute(None)
         if inv_log:

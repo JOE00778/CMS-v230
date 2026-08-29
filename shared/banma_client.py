@@ -353,17 +353,18 @@ def chunk_by_budget(keys: list[str], budget: int = BATCH_CHAR_BUDGET,
 
 import re as _re
 
-_SEQ_SUFFIX = _re.compile(r"^(.{6,}?)_(\d{1,3})$")
+_SEQ_SUFFIX = _re.compile(r"^(.{6,}?)[_-](\d{1,3})$")
 
 
 def strip_seq_suffix(key: str) -> str:
-    """JD 請求書の連番後綴 `_1`〜`_999` を外して照会用 base を得る。
+    """JD 請求書の連番後綴 `_1`/`-1`〜`_999`/`-999` を外して照会用 base を得る。
 
-    実例（2026-08-30 Boss 指摘）: `260723CNMX7QSX_1` `260713K1JXYHVW_3` ——
-    同一注文の複数行に JD が振る連番で、base が平台注文番号
-    （OrderDisplayID で斑马命中を 3/3 実証）。
-    ⚠️ 1-3 位に限定する理由: NST 直録の `SO00504371_7458145`（7 位の内部 ID）
-    を誤って剥がないため。後綴なしの key はそのまま返る。
+    実例（2026-08-30 Boss 指摘）: `260723CNMX7QSX_1`（Shopee）、
+    `4101058683725-2`（Coupang · 連字符版も実在）——同一注文の複数行に
+    JD が振る連番で、base が平台注文番号（OrderDisplayID で斑马命中を実証）。
+    ⚠️ 1-3 位に限定する理由: NST 直録の `SO00504371_7458145`（7 位の内部 ID）や
+    楽天注文番号 `269580-20260607-0488932098`（尾部 10 位）を誤って剥がないため。
+    後綴なしの key はそのまま返る。
     """
     m = _SEQ_SUFFIX.match(key)
     return m.group(1) if m else key
