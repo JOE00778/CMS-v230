@@ -340,32 +340,40 @@ with tab1:
                 err_log.append(f"❌ {up.name}: {e}")
             prog.progress((i + 1) / len(ups), text=f"{i + 1}/{len(ups)}")
 
-        # ── 斑马 API 補齊（請求書があった月のみ · BM 手動 upload の代替）──
+        # ── 斑马 API 補齊（Boss 2026-08-29「先入库、再只拉需要的」）──
+        #    請求書の join_key のうち未マッチ分だけを IDs/OrderDisplayID で
+        #    精確批量取得（200 個/批）。窓方式（fill_shop_map_from_banma）は
+        #    回灌用の後備として残置。
         if use_banma and inv_months:
             banma_client.ensure_store_map_table(conn)
-            for ym, dates in sorted(inv_months.items()):
-                start, end = banma_client.invoice_window(dates, ym)
-                bprog = st.progress(0.0, text=t("🦓 斑马 {ym} 包裹取得中…").format(ym=ym))
+            try:
+                keys = banma_client.missing_join_keys(conn, sorted(inv_months))
+                if keys:
+                    bprog = st.progress(0.0, text=t("🦓 斑马 精确取数中…"))
 
-                def _cb(page, total):
-                    bprog.progress(min(page / max(total, 1), 1.0),
-                                   text=t("🦓 斑马 {ym}: {p}/{n} 页").format(
-                                       ym=ym, p=page, n=total))
-                try:
-                    r = banma_client.fill_shop_map_from_banma(conn, start, end, _cb)
-                    bm_log.append(t("🦓 斑马 {ym}: 包裹 {n} 件补齐（窗口 {w}）").format(
-                        ym=ym, n=f"{r['upserted']:,}", w=r["window"]))
-                except banma_client.BanmaAuthError as e:
-                    err_log.append(t("❌ 斑马 token 失效（去 ERP 后台手动更新）: ") + str(e))
-                except Exception as e:  # noqa: BLE001
+                    def _cb(done, total):
+                        bprog.progress(min(done / max(total, 1), 1.0),
+                                       text=t("🦓 斑马: {p}/{n} 批").format(
+                                           p=done, n=total))
                     try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                    err_log.append(t("❌ 斑马 {ym} 补齐失败（已入库的包裹保留 · 可重跑）: ")
-                                   .format(ym=ym) + str(e))
-                finally:
-                    bprog.empty()
+                        r = banma_client.fetch_shop_map_by_keys(conn, keys, _cb)
+                        bm_log.append(t(
+                            "🦓 斑马: 未匹配 {k} 单号 → 取得 {f} / 补齐 {u} 包裹（{b} 批）"
+                        ).format(k=f"{r['requested']:,}", f=f"{r['fetched']:,}",
+                                 u=f"{r['upserted']:,}", b=r["batches"]))
+                    finally:
+                        bprog.empty()
+                else:
+                    bm_log.append(t("🦓 斑马: 请求书单号已全部匹配，无需取数"))
+            except banma_client.BanmaAuthError as e:
+                err_log.append(t("❌ 斑马 token 失效（去 ERP 后台手动更新）: ") + str(e))
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                err_log.append(t("❌ 斑马补齐失败（已入库数据保留 · 重新点按钮即续跑）: ")
+                               + str(e))
 
         with st.spinner(t("全月 重算中…")):
             run_recompute(None)

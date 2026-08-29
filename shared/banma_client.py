@@ -6,9 +6,13 @@
 
   ensure_token(conn)                    token 经 PG banma.api_token 缓存
                                         （与 database 仓 banma_api 共用同一张表）
-  iter_packages(client, start, end)     按 CreateTime 窗口分页迭代包裹
+  fetch_shop_map_by_keys(conn, keys)    按请求书 join_key 精确批量拉取（主路径 ·
+                                        Boss 2026-08-29「先入库再只拉需要的」：
+                                        IDs / OrderDisplayID 各支持 200 个/批，
+                                        4 万单号 ≈ 200 次调用 ≈ 2 分钟）
+  iter_packages(client, start, end)     按 CreateTime 窗口分页迭代（回灌用后备）
   package_to_row(pkg, shop_by_store)    包裹 → order_shop_map 行（PII 不落地）
-  invoice_window(dates, ym)             请求书费用日期 → 拉取窗口
+  invoice_window(dates, ym)             请求书费用日期 → 拉取窗口（后备）
 
 凭据 BANMA_APP_ID / BANMA_APP_SECRET（元川 .env → compose 映射，照 ECMS_* 先例）。
 签名/重试与 database 仓 data_warehouse/banma_api/client.py 同算法：
@@ -318,6 +322,76 @@ ON CONFLICT (parcel_no) DO UPDATE SET
     platform = EXCLUDED.platform, shop = EXCLUDED.shop,
     ship_date = EXCLUDED.ship_date, imported_at = now()
 """
+
+
+BATCH = 200                         # IDs / OrderDisplayID の API 上限
+
+
+def is_parcel_id(key: str) -> bool:
+    """join_key が斑马の包裹 ID か（19 位の雪花数字）。
+    それ以外（Coupang 13/14 位注文番号等 · 2026-05 以降の請求書に混在）は
+    OrderDisplayID として検索する。"""
+    return key.isdigit() and len(key) == 19
+
+
+def fetch_shop_map_by_keys(conn, keys: list[str],
+                           progress: Callable[[int, int], None] | None = None,
+                           ) -> dict:
+    """請求書の join_key 集合だけを斑马から精確取得 → order_shop_map upsert。
+
+    実測（2026-08-29）: IDs は**包裹 ID** で過滤する（文書の「订单ID」は誤記 ·
+    実在 2+架空 1 を投げて実在 2 だけ返った）。OrderDisplayID は Coupang
+    注文番号から包裹を逆引きできる。どちらも 200 個/批。
+    バッチ毎に upsert + commit（冪等 · 中断後の再実行無害）。
+    """
+    keys = [str(k).strip() for k in keys if k]
+    pids = [k for k in keys if is_parcel_id(k)]
+    oids = [k for k in keys if not is_parcel_id(k)]
+    batches = ([("IDs", pids[i:i + BATCH]) for i in range(0, len(pids), BATCH)]
+               + [("OrderDisplayID", oids[i:i + BATCH])
+                  for i in range(0, len(oids), BATCH)])
+    if not batches:
+        return {"requested": 0, "fetched": 0, "upserted": 0, "batches": 0}
+
+    client = BanmaClient.from_env()
+    ensure_token(conn, client)
+    shop_by_store = load_shop_by_store(conn)
+    cur = conn.cursor()
+    fetched = upserted = 0
+    for i, (param, chunk) in enumerate(batches, 1):
+        page = 1
+        while True:                      # 200 個指定でも PageSize=50 → 最大 4 頁
+            data = client.call("GET", "/v1/order/package", {
+                "PageNumber": page, "PageSize": PAGE_SIZE,
+                param: ",".join(chunk),
+            })
+            items = (data or {}).get("Packages") or []
+            rows = [r for r in (package_to_row(it, shop_by_store)
+                                for it in items) if r]
+            if rows:
+                cur.executemany(UPSERT_SHOP_MAP, rows)
+                conn.commit()
+                upserted += len(rows)
+            fetched += len(items)
+            if not ((data or {}).get("Page") or {}).get("HasMore"):
+                break
+            page += 1
+        if progress:
+            progress(i, len(batches))
+    return {"requested": len(keys), "fetched": fetched,
+            "upserted": upserted, "batches": len(batches)}
+
+
+def missing_join_keys(conn, yms: list[str]) -> list[str]:
+    """対象月の請求書行のうち、parcel_no でも order_id でも未マッチの join_key。"""
+    return [r[0] for r in conn.execute(
+        """SELECT DISTINCT r.join_key
+           FROM logistics.cost_invoice_raw r
+           LEFT JOIN logistics.order_shop_map mp ON r.join_key = mp.parcel_no
+           WHERE r.year_month = ANY(%s) AND r.join_key IS NOT NULL
+             AND mp.parcel_no IS NULL
+             AND NOT EXISTS (SELECT 1 FROM logistics.order_shop_map o
+                             WHERE o.order_id = r.join_key)""", (yms,))]
 
 
 def ensure_store_map_table(conn) -> None:

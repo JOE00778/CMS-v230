@@ -193,3 +193,55 @@ def test_ensure_token_fetches_when_cache_expired(monkeypatch):
         "RefreshTokenExpiryTime": "2026-09-27T00:00:00"})
     assert B.ensure_token(conn, c, now=now) == "NEW"
     assert any("INSERT INTO banma.api_token" in q for q in conn.executed)
+
+
+# ── 精確批量取得（Boss 2026-08-29「先入库再只拉需要的」）──────────
+
+def test_is_parcel_id_split():
+    assert B.is_parcel_id("1965711036740812800")          # 19 位雪花 = 包裹 ID
+    assert not B.is_parcel_id("12100195565099")           # Coupang 14 位注文番号
+    assert not B.is_parcel_id("PO-100-19404121580150087") # Temu
+    assert not B.is_parcel_id("269580-20260607-0488932098")
+
+
+def test_fetch_shop_map_by_keys_batches_and_routes(monkeypatch):
+    """19 位 → IDs / 其他 → OrderDisplayID、200 個/批で分割されること。"""
+    calls = []
+
+    class _FakeClient:
+        access_token = "T"
+        def call(self, method, path, params=None):
+            calls.append(params)
+            key0 = (params.get("IDs") or params.get("OrderDisplayID")).split(",")[0]
+            return {"Packages": [{"Package": {"ID": key0 if key0.isdigit() else "9",
+                                              "StoreID": "5"},
+                                  "Details": []}],
+                    "Page": {"HasMore": False}}
+
+    monkeypatch.setattr(B.BanmaClient, "from_env", classmethod(lambda cls: _FakeClient()))
+    monkeypatch.setattr(B, "ensure_token", lambda conn, c: "T")
+    monkeypatch.setattr(B, "load_shop_by_store", lambda conn: {"5": "SHOP"})
+
+    class _Cur:
+        def executemany(self, sql, rows): pass
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): pass
+
+    keys = [str(10**18 + i) for i in range(250)] + ["12100195565099", "PO-1"]
+    prog = []
+    r = B.fetch_shop_map_by_keys(_Conn(), keys, progress=lambda d, n: prog.append((d, n)))
+    ids_batches = [c for c in calls if "IDs" in c]
+    oid_batches = [c for c in calls if "OrderDisplayID" in c]
+    assert len(ids_batches) == 2          # 250 → 200 + 50
+    assert len(oid_batches) == 1          # 2 → 1 批
+    assert len(ids_batches[0]["IDs"].split(",")) == 200
+    assert r["requested"] == 252 and r["batches"] == 3
+    assert prog[-1] == (3, 3)
+
+
+def test_fetch_shop_map_by_keys_empty_is_noop(monkeypatch):
+    monkeypatch.setattr(B.BanmaClient, "from_env",
+                        classmethod(lambda cls: (_ for _ in ()).throw(AssertionError("不应调用"))))
+    r = B.fetch_shop_map_by_keys(object(), [])
+    assert r == {"requested": 0, "fetched": 0, "upserted": 0, "batches": 0}
