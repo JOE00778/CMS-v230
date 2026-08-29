@@ -351,6 +351,24 @@ def chunk_by_budget(keys: list[str], budget: int = BATCH_CHAR_BUDGET,
     return out
 
 
+import re as _re
+
+_SEQ_SUFFIX = _re.compile(r"^(.{6,}?)_(\d{1,3})$")
+
+
+def strip_seq_suffix(key: str) -> str:
+    """JD 請求書の連番後綴 `_1`〜`_999` を外して照会用 base を得る。
+
+    実例（2026-08-30 Boss 指摘）: `260723CNMX7QSX_1` `260713K1JXYHVW_3` ——
+    同一注文の複数行に JD が振る連番で、base が平台注文番号
+    （OrderDisplayID で斑马命中を 3/3 実証）。
+    ⚠️ 1-3 位に限定する理由: NST 直録の `SO00504371_7458145`（7 位の内部 ID）
+    を誤って剥がないため。後綴なしの key はそのまま返る。
+    """
+    m = _SEQ_SUFFIX.match(key)
+    return m.group(1) if m else key
+
+
 def is_parcel_id(key: str) -> bool:
     """join_key が斑马の包裹 ID か（19 位の雪花数字）。
     それ以外（Coupang 13/14 位注文番号等 · 2026-05 以降の請求書に混在）は
@@ -369,8 +387,13 @@ def fetch_shop_map_by_keys(conn, keys: list[str],
     バッチ毎に upsert + commit（冪等 · 中断後の再実行無害）。
     """
     keys = [str(k).strip() for k in keys if k]
-    pids = [k for k in keys if is_parcel_id(k)]
-    oids = [k for k in keys if not is_parcel_id(k)]
+    # 連番後綴 `_N` を剥いだ base で照会し、結果は元 key ごとに 1 行ずつ書く
+    # （parcel_no=元 key にすることで recompute の join がそのまま命中する）
+    by_base: dict[str, list[str]] = {}
+    for k in keys:
+        by_base.setdefault(strip_seq_suffix(k), []).append(k)
+    pids = [b for b in by_base if is_parcel_id(b)]
+    oids = [b for b in by_base if not is_parcel_id(b)]
     batches = ([("IDs", c) for c in chunk_by_budget(pids)]
                + [("OrderDisplayID", c) for c in chunk_by_budget(oids)])
     if not batches:
@@ -389,8 +412,16 @@ def fetch_shop_map_by_keys(conn, keys: list[str],
                 param: ",".join(chunk),
             })
             items = (data or {}).get("Packages") or []
-            rows = [r for r in (package_to_row(it, shop_by_store)
-                                for it in items) if r]
+            rows: list[dict] = []
+            for it in items:
+                r = package_to_row(it, shop_by_store)
+                if not r:
+                    continue
+                # 応答 → 照会 base（IDs は包裹 ID、OrderDisplayID は注文番号）
+                base = r["parcel_no"] if param == "IDs" else (r["order_id"] or "")
+                for orig in by_base.get(base, [r["parcel_no"]]):
+                    rows.append({**r, "parcel_no": orig,
+                                 "order_id": r["order_id"] or base})
             if rows:
                 cur.executemany(UPSERT_SHOP_MAP, rows)
                 conn.commit()

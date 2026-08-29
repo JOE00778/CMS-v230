@@ -258,3 +258,40 @@ def test_chunk_by_budget_respects_char_limit_and_hard_max():
     # 短い key は hard_max=200 で切れる
     short = ["k"] * 450
     assert [len(c) for c in B.chunk_by_budget(short)] == [200, 200, 50]
+
+
+# ── 連番後綴 `_N`（2026-08-30 Boss 指摘の回帰）──────────────────
+
+def test_strip_seq_suffix():
+    assert B.strip_seq_suffix("260723CNMX7QSX_1") == "260723CNMX7QSX"
+    assert B.strip_seq_suffix("260713K1JXYHVW_3") == "260713K1JXYHVW"
+    assert B.strip_seq_suffix("SO00504371_7458145") == "SO00504371_7458145"  # 7 位は剥がない
+    assert B.strip_seq_suffix("1965711036740812800") == "1965711036740812800"
+
+
+def test_fetch_maps_suffixed_keys_back_to_originals(monkeypatch):
+    """`_1`/`_2` 付き key は base で照会し、元 key ごとに 1 行ずつ upsert される。"""
+    class _FakeClient:
+        access_token = "T"
+        def call(self, method, path, params=None):
+            assert params.get("OrderDisplayID") == "260713K1JXYHVW"
+            return {"Packages": [{"Package": {"ID": "1979000120594665472",
+                                              "StoreID": "5"},
+                                  "Details": [{"OrderDisplayID": "260713K1JXYHVW"}]}],
+                    "Page": {"HasMore": False}}
+    written = []
+    class _Cur:
+        def executemany(self, sql, rows): written.extend(rows)
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): pass
+    monkeypatch.setattr(B.BanmaClient, "from_env", classmethod(lambda cls: _FakeClient()))
+    monkeypatch.setattr(B, "ensure_token", lambda conn, c: "T")
+    monkeypatch.setattr(B, "load_shop_by_store", lambda conn: {"5": "SHOP"})
+    r = B.fetch_shop_map_by_keys(
+        _Conn(), ["260713K1JXYHVW_1", "260713K1JXYHVW_2", "260713K1JXYHVW_3"])
+    assert r["upserted"] == 3
+    assert sorted(w["parcel_no"] for w in written) == [
+        "260713K1JXYHVW_1", "260713K1JXYHVW_2", "260713K1JXYHVW_3"]
+    assert all(w["order_id"] == "260713K1JXYHVW" and w["shop"] == "SHOP"
+               for w in written)
