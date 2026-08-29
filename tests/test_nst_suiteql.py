@@ -48,18 +48,23 @@ class _Resp(io.BytesIO):
     def __exit__(self, *a): return False
 
 
-def test_lookup_so_customers_builds_in_clause_and_maps(monkeypatch):
+def test_lookup_so_shops_prefix_strip_and_direct_fallback(monkeypatch):
+    """店舗ありは「nn:」前綴を外した店名、店舗なしは NST直販。顧客字段は使わない。"""
     _env(monkeypatch)
     seen = {}
     def fake_urlopen(req, timeout=None):
         seen["q"] = json.loads(req.data)["q"]
         return _Resp(json.dumps({"hasMore": False, "items": [
-            {"tranid": "SO00504371", "entity_name": "C000108 エルスタイル株式会社"},
+            {"tranid": "SO00504423", "shop": "21:MTK SHOP アマゾン店"},
+            {"tranid": "SO00504371", "shop": None},
         ]}).encode())
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    got = N.lookup_so_customers(["SO00504371", "SO00504075", "SO00504371"])
-    assert got == {"SO00504371": "C000108 エルスタイル株式会社"}
-    assert "'SO00504075','SO00504371'" in seen["q"]      # 去重+排序
+    got = N.lookup_so_shops(["SO00504371", "SO00504423", "SO00504371"])
+    assert got == {"SO00504423": "MTK SHOP アマゾン店",
+                   "SO00504371": N.NST_DIRECT_SHOP}
+    assert "'SO00504371','SO00504423'" in seen["q"]      # 去重+排序
+    assert "custbody_fb_ne_ro_shop" in seen["q"]
+    assert "entity" not in seen["q"]                      # 顧客は引かない
     assert "type = 'SalesOrd'" in seen["q"]
 
 

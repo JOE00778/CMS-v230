@@ -375,16 +375,16 @@ with tab1:
                 err_log.append(t("❌ 斑马补齐失败（已入库数据保留 · 重新点按钮即续跑）: ")
                                + str(e))
 
-        # ── SO 形状（NST 直録注文 · B2B 卸/保証補発）の自動帰類 ──
-        #    Boss 2026-08-29 拍板: SuiteQL で顧客名を引き shop に据える。
-        #    部署は tab② 未分類フローで顧客単位に一度分類すれば以後自動。
+        # ── SO 形状（NST 注文）の自動帰類 ──
+        #    Boss 2026-08-30 是正: shop には NST の店舗字段を使う（顧客名は
+        #    販売渠道ではない）。店舗未設定の直録注文は「NST直販」（dept=EC 登録済）。
         if inv_months:
             try:
                 so_keys = [k for k in banma_client.missing_join_keys(
                                conn, sorted(inv_months))
                            if re.match(r"^SO\d+", k)]
                 if so_keys and nst_suiteql.is_configured():
-                    names = nst_suiteql.lookup_so_customers(
+                    names = nst_suiteql.lookup_so_shops(
                         [k.split("_")[0] for k in so_keys])
                     so_rows = [{"parcel_no": k, "order_id": k.split("_")[0],
                                 "waybill_no": None, "platform": "NST",

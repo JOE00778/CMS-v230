@@ -1,9 +1,10 @@
 """NST SuiteQL 极小クライアント（物流費配賦の SO 帰類専用 · 読み取りのみ）。
 
-用途は一つ（Boss 2026-08-29 拍板）: JD 請求書の join_key が `SOxxxxxxxx_nnnnn`
-（NST 直録注文 · B2B 卸/保証補発）のとき、SuiteQL で顧客表示名を引いて
-order_shop_map の shop に据える。部署への分類は page29 tab② の
-未分類フローで Boss が顧客単位に一度行えば以後自動。
+用途は一つ: JD 請求書の join_key が `SOxxxxxxxx_nnnnn`（NST 注文）のとき、
+SuiteQL で **NST の店舗字段**を引いて order_shop_map の shop に据える
+（Boss 2026-08-30 是正：顧客名は販売渠道ではないので使わない）。
+店舗未設定の直録注文（B2B 卸/保証補発）は「NST直販」（dept=EC 登録済 ·
+Boss 2026-08-30「归EC 也就是现在的CB事业部」）。
 
 認証は TBA（OAuth 1.0a HMAC-SHA256 · NST_AUTH_MODE=tba）——四つの文字列だけで
 署名でき、純標準ライブラリで済む（OAuth2/JWT は cert+PyJWT が要るため CMS
@@ -134,16 +135,30 @@ def suiteql(sql: str, *, limit: int = 1000, max_retries: int = 4) -> list[dict]:
     raise NstError(f"retries exhausted: {last_err}") from last_err
 
 
-def lookup_so_customers(so_nos: list[str]) -> dict[str, str]:
-    """SO 番号 → NST 顧客表示名（例 'C000108 エルスタイル株式会社'）。
-    未命中の SO は結果に含まれない。"""
+NST_DIRECT_SHOP = "NST直販"     # 店舗未設定の直録注文（B2B 卸/保証補発）の帰属先
+
+
+def lookup_so_shops(so_nos: list[str]) -> dict[str, str]:
+    """SO 番号 → NST の店舗名（custbody_fb_ne_ro_shop · sales_invoice 鏡像と同字段）。
+
+    ⚠️ 顧客（entity）は使わない——顧客は取引相手であって販売渠道ではない
+    （Boss 2026-08-30「NST店铺和斑马店铺搞混了」の是正）。
+    - 店舗あり（平台系 SO）: 表示名の「nn:」内部 ID 前綴を外した店名
+    - 店舗なし（直録 B2B/保証補発 · 実測で大半）: NST_DIRECT_SHOP
+    NST に存在しない SO は結果に含まれない。
+    """
     so_nos = sorted({s for s in so_nos if s})
     if not so_nos:
         return {}
     quoted = ",".join("'" + s.replace("'", "''") + "'" for s in so_nos)
     rows = suiteql(
-        "SELECT t.tranid, BUILTIN.DF(t.entity) AS entity_name "
+        "SELECT t.tranid, BUILTIN.DF(t.custbody_fb_ne_ro_shop) AS shop "
         f"FROM transaction t WHERE t.tranid IN ({quoted}) "
         "AND t.type = 'SalesOrd'")
-    return {r["tranid"]: r["entity_name"] for r in rows
-            if r.get("tranid") and r.get("entity_name")}
+    out: dict[str, str] = {}
+    for r in rows:
+        if not r.get("tranid"):
+            continue
+        shop = (r.get("shop") or "").partition(":")[2] or r.get("shop") or ""
+        out[r["tranid"]] = shop.strip() or NST_DIRECT_SHOP
+    return out
