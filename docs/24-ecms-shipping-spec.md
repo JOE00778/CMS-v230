@@ -202,19 +202,19 @@ ECMS 要 省(V) / 市(W) / 详细地址(Y) 三段，Coupang 只给整串韩语 `
 开源库 `addresskr`（Apache-2.0）的做法值得记：因为不知道详细地址从哪开始，
 它**从后往前逐 token 剥离，每次拿前半部分去 API 搜，第一个搜得到的就是标准地址**。
 准确度更高且顺带拿英文地址与邮编校验，代价是每单多次外部 API 调用 + 要申请승인키。
-→ 如果 ECMS 要求英文地址（Excel 的 Q 列 `Consignee Info Language` 可选语种，
-运营现在填韩文），再上这条路。
+→ **英文地址不需要**（Boss 2026-08-30 确认），所以这条路不上。韩文原文直接填，
+`Consignee Info Language` 按韩文走。
 
 ## 6. 待确认清单（做之前必须问清）
 
 | # | 问谁 | 问什么 | 不问清的后果 |
 |---|---|---|---|
 | ~~①~~ | ~~Boss~~ | **已定 2026-08-30**：每天定点拉到 CMS 临时表（含 PII），发完可删，**保留 7 天**。见 §7.1 | — |
-| ② | ECMS | clientId / token（UAT+PRO）、Warehouse Code、Shipper Code、Platform Id | 全是 M 字段，缺一个发不出去 |
-| ③ | ECMS | **韩国 PCCC 通过 API 哪个字段传**（IOR.idNumber？additionalInfo？）；`oneTimePccc` 怎么处理 | 韩国清关过不了 |
-| ④ | ECMS | 重量/尺寸/金额的**上传侧**精度要求是否与 API 规格一致（都是 2 位小数） | 数值被拒或被截断 |
+| ② | **ECMS 牧野さん** | clientId / token（UAT+PRO）、Warehouse Code、Shipper Code、Platform Id | 全是 M 字段，缺一个发不出去 |
+| ③ | **ECMS 牧野さん** | **韩国 PCCC 通过 API 哪个字段传**（IOR.idNumber？additionalInfo？）；`oneTimePccc` 怎么处理 | 韩国清关过不了。问询文本见 `docs/24-ecms-inquiry-makino.ja.md`（Boss 2026-08-30 指示由 Boss 自己发） |
+| ④ | **ECMS 牧野さん** | 重量/尺寸/金额的**上传侧**精度要求是否与 API 规格一致（都是 2 位小数） | 数值被拒或被截断 |
 | ~~⑤~~ | ~~Boss~~ | **已做 2026-08-30**：`shared/kr_address.py`，实测 311/311。见 §5.6 | — |
-| ⑥ | ECMS | serviceType（Warehouse/Dropoff/Pickup）、reasonForExport 的合同取值 | 已在 b56f318 里默认 Warehouse/commercial，未确认 |
+| ⑥ | **ECMS 牧野さん** | serviceType（Warehouse/Dropoff/Pickup）、reasonForExport 的合同取值 | 已在 b56f318 里默认 Warehouse/commercial，未确认 |
 
 ## 7. 实现方案（Coupang tab）
 
