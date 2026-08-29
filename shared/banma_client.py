@@ -90,20 +90,36 @@ class BanmaClient:
         return cls(app_id, secret)
 
     # ── 署名（database 仓 banma_api/client.py と同一アルゴリズム）──
-    def sign(self, method: str, path: str, query: str,
-             timestamp: str, body: str = "") -> str:
-        params = {"app_id": self.app_id, "app_secret": self.app_secret}
-        if query:
-            for pair in query.split("&"):
-                k, _, v = pair.partition("=")
-                params[k.lower()] = v
+    def sign_params(self, method: str, path: str, params: dict,
+                    timestamp: str, body: str = "") -> str:
+        """**URL エンコード前の生値**で署名する（文書の JS 例と同じ）。
+
+        ⚠️ エンコード後の値で署名すると、非 ASCII を含む単号で必ず
+        `401 invalid sign` になる。2026-08-30 実測: 1〜5 月の請求書に
+        `CB用商品`（JD 手書き行）が居て、`CB%E7%94%A8...` で署名 →
+        サーバは復号値で検証するため不一致 → バッチ全体が 401。
+        7 月は全単号が ASCII の unreserved 文字だったので露呈しなかった。
+        """
+        p = {"app_id": self.app_id, "app_secret": self.app_secret}
+        for k, v in (params or {}).items():
+            p[k.lower()] = str(v)
         text = method.upper() + path
-        for k in sorted(params):
-            text += f"{k}={params[k]}&"
+        for k in sorted(p):
+            text += f"{k}={p[k]}&"
         text += str(timestamp)
         if body:
             text += body
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def sign(self, method: str, path: str, query: str,
+             timestamp: str, body: str = "") -> str:
+        """query 文字列版（署名ベクトル検証・後方互換用）。"""
+        d = {}
+        if query:
+            for pair in query.split("&"):
+                k, _, v = pair.partition("=")
+                d[k] = v
+        return self.sign_params(method, path, d, timestamp, body)
 
     def _throttle(self) -> None:
         wait = self._last_call + self.min_interval - time.monotonic()
@@ -124,7 +140,8 @@ class BanmaClient:
             headers = {
                 "X-BANMA-APP-ID": self.app_id,
                 "X-BANMA-TIMESTAMP": ts,
-                "X-BANMA-SIGN": self.sign(method, path, query, ts),
+                # 署名は生値（params）で作る——query はエンコード済みなので使わない
+                "X-BANMA-SIGN": self.sign_params(method, path, params or {}, ts),
                 "X-BANMA-SIGN-METHOD": "SHA256",
                 "Content-Type": "application/json",
             }

@@ -297,3 +297,37 @@ def test_fetch_maps_suffixed_keys_back_to_originals(monkeypatch):
         "260713K1JXYHVW_1", "260713K1JXYHVW_2", "260713K1JXYHVW_3"]
     assert all(w["order_id"] == "260713K1JXYHVW" and w["shop"] == "SHOP"
                for w in written)
+
+
+def test_sign_uses_raw_values_not_urlencoded():
+    """非 ASCII を含む値は**生値**で署名する（2026-08-30 実障害の回帰）。
+
+    エンコード後（CB%E7%94%A8...）で署名すると斑马は 401 invalid sign を返す。
+    """
+    import hashlib as _h
+    c = _client()
+    got = c.sign_params("GET", "/v1/order/package",
+                        {"PageNumber": 1, "OrderDisplayID": "CB用商品"}, "1000")
+    text = ("GET/v1/order/package"
+            "app_id=APPID&app_secret=SECRET&"
+            "orderdisplayid=CB用商品&pagenumber=1&" + "1000")
+    assert got == _h.sha256(text.encode("utf-8")).hexdigest()
+    # エンコード版とは必ず異なる（＝取り違えたら即バレる）
+    assert got != c.sign("GET", "/v1/order/package",
+                         "PageNumber=1&OrderDisplayID=CB%E7%94%A8%E5%95%86%E5%93%81",
+                         "1000")
+
+
+def test_call_signs_with_raw_params(monkeypatch):
+    """call が生値署名を使っていること（エンコード値だと 401 になる経路）。"""
+    import urllib.request as _u
+    seen = {}
+    def fake_urlopen(req, timeout=None):
+        seen["sign"] = req.get_header("X-banma-sign")
+        seen["ts"] = req.get_header("X-banma-timestamp")
+        return _ok({"ok": 1})
+    monkeypatch.setattr(_u, "urlopen", fake_urlopen)
+    c = _client()
+    c.call("GET", "/v1/order/package", {"OrderDisplayID": "CB用商品"})
+    assert seen["sign"] == c.sign_params(
+        "GET", "/v1/order/package", {"OrderDisplayID": "CB用商品"}, seen["ts"])
