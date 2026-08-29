@@ -79,6 +79,11 @@ services:
       ECMS_ACCOUNT: ${ECMS_ACCOUNT:-}
       ECMS_SERVICE_TYPE: ${ECMS_SERVICE_TYPE:-Warehouse}
       ECMS_SHIPPER_JSON: ${ECMS_SHIPPER_JSON:-}
+      # page29 物流費上传 · 斑马 API 自動補齊（BM 手動導出の代替 · 2026-08-29）
+      # 資格情報は deploy/windows/.env（database/.env と同値）。未設定でも頁は開き
+      # checkbox が無効表示になるだけ。
+      BANMA_APP_ID: ${BANMA_APP_ID:-}
+      BANMA_APP_SECRET: ${BANMA_APP_SECRET:-}
       TZ: Asia/Tokyo
     volumes:
       # 代码 bind mount（2026-05-19）: git pull 后立即生效，不需 --build

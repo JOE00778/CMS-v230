@@ -5,6 +5,8 @@ Boss 指示:
 - 订单→店舗 マッピング(BM) も NST 拉取不可 → Boss が平台/JD WMS から導出 upload。
 - 包裹号で紐付かない / 店舗が部署未分類 → 【不明】に集計（後で確認）。
 - 列は表頭名で解決（JD 請求書/BM は列順不定）。費用は不含税。
+- 2026-08-29（Boss 拍板の最終形態）: 請求書 upload 時に**斑马 API から包裹→店舗を
+  自動補齊**（BM 手動導出を代替 · tab1 の BM upload は後備として残す）。
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 
+from shared import banma_client
 from shared.db import get_connection
 from shared.i18n import lang_selector, t
 
@@ -275,8 +278,15 @@ with tab1:
     ))
     ups = st.file_uploader(t("xlsx（可多选）"), type=["xlsx"],
                            accept_multiple_files=True, key="batch_up")
+    _bm_ok = banma_client.is_configured()
+    use_banma = st.checkbox(
+        t("🦓 自动从斑马补齐 包裹→店铺（替代 BM 手动导出）"),
+        value=_bm_ok, disabled=not _bm_ok, key="use_banma",
+        help=t("按请求书费用发生日期 ±10 天从斑马拉包裹（全平台 · 约 10 分钟/月）。"
+               "未配置 BANMA_APP_ID/SECRET 时不可用。"))
     if ups and st.button(t("💾 批量解析 → 写入 PG + 重算"), key="batch_btn", type="primary"):
         inv_log, bm_log, err_log = [], [], []
+        inv_months: dict[str, list] = {}          # ym → 費用発生日 list（斑马窓計算用）
         prog = st.progress(0.0, text=t("解析中…"))
         for i, up in enumerate(ups):
             data = up.getvalue()
@@ -304,6 +314,7 @@ with tab1:
                                    (year_month, seq, item_name, amount_ex_tax, amount_in_tax)
                                    VALUES (%s,%s,%s,%s,%s)""", bill)
                         conn.commit()
+                        inv_months.setdefault(ym, []).extend(r[8] for r in rows)
                         inv_log.append(t("✅ 请求书 {ym}: ").format(ym=ym)
                                        + " ".join(f"{k}={v}" for k, v in per.items())
                                        + (f" +Billing{len(bill)}" if bill else ""))
@@ -328,6 +339,34 @@ with tab1:
             except Exception as e:
                 err_log.append(f"❌ {up.name}: {e}")
             prog.progress((i + 1) / len(ups), text=f"{i + 1}/{len(ups)}")
+
+        # ── 斑马 API 補齊（請求書があった月のみ · BM 手動 upload の代替）──
+        if use_banma and inv_months:
+            banma_client.ensure_store_map_table(conn)
+            for ym, dates in sorted(inv_months.items()):
+                start, end = banma_client.invoice_window(dates, ym)
+                bprog = st.progress(0.0, text=t("🦓 斑马 {ym} 包裹取得中…").format(ym=ym))
+
+                def _cb(page, total):
+                    bprog.progress(min(page / max(total, 1), 1.0),
+                                   text=t("🦓 斑马 {ym}: {p}/{n} 页").format(
+                                       ym=ym, p=page, n=total))
+                try:
+                    r = banma_client.fill_shop_map_from_banma(conn, start, end, _cb)
+                    bm_log.append(t("🦓 斑马 {ym}: 包裹 {n} 件补齐（窗口 {w}）").format(
+                        ym=ym, n=f"{r['upserted']:,}", w=r["window"]))
+                except banma_client.BanmaAuthError as e:
+                    err_log.append(t("❌ 斑马 token 失效（去 ERP 后台手动更新）: ") + str(e))
+                except Exception as e:  # noqa: BLE001
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    err_log.append(t("❌ 斑马 {ym} 补齐失败（已入库的包裹保留 · 可重跑）: ")
+                                   .format(ym=ym) + str(e))
+                finally:
+                    bprog.empty()
+
         with st.spinner(t("全月 重算中…")):
             run_recompute(None)
         if inv_log:

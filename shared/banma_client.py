@@ -1,0 +1,357 @@
+"""斑马 ERP 开放平台客户端（物流费配赋专用 · 只读）。
+
+用途只有一个（Boss 2026-08-29 拍板）：上传 JD 请求书时，按费用发生窗口从
+斑马拉包裹（GET /v1/order/package），生成 logistics.order_shop_map 行，
+替代 BM 手动导出。不做定时同步、不落任何新拉取表。
+
+  ensure_token(conn)                    token 经 PG banma.api_token 缓存
+                                        （与 database 仓 banma_api 共用同一张表）
+  iter_packages(client, start, end)     按 CreateTime 窗口分页迭代包裹
+  package_to_row(pkg, shop_by_store)    包裹 → order_shop_map 行（PII 不落地）
+  invoice_window(dates, ym)             请求书费用日期 → 拉取窗口
+
+凭据 BANMA_APP_ID / BANMA_APP_SECRET（元川 .env → compose 映射，照 ECMS_* 先例）。
+签名/重试与 database 仓 data_warehouse/banma_api/client.py 同算法：
+  - SHA256(method + path + sorted(k=v&) + timestamp + body) 小写 hex，末尾带 &
+  - 429/5xx/网络例外/非 JSON 200 指数退避（2026-08-28 全 ingester 统一判据）
+  - AccessToken 3 天 / RefreshToken 30 天（实测 · 文档的 7 天是错的）
+"""
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import http.client
+import json
+import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Callable, Iterator
+
+GATEWAY = "https://gateway.banmaerp.com"
+PAGE_SIZE = 50                      # API 上限
+RETRY_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
+_MARGIN = dt.timedelta(hours=24)    # token 期限先読み更新（TZ ずれ吸収）
+
+
+class BanmaError(RuntimeError):
+    def __init__(self, status: int, body: str):
+        super().__init__(f"Banma HTTP {status}: {body[:300]}")
+        self.status = status
+
+
+class BanmaAuthError(BanmaError):
+    """token 全失効 → ERP 画面（服务>开放平台>APP管理）で手動更新が必要。"""
+
+
+class BanmaNotConfigured(BanmaError):
+    """BANMA_APP_ID / BANMA_APP_SECRET 未配置（元川 .env / compose 映射）。"""
+
+    def __init__(self):
+        super().__init__(0, "BANMA_APP_ID / BANMA_APP_SECRET 未配置")
+
+
+def _secret(name: str) -> str:
+    """优先 streamlit secrets，fallback env var（与 shared.ecms_client 一致）。
+    页面外（テスト等）でも import できるよう streamlit は遅延 import。"""
+    try:
+        import streamlit as st
+        v = st.secrets.get(name, None)
+        if v:
+            return str(v)
+    except Exception:
+        pass
+    return os.environ.get(name, "")
+
+
+def is_configured() -> bool:
+    return bool(_secret("BANMA_APP_ID") and _secret("BANMA_APP_SECRET"))
+
+
+class BanmaClient:
+    def __init__(self, app_id: str, app_secret: str,
+                 min_interval: float = 0.25):     # 5QPS/app に余裕
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.access_token = ""
+        self.min_interval = min_interval
+        self._last_call = 0.0
+
+    @classmethod
+    def from_env(cls) -> "BanmaClient":
+        app_id, secret = _secret("BANMA_APP_ID"), _secret("BANMA_APP_SECRET")
+        if not app_id or not secret:
+            raise BanmaNotConfigured()
+        return cls(app_id, secret)
+
+    # ── 署名（database 仓 banma_api/client.py と同一アルゴリズム）──
+    def sign(self, method: str, path: str, query: str,
+             timestamp: str, body: str = "") -> str:
+        params = {"app_id": self.app_id, "app_secret": self.app_secret}
+        if query:
+            for pair in query.split("&"):
+                k, _, v = pair.partition("=")
+                params[k.lower()] = v
+        text = method.upper() + path
+        for k in sorted(params):
+            text += f"{k}={params[k]}&"
+        text += str(timestamp)
+        if body:
+            text += body
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _throttle(self) -> None:
+        wait = self._last_call + self.min_interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self._last_call = time.monotonic()
+
+    def call(self, method: str, path: str, params: dict | None = None,
+             max_retries: int = 5):
+        """→ 応答 envelope の Data。再試行判据は 2026-08-28 全 ingester 統一形。"""
+        query = urllib.parse.urlencode(params, doseq=True, safe=":,-T") \
+            if params else ""
+        url = GATEWAY + path + (("?" + query) if query else "")
+        last_err: Exception | None = None
+        for attempt in range(max_retries):
+            self._throttle()
+            ts = str(int(time.time()))
+            headers = {
+                "X-BANMA-APP-ID": self.app_id,
+                "X-BANMA-TIMESTAMP": ts,
+                "X-BANMA-SIGN": self.sign(method, path, query, ts),
+                "X-BANMA-SIGN-METHOD": "SHA256",
+                "Content-Type": "application/json",
+            }
+            if self.access_token:
+                headers["X-BANMA-ACCESS-TOKEN"] = self.access_token
+            req = urllib.request.Request(url, method=method.upper(),
+                                         headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                # ⚠️ HTTPError ⊂ URLError ⊂ OSError なのでこの branch が必ず先
+                text = e.read().decode("utf-8", "replace")
+                if e.code in RETRY_HTTP_STATUS:
+                    last_err = e
+                    time.sleep(float(2 ** attempt))
+                    continue
+                if e.code == 401:
+                    raise BanmaAuthError(e.code, text) from e
+                raise BanmaError(e.code, text) from e
+            except (OSError, http.client.HTTPException,
+                    json.JSONDecodeError) as e:
+                # read 段の裸 TimeoutError / 接続断 / 非 JSON 200。GET のみで冪等
+                last_err = e
+                if attempt + 1 >= max_retries:
+                    break
+                time.sleep(float(2 ** attempt))
+                continue
+            if not data.get("Success"):
+                code = int(data.get("Code") or 0)
+                msg = str(data.get("Message") or "")
+                if code == 401 or "token" in msg.lower():
+                    raise BanmaAuthError(code, msg)
+                raise BanmaError(code, msg)
+            return data.get("Data")
+        raise BanmaError(0, f"retries exhausted: {last_err}") from last_err
+
+
+# ══════════════════════════════════════════════════════════
+# token（banma.api_token 共用 · database 仓 ensure_token と同ロジック）
+# ══════════════════════════════════════════════════════════
+
+def parse_dt(v) -> dt.datetime | None:
+    if not v:
+        return None
+    s = str(v).strip().replace("T", " ")[:19]
+    try:
+        return dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def ensure_token(conn, client: BanmaClient,
+                 now: dt.datetime | None = None) -> str:
+    """PG キャッシュ → 期限近ければ Refresh → 無ければ GetToken。
+    期限は中国標準時 naive（Boss 2026-08-28 確定：斑马サーバ＝中国）。"""
+    now = now or dt.datetime.now(
+        dt.timezone(dt.timedelta(hours=8))).replace(tzinfo=None)
+    row = conn.execute(
+        "SELECT access_token, access_expiry, refresh_token, refresh_expiry "
+        "FROM banma.api_token WHERE app_id = %s", (client.app_id,)).fetchone()
+    if row and row[1] and row[1] - _MARGIN > now:
+        client.access_token = row[0]
+        return row[0]
+    if row and row[2] and row[3] and row[3] > now:
+        try:
+            data = client.call("GET", "/v1/Auth/RefreshToken",
+                               {"refreshToken": row[2]})
+            return _store_token(conn, client, data, now)
+        except BanmaError:
+            pass                                    # GetToken に回退
+    data = client.call("GET", "/v1/Auth/GetToken")
+    return _store_token(conn, client, data, now)
+
+
+def _store_token(conn, client: BanmaClient, data: dict,
+                 now: dt.datetime) -> str:
+    access = (data or {}).get("AccessToken") or ""
+    access_exp = parse_dt((data or {}).get("AccessTokenExpiryTime"))
+    if not access or (access_exp and access_exp <= now):
+        raise BanmaAuthError(
+            401, "token 完全失効: ERP 画面（服务>开放平台>APP管理）で手動更新")
+    conn.execute(
+        "INSERT INTO banma.api_token (app_id, access_token, access_expiry, "
+        "refresh_token, refresh_expiry, updated_at) "
+        "VALUES (%s, %s, %s, %s, %s, NOW()) "
+        "ON CONFLICT (app_id) DO UPDATE SET "
+        "access_token = EXCLUDED.access_token, "
+        "access_expiry = EXCLUDED.access_expiry, "
+        "refresh_token = EXCLUDED.refresh_token, "
+        "refresh_expiry = EXCLUDED.refresh_expiry, updated_at = NOW()",
+        (client.app_id, access, access_exp,
+         data.get("RefreshToken"), parse_dt(data.get("RefreshTokenExpiryTime"))))
+    conn.commit()
+    client.access_token = access
+    return access
+
+
+# ══════════════════════════════════════════════════════════
+# 包裹 → order_shop_map 行
+# ══════════════════════════════════════════════════════════
+
+def invoice_window(cost_dates: list[dt.date | None], ym: str,
+                   pad_days: int = 10) -> tuple[str, str]:
+    """请求书费用日期 min/max ± pad → 斑马拉取窗口（ISO 秒精度）。
+    费用日期全空时 fallback 对象月 ± pad。"""
+    ds = [d for d in cost_dates if d]
+    if ds:
+        lo, hi = min(ds), max(ds)
+    else:
+        y, m = int(ym[:4]), int(ym[5:7])
+        lo = dt.date(y, m, 1)
+        hi = (dt.date(y + 1, 1, 1) if m == 12 else dt.date(y, m + 1, 1)) \
+            - dt.timedelta(days=1)
+    pad = dt.timedelta(days=pad_days)
+    return (f"{lo - pad:%Y-%m-%d}T00:00:00", f"{hi + pad:%Y-%m-%d}T23:59:59")
+
+
+def iter_packages(client: BanmaClient, start: str, end: str,
+                  progress: Callable[[int, int], None] | None = None,
+                  ) -> Iterator[dict]:
+    """GET /v1/order/package を CreateTime 窓で分頁イテレート（1 件ずつ yield）。
+    progress(page, page_count) で UI 進捗を更新できる。"""
+    page = 1
+    while True:
+        data = client.call("GET", "/v1/order/package", {
+            "PageNumber": page, "PageSize": PAGE_SIZE,
+            "SearchTimeField": "CreateTime",
+            "SearchTimeStart": start, "SearchTimeEnd": end,
+            "SortField": "CreateTime", "SortBy": "ASC",
+        })
+        items = (data or {}).get("Packages") or []
+        pg = (data or {}).get("Page") or {}
+        if progress:
+            progress(page, int(pg.get("PageCount") or page))
+        for it in items:
+            yield it
+        if not pg.get("HasMore"):
+            return
+        page += 1
+
+
+def package_to_row(item: dict, shop_by_store: dict[str, str]) -> dict | None:
+    """包裹 1 件 → order_shop_map 行。PII（收件人姓名/电话/地址等）不读取不保存。
+
+    shop 名の優先順: logistics.banma_store_map（BM 店名との対照表）
+    → banma.store.name → StoreID 生値。⚠️ BM 導出の店名と store.name は
+    同一 StoreID でも不一致（2026-08-29 実測）——対照表が正、store.name は
+    新店舗が対照表に無い間の暫定値（tab② の未分類フローで Boss が分類）。
+    """
+    pkg = item.get("Package") or item
+    pid = pkg.get("ID")
+    if not pid:
+        return None
+    store_id = str(pkg.get("StoreID") or "")
+    order_id = None
+    for d in item.get("Details") or []:
+        if d.get("OrderDisplayID"):
+            order_id = str(d["OrderDisplayID"])
+            break
+    ship = parse_dt(pkg.get("DeliveryTime")) or parse_dt(pkg.get("CreateTime"))
+    return {
+        "parcel_no": str(pid),
+        "order_id": order_id,
+        "waybill_no": (str(pkg.get("ExpressNo")) if pkg.get("ExpressNo") else None),
+        "platform": (str(pkg.get("Platform")) if pkg.get("Platform") else None),
+        "shop": shop_by_store.get(store_id) or store_id or None,
+        "ship_date": ship.date() if ship else None,
+    }
+
+
+def load_shop_by_store(conn) -> dict[str, str]:
+    """StoreID → shop 名。対照表（banma_store_map）優先、無い店は store.name。"""
+    out: dict[str, str] = {}
+    try:
+        for sid, name in conn.execute(
+                "SELECT id::text, name FROM banma.store"):
+            if name:
+                out[sid] = name
+    except Exception:
+        conn.rollback()                 # banma schema 不在でも動く
+    for sid, shop in conn.execute(
+            "SELECT store_id, shop FROM logistics.banma_store_map"):
+        out[sid] = shop
+    return out
+
+
+UPSERT_SHOP_MAP = """
+INSERT INTO logistics.order_shop_map
+    (parcel_no, order_id, waybill_no, platform, shop, ship_date)
+VALUES (%(parcel_no)s, %(order_id)s, %(waybill_no)s,
+        %(platform)s, %(shop)s, %(ship_date)s)
+ON CONFLICT (parcel_no) DO UPDATE SET
+    order_id = EXCLUDED.order_id, waybill_no = EXCLUDED.waybill_no,
+    platform = EXCLUDED.platform, shop = EXCLUDED.shop,
+    ship_date = EXCLUDED.ship_date, imported_at = now()
+"""
+
+
+def ensure_store_map_table(conn) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS logistics.banma_store_map ("
+        "store_id TEXT PRIMARY KEY, "
+        "shop     TEXT NOT NULL, "          # = BM 導出/shop_dept_map の店名口径
+        "updated_at TIMESTAMPTZ DEFAULT NOW())")
+    conn.commit()
+
+
+def fill_shop_map_from_banma(conn, start: str, end: str,
+                             progress: Callable[[int, int], None] | None = None,
+                             flush_every: int = 500) -> dict:
+    """窓内の包裹を斑马から取得 → order_shop_map へ upsert（ページ毎に途中 commit）。
+    戻り値: {fetched, upserted, window}。"""
+    client = BanmaClient.from_env()
+    ensure_token(conn, client)
+    shop_by_store = load_shop_by_store(conn)
+    cur = conn.cursor()
+    fetched = upserted = 0
+    buf: list[dict] = []
+    for item in iter_packages(client, start, end, progress):
+        fetched += 1
+        row = package_to_row(item, shop_by_store)
+        if row:
+            buf.append(row)
+        if len(buf) >= flush_every:
+            cur.executemany(UPSERT_SHOP_MAP, buf)
+            conn.commit()
+            upserted += len(buf)
+            buf.clear()
+    if buf:
+        cur.executemany(UPSERT_SHOP_MAP, buf)
+        conn.commit()
+        upserted += len(buf)
+    return {"fetched": fetched, "upserted": upserted, "window": f"{start}..{end}"}
