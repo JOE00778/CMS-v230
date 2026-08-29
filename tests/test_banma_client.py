@@ -233,11 +233,13 @@ def test_fetch_shop_map_by_keys_batches_and_routes(monkeypatch):
     r = B.fetch_shop_map_by_keys(_Conn(), keys, progress=lambda d, n: prog.append((d, n)))
     ids_batches = [c for c in calls if "IDs" in c]
     oid_batches = [c for c in calls if "OrderDisplayID" in c]
-    assert len(ids_batches) == 2          # 250 → 200 + 50
-    assert len(oid_batches) == 1          # 2 → 1 批
-    assert len(ids_batches[0]["IDs"].split(",")) == 200
-    assert r["requested"] == 252 and r["batches"] == 3
-    assert prog[-1] == (3, 3)
+    # 19 位 ID は 1,600 字符予算 → 80 個/批 → 250 個 = 4 批
+    assert len(ids_batches) == 4
+    assert len(oid_batches) == 1
+    for b in ids_batches:
+        assert len(b["IDs"]) <= B.BATCH_CHAR_BUDGET   # IIS 2,048 上限の回帰
+    assert r["requested"] == 252 and r["batches"] == 5
+    assert prog[-1] == (5, 5)
 
 
 def test_fetch_shop_map_by_keys_empty_is_noop(monkeypatch):
@@ -245,3 +247,14 @@ def test_fetch_shop_map_by_keys_empty_is_noop(monkeypatch):
                         classmethod(lambda cls: (_ for _ in ()).throw(AssertionError("不应调用"))))
     r = B.fetch_shop_map_by_keys(object(), [])
     assert r == {"requested": 0, "fetched": 0, "upserted": 0, "batches": 0}
+
+
+def test_chunk_by_budget_respects_char_limit_and_hard_max():
+    # 19 位 ID: 80 個/批
+    ids = [str(10**18 + i) for i in range(100)]
+    chunks = B.chunk_by_budget(ids)
+    assert all(len(",".join(c)) <= B.BATCH_CHAR_BUDGET for c in chunks)
+    assert [len(c) for c in chunks] == [80, 20]
+    # 短い key は hard_max=200 で切れる
+    short = ["k"] * 450
+    assert [len(c) for c in B.chunk_by_budget(short)] == [200, 200, 50]

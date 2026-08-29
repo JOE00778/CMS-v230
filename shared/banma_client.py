@@ -324,7 +324,31 @@ ON CONFLICT (parcel_no) DO UPDATE SET
 """
 
 
-BATCH = 200                         # IDs / OrderDisplayID の API 上限
+# 批量照会の 1 批あたり文字数予算。API 仕様は 200 個/批だが、ゲートウェイ前段の
+# IIS が query ≤2,048 字符しか受けない（2026-08-29 実測: 2,029 OK / 2,429 → 404
+# の gb2312 HTML）。19 位 ID ×200 = 4,029 字符で即死するため、個数でなく
+# 文字数で切る。1,600 字符 ≈ 19 位 ID 80 個 / 楽天 26 位単号 59 個。
+BATCH_CHAR_BUDGET = 1600
+BATCH_MAX = 200                     # API 仕様上の個数上限
+
+
+def chunk_by_budget(keys: list[str], budget: int = BATCH_CHAR_BUDGET,
+                    hard_max: int = BATCH_MAX) -> list[list[str]]:
+    """カンマ連結後が budget 字符以内に収まるように分割。"""
+    out: list[list[str]] = []
+    cur: list[str] = []
+    used = 0
+    for k in keys:
+        add = len(k) + (1 if cur else 0)
+        if cur and (used + add > budget or len(cur) >= hard_max):
+            out.append(cur)
+            cur, used = [], 0
+            add = len(k)
+        cur.append(k)
+        used += add
+    if cur:
+        out.append(cur)
+    return out
 
 
 def is_parcel_id(key: str) -> bool:
@@ -347,9 +371,8 @@ def fetch_shop_map_by_keys(conn, keys: list[str],
     keys = [str(k).strip() for k in keys if k]
     pids = [k for k in keys if is_parcel_id(k)]
     oids = [k for k in keys if not is_parcel_id(k)]
-    batches = ([("IDs", pids[i:i + BATCH]) for i in range(0, len(pids), BATCH)]
-               + [("OrderDisplayID", oids[i:i + BATCH])
-                  for i in range(0, len(oids), BATCH)])
+    batches = ([("IDs", c) for c in chunk_by_budget(pids)]
+               + [("OrderDisplayID", c) for c in chunk_by_budget(oids)])
     if not batches:
         return {"requested": 0, "fetched": 0, "upserted": 0, "batches": 0}
 
