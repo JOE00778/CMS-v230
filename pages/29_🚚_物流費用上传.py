@@ -18,7 +18,7 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 
-from shared import banma_client
+from shared import banma_client, nst_suiteql
 from shared.db import get_connection
 from shared.i18n import lang_selector, t
 
@@ -374,6 +374,39 @@ with tab1:
                     pass
                 err_log.append(t("❌ 斑马补齐失败（已入库数据保留 · 重新点按钮即续跑）: ")
                                + str(e))
+
+        # ── SO 形状（NST 直録注文 · B2B 卸/保証補発）の自動帰類 ──
+        #    Boss 2026-08-29 拍板: SuiteQL で顧客名を引き shop に据える。
+        #    部署は tab② 未分類フローで顧客単位に一度分類すれば以後自動。
+        if inv_months:
+            try:
+                so_keys = [k for k in banma_client.missing_join_keys(
+                               conn, sorted(inv_months))
+                           if re.match(r"^SO\d+", k)]
+                if so_keys and nst_suiteql.is_configured():
+                    names = nst_suiteql.lookup_so_customers(
+                        [k.split("_")[0] for k in so_keys])
+                    so_rows = [{"parcel_no": k, "order_id": k.split("_")[0],
+                                "waybill_no": None, "platform": "NST",
+                                "shop": names[k.split("_")[0]],
+                                "ship_date": None}
+                               for k in so_keys if k.split("_")[0] in names]
+                    if so_rows:
+                        conn.cursor().executemany(
+                            banma_client.UPSERT_SHOP_MAP, so_rows)
+                        conn.commit()
+                        bm_log.append(t(
+                            "🏢 NST 直録(SO): {n} 件 → 顧客名で登記（部署未分類なら tab② で分類）"
+                        ).format(n=len(so_rows)))
+                    left = [k for k in so_keys if k.split("_")[0] not in names]
+                    if left:
+                        err_log.append(t("⚠️ NST に見つからない SO: ") + ", ".join(left))
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                err_log.append(t("❌ SO 帰類失败（該当行は【不明】のまま）: ") + str(e))
 
         with st.spinner(t("全月 重算中…")):
             run_recompute(None)

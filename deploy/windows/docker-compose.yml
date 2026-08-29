@@ -82,6 +82,12 @@ services:
       # page29 物流費上传 · 斑马 API 自動補齊（BM 手動導出の代替 · 2026-08-29）
       # 資格情報は deploy/windows/.env（database/.env と同値）。未設定でも頁は開き
       # checkbox が無効表示になるだけ。
+      # page29 SO 帰類 · NST SuiteQL（TBA 読取専用 · database/.env と同値）
+      NST_ACCOUNT_ID: ${NST_ACCOUNT_ID:-}
+      NST_TBA_CONSUMER_KEY: ${NST_TBA_CONSUMER_KEY:-}
+      NST_TBA_CONSUMER_SECRET: ${NST_TBA_CONSUMER_SECRET:-}
+      NST_TBA_TOKEN_ID: ${NST_TBA_TOKEN_ID:-}
+      NST_TBA_TOKEN_SECRET: ${NST_TBA_TOKEN_SECRET:-}
       BANMA_APP_ID: ${BANMA_APP_ID:-}
       BANMA_APP_SECRET: ${BANMA_APP_SECRET:-}
       TZ: Asia/Tokyo
