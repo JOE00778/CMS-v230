@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import io
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 import openpyxl
 import pandas as pd
@@ -279,6 +279,35 @@ with tab1:
     ups = st.file_uploader(t("xlsx（可多选）"), type=["xlsx"],
                            accept_multiple_files=True, key="batch_up")
     _bm_ok = banma_client.is_configured()
+    # 斑马 token の期限警告（Boss 2026-08-29 に定時同期を停止した結果、
+    # token は「請求書を上げた時」しか更新されない。RefreshToken 30 日を
+    # 跨いで空けると全失効 → ERP 画面で人手更新が必要になる）
+    if _bm_ok:
+        try:
+            _tk = conn.execute(
+                "SELECT refresh_expiry FROM banma.api_token "
+                "WHERE app_id = %s", (banma_client._secret("BANMA_APP_ID"),)
+            ).fetchone()
+            if _tk and _tk["refresh_expiry"]:
+                # 期限は中国標準時 naive で保存されている
+                _now_cn = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+                _left = (_tk["refresh_expiry"] - _now_cn).days
+                _exp = _tk["refresh_expiry"].strftime("%Y-%m-%d")
+                if _left < 0:
+                    st.error(t("🔴 斑马 RefreshToken は {d} に失効済。斑马 ERP（服务 > 开放平台 > APP管理）で"
+                               "「更新令牌」を押してから再度アップロードしてください。").format(d=_exp))
+                elif _left <= 10:
+                    st.warning(t("⚠️ 斑马 RefreshToken の残り {n} 日（{d} 失効）。"
+                                 "この画面で請求書を上げるたびに自動延長されます。"
+                                 "失効した場合は ERP 画面で「更新令牌」。").format(n=_left, d=_exp))
+                else:
+                    st.caption(t("🦓 斑马 token 有効（残り {n} 日 · {d} まで · アップロードのたび自動延長）")
+                               .format(n=_left, d=_exp))
+        except Exception:  # noqa: BLE001
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     use_banma = st.checkbox(
         t("🦓 自动从斑马补齐 包裹→店铺（替代 BM 手动导出）"),
         value=_bm_ok, disabled=not _bm_ok, key="use_banma",
