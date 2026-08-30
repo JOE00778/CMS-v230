@@ -78,9 +78,27 @@ def _cell(r, c):
     return v
 
 
+def _load_wb(data: bytes, probe: tuple[str, ...]):
+    """請求書 xlsx を read_only で開く（41MB で peak 2,047MB → 153MB · 2026-08-30 実測）。
+
+    ⚠️ 非 read_only は 26.6 万行（うち 21.4 万行は使わない Storage Fee）を全展開し、
+    streamlit コンテナの上限 2,048MB を単独で使い切る。parse_invoice と
+    parse_billing で 2 回読むため確実に OOM → コンテナ再起動 → 画面が勝手に
+    リロードして上げたファイルが消える（Boss が 7 月と 6 月で 2 回踏んだ現象）。
+    ⚠️ dimension 欠落の xlsx は read_only だと 1 行しか読めない実績があるため、
+    probe シートが実質空なら通常モードへ落とす（6 月/7 月の実ファイルは
+    両モードで行数一致を確認済）。
+    """
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    for sheet in probe:
+        if sheet in wb.sheetnames and (wb[sheet].max_row or 0) > 1:
+            return wb
+    wb.close()
+    return openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+
+
 def parse_invoice(data: bytes, ym: str):
-    # 普通模式（請求書/导出 xlsx は dimension 欠落で read_only 不可の場合あり）
-    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    wb = _load_wb(data, tuple(INV_SHEETS))
     rows, per = [], {}
     for sheet, (ct, joinkw) in INV_SHEETS.items():
         if sheet not in wb.sheetnames:
@@ -155,7 +173,7 @@ def parse_bm(data: bytes):
 
 def parse_billing(data: bytes, ym: str):
     """Billing sheet（JD 公式の費用全構成）→ (ym, seq, item_name, ex, in)。Total 行で停止。"""
-    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    wb = _load_wb(data, ("Billing",))
     if "Billing" not in wb.sheetnames:
         wb.close()
         return []
