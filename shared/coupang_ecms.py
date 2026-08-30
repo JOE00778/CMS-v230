@@ -13,6 +13,8 @@
 合わせて既定値にしてあるが、`COUPANG_KRW_USD_RATE` で差し替えられる。使ったレートは
 毎回 queue に保存する（後から検証できるように）。
 
+住所の三段切りは `shared/kr_address.py` に任せる（ここで再実装しない）。
+
 ⚠️ 電話は `receiver.safeNumber`（0503-/0502- の安心番号）を**使わない**。通関には
 `overseaShippingInfoDto.ordererPhoneNumber`（実番号）を使う——運営の Excel も
 「通関用連絡先」列を参照している。
@@ -21,12 +23,15 @@ from __future__ import annotations
 
 import math
 import os
-import re
+
+from shared import kr_address
 
 # 運営 Excel の固定係数。実勢レートではない
 DEFAULT_KRW_USD = 0.00068
 # 韓国の個人通関免税枠（USD）。これ以上は目録通関ではなく一般申告
 DUTY_FREE_USD = 150.0
+
+# 住所の三段切りは shared/kr_address.py（행정안전부 법정동코드ベース・実測 311/311）
 
 
 def fx_rate() -> float:
@@ -65,62 +70,6 @@ def split_sku(code: str) -> tuple[str, int]:
     except ValueError:
         return jan, 1
     return jan, max(1, n)
-
-
-# ------------------------------------------------------------------
-# 住所分割
-# ------------------------------------------------------------------
-# 広域自治体 17。2023-06 に 강원도 → 강원특별자치도、2024-01 に 전라북도 → 전북특별자치도
-# へ改称しているが、Coupang のデータには旧称も出るので**両方受ける**。
-_METRO = (
-    "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
-    "대전광역시", "울산광역시", "세종특별자치시",
-)
-_PROVINCE = (
-    "경기도", "강원특별자치도", "강원도", "충청북도", "충청남도",
-    "전북특별자치도", "전라북도", "전라남도", "경상북도", "경상남도",
-    "제주특별자치도", "제주도",
-)
-# 略称 → 正式名。Coupang は「서울 강남구」のような略記も返す
-_ALIAS = {
-    "서울": "서울특별시", "부산": "부산광역시", "대구": "대구광역시",
-    "인천": "인천광역시", "광주": "광주광역시", "대전": "대전광역시",
-    "울산": "울산광역시", "세종": "세종특별자치시", "세종시": "세종특별자치시",
-    "경기": "경기도", "강원": "강원특별자치도", "충북": "충청북도",
-    "충남": "충청남도", "전북": "전북특별자치도", "전남": "전라남도",
-    "경북": "경상북도", "경남": "경상남도", "제주": "제주특별자치도",
-}
-_ALL_SIDO = _METRO + _PROVINCE
-
-
-def split_address(addr: str) -> tuple[str, str, str]:
-    """韓国語住所を (시도, 시군구, 詳細) に分ける。
-
-    運営が「地址分析」シートで手作業＋AI でやっている分割の規則版。実データに合わせて:
-      · 広域市/特別市     → 시군구 は시도そのもの、残り全部が詳細
-        「서울특별시 강동구 둔촌동 555」→ ("서울특별시", "서울특별시", "강동구 둔촌동 555")
-      · 도                → 시군구 は「도 + 시/군」、구から先が詳細
-        「경기도 수원시 권선구 호매실동」→ ("경기도", "경기도 수원시", "권선구 호매실동")
-
-    先頭が既知の시도でなければ (「", "", 原文) を返す——推測で埋めない。画面で運営が直す。
-    """
-    s = re.sub(r"\s+", " ", (addr or "").strip())
-    if not s:
-        return "", "", ""
-    parts = s.split(" ")
-    head = parts[0]
-    sido = _ALIAS.get(head) or (head if head in _ALL_SIDO else "")
-    if not sido:
-        return "", "", s
-
-    rest = parts[1:]
-    if sido in _METRO or _ALIAS.get(head) in _METRO:
-        return sido, sido, " ".join(rest)
-
-    # 도：次のトークンが 시 / 군 なら시군구に含める
-    if rest and rest[0].endswith(("시", "군")):
-        return sido, f"{sido} {rest[0]}", " ".join(rest[1:])
-    return sido, sido, " ".join(rest)
 
 
 # ------------------------------------------------------------------
@@ -185,7 +134,7 @@ def to_queue_row(box: dict, lookup, pulled_at: str) -> dict:
     rate = fx_rate()
     r = box.get("receiver") or {}
     addr_full = " ".join(x for x in (r.get("addr1"), r.get("addr2")) if x).strip()
-    sido, sigungu, detail = split_address(addr_full)
+    a = kr_address.to_ecms(addr_full)
     items = build_items(box, lookup)
     pccc, kind = pccc_of(box)
 
@@ -202,9 +151,9 @@ def to_queue_row(box: dict, lookup, pulled_at: str) -> dict:
         "receiver_phone": customs_phone(box),
         "receiver_postcode": (r.get("postCode") or "").strip(),  # 前ゼロ保持のため文字列
         "receiver_addr": addr_full,
-        "addr_sido": sido,
-        "addr_sigungu": sigungu,
-        "addr_detail": detail,
+        "addr_sido": a["province"] or "",
+        "addr_sigungu": a["city"] or "",
+        "addr_detail": a["address"],
         "pccc": pccc,
         "pccc_kind": kind,
         "items": items,
