@@ -237,6 +237,9 @@ class _PostgresAdapter:
         "kpi_monthly_history": ("year_month",),
         # ECMS 发货（2026-08-28）
         "ecms_shipment": ("reference_code", "env"),
+        # Coupang → ECMS 发货（2026-08-30）
+        "coupang_shipment_queue": ("order_id", "shipment_box_id"),
+        "coupang_product_info": ("jan",),
     }
 
     _RE_OR_REPLACE = re.compile(

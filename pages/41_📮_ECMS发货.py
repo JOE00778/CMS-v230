@@ -23,7 +23,10 @@ st.set_page_config(page_title=t("ECMS 发货"), page_icon="📮", layout="wide")
 from shared.auth import require_password
 from shared.theme import inject_theme
 from shared import ecms_client as ec
-from shared import ecms_store as store
+from shared import ecms_store as ecms_store
+from shared import coupang_client as cp
+from shared import coupang_ecms as ce
+from shared import coupang_store as store_cp
 
 require_password()
 inject_theme()
@@ -45,12 +48,228 @@ def _user() -> str:
     return u.get("email") or u.get("name") or ""
 
 
-tab_create, tab_label, tab_track, tab_cancel, tab_log = st.tabs(
-    [t("① 建运单"), t("② 面单"), t("③ 追踪"), t("④ 取消"), t("📋 记录")]
+tab_cp, tab_sf, tab_create, tab_label, tab_track, tab_cancel, tab_log = st.tabs(
+    [t("🇰🇷 Coupang"), t("🛒 Shopify"), t("✍️ 手工建单"), t("🏷️ 面单"),
+     t("🚚 追踪"), t("🚫 取消"), t("📋 记录")]
 )
 
 # ============================================================
-# ① 建运单
+# ① Coupang（KR）· 拉取 → 核对 → 发 ECMS
+# ============================================================
+with tab_cp:
+    if not cp.is_configured():
+        st.warning(t("Coupang 未配置（元川 .env 的 COUPANG_ACCESS_KEY / SECRET_KEY / VENDOR_ID）"))
+
+    pm = store_cp.product_map()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(t("商品主档"), f"{len(pm)}")
+    q_all = store_cp.list_queue()
+    c2.metric(t("待处理"), sum(1 for r in q_all if r["ecms_status"] == "pending"))
+    c3.metric(t("已发送"), sum(1 for r in q_all if r["ecms_status"] == "sent"))
+    c4.metric(t("换算汇率"), f"{ce.fx_rate():.5f}", help=t("KRW→USD。运营 Excel 的固定系数"))
+
+    # ---- 拉取 ----
+    p1, p2 = st.columns([1, 3])
+    days = p1.number_input(t("拉取最近几天"), min_value=1, max_value=30, value=3, key="cp_days")
+    if p2.button(t("从 Coupang 拉取待发货订单"), type="primary", key="cp_pull",
+                 disabled=not cp.is_configured()):
+        try:
+            boxes = cp.fetch_shippable(days=int(days))
+        except cp.CoupangError as e:
+            st.error(str(e))
+        else:
+            now = store_cp._now()
+            rows = [ce.to_queue_row(b, pm.get, now) for b in boxes]
+            n, skipped = store_cp.upsert_queue(rows)
+            purged = store_cp.purge_old()
+            st.success(t("拉取完成") +
+                       f" · {t('取得')} {len(boxes)} · {t('入库')} {n} · "
+                       f"{t('已发送跳过')} {skipped} · {t('过期清理')} {purged}")
+            st.rerun()
+
+    st.caption(t("个人信息（姓名/电话/地址/PCCC）保存 7 天后自动删除，每次拉取时清理。"))
+
+    # ---- 商品主档导入 ----
+    with st.expander(t("商品主档导入（coupang 产品信息 Excel）"), expanded=not pm):
+        st.caption(t("需要的列：JAN（不带下划线的那列）· 英文名称 · HScode · 产品重量(g) · URL"))
+        up = st.file_uploader(t("选择 Excel"), type=["xlsx"], key="cp_prod")
+        if up is not None and st.button(t("导入"), key="cp_prod_go"):
+            try:
+                df = pd.read_excel(up)
+            except Exception as e:
+                st.error(t("读取失败：") + str(e))
+            else:
+                def _pick(row):
+                    """JAN 列は 2 つある（片方は `JAN_入数`）。下線の無い方を採る。"""
+                    for k, v in row.items():
+                        if str(k).strip().upper().startswith("JAN"):
+                            s = str(v).strip()
+                            if s and s.lower() != "nan" and "_" not in s:
+                                return s
+                    return ""
+
+                def _col(row, *names):
+                    for k, v in row.items():
+                        key = str(k).strip()
+                        if any(n in key for n in names):
+                            s = str(v).strip()
+                            if s and s.lower() != "nan":
+                                return s
+                    return ""
+
+                recs = []
+                for _, raw in df.iterrows():
+                    row = raw.to_dict()
+                    jan = _pick(row)
+                    if not jan:
+                        continue
+                    w = _col(row, "产品重量", "重量")
+                    try:
+                        w = float(w) if w else None
+                    except ValueError:
+                        w = None
+                    recs.append({"jan": jan, "name_en": _col(row, "英文名称", "英文"),
+                                 "hscode": _col(row, "HScode", "HS"),
+                                 "weight_g": w, "url": _col(row, "URL")})
+                n = store_cp.upsert_products(recs)
+                st.success(t("导入") + f" {n} / {len(df)} " + t("行"))
+                st.rerun()
+
+    # ---- 核对 ----
+    pending = [r for r in q_all if r["ecms_status"] in ("pending", "failed")]
+    if not pending:
+        st.info(t("没有待处理的订单"))
+    else:
+        st.subheader(t("核对") + f"（{len(pending)}）")
+        st.caption(t("红色 = 缺必填项，发不出去。省/市/地址/PCCC/电话/重量 可以直接改。"))
+        view = []
+        for r in pending:
+            miss = ce.missing_fields(r)
+            view.append({
+                "发送": not miss,
+                "缺": "、".join(miss) if miss else "",
+                "order_id": r["order_id"], "box_id": r["shipment_box_id"],
+                "姓名": r["receiver_name"], "电话": r["receiver_phone"],
+                "邮编": r["receiver_postcode"], "省/州": r["addr_sido"],
+                "城市": r["addr_sigungu"], "详细地址": r["addr_detail"],
+                "PCCC": r["pccc"], "重量kg": r["weight_kg"],
+                "USD": r["total_usd"], "通关": ce.clearance_type(r["total_usd"] or 0),
+                "品目": " / ".join(f"{i.get('name_en') or i.get('jan')}×{i['qty']}"
+                                   for i in r["items"]),
+            })
+        edited = st.data_editor(
+            pd.DataFrame(view), use_container_width=True, hide_index=True, key="cp_edit",
+            disabled=["缺", "order_id", "box_id", "USD", "通关", "品目"],
+            column_config={"发送": st.column_config.CheckboxColumn(t("发送"))},
+        )
+
+        if st.button(t("保存修改"), key="cp_save"):
+            n = 0
+            for _, row in edited.iterrows():
+                store_cp.update_row(
+                    str(row["order_id"]), str(row["box_id"]),
+                    receiver_name=row["姓名"], receiver_phone=row["电话"],
+                    receiver_postcode=str(row["邮编"]), addr_sido=row["省/州"],
+                    addr_sigungu=row["城市"], addr_detail=row["详细地址"],
+                    pccc=row["PCCC"],
+                    weight_kg=float(row["重量kg"]) if row["重量kg"] else None)
+                n += 1
+            st.success(t("已保存") + f" {n}")
+            st.rerun()
+
+        # ---- 发送 ----
+        chosen = [r for r in edited.to_dict("records") if r["发送"] and not r["缺"]]
+        st.divider()
+        shipper = ec.shipper_default()
+        blocked = []
+        if not ec.is_configured():
+            blocked.append(t("ECMS 凭证未配置"))
+        if not shipper:
+            blocked.append(t("发件人未配置（ECMS_SHIPPER_JSON）"))
+        if blocked:
+            st.warning("、".join(blocked))
+
+        ok_send = st.checkbox(
+            t("已核对，确认发送（ECMS 建单不可撤销，只能事后取消）"), key="cp_confirm")
+        if st.button(t("发送到 ECMS") + f"（{len(chosen)}）", type="primary", key="cp_send",
+                     disabled=not (chosen and ok_send and not blocked)):
+            by_key = {(r["order_id"], r["shipment_box_id"]): r for r in pending}
+            ok = fail = 0
+            log = []
+            for c in chosen:
+                r = by_key.get((str(c["order_id"]), str(c["box_id"])))
+                if not r:
+                    continue
+                ref = f"CP-{r['order_id']}-{r['shipment_box_id']}"
+                if ecms_store.fetch_shipment(ref):
+                    log.append(f"⏭️ {ref} " + t("已建过，跳过"))
+                    continue
+                receiver = {
+                    "country": "KR", "name": r["receiver_name"], "state": r["addr_sido"],
+                    "city": r["addr_sigungu"], "address1": r["addr_detail"],
+                    "postCode": r["receiver_postcode"], "phone": r["receiver_phone"],
+                    "email": "",
+                }
+                items = [{"name": i["name_en"], "description": i["name_en"],
+                          "quantity": i["qty"], "price_amount": i["price_usd"],
+                          "price_currency": "USD",
+                          "weight_kg": (i["weight_kg"] or 0) / max(1, i["qty"]),
+                          "origin_country": "JP", "hscode": i.get("hscode") or "",
+                          "url": i.get("url") or ""} for i in r["items"]]
+                # TODO(PCCC): 牧野さん回答待ち。API のどのフィールドに載せるか未確定のため
+                # いまは備考にだけ入れておく（回答が来たら build_shipment に正式に渡す）
+                payload = ec.build_shipment(
+                    reference_code=ref, receiver=receiver, items=items,
+                    weight_kg=r["weight_kg"], length_cm=25, width_cm=18, height_cm=8,
+                    shipper=shipper)
+                payload["customs"]["importReference"] = r["pccc"]
+                base = dict(reference_code=ref, receiver_name=r["receiver_name"],
+                            receiver_country="KR", request_json=payload, created_by=_user())
+                try:
+                    data = ec.create_shipment(payload)
+                except ec.EcmsError as e:
+                    fail += 1
+                    ecms_store.save_shipment(**base, status="failed",
+                                             response_json={"error": str(e)})
+                    store_cp.update_row(r["order_id"], r["shipment_box_id"],
+                                        ecms_status="failed", note=str(e)[:400])
+                    log.append(f"❌ {ref}: {e}")
+                else:
+                    ok += 1
+                    box = (data.get("boxes") or [{}])[0]
+                    ecms_store.save_shipment(**base, status="created",
+                                             shipment_id=data.get("shipmentId") or "",
+                                             tracking_no=box.get("trackingNo") or "",
+                                             label_url=(box.get("file") or {}).get("labelUrl") or "",
+                                             response_json=data)
+                    store_cp.update_row(r["order_id"], r["shipment_box_id"],
+                                        ecms_status="sent", ecms_reference=ref, note="")
+                    log.append(f"✅ {ref} → {box.get('trackingNo')}")
+            st.success(f"ok={ok} fail={fail} " + t("（详情见下）"))
+            st.code("\n".join(log) or "-")
+
+    # ---- 面单 ----
+    sent = [r for r in q_all if r["ecms_status"] == "sent" and r["ecms_reference"]]
+    if sent:
+        with st.expander(t("已发送的面单") + f"（{len(sent)}）", expanded=False):
+            for r in sent:
+                s = ecms_store.fetch_shipment(r["ecms_reference"])
+                if not s:
+                    continue
+                cols = st.columns([2, 2, 1])
+                cols[0].write(f"`{r['ecms_reference']}` {r['receiver_name']}")
+                cols[1].write(s.get("tracking_no") or "-")
+                if s.get("label_url"):
+                    cols[2].link_button(t("面单"), s["label_url"])
+
+# ============================================================
+# ② Shopify · 後回し（Boss 2026-08-30「coupang做完后再做shopify的」）
+# ============================================================
+with tab_sf:
+    st.info(t("Shopify 侧待做——先把 Coupang 这条跑通。手工建单可用「✍️ 手工建单」tab。"))
+
+# ============================================================
+# 手工建单
 # ============================================================
 with tab_create:
     shipper = ec.shipper_default()
@@ -134,7 +353,7 @@ with tab_create:
         with st.expander(t("发出去的 JSON（发前核一遍）"), expanded=False):
             st.json(payload)
 
-        existing = store.fetch_shipment(ref.strip())
+        existing = ecms_store.fetch_shipment(ref.strip())
         if existing and existing["status"] == "created":
             st.error(t("这个单号已建过运单：") + f" trackingNo={existing['tracking_no']}"
                      + t("。ECMS 不接受重复建单，要重建先在 ④ 取消。"))
@@ -148,12 +367,12 @@ with tab_create:
                 try:
                     data = ec.create_shipment(payload)
                 except ec.EcmsError as e:
-                    store.save_shipment(**base, status="failed",
+                    ecms_store.save_shipment(**base, status="failed",
                                         response_json={"error": str(e), "errors": e.errors})
                     st.error(t("建单失败：") + str(e))
                 else:
                     box = (data.get("boxes") or [{}])[0]
-                    store.save_shipment(**base, status="created",
+                    ecms_store.save_shipment(**base, status="created",
                                         shipment_id=data.get("shipmentId") or "",
                                         tracking_no=box.get("trackingNo") or "",
                                         label_url=(box.get("file") or {}).get("labelUrl") or "",
@@ -201,7 +420,7 @@ with tab_track:
             if not events:
                 st.info(t("暂无事件（ECMS 收到电子舱单后才有第一条 S01N100）"))
             else:
-                n = store.save_events(events)
+                n = ecms_store.save_events(events)
                 st.caption(t("已落库") + f" {n} " + t("条（重复事件自动跳过）"))
                 st.dataframe(
                     pd.DataFrame(events)[["date", "code", "description", "location", "remark"]],
@@ -209,7 +428,7 @@ with tab_track:
 
     hist_tno = (tt or ts).strip()
     if hist_tno:
-        rows = store.local_events(hist_tno)
+        rows = ecms_store.local_events(hist_tno)
         if rows:
             with st.expander(t("本地已存事件") + f"（{len(rows)}）", expanded=False):
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -231,14 +450,14 @@ with tab_cancel:
             st.error(t("取消失败：") + str(e))
         else:
             if cref.strip():
-                store.update_status(cref.strip(), "cancelled")
+                ecms_store.update_status(cref.strip(), "cancelled")
             st.success(t("已取消") + f" · {resp.get('message', '')}")
 
 # ============================================================
 # 📋 记录
 # ============================================================
 with tab_log:
-    rows = store.recent_shipments()
+    rows = ecms_store.recent_shipments()
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:

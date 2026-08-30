@@ -266,3 +266,76 @@ ECMS 要 省(V) / 市(W) / 详细地址(Y) 三段，Coupang 只给整串韩语 `
 - JD（京东物流）出库单上传 —— xlsx 里的「JD 用发货文件」「JD CSV UP用」是另一条链路，不是 ECMS
 - Excel 批量上传路径（我们走 API）
 - Coupang 侧运单号回填（要单独接 Coupang 的发货处理接口）
+
+
+---
+
+## 9. 実装（2026-08-30 · Coupang 側）
+
+Boss の指示 4 点を反映済み：①毎日定時に取り込み・7 日で削除 ②電話は客の実番号
+③PCCC は注文から取る ④申告は USD 固定（レートは運営 Excel の係数）。
+
+| 追加したもの | 何をする |
+|---|---|
+| `shared/coupang_client.py` | ordersheets を status=ACCEPT/INSTRUCT で引く（PII 込み・その場限り） |
+| `shared/coupang_ecms.py` | 換算と分割の**純関数**。運営 Excel の数式が正 |
+| `shared/coupang_store.py` | queue の読み書き + **7 日で PII 削除** |
+| `coupang_shipment_queue` / `coupang_product_info` | 2 表（SQLite / PG 両方に追加済み） |
+| `pages/41_📮_ECMS发货.py` の「🇰🇷 Coupang」tab | 取込 → 核対 → 送信 → 面単 |
+| `tools/pull_coupang_shipments.py` | 元川の定時タスク用。取り込むだけで**送らない** |
+
+### 換算・丸めの規則（`coupang通关文件.xlsx`「JD 用发货文件」の数式が出所）
+
+| 項目 | 式 | 精度 |
+|---|---|---|
+| 申告金額 | `paid amount(KRW) × 0.00068` | **USD・小数 2 桁**（`ROUND`） |
+| 通関類型 | `金額 >= 150 → "2"、未満 → "1"` | USD 150 が免税枠 |
+| 重量 | `単品重量(g) ÷ 1000 × 数量` | **kg・小数 1 桁を切り上げ**（`ROUNDUP`） |
+| 数量 | `SKU の "_" の後 × Purchased qty` | 整数 |
+| 発送人 | `smikie japan` / `3-1-35,Sekidenmachi,Oita,Oita,Japan` / `097-574-9906` | 固定 |
+
+⚠️ `0.00068` は実勢レートではなく運営の固定係数（1 USD ≈ 1,470.6 KRW）。
+`COUPANG_KRW_USD_RATE` で差し替え可。**使ったレートは行ごとに保存**している。
+
+### 住所の分割（API も外部サービスも使わない）
+
+英語住所は不要（Boss 2026-08-30）なので韓国語のまま、規則で 3 つに割る：
+
+- 広域市・特別市（8）→ 시군구 = 시도そのもの、残り全部が詳細
+  `서울특별시 강동구 둔촌동 555` → (`서울특별시`, `서울특別시`, `강동구 둔촌동 555`)
+- 도（9）→ 시군구 = `도 + 시/군`、구から先が詳細
+  `경기도 수원시 권선구 호매실동` → (`경기도`, `경기도 수원시`, `권선구 호매실동`)
+
+「地址分析 ecms」シートの実データがそのままテストケース。略称（`서울` `경기`）は正式名へ寄せ、
+改称前の `강원도` / `전라북도` も受ける。**先頭が既知の시도でなければ空を返す**——
+埋めずに画面で赤く出し、運営に直させる（AI 翻訳に任せない。現行シートには
+「京畿道京畿道水原市」のような重複や、注釈文がそのまま住所欄に入った例がある）。
+
+### 運用フロー
+
+```
+毎日定時（元川タスク）  tools/pull_coupang_shipments.py --days 3
+    → 取り込み・7 日超を削除・**送信はしない**
+運営が page41「🇰🇷 Coupang」  赤い行を直す → チェック → 「发送到 ECMS」
+    → 1 件ずつ manifest → tracking と面単 URL が返る → queue は sent
+```
+
+`reference_code` は `CP-{orderId}-{shipmentBoxId}`。送信前に `ecms_shipment` を見て
+二重建単を止める（ECMS の manifest は非冪等）。
+
+### 元川の定時タスク（Boss が設定）
+
+```
+タスク名: CMS Coupang 発送取込
+実行時刻: 毎日 09:00（運営の始業前に揃っていればよい。時刻は変えて構わない）
+コマンド: docker exec cms_streamlit python tools/pull_coupang_shipments.py --days 3
+```
+
+### まだ塞がっていない穴
+
+- **PCCC の送り先フィールド**（牧野さん回答待ち）。いまは `customs.importReference` に
+  仮置きしている。回答が来たら `build_shipment()` に正式に渡す — `pages/41` の
+  `TODO(PCCC)` の 1 行を差し替えるだけ
+- 商品マスタは画面から Excel 取り込み。自動化は未着手
+- 箱サイズは 25×18×8cm 固定。実箱に合わせるなら要調整
+- **Coupang への運送状番号の戻し入れが未実装** — これをやらないと平台側が発送を認識しない

@@ -1270,3 +1270,47 @@ CREATE TABLE IF NOT EXISTS ecms_tracking_event (
   PRIMARY KEY (tracking_no, event_code, event_time)
 );
 CREATE INDEX IF NOT EXISTS idx_ecms_evt_tracking ON ecms_tracking_event(tracking_no);
+
+-- ============================================================
+-- Coupang → ECMS 发货（2026-08-30）· shared/schema.sql と同期
+-- queue は PII を持つ。7 日で自動削除
+-- ============================================================
+CREATE TABLE IF NOT EXISTS coupang_shipment_queue (
+  order_id          TEXT NOT NULL,
+  shipment_box_id   TEXT NOT NULL,
+  ordered_at        TEXT,
+  coupang_status    TEXT,
+  receiver_name     TEXT,
+  receiver_phone    TEXT,
+  receiver_postcode TEXT,
+  receiver_addr     TEXT,
+  addr_sido         TEXT,
+  addr_sigungu      TEXT,
+  addr_detail       TEXT,
+  pccc              TEXT,
+  pccc_kind         TEXT,
+  items_json        TEXT,
+  total_krw         DOUBLE PRECISION,
+  total_usd         DOUBLE PRECISION,
+  weight_kg         DOUBLE PRECISION,
+  fx_rate           DOUBLE PRECISION,
+  ecms_status       TEXT NOT NULL,
+  ecms_reference    TEXT,
+  note              TEXT,
+  pulled_at         TEXT NOT NULL,
+  updated_at        TEXT,
+  PRIMARY KEY (order_id, shipment_box_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cpq_status ON coupang_shipment_queue(ecms_status);
+CREATE INDEX IF NOT EXISTS idx_cpq_pulled ON coupang_shipment_queue(pulled_at);
+
+CREATE TABLE IF NOT EXISTS coupang_product_info (
+  jan            TEXT PRIMARY KEY,
+  name_en        TEXT,
+  hscode         TEXT,
+  weight_g       DOUBLE PRECISION,
+  product_id     TEXT,
+  option_id      TEXT,
+  url            TEXT,
+  updated_at     TEXT
+);

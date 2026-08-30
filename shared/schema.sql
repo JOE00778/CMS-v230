@@ -1183,3 +1183,50 @@ CREATE TABLE IF NOT EXISTS ecms_tracking_event (
   PRIMARY KEY (tracking_no, event_code, event_time)
 );
 CREATE INDEX IF NOT EXISTS idx_ecms_evt_tracking ON ecms_tracking_event(tracking_no);
+
+-- ============================================================
+-- Coupang → ECMS 发货（2026-08-30）
+-- queue は PII を持つ（受取人氏名・電話・住所・PCCC）。**7 日で自動削除**
+-- （Boss 2026-08-30「発送完了後は消してよい・1 週間残ればいい」）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS coupang_shipment_queue (
+  order_id          TEXT NOT NULL,           -- Coupang orderId
+  shipment_box_id   TEXT NOT NULL,           -- 1 注文が複数箱に割れる。ECMS は箱単位で 1 運単
+  ordered_at        TEXT,
+  coupang_status    TEXT,                    -- ACCEPT / INSTRUCT / ...
+  receiver_name     TEXT,                    -- PII
+  receiver_phone    TEXT,                    -- PII · 通関用の実番号（安心番号ではない）
+  receiver_postcode TEXT,                    -- 前ゼロ保持のため TEXT
+  receiver_addr     TEXT,                    -- PII · 韓国語の住所まるごと
+  addr_sido         TEXT,                    -- 分割結果（運営が画面で直せる）
+  addr_sigungu      TEXT,
+  addr_detail       TEXT,
+  pccc              TEXT,                    -- PII · 個人通関固有符号
+  pccc_kind         TEXT,                    -- normal / onetime
+  items_json        TEXT,                    -- [{jan, name_en, hscode, qty, weight_kg, price_usd, url}]
+  total_krw         REAL,
+  total_usd         REAL,                    -- ROUND(krw * rate, 2)
+  weight_kg         REAL,                    -- ROUNDUP(sum, 1)
+  fx_rate           REAL,                    -- 換算に使ったレート（後から検証できるよう都度保存）
+  ecms_status       TEXT NOT NULL,           -- pending / sent / failed / skipped
+  ecms_reference    TEXT,                    -- 送信した ecms_shipment.reference_code
+  note              TEXT,
+  pulled_at         TEXT NOT NULL,           -- ここから 7 日で削除
+  updated_at        TEXT,
+  PRIMARY KEY (order_id, shipment_box_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cpq_status ON coupang_shipment_queue(ecms_status);
+CREATE INDEX IF NOT EXISTS idx_cpq_pulled ON coupang_shipment_queue(pulled_at);
+
+-- 商品マスタ（JAN → 申告用の英語品名 / HS / 単品重量 / 商品URL）
+-- 出所は運営の「coupang 产品信息」Excel。画面から取り込む。
+CREATE TABLE IF NOT EXISTS coupang_product_info (
+  jan            TEXT PRIMARY KEY,           -- 下線なしの JAN（SKU の "_" 前）
+  name_en        TEXT,                       -- 申告品名（英語）
+  hscode         TEXT,
+  weight_g       REAL,                       -- 単品の g。ECMS へは kg 換算
+  product_id     TEXT,                       -- Coupang Product ID（URL 組み立て用）
+  option_id      TEXT,                       -- Coupang 옵션 ID
+  url            TEXT,
+  updated_at     TEXT
+);
