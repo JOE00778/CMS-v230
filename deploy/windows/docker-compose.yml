@@ -90,6 +90,14 @@ services:
       NST_TBA_TOKEN_SECRET: ${NST_TBA_TOKEN_SECRET:-}
       BANMA_APP_ID: ${BANMA_APP_ID:-}
       BANMA_APP_SECRET: ${BANMA_APP_SECRET:-}
+      # page41「🇰🇷 Coupang」· 発送対象の注文を PII 込みでその場で引く（2026-08-30）
+      # database/.env と同値を deploy/windows/.env にも置く（NST_* / BANMA_* と同じ扱い）
+      # ⚠️ WING key は斑马ERP と共用・180 日輪換。輪換時は両方の .env を直すこと
+      COUPANG_ACCESS_KEY: ${COUPANG_ACCESS_KEY:-}
+      COUPANG_SECRET_KEY: ${COUPANG_SECRET_KEY:-}
+      COUPANG_VENDOR_ID: ${COUPANG_VENDOR_ID:-}
+      # KRW→USD 換算係数。既定 0.00068 は運営 Excel の固定値（実勢レートではない）
+      COUPANG_KRW_USD_RATE: ${COUPANG_KRW_USD_RATE:-}
       TZ: Asia/Tokyo
     volumes:
       # 代码 bind mount（2026-05-19）: git pull 后立即生效，不需 --build

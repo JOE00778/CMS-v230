@@ -318,9 +318,22 @@ Boss の指示 4 点を反映済み：①毎日定時に取り込み・7 日で�
 
 ```
 タスク名: CMS Coupang 発送取込
-実行時刻: 毎日 09:00（運営の始業前に揃っていればよい。時刻は変えて構わない）
+実行時刻: 毎日 09:00（時刻は変えて構わない）
 コマンド: docker exec cms_streamlit python tools/pull_coupang_shipments.py --days 3
 ```
+
+**COUPANG_* の凭据は元川に既にある**（`database/.env`。斑马ERP と共用の WING key、
+180 日輪換）。streamlit 容器は env_file を読まず environment を明示列挙する作りなので、
+`deploy/windows/.env` にも同じ 3 つを写す必要がある（NST_* / BANMA_* と同じ扱い）:
+
+```
+COUPANG_ACCESS_KEY=（database/.env と同値）
+COUPANG_SECRET_KEY=（同上）
+COUPANG_VENDOR_ID=（同上）
+```
+
+compose の environment を触ったので、反映は **redeploy.bat**（update-cms.bat の
+restart では compose を読み直さない）。
 
 ### まだ塞がっていない穴
 
