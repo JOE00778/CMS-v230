@@ -335,6 +335,24 @@ COUPANG_VENDOR_ID=（同上）
 compose の environment を触ったので、反映は **redeploy.bat**（update-cms.bat の
 restart では compose を読み直さない）。
 
+### 疎通確認（凭据が届いたら最初にやること）
+
+Boss 2026-08-30「先测试 ECMS 推送订单信息和回传面单是否可用，然后再测试回填 coupang」。
+
+```
+docker exec cms_streamlit python tools/ecms_uat_check.py
+```
+
+ダミーの韓国宛て 1 件で manifest → printLabel → getTracking → cancelShipment を
+順に叩き、`ok=4/4` で終われば ECMS 側は使える。面単 PDF はファイルに落とすので
+中身も目で見られる。落ちたらそこで止まり、送った JSON と生レスポンスを出す。
+
+- **ECMS_ENV=pro では動かない**（実運送状が立つため）。`--allow-pro` を明示したときだけ
+- 建てた運単は最後に自動で取消す（`--keep` で残せる）
+
+これが通ってから、page41「🇰🇷 Coupang」で実注文 1 件を UAT に流して突き合わせる。
+Coupang への運送状番号の戻し入れはその後（Boss 指示で後回し）。
+
 ### まだ塞がっていない穴
 
 - **PCCC の送り先フィールド**（牧野さん回答待ち）。いまは `customs.importReference` に
