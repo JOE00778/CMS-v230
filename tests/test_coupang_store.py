@@ -87,18 +87,28 @@ def test_PIIは7日で消える():
     assert cs.purge_old() == 0                                # 二度目は何も消えない
 
 
-def test_商品マスタの取り込みと参照():
+def test_商品マスタは_SKU_単位():
+    """同じ JAN でも規格違い（`_2` / `_3`）は別行。JAN で持つと英語品名と URL が混ざる。"""
     assert cs.upsert_products([
-        {"jan": "4573626220481", "name_en": "Shampoo Set", "hscode": "330510",
-         "weight_g": 500.0, "url": "https://x"},
-        {"jan": "", "name_en": "捨てられる"},                  # JAN 無しは入れない
-    ]) == 1
+        {"sku": "4901616011007_2", "jan": "4901616011007", "pack": 2,
+         "name_en": "Ora2 Toothpaste 130g, 2pcs", "option_id": "95619912252"},
+        {"sku": "4901616011007_3", "jan": "4901616011007", "pack": 3,
+         "name_en": "Ora2 Toothpaste 130g, 3pcs", "option_id": "95619969056"},
+        {"sku": "", "name_en": "捨てられる"},                  # SKU 無しは入れない
+    ]) == 2
     m = cs.product_map()
-    assert set(m) == {"4573626220481"}
-    assert m["4573626220481"]["weight_g"] == 500.0
-    cs.upsert_products([{"jan": "4573626220481", "name_en": "Shampoo Set v2",
-                         "hscode": "330510", "weight_g": 520.0}])
-    assert cs.product_map()["4573626220481"]["name_en"] == "Shampoo Set v2"   # 上書き
+    assert set(m) == {"4901616011007_2", "4901616011007_3"}
+    assert m["4901616011007_2"]["option_id"] == "95619912252"
+    assert m["4901616011007_3"]["option_id"] == "95619969056"
+    assert m["4901616011007_3"]["jan"] == "4901616011007"
+    cs.upsert_products([{"sku": "4901616011007_3", "jan": "4901616011007",
+                         "name_en": "Ora2 v2"}])
+    assert cs.product_map()["4901616011007_3"]["name_en"] == "Ora2 v2"   # 上書き
+
+
+def test_JAN_だけ渡されても_SKU_から補える():
+    cs.upsert_products([{"sku": "4976631478272", "name_en": "Pelican Soap"}])
+    assert cs.product_map()["4976631478272"]["jan"] == "4976631478272"
 
 
 def test_空入力は何もしない():

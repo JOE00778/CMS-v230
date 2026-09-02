@@ -1,0 +1,230 @@
+[
+ {
+  "col": "A",
+  "header": "Client Code\n客户代码\n#Mandatory#"
+ },
+ {
+  "col": "B",
+  "header": "Order Number\n订单号\n#Mandatory#"
+ },
+ {
+  "col": "C",
+  "header": "Ref Number\n头程运单号\n#Mandatory#"
+ },
+ {
+  "col": "D",
+  "header": "Expected Ship Date\n预计发货日期\n#Optional#"
+ },
+ {
+  "col": "E",
+  "header": "Arrival Date\n预计到达日期\n#Optional#"
+ },
+ {
+  "col": "F",
+  "header": "Weight\n毛重\n#Recommended#"
+ },
+ {
+  "col": "G",
+  "header": "Length\n长\n#Recommended#"
+ },
+ {
+  "col": "H",
+  "header": "Width\n宽\n#Recommended#"
+ },
+ {
+  "col": "I",
+  "header": "Height\n高\n#Recommended#"
+ },
+ {
+  "col": "J",
+  "header": "Weight Unit\n重量单位\n#Recommended#"
+ },
+ {
+  "col": "K",
+  "header": "Length Unit\n体积单位\n#Recommended#"
+ },
+ {
+  "col": "L",
+  "header": "Warehouse Code\n仓库编码\n#Mandatory#"
+ },
+ {
+  "col": "M",
+  "header": "Customs Clearance Type\n清关模式\n#Optional#"
+ },
+ {
+  "col": "N",
+  "header": "Insurance Type\n保险类型\n#Optional#"
+ },
+ {
+  "col": "O",
+  "header": "Service Level\n服务等级\n#Optional#"
+ },
+ {
+  "col": "P",
+  "header": "Order Date\n订单日期\n#Optional#"
+ },
+ {
+  "col": "Q",
+  "header": "Consignee Info Language\n收货人信息语种\n#Mandatory#"
+ },
+ {
+  "col": "R",
+  "header": "Consignee Name\n收货人姓名\n#Mandatory#"
+ },
+ {
+  "col": "S",
+  "header": "Consignee Telephone\n收货人电话\n#Mandatory#"
+ },
+ {
+  "col": "T",
+  "header": "Consignee Email\n收货人邮箱\n#Optional#"
+ },
+ {
+  "col": "U",
+  "header": "Consignee Country\n收货人国家\n#Mandatory#"
+ },
+ {
+  "col": "V",
+  "header": "Consignee Province\n收货人州/省\n#Mandatory#"
+ },
+ {
+  "col": "W",
+  "header": "Consignee City\n收货人城市\n#Mandatory#"
+ },
+ {
+  "col": "X",
+  "header": "Consignee Postal Code\n收货人邮编\n#Optional#"
+ },
+ {
+  "col": "Y",
+  "header": "Consignee Address\n收货人地址\n#Mandatory#"
+ },
+ {
+  "col": "Z",
+  "header": "Consignee ID Type\n收货人证件类型\n#Conditional Required#"
+ },
+ {
+  "col": "AA",
+  "header": "Consignee IDNo\n收货人证件号\n#Conditional Required#"
+ },
+ {
+  "col": "AB",
+  "header": "Order Remark\n订单备注\n#Optional#"
+ },
+ {
+  "col": "AC",
+  "header": "Item Info Language\n内件信息语言\n#Mandatory#"
+ },
+ {
+  "col": "AD",
+  "header": "Item Num\n内件序号\n#Optional#"
+ },
+ {
+  "col": "AE",
+  "header": "Item_Brand\n品牌\n#Mandatory#"
+ },
+ {
+  "col": "AF",
+  "header": "Item_Specifications\n规格型号\n#Mandatory#"
+ },
+ {
+  "col": "AG",
+  "header": "Item_SKU\nSKU\n#Mandatory#"
+ },
+ {
+  "col": "AH",
+  "header": "Item_Name\n品名\n#Mandatory#"
+ },
+ {
+  "col": "AI",
+  "header": "Item_Describe\n描述\n#Optional#"
+ },
+ {
+  "col": "AJ",
+  "header": "Item_Grossweight\n毛重\n#Mandatory#"
+ },
+ {
+  "col": "AK",
+  "header": "Item_Weight_Unit\n重量单位\n#Mandatory#"
+ },
+ {
+  "col": "AL",
+  "header": "Item_Dangerous_Type\n危险品类型\n#Mandatory#"
+ },
+ {
+  "col": "AM",
+  "header": "HSCode\n海关编码\n#Optional#"
+ },
+ {
+  "col": "AN",
+  "header": "Item_Url\n内件网址\n#Recommended#"
+ },
+ {
+  "col": "AO",
+  "header": "Item_Quantity\n内件总数\n#Mandatory#"
+ },
+ {
+  "col": "AP",
+  "header": "Item_Price\n单价\n#Mandatory#"
+ },
+ {
+  "col": "AQ",
+  "header": "Total_Price\n总价\n#Optional#"
+ },
+ {
+  "col": "AR",
+  "header": "Item_Currency\n币种\n#Mandatory#"
+ },
+ {
+  "col": "AS",
+  "header": "Item_Country\n原产国\n#Mandatory#"
+ },
+ {
+  "col": "AT",
+  "header": "Shipper_Code\n发货人编码\n#Mandatory#"
+ },
+ {
+  "col": "AU",
+  "header": "Platform Id\n电商平台编码\n#Optional#"
+ },
+ {
+  "col": "AV",
+  "header": "Sub Client Code\n被代理商家编码\n#Optional#"
+ },
+ {
+  "col": "AW",
+  "header": "HazmatDesc\n危险品描述\n#Optional#"
+ },
+ {
+  "col": "AX",
+  "header": "TAX_NUMBER\n目的国进口税号\n#Optional#"
+ },
+ {
+  "col": "AY",
+  "header": "TAX_PAID_TYPE\n消费税支付状态\n#Optional#"
+ },
+ {
+  "col": "AZ",
+  "header": "Shipper's ABN Number\n发货人 ABN Number\n#Optional#"
+ },
+ {
+  "col": "BA",
+  "header": "Export Type\n出口报关类型\n#Optional#"
+ },
+ {
+  "col": "BB",
+  "header": "Export Reference\n出口报关编号\n#Optional#"
+ },
+ {
+  "col": "BC",
+  "header": "ESE Care\n#Optional#"
+ },
+ {
+  "col": "BD",
+  "header": "A/F\n运杂费\n#Optional#"
+ },
+ {
+  "col": "BE",
+  "header": "Other Charges\n保险金额\n#Optional#"
+ }
+]

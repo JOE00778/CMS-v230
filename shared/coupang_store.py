@@ -21,31 +21,56 @@ def _now() -> str:
 # 商品マスタ
 # ------------------------------------------------------------------
 def upsert_products(rows: list[dict]) -> int:
+    """キーは **SKU**（`JAN_入数`）。同じ JAN でも規格違いは別 OptionID・別英語品名。"""
     if not rows:
         return 0
+    valid = [r for r in rows if r.get("sku")]
     conn = get_connection()
     try:
         conn.executemany(
             "INSERT OR REPLACE INTO coupang_product_info"
-            " (jan, name_en, hscode, weight_g, product_id, option_id, url, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            [(r["jan"], r.get("name_en"), r.get("hscode"), r.get("weight_g"),
-              r.get("product_id"), r.get("option_id"), r.get("url"), _now())
-             for r in rows if r.get("jan")],
+            " (sku, jan, pack, name_en, brand, hscode, product_id, option_id, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            [(r["sku"], r.get("jan") or str(r["sku"]).split("_")[0], r.get("pack"),
+              r.get("name_en"), r.get("brand"), r.get("hscode"), r.get("product_id"),
+              r.get("option_id"), _now()) for r in valid],
         )
         conn.commit()
-        return len([r for r in rows if r.get("jan")])
+        return len(valid)
     finally:
         conn.close()
 
 
 def product_map() -> dict[str, dict]:
-    """JAN → マスタ 1 行。件数はたかだか数千なので丸ごと読んで dict にする。"""
+    """SKU → マスタ 1 行。件数はたかだか数千なので丸ごと読んで dict にする。"""
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT jan, name_en, hscode, weight_g, url FROM coupang_product_info").fetchall()
-        return {str(r["jan"]): dict(r) for r in rows}
+            "SELECT sku, jan, pack, name_en, brand, hscode, product_id, option_id"
+            " FROM coupang_product_info").fetchall()
+        return {str(r["sku"]): dict(r) for r in rows}
+    finally:
+        conn.close()
+
+
+def nst_master_map(jans: list[str]) -> dict[str, dict]:
+    """NST 商品マスタから JAN → {maker, weight(g)}。重量と品牌の出所はここ。
+
+    運営 Excel の数式 `XLOOKUP(JAN, cms0811!B:B, cms0811!P:P)` と同じ引き方。
+    cms0811 は NST マスタの写しなので、CMS では PG から直接引く。
+    PG が無い（本機 SQLite）ときは空を返す——埋めずに画面で赤く出す。
+    """
+    if not jans:
+        return {}
+    conn = get_connection()
+    try:
+        marks = ",".join("?" * len(jans))
+        rows = conn.execute(
+            f"SELECT jan, maker, weight FROM nst.item_master_raw WHERE jan IN ({marks})",
+            tuple(jans)).fetchall()
+        return {str(r["jan"]): {"maker": r["maker"], "weight": r["weight"]} for r in rows}
+    except Exception:
+        return {}
     finally:
         conn.close()
 

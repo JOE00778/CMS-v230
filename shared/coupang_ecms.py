@@ -96,28 +96,38 @@ def customs_phone(box: dict) -> str:
     return (r.get("receiverNumber") or "").strip()
 
 
-def build_items(box: dict, lookup) -> list[dict]:
-    """orderItems → 申告明細。lookup(jan) は商品マスタ 1 行 or None を返す callable。"""
+def build_items(box: dict, products: dict, masters: dict | None = None) -> list[dict]:
+    """orderItems → 申告明細。
+
+    products: **SKU**（`JAN_入数`）キー。同じ JAN でも規格違いは別 OptionID・別英語品名。
+    masters : **JAN** キーの NST 商品マスタ（`maker` / `weight` g）。重量の出所はこちら。
+    """
     rate = fx_rate()
+    masters = masters or {}
     out = []
     for it in box.get("orderItems") or []:
-        jan, pack = split_sku(it.get("externalVendorSkuCode") or "")
+        sku_raw = (it.get("externalVendorSkuCode") or "").strip()
+        jan, pack = split_sku(sku_raw)
         shipped = int(it.get("shippingCount") or 0) - int(it.get("cancelCount") or 0)
         if shipped <= 0:
             continue
         qty = pack * shipped
-        m = lookup(jan) or {}
-        unit_g = m.get("weight_g")
+        m = products.get(sku_raw) or {}
+        unit_g = (masters.get(jan) or {}).get("weight")
         krw_total = float(it.get("salesPrice") or 0) * shipped
         out.append({
             "jan": jan,
             "name_en": m.get("name_en") or "",
             "hscode": m.get("hscode") or "",
-            "url": m.get("url") or "",
+            "url": (f"https://www.coupang.com/vp/products/{m['product_id']}"
+                    f"?vendorItemId={m['option_id']}"
+                    if m.get("product_id") and m.get("option_id") else ""),
             "pack": pack,
             "shipped": shipped,
             "qty": qty,
-            "weight_kg": round(float(unit_g) / 1000 * qty, 4) if unit_g else None,
+            # ECMS の Item_Grossweight は 1 個あたりの kg（数量は掛けない · 実測 37/37）
+            "weight_kg": round(float(unit_g) / 1000, 2) if unit_g else None,
+            "weight_total_kg": round(float(unit_g) / 1000 * qty, 3) if unit_g else None,
             "krw": krw_total,
             "price_usd": usd_from_krw(krw_total / qty, rate) if qty else 0.0,
             "total_usd": usd_from_krw(krw_total, rate),
@@ -125,7 +135,8 @@ def build_items(box: dict, lookup) -> list[dict]:
     return out
 
 
-def to_queue_row(box: dict, lookup, pulled_at: str) -> dict:
+def to_queue_row(box: dict, products: dict, pulled_at: str,
+                 masters: dict | None = None) -> dict:
     """Coupang の shipmentBox 1 件 → coupang_shipment_queue の 1 行。
 
     足りない項目（英語品名 / HS / 重量 / PCCC）は空のまま返す。**埋めない**——
@@ -135,11 +146,11 @@ def to_queue_row(box: dict, lookup, pulled_at: str) -> dict:
     r = box.get("receiver") or {}
     addr_full = " ".join(x for x in (r.get("addr1"), r.get("addr2")) if x).strip()
     a = kr_address.to_ecms(addr_full)
-    items = build_items(box, lookup)
+    items = build_items(box, products, masters)
     pccc, kind = pccc_of(box)
 
     total_krw = sum(i["krw"] for i in items)
-    weights = [i["weight_kg"] for i in items if i["weight_kg"] is not None]
+    weights = [i["weight_total_kg"] for i in items if i.get("weight_total_kg") is not None]
     weight = roundup_1(sum(weights)) if len(weights) == len(items) and items else None
 
     return {

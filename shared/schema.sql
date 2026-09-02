@@ -1221,12 +1221,16 @@ CREATE INDEX IF NOT EXISTS idx_cpq_pulled ON coupang_shipment_queue(pulled_at);
 -- 商品マスタ（JAN → 申告用の英語品名 / HS / 単品重量 / 商品URL）
 -- 出所は運営の「coupang 产品信息」Excel。画面から取り込む。
 CREATE TABLE IF NOT EXISTS coupang_product_info (
-  jan            TEXT PRIMARY KEY,           -- 下線なしの JAN（SKU の "_" 前）
+  sku            TEXT PRIMARY KEY,           -- Coupang の Vendor product code `JAN_入数`
+  jan            TEXT NOT NULL,              -- SKU の "_" 前。重量は JAN 単位で NST から引く
+  pack           INTEGER,                    -- "_" の後（内含個数）
   name_en        TEXT,                       -- 申告品名（英語）
+  brand          TEXT,                       -- 申告用の品牌。空なら NST の 厂商 を使う
+                                             -- （NST「ユニリーバ」→ 運営「Dove」のような
+                                             --   ブランド名は自動で導けないのでここで上書き）
   hscode         TEXT,
-  weight_g       REAL,                       -- 単品の g。ECMS へは kg 換算
-  product_id     TEXT,                       -- Coupang Product ID（URL 組み立て用）
-  option_id      TEXT,                       -- Coupang 옵션 ID
-  url            TEXT,
+  product_id     TEXT,                       -- Coupang Product ID（商品URL 組み立て用）
+  option_id      TEXT,                       -- Coupang 옵션 ID = ECMS の Platform Id
   updated_at     TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_cpi_jan ON coupang_product_info(jan);

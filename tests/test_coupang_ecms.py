@@ -77,10 +77,10 @@ def _box(**over):
     return b
 
 
-def _lookup(jan):
-    return {"4573626220481": {"name_en": "&Honey Sakura Shampoo Treatment Set",
-                              "hscode": "330510", "weight_g": 500.0,
-                              "url": "https://www.coupang.com/vp/products/9660564393"}}.get(jan)
+_PRODUCTS = {"4573626220481_2": {"name_en": "&Honey Sakura Shampoo Treatment Set",
+                                 "hscode": "330510", "product_id": "9660564393",
+                                 "option_id": "95148686296"}}
+_MASTERS = {"4573626220481": {"maker": "VICREA", "weight": 250.0}}   # 単品 250g × 入数 2 = 500g
 
 
 def test_安心番号は使わない():
@@ -100,7 +100,7 @@ def test_一回限りPCCCも拾う():
 
 # ---------- 行の組み立て ----------
 def test_queue行():
-    row = ce.to_queue_row(_box(), _lookup, "2026-08-30T09:00:00+09:00")
+    row = ce.to_queue_row(_box(), _PRODUCTS, "2026-08-30T09:00:00+09:00", _MASTERS)
     assert row["order_id"] == "26102557706698"
     assert row["receiver_postcode"] == "13581"
     assert row["addr_sigungu"] == "경기도 성남시"
@@ -108,8 +108,9 @@ def test_queue行():
     assert row["pccc"] == "P842160107476"
     it = row["items"][0]
     assert it["qty"] == 2                     # 入数 2 × 出荷 1
-    assert it["weight_kg"] == 1.0             # 500g × 2
-    assert row["weight_kg"] == 1.0
+    assert it["weight_kg"] == 0.25            # 1 個あたり 250g（数量は掛けない）
+    assert it["weight_total_kg"] == 0.5       # 250g × 2 個
+    assert row["weight_kg"] == 0.5
     assert row["total_krw"] == 77900
     assert row["total_usd"] == 52.97
     assert row["fx_rate"] == 0.00068          # 使ったレートを残す
@@ -119,7 +120,7 @@ def test_queue行():
 
 def test_前ゼロの邮编が消えない():
     row = ce.to_queue_row(_box(receiver={**_box()["receiver"], "postCode": "01058"}),
-                          _lookup, "t")
+                          _PRODUCTS, "t", _MASTERS)
     assert row["receiver_postcode"] == "01058"
 
 
@@ -127,13 +128,13 @@ def test_キャンセル分は数えない():
     b = _box()
     b["orderItems"] = [{"externalVendorSkuCode": "4573626220481_2", "shippingCount": 3,
                         "cancelCount": 3, "salesPrice": 77900}]
-    row = ce.to_queue_row(b, _lookup, "t")
+    row = ce.to_queue_row(b, _PRODUCTS, "t", _MASTERS)
     assert row["items"] == []                 # 全部キャンセル → 明細ゼロ
     assert "申告明細" in ce.missing_fields(row)
 
 
 def test_商品マスタ未登録は空のまま返して赤で出す():
-    row = ce.to_queue_row(_box(), lambda jan: None, "t")
+    row = ce.to_queue_row(_box(), {}, "t", {})
     miss = ce.missing_fields(row)
     assert "重量（商品マスタ未登録）" in miss
     assert any("英語品名" in m for m in miss)

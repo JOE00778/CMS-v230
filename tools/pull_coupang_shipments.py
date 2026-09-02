@@ -50,8 +50,11 @@ def main() -> int:
         return 1
 
     pm = store.product_map()
+    jans = sorted({ce.split_sku(it.get("externalVendorSkuCode") or "")[0]
+                   for b in boxes for it in (b.get("orderItems") or [])})
+    nm = store.nst_master_map(jans)
     now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-    rows = [ce.to_queue_row(b, pm.get, now) for b in boxes]
+    rows = [ce.to_queue_row(b, pm, now, nm) for b in boxes]
     incomplete = sum(1 for r in rows if ce.missing_fields(r))
 
     if args.dry_run:
