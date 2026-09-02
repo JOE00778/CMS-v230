@@ -92,6 +92,21 @@ def test_品牌は_厂商から和名併記を落とす():
     assert X.clean_brand("KAO") == "KAO"
 
 
+def test_HSCode_は載せない():
+    """運営の実ファイルは 37/37 とも空。マスタに値があっても出さない。"""
+    row = X.build_row({X.C_SKU: "4901616011007_3"}, {"hscode": "330610"}, {}, "R1")
+    assert row["AM"] == ""
+
+
+def test_옵션ID_は注文側が正():
+    """商品マスタが古いことがある。実測 37/37 が注文の Option ID と一致。"""
+    row = X.build_row({X.C_SKU: "x_1", X.C_OPTION_ID: "95323351399"},
+                      {"option_id": "95424664036", "product_id": "9544746544"}, {}, "R1")
+    assert row["AU"] == "95323351399"
+    assert "vendorItemId=95323351399" in row["AN"]
+    assert "/products/9544746544" in row["AN"]      # Product ID はマスタ側
+
+
 def test_商品マスタの_brand_が_厂商より優先():
     row = X.build_row({X.C_SKU: "4902111775227_1"},
                       {"brand": "Dove", "name_en": "x"}, {"maker": "ユニリーバ"}, "R1")

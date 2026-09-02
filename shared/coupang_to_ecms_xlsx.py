@@ -155,8 +155,11 @@ def build_row(order: dict, product: dict | None, master: dict | None,
 
     province, city, _how = province_city(order.get(C_ADDR, ""))
 
+    # Product ID は商品マスタ側（注文の Displayed product ID とは別番号のことがある。
+    # 実データ: 注文 8026156620 に対し運営の URL は 9544746544）。
+    # 옵션 ID は**注文側が正**（マスタが古いことがある。実測 37/37 が注文の O 列と一致）。
     pid = product.get("product_id") or order.get(C_PRODUCT_ID, "")
-    oid = product.get("option_id") or order.get(C_OPTION_ID, "")
+    oid = order.get(C_OPTION_ID) or product.get("option_id", "")
     url = (f"https://www.coupang.com/vp/products/{pid}?vendorItemId={oid}"
            if pid and oid else "")
 
@@ -184,7 +187,10 @@ def build_row(order: dict, product: dict | None, master: dict | None,
         "AJ": grossweight,
         "AK": "KG",
         "AL": "N",
-        "AM": product.get("hscode", ""),
+        # HSCode は運営の実ファイルが 37/37 とも**空**。商品マスタには入っているが
+        # アップロードには載せていないので、それに合わせる。載せたくなったらここを
+        # product.get("hscode", "") に戻す。
+        "AM": "",
         "AN": url,
         "AO": qty,
         "AP": unit,

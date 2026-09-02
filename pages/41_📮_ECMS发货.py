@@ -39,6 +39,28 @@ lang_selector()
 st.title(t("📮 ECMS 发货"))
 
 
+def _read_sheet(upload, key: str):
+    """複数シートの Excel はどれを読むか選ばせる。1 枚だけならそのまま読む。
+
+    運営の `coupang通关文件.xlsx` は 10 シートあり、先頭は「JD 用发货文件」。
+    黙って先頭を読むと**別ラインの表を商品マスタとして取り込む**ことになる。
+    """
+    try:
+        xl = pd.ExcelFile(upload)
+    except Exception as e:
+        st.error(t("读取失败：") + str(e))
+        return None
+    names = xl.sheet_names
+    name = names[0]
+    if len(names) > 1:
+        name = st.selectbox(t("选择工作表"), names, key=key + "_sheet")
+    try:
+        return xl.parse(name, dtype=str).fillna("")
+    except Exception as e:
+        st.error(t("读取失败：") + str(e))
+        return None
+
+
 def _col_letter(i: int) -> str:
     """0 → A, 25 → Z, 26 → AA。Coupang の書き出しを列位置で読むため。"""
     out = ""
@@ -80,18 +102,16 @@ with tab_cp:
     if excel_mode:
         st.caption(t("Coupang 后台下载的订单 Excel → ECMS 上传用 Excel。"
                      "规则照运营 2026-09-02 的实际文件核对过（37 行逐格一致）。"))
-        up_o = st.file_uploader(t("Coupang 订单 Excel"), type=["xlsx"], key="cp_orders")
+        st.markdown("**1. " + t("每天要转的订单") + "**")
+        up_o = st.file_uploader(t("Coupang 后台下载的订单 Excel"), type=["xlsx"], key="cp_orders")
         e1, e2 = st.columns(2)
         seq = e1.number_input(t("头程运单号起始序号"), min_value=1, max_value=99999, value=1,
                               key="cp_seq", help=t("ECLBF + 日期 + 5位序号。接着上次的号往下"))
         ship_day = e2.date_input(t("运单号日期"), key="cp_day")
 
         if up_o is not None:
-            try:
-                df_o = pd.read_excel(up_o, dtype=str).fillna("")
-            except Exception as e:
-                st.error(t("读取失败：") + str(e))
-            else:
+            df_o = _read_sheet(up_o, "cp_orders")
+            if df_o is not None:
                 # 列名ではなく**位置**で取る（Coupang の書き出しは列名が英/韓で揺れる）
                 orders = []
                 for _, raw in df_o.iterrows():
@@ -132,41 +152,45 @@ with tab_cp:
 
         # ---- 商品主档 ----
         pm_now = store_cp.product_map()
-        with st.expander(t("商品主档") + f"（{len(pm_now)}）", expanded=not pm_now):
-            st.caption(t("按 SKU（4901616011007_3 这种）登记。同一 JAN 不同规格是不同行。"
-                         "英文品名 / HScode / Product ID / 옵션 ID 来自这里；"
-                         "重量和品牌从 NST 主档自动查，品牌要覆盖时填 brand 列。"))
+        st.markdown("**2. " + t("商品主档（传一次就行，有新品再传）") + "**")
+        with st.expander(t("商品主档") + f"（{len(pm_now)} " + t("件") + "）",
+                         expanded=not pm_now):
+            if not pm_now:
+                st.warning(t("商品主档是空的——现在转换出来的英文品名 / HScode / 商品URL 都会是空的。"
+                             "先传一次「coupang 产品信息」那个工作表。"))
+            st.caption(t("按 SKU（4901616011007_3 这种）登记，同一 JAN 不同规格算不同行。"
+                         "这里提供：英文品名 / HScode / Product ID / 옵션 ID。"
+                         "重量和品牌从 NST 主档自动查，品牌要覆盖时在表里加 brand 列。"))
             up_p = st.file_uploader(t("商品信息 Excel"), type=["xlsx"], key="cp_prod")
-            if up_p is not None and st.button(t("导入"), key="cp_prod_go"):
-                try:
-                    df_p = pd.read_excel(up_p, dtype=str).fillna("")
-                except Exception as e:
-                    st.error(t("读取失败：") + str(e))
-                else:
-                    def _c(row, *names):
-                        for k, v in row.items():
-                            if any(n.lower() in str(k).strip().lower() for n in names):
-                                s = str(v).strip()
-                                if s and s.lower() != "nan":
-                                    return s
-                        return ""
+            df_p = _read_sheet(up_p, "cp_prod") if up_p is not None else None
+            if df_p is not None:
+                st.caption(t("读到") + f" {len(df_p)} " + t("行") + " · "
+                           + t("识别到的列") + ": " + "、".join(str(c)[:14] for c in df_p.columns[:12]))
+            if df_p is not None and st.button(t("导入"), key="cp_prod_go"):
+                def _c(row, *names):
+                    for k, v in row.items():
+                        if any(n.lower() in str(k).strip().lower() for n in names):
+                            s = str(v).strip()
+                            if s and s.lower() != "nan":
+                                return s
+                    return ""
 
-                    recs = []
-                    for _, raw in df_p.iterrows():
-                        row = raw.to_dict()
-                        sku = _c(row, "JAN", "SKU", "vendor")
-                        if not sku:
-                            continue
-                        jan, pack = X.split_sku(sku)
-                        recs.append({"sku": sku, "jan": jan, "pack": pack,
-                                     "name_en": _c(row, "英文名称", "英文", "name_en"),
-                                     "brand": _c(row, "brand", "品牌"),
-                                     "hscode": _c(row, "HScode", "HS"),
-                                     "product_id": _c(row, "Product ID"),
-                                     "option_id": _c(row, "옵션", "option")})
-                    n = store_cp.upsert_products(recs)
-                    st.success(t("导入") + f" {n} / {len(df_p)} " + t("行"))
-                    st.rerun()
+                recs = []
+                for _, raw in df_p.iterrows():
+                    row = raw.to_dict()
+                    sku = _c(row, "JAN", "SKU", "vendor")
+                    if not sku:
+                        continue
+                    jan, pack = X.split_sku(sku)
+                    recs.append({"sku": sku, "jan": jan, "pack": pack,
+                                 "name_en": _c(row, "英文名称", "英文", "name_en"),
+                                 "brand": _c(row, "brand", "品牌"),
+                                 "hscode": _c(row, "HScode", "HS"),
+                                 "product_id": _c(row, "Product ID"),
+                                 "option_id": _c(row, "옵션", "option")})
+                n = store_cp.upsert_products(recs)
+                st.success(t("导入") + f" {n} / {len(df_p)} " + t("行"))
+                st.rerun()
             if pm_now:
                 st.dataframe(pd.DataFrame(list(pm_now.values())[:200]),
                              use_container_width=True, hide_index=True)
