@@ -111,6 +111,10 @@ services:
       - ../../.streamlit:/app/.streamlit:ro
       - ../../assets:/app/assets:ro
       - ../../README.md:/app/README.md:ro
+      # PG schema（2026-09-02）: これを外していたせいで git pull しても新テーブルの
+      # DDL が容器に入らず、page が「relation does not exist」で落ちた。
+      # イメージ内の COPY 済みファイルを見ていたため、redeploy しないと反映されなかった。
+      - ../../deploy/windows/schema.postgres.sql:/app/deploy/windows/schema.postgres.sql:ro
       # 数据卷（运行时读写）
       - ${DATA_DIR:-./data}/files:/app/data/files
     networks:

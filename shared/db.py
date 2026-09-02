@@ -29,6 +29,29 @@ OUTPUTS_DIR = DATA_DIR / "outputs"
 DB_PATH = PROJECT_ROOT / "data_warehouse" / "warehouse.db"
 
 
+def _split_sql(text: str) -> list[str]:
+    """schema.postgres.sql を 1 文ずつに割る。
+
+    行頭の `--` コメント行は捨て、`;` で終わる行を文の切れ目とする。
+    このファイルには関数本体（$$ ... $$）が無いので、この単純な分割で足りる。
+    """
+    stmts: list[str] = []
+    buf: list[str] = []
+    for line in text.splitlines():
+        if line.strip().startswith("--"):
+            continue
+        buf.append(line)
+        if line.rstrip().endswith(";"):
+            body = "\n".join(buf).strip()
+            if body:
+                stmts.append(body)
+            buf = []
+    tail = "\n".join(buf).strip()
+    if tail:
+        stmts.append(tail)
+    return stmts
+
+
 def _is_postgres() -> bool:
     """检测是否走 Postgres 后端。仅当 DATABASE_URL 以 postgres 开头才启用。"""
     url = os.environ.get("DATABASE_URL", "")
@@ -85,9 +108,26 @@ def _get_postgres_connection():
 
             schema_path = PROJECT_ROOT / "deploy" / "windows" / "schema.postgres.sql"
             if schema_path.exists():
-                cur = raw.cursor()
-                cur.execute(schema_path.read_text(encoding="utf-8"))
-                raw.commit()
+                # 1 文ずつ流す（2026-09-02）。丸ごと 1 回の execute だと、途中の 1 文が
+                # 落ちただけで**全部 rollback** され、しかも外側の except に握り潰されて
+                # 無言で「テーブルが 1 つも増えない」状態になる。実際にそれで
+                # coupang_product_info が作られず page が落ちた。
+                ok = fail = 0
+                first_error = ""
+                for stmt in _split_sql(schema_path.read_text(encoding="utf-8")):
+                    try:
+                        cur = raw.cursor()
+                        cur.execute(stmt)
+                        raw.commit()
+                        ok += 1
+                    except Exception as e:                    # 1 文の失敗で他を巻き込まない
+                        raw.rollback()
+                        fail += 1
+                        if not first_error:
+                            first_error = f"{stmt.splitlines()[0][:80]} → {e}"
+                if fail:
+                    print(f"[schema.postgres.sql] ok={ok} fail={fail} 先頭の失敗: {first_error}",
+                          flush=True)
             # ALTER 加列（与 SQLite ALTERS 对齐，幂等）
             from shared.schema_bootstrap import ALTERS
             for table, col_def in ALTERS:

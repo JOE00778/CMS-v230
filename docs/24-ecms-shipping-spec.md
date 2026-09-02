@@ -427,3 +427,23 @@ API 疎通が済んだらモードを「🔌 API 直连」に切り替える（�
 テストは `tests/test_coupang_to_ecms_xlsx.py`。fixtures は**匿名化済み**
 （氏名・電話・PCCC は連番の偽値、住所は行政区だけ残して以下を差し替え）。
 分割規則の検証に必要な部分は保っているので、規則を壊すとテストが落ちる。
+
+
+---
+
+## 11. 元川で踏んだ穴（2026-09-02）
+
+page41 が `relation "coupang_product_info" does not exist` で落ちた。原因は 2 つ、
+どちらも**無言で効く**タイプ:
+
+1. **compose の volumes に `deploy/` が無かった**。コードは bind mount なので `git pull`
+   で入るが、`schema.postgres.sql` は Dockerfile の `COPY . /app` でイメージに焼かれた
+   ものを見ていた。→ `update-cms.bat`（restart だけ）では新しい DDL が容器に入らない。
+   **修正**: schema ファイルを bind mount に追加（`docker-compose.yml`）。
+2. **schema 全体を 1 回の `execute` で流していた**。1 文でも落ちれば全部 rollback、
+   しかも外側の `except` に握り潰されて「テーブルが 1 つも増えない」だけになる。
+   **修正**: 1 文ずつ実行し、失敗したら `ok=N fail=M 先頭の失敗:` を stdout に出す。
+
+反映には **`redeploy.bat` を 1 回**（compose を触ったため）。以後は `update-cms.bat` で入る。
+
+`tests/test_pg_schema_split.py` が、分割の健全性と compose の bind mount の両方を見張る。
