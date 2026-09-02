@@ -119,9 +119,15 @@ def build_items(box: dict, products: dict, masters: dict | None = None) -> list[
             "jan": jan,
             "name_en": m.get("name_en") or "",
             "hscode": m.get("hscode") or "",
-            "url": (f"https://www.coupang.com/vp/products/{m['product_id']}"
-                    f"?vendorItemId={m['option_id']}"
-                    if m.get("product_id") and m.get("option_id") else ""),
+            # API は商品ページ URL をそのまま返す（`productSalesPageUrl`）。組み立てない。
+            # 無い場合だけ productId + vendorItemId から作り、それも無ければマスタに頼る。
+            "url": (it.get("productSalesPageUrl")
+                    or (f"https://www.coupang.com/vp/products/{it['productId']}"
+                        f"?vendorItemId={it['vendorItemId']}"
+                        if it.get("productId") and it.get("vendorItemId") else "")
+                    or (f"https://www.coupang.com/vp/products/{m['product_id']}"
+                        f"?vendorItemId={m['option_id']}"
+                        if m.get("product_id") and m.get("option_id") else "")),
             "pack": pack,
             "shipped": shipped,
             "qty": qty,

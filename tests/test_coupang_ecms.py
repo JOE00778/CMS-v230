@@ -99,6 +99,21 @@ def test_一回限りPCCCも拾う():
 
 
 # ---------- 行の組み立て ----------
+def test_商品URLはAPIが返すものを優先():
+    """ordersheets は `productSalesPageUrl` を返す（公式ドキュメントの応答例）。
+    組み立てるより API の値が正——`productId` は商品の統合・分割で**変わる**ため
+    （公式: productId は「exposing の単位」で可変、vendorItemId が不変のキー）。"""
+    b = _box()
+    b["orderItems"][0]["productSalesPageUrl"] = "https://www.coupang.com/vp/products/1?vendorItemId=2"
+    assert ce.to_queue_row(b, _PRODUCTS, "t", _MASTERS)["items"][0]["url"] == \
+        "https://www.coupang.com/vp/products/1?vendorItemId=2"
+
+    b2 = _box()
+    b2["orderItems"][0].update({"productId": "9660564393", "vendorItemId": "95148686296"})
+    assert ce.to_queue_row(b2, {}, "t", {})["items"][0]["url"] == \
+        "https://www.coupang.com/vp/products/9660564393?vendorItemId=95148686296"
+
+
 def test_queue行():
     row = ce.to_queue_row(_box(), _PRODUCTS, "2026-08-30T09:00:00+09:00", _MASTERS)
     assert row["order_id"] == "26102557706698"
