@@ -3,6 +3,12 @@
 
 [server]
 maxUploadSize = 200
+# WS ping/timeout 30s→60s（2026-08-30）: 41MB 請求書アップロード中に上りが
+# 飽和すると pong が 30s に間に合わず、サーバが WS を切断 → 前端が再接続 =
+# 「強制リフレッシュ」でファイルが消える。60s なら CF の idle 100s 制限内で
+# 最大の余裕。サーバ側実測は正常（同一ファイル 41.7MB を協議シミュレーションで
+# 2 回 204 成功）なので、断因はクライアント側の保活と推定。
+websocketPingInterval = 60
 enableCORS = false
 enableXsrfProtection = true
 enableStaticServing = true
