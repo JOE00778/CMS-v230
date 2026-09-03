@@ -5,7 +5,8 @@ page41 で人が押していく代わりに、4 接口を順に叩いて**どこ
 
 安全側の作り:
   · **既定は UAT のみ**。ECMS_ENV=pro のときは実運送状になるので拒否する（--allow-pro で解除）
-  · 建てた運単は最後に **自動で取消す**（--keep で残せる）
+  · 建てた運単は最後に **自動で取消す**（--keep で残せる。ただし**本番では --keep 禁止**——
+    取消されない実運送状が残るため）
   · 落ちたらそこで止めて生レスポンスを出す（推測しない）
 
 用法（元川 · 凭据は .env 済みが前提）:
@@ -57,6 +58,13 @@ def main() -> int:
         print("NG: ECMS_ENV=pro。本番で実運送状が立つため中止した。"
               "本当に本番で試すなら --allow-pro", file=sys.stderr)
         return 2
+    if env == "pro" and args.keep:
+        # 本番で運送状を残したまま終わると、誰も取消さない実運送状が 1 本残る
+        print("NG: 本番で --keep は許可しない（取消されない実運送状が残る）", file=sys.stderr)
+        return 2
+    if env == "pro":
+        print("⚠️ **本番環境**。テスト用のダミー宛先で運送状を 1 本立て、最後に取消す。"
+              "ECMS 側には『作成→取消』の記録が残る。", flush=True)
     if not ec.is_configured():
         print("NG: ECMS_CLIENT_ID / ECMS_TOKEN 未設定", file=sys.stderr)
         return 2
