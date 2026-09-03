@@ -480,6 +480,30 @@ with tab1:
                     pass
                 err_log.append(t("❌ 佐川帰類失败: ") + str(e))
 
+        # ── ECMS 海外直送（ECLBF+国コード2桁+数字）→ 輸出 ──
+        #    Boss 2026-09-02 規則「日本国内=EC / 海外=輸出」。ECLBFPH(比) 等の
+        #    ECMS 出荷単は海外直送 → shop「ECMS海外直送」（dept=輸出 登録済）。
+        if inv_months:
+            try:
+                ecms = [k for k in banma_client.missing_join_keys(
+                            conn, sorted(inv_months))
+                        if re.match(r"^ECLBF[A-Z]{2}\d+", k)]
+                if ecms:
+                    conn.cursor().executemany(
+                        banma_client.UPSERT_SHOP_MAP,
+                        [{"parcel_no": k, "order_id": None, "waybill_no": k,
+                          "platform": "ECMS", "shop": "ECMS海外直送",
+                          "ship_date": None} for k in ecms])
+                    conn.commit()
+                    bm_log.append(t("🌏 ECMS海外直送(輸出): {n} 単を帰類").format(
+                        n=len(ecms)))
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                err_log.append(t("❌ ECMS帰類失败: ") + str(e))
+
         with st.spinner(t("全月 重算中…")):
             run_recompute(None)
         if inv_log:
