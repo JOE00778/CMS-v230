@@ -29,11 +29,11 @@ def upsert_products(rows: list[dict]) -> int:
     try:
         conn.executemany(
             "INSERT OR REPLACE INTO coupang_product_info"
-            " (sku, jan, pack, name_en, brand, hscode, product_id, option_id, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            " (sku, jan, pack, name_en, weight_kg, brand, hscode, product_id, option_id,"
+            "  updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             [(r["sku"], r.get("jan") or str(r["sku"]).split("_")[0], r.get("pack"),
-              r.get("name_en"), r.get("brand"), r.get("hscode"), r.get("product_id"),
-              r.get("option_id"), _now()) for r in valid],
+              r.get("name_en"), r.get("weight_kg"), r.get("brand"), r.get("hscode"),
+              r.get("product_id"), r.get("option_id"), _now()) for r in valid],
         )
         conn.commit()
         return len(valid)
@@ -46,33 +46,47 @@ def product_map() -> dict[str, dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT sku, jan, pack, name_en, brand, hscode, product_id, option_id"
+            "SELECT sku, jan, pack, name_en, weight_kg, brand, hscode, product_id, option_id"
             " FROM coupang_product_info").fetchall()
         return {str(r["sku"]): dict(r) for r in rows}
     finally:
         conn.close()
 
 
-def nst_master_map(jans: list[str]) -> dict[str, dict]:
-    """NST 商品マスタから JAN → {maker, weight(g)}。重量と品牌の出所はここ。
+def nst_master_map(jans: list[str]) -> tuple[dict[str, dict], str]:
+    """JAN → {maker, weight(g)}。戻り値は (マップ, エラー文字列)。
 
-    運営 Excel の数式 `XLOOKUP(JAN, cms0811!B:B, cms0811!P:P)` と同じ引き方。
-    cms0811 は NST マスタの写しなので、CMS では PG から直接引く。
-    PG が無い（本機 SQLite）ときは空を返す——埋めずに画面で赤く出す。
+    品牌 = `nst.item_master_raw.maker`
+    毛重 = **`jdl.v_goods_dimensions.wms_gross_weight_g`**（倉庫実測。page02「毛重(g)」と同じ）
+           ⚠️ `nst.item_master_raw` に `weight` 列は**無い**。2026-09-03 に存在しない列を
+           SELECT していて、しかも例外を握り潰していたため品牌と毛重が両方とも空のまま
+           46 行出力された。**エラーは握り潰さず呼び出し元に返す**。
+
+    jan は一意ではない（15,589 行 / 15,473 distinct）ので、重量が取れた行を優先する。
     """
     if not jans:
-        return {}
+        return {}, ""
     conn = get_connection()
     try:
         marks = ",".join("?" * len(jans))
         rows = conn.execute(
-            f"SELECT jan, maker, weight FROM nst.item_master_raw WHERE jan IN ({marks})",
-            tuple(jans)).fetchall()
-        return {str(r["jan"]): {"maker": r["maker"], "weight": r["weight"]} for r in rows}
-    except Exception:
-        return {}
+            "SELECT im.jan, im.maker, gd.wms_gross_weight_g AS weight"
+            " FROM nst.item_master_raw im"
+            " LEFT JOIN jdl.v_goods_dimensions gd ON gd.jan = im.jan"
+            f" WHERE im.jan IN ({marks})", tuple(jans)).fetchall()
+    except Exception as e:                       # SQLite 本機や列変更を握り潰さない
+        return {}, str(e)
     finally:
         conn.close()
+
+    out: dict[str, dict] = {}
+    for r in rows:
+        jan = str(r["jan"])
+        cur = out.get(jan)
+        # 同じ JAN が複数行ある。重量が取れている行を優先
+        if cur is None or (cur.get("weight") is None and r["weight"] is not None):
+            out[jan] = {"maker": r["maker"], "weight": r["weight"]}
+    return out, ""
 
 
 # ------------------------------------------------------------------
@@ -175,5 +189,35 @@ def purge_old(days: int = RETENTION_DAYS) -> int:
         conn.execute("DELETE FROM coupang_shipment_queue WHERE pulled_at < ?", (cutoff,))
         conn.commit()
         return int(before or 0)
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------------
+# 品牌の日→英
+# ------------------------------------------------------------------
+def brand_alias_map() -> dict[str, str]:
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT maker, brand_en FROM coupang_brand_alias").fetchall()
+        return {str(r["maker"]): r["brand_en"] for r in rows if r["brand_en"]}
+    finally:
+        conn.close()
+
+
+def upsert_brand_alias(pairs: dict[str, str]) -> int:
+    """{メーカー名: 英語品牌}。空文字の行は削除する。"""
+    conn = get_connection()
+    try:
+        add = [(k, v.strip(), _now()) for k, v in pairs.items() if k and v and v.strip()]
+        drop = [(k,) for k, v in pairs.items() if k and not (v or "").strip()]
+        if add:
+            conn.executemany(
+                "INSERT OR REPLACE INTO coupang_brand_alias (maker, brand_en, updated_at)"
+                " VALUES (?,?,?)", add)
+        if drop:
+            conn.executemany("DELETE FROM coupang_brand_alias WHERE maker = ?", drop)
+        conn.commit()
+        return len(add)
     finally:
         conn.close()

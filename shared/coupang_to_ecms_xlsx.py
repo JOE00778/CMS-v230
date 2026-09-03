@@ -108,19 +108,42 @@ def province_city(addr: str) -> tuple[str, str, str]:
     if not s:
         return "", "", "empty"
     sido, sgg, _detail, how = kr_address.split(s)
-    first = s.split(" ")[0]
+    parts = s.split(" ")
+    first = parts[0]
+    # 省は**先頭語の完全一致だけ**採る。kr_address の前方一致に任せると
+    # `전남광주통합특별시`（実在しない行政区）が「전남」に引っかかって
+    # 전라남도 と判定される——実際は광주광역시で、通関先を間違える。
     if first in kr_address.SIDO or first in RENAMED_SIDO:
         province = first                      # 正式名・改称前ともそのまま
+    elif first in kr_address.ALIAS:
+        province = kr_address.ALIAS[first]    # 略称だけ開く
     else:
-        province = kr_address.ALIAS.get(first, sido or "")   # 略称だけ開く
+        province = ""                         # 推測しない。画面で赤く出す
     city = (sgg or "").split(" ")[0] if sgg else ""
-    if not province or not city:
-        return province or "", city or "", how
-    return province, city, how
+
+    if province and not city:
+        if province == "세종특별자치시":
+            # 世宗は単層制で시군구が無い。市の欄には시도そのものを入れる
+            city, how = province, "sejong"
+        elif len(parts) > 1 and parts[1].endswith(("시", "군", "구")):
+            # 行政区は新設される（인천 검단구 = 2026-07-01 新設。手元の
+            # 법정동코드は 2026-03-01 版なので載っていない）。表に無くても
+            # 시/군/구 で終わる語ならそれを採り、how に guess を残す
+            city, how = parts[1], "guess:" + how
+    return province or "", city or "", how
+
+
+def needs_english_brand(brand: str) -> bool:
+    """申告用の品牌に日本語が残っているか（運営「品牌要填英文的」）。
+
+    `Pelican Soap` は素通り、`コーセーコスメポート` や `UHA味覚糖` は要対応。
+    括弧の併記を落とした**後**で判定すること。
+    """
+    return bool(brand) and any(ord(c) > 127 for c in brand)
 
 
 def build_row(order: dict, product: dict | None, master: dict | None,
-              ref_number: str) -> dict:
+              ref_number: str, brand_alias: dict | None = None) -> dict:
     """Coupang 1 行 → ECMS 1 行（列記号 → 値）。
 
     product: `coupang_product_info` を **SKU（`JAN_入数`）** で引いたもの
@@ -147,11 +170,18 @@ def build_row(order: dict, product: dict | None, master: dict | None,
     # 20600÷3=6866.67→**6867**（切り捨てではない）
     unit = int(round_half_up(paid / qty, 0)) if qty else 0
 
-    # Item_Grossweight は **1 個あたり**の kg。内含個数も購入数も掛けない
-    # （ECMS 側が Item_Quantity と掛け合わせる）。実測: NST 148g → 0.15 / 83g → 0.08 /
-    # 757g → 0.76。運営の実出力 37/37 がこの式で再現できる。
+    # Item_Grossweight は **1 個あたり**の kg（ECMS 側が Item_Quantity と掛ける）。
+    # 商品マスタの「产品重量」は **SKU 全体（入数込み）の kg** なので入数で割る:
+    #   4901616011007_3 → 0.444kg / 3 = 0.148 → 0.15（運営の実出力と一致）
+    # マスタに無ければ NST 側（JDL 実測 g）に落とす。
+    pack_weight = product.get("weight_kg")
     weight_g = master.get("weight")
-    grossweight = round_half_up(float(weight_g) / 1000, 2) if weight_g else ""
+    if pack_weight:
+        grossweight = round_half_up(float(pack_weight) / max(1, pack), 2)
+    elif weight_g:
+        grossweight = round_half_up(float(weight_g) / 1000, 2)
+    else:
+        grossweight = ""
 
     province, city, _how = province_city(order.get(C_ADDR, ""))
 
@@ -179,8 +209,10 @@ def build_row(order: dict, product: dict | None, master: dict | None,
         "Z": "ID",
         "AA": order.get(C_PCCC, ""),
         "AC": "EN",
-        # 商品マスタに brand があればそれ。無ければ NST の 厂商 から和名併記を落とす
-        "AE": product.get("brand") or clean_brand(master.get("maker", "")),
+        # 商品マスタの brand → メーカー単位の日英対応 → NST 厂商（和名併記を除去）の順
+        "AE": (product.get("brand")
+               or (brand_alias or {}).get(master.get("maker", ""))
+               or clean_brand(master.get("maker", ""))),
         "AF": order.get(C_OPTION_NAME, ""),
         "AG": jan,
         "AH": product.get("name_en", ""),
@@ -219,7 +251,8 @@ def missing(row: dict) -> list[str]:
 
 
 def convert(orders: list[dict], products: dict, masters: dict,
-            start_seq: int = 1, on: date | None = None) -> list[dict]:
+            start_seq: int = 1, on: date | None = None,
+            brand_alias: dict | None = None) -> list[dict]:
     """Coupang の全行 → ECMS の全行。1 注文 1 行（実データも 37→37 の 1 対 1）。
 
     products は **SKU** キー、masters は **JAN** キー。
@@ -229,7 +262,7 @@ def convert(orders: list[dict], products: dict, masters: dict,
         sku = (o.get(C_SKU) or "").strip()
         jan, _ = split_sku(sku)
         out.append(build_row(o, products.get(sku), masters.get(jan),
-                             ref_number(start_seq + i, on)))
+                             ref_number(start_seq + i, on), brand_alias))
     return out
 
 

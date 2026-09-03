@@ -123,8 +123,14 @@ with tab_cp:
 
                 pm = store_cp.product_map()
                 jans = sorted({X.split_sku(o.get(X.C_SKU, ""))[0] for o in orders})
-                nm = store_cp.nst_master_map(jans)
-                rows = X.convert(orders, pm, nm, start_seq=int(seq), on=ship_day)
+                nm, nm_err = store_cp.nst_master_map(jans)
+                if nm_err:
+                    st.error(t("NST 主档查询失败——品牌和毛重会是空的：") + nm_err)
+                elif not nm:
+                    st.warning(t("NST 主档没查到这批 JAN——品牌和毛重会是空的"))
+                alias = store_cp.brand_alias_map()
+                rows = X.convert(orders, pm, nm, start_seq=int(seq), on=ship_day,
+                                 brand_alias=alias)
 
                 view = []
                 for r in rows:
@@ -139,6 +145,20 @@ with tab_cp:
                     st.warning(t("有缺项的行") + f"：{bad} / {len(rows)}　"
                                + t("（商品主档没登记的 SKU 会缺英文品名/HScode）"))
                 st.dataframe(pd.DataFrame(view), use_container_width=True, hide_index=True)
+
+                jp = sorted({r["AE"] for r in rows if X.needs_english_brand(r["AE"])})
+                if jp:
+                    st.warning(t("品牌还是日文的") + f"：{len(jp)} " + t("个。填上英文后会自动套用到以后所有订单。"))
+                    ed = st.data_editor(
+                        pd.DataFrame([{"厂商（NST）": m, "英文品牌": alias.get(m, "")}
+                                      for m in jp]),
+                        use_container_width=True, hide_index=True, key="cp_brand",
+                        disabled=["厂商（NST）"])
+                    if st.button(t("保存品牌对应并重新转换"), key="cp_brand_save"):
+                        n = store_cp.upsert_brand_alias(
+                            {r["厂商（NST）"]: r["英文品牌"] for _, r in ed.iterrows()})
+                        st.success(t("已保存") + f" {n}")
+                        st.rerun()
 
                 buf = io.BytesIO()
                 tmp = Path(tempfile.gettempdir()) / f"ecms_{ship_day:%Y%m%d}.xlsx"
@@ -159,8 +179,9 @@ with tab_cp:
                 st.warning(t("商品主档是空的——现在转换出来的英文品名 / HScode / 商品URL 都会是空的。"
                              "先传一次「coupang 产品信息」那个工作表。"))
             st.caption(t("按 SKU（4901616011007_3 这种）登记，同一 JAN 不同规格算不同行。"
-                         "这里提供：英文品名 / HScode / Product ID / 옵션 ID。"
-                         "重量和品牌从 NST 主档自动查，品牌要覆盖时在表里加 brand 列。"))
+                         "这里提供：英文品名 / 产品重量 / HScode / Product ID / 옵션 ID。"
+                         "「产品重量」是整个 SKU（含件数）的 kg，会自动除以件数填到毛重。"
+                         "品牌从 NST 主档查，要覆盖时在表里加 brand 列。"))
             up_p = st.file_uploader(t("商品信息 Excel"), type=["xlsx"], key="cp_prod")
             df_p = _read_sheet(up_p, "cp_prod") if up_p is not None else None
             if df_p is not None:

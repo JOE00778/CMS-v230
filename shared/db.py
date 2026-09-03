@@ -280,6 +280,7 @@ class _PostgresAdapter:
         # Coupang → ECMS 发货（2026-08-30）
         "coupang_shipment_queue": ("order_id", "shipment_box_id"),
         "coupang_product_info": ("sku",),
+        "coupang_brand_alias": ("maker",),
     }
 
     _RE_OR_REPLACE = re.compile(

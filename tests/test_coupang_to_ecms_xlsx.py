@@ -221,3 +221,45 @@ def test_xlsx_書き出し(tmp_path):
     assert ws.cell(2, 1).value == "LBF"
     zip_col = X.COLUMNS.index("X") + 1
     assert isinstance(ws.cell(2, zip_col).value, str)         # 前ゼロ保持
+
+
+def test_品牌の日英対応():
+    """運営「品牌（要填英文的）」。メーカー単位で 1 行入れれば全商品に効く。"""
+    assert X.needs_english_brand("コーセーコスメポート") is True
+    assert X.needs_english_brand("UHA味覚糖") is True
+    assert X.needs_english_brand("Pelican Soap") is False
+    assert X.needs_english_brand("") is False
+    row = X.build_row({X.C_SKU: "x_1"}, {}, {"maker": "ユニリーバ"}, "R",
+                      {"ユニリーバ": "Dove"})
+    assert row["AE"] == "Dove"
+    # 商品マスタの brand が最優先
+    row2 = X.build_row({X.C_SKU: "x_1"}, {"brand": "Unilever"}, {"maker": "ユニリーバ"}, "R",
+                       {"ユニリーバ": "Dove"})
+    assert row2["AE"] == "Unilever"
+
+
+def test_毛重はマスタの入数込み重量を割る():
+    """「产品重量」は SKU 全体（入数込み）の kg。ECMS の Item_Grossweight は 1 個あたり。
+
+    実測: 4901616011007_3 の 0.444kg ÷ 3 = 0.148 → 0.15（運営の実出力と一致）。
+    割らずに出すと 3 倍の重量で申告することになる。
+    """
+    row = X.build_row({X.C_SKU: "4901616011007_3"}, {"weight_kg": 0.444}, {}, "R")
+    assert row["AJ"] == 0.15
+    # マスタに無ければ NST（g）へフォールバック
+    assert X.build_row({X.C_SKU: "x_2"}, {}, {"weight": 148.0}, "R")["AJ"] == 0.15
+    # どちらも無ければ空。0 で埋めない
+    assert X.build_row({X.C_SKU: "x_1"}, {}, {}, "R")["AJ"] == ""
+
+
+def test_世宗市と新設区():
+    """世宗は単層制で시군구が無い。검단구は 2026-07 新設で手元の법정동코드に載っていない。"""
+    assert X.province_city("세종특별자치시 마음로 67 가락마을")[:2] == \
+        ("세종특별자치시", "세종특별자치시")
+    assert X.province_city("인천광역시 검단구 원당동 987-1")[:2] == ("인천광역시", "검단구")
+
+
+def test_実在しない行政区は省も空にする():
+    """`전남광주통합특별시` は前方一致で전라남도に化ける。実際は광주광역시で通関先が変わる。"""
+    p, c, _ = X.province_city("전남광주통합특별시 북구 자미로39번길 9")
+    assert (p, c) == ("", "")

@@ -1225,6 +1225,8 @@ CREATE TABLE IF NOT EXISTS coupang_product_info (
   jan            TEXT NOT NULL,              -- SKU の "_" 前。重量は JAN 単位で NST から引く
   pack           INTEGER,                    -- "_" の後（内含個数）
   name_en        TEXT,                       -- 申告品名（英語）
+  weight_kg      REAL,                       -- 「产品重量」列。**SKU 全体（入数込み）の kg**
+                                             -- ECMS の Item_Grossweight は 1 個あたりなので pack で割る
   brand          TEXT,                       -- 申告用の品牌。空なら NST の 厂商 を使う
                                              -- （NST「ユニリーバ」→ 運営「Dove」のような
                                              --   ブランド名は自動で導けないのでここで上書き）
@@ -1234,3 +1236,13 @@ CREATE TABLE IF NOT EXISTS coupang_product_info (
   updated_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cpi_jan ON coupang_product_info(jan);
+
+-- 品牌の日→英 対応（2026-09-03）
+-- 運営「品牌（要填英文的）」。NST の 厂商 は日本語のことがある
+-- （コーセーコスメポート → CoenRich、ユニリーバ → Dove）。SKU ごとに直すのは手間なので
+-- **メーカー単位**で持つ。ここに 1 行入れれば以後そのメーカーの全商品に効く。
+CREATE TABLE IF NOT EXISTS coupang_brand_alias (
+  maker      TEXT PRIMARY KEY,
+  brand_en   TEXT NOT NULL,
+  updated_at TEXT
+);

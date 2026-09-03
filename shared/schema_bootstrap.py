@@ -14,12 +14,13 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
 # 增量 ALTER（旧 db 已建过表,补充缺失列）
 # 格式: (table, column_def_in_ALTER) — 如果列已存在会被 try/except 吞掉
 ALTERS: list[tuple[str, str]] = [
+    ("coupang_product_info", "weight_kg REAL"),
     ("sales_line", "maker TEXT"),
     # Phase 4 v2 表字段扩展（旧库 ALTER 加列，新库 CREATE 已含）
     ("item_inventory_snapshot_v2", "item_code TEXT"),

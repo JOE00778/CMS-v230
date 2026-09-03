@@ -52,7 +52,9 @@ def main() -> int:
     pm = store.product_map()
     jans = sorted({ce.split_sku(it.get("externalVendorSkuCode") or "")[0]
                    for b in boxes for it in (b.get("orderItems") or [])})
-    nm = store.nst_master_map(jans)
+    nm, nm_err = store.nst_master_map(jans)
+    if nm_err:
+        print(f"警告: NST 主档の照会に失敗（品牌と毛重が空になる）: {nm_err}", file=sys.stderr)
     now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     rows = [ce.to_queue_row(b, pm, now, nm) for b in boxes]
     incomplete = sum(1 for r in rows if ce.missing_fields(r))
