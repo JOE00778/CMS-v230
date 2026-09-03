@@ -123,8 +123,8 @@ def province_city(addr: str) -> tuple[str, str, str]:
 
     if province and not city:
         if province == "세종특별자치시":
-            # 世宗は単層制で시군구が無い。市の欄には시도そのものを入れる
-            city, how = province, "sejong"
+            # 世宗は単層制で시군구が無い。運営の実出力は市の欄が **세종시**（略称）
+            city, how = "세종시", "sejong"
         elif len(parts) > 1 and parts[1].endswith(("시", "군", "구")):
             # 行政区は新設される（인천 검단구 = 2026-07-01 新設。手元の
             # 법정동코드は 2026-03-01 版なので載っていない）。表に無くても
@@ -170,14 +170,17 @@ def build_row(order: dict, product: dict | None, master: dict | None,
     # 20600÷3=6866.67→**6867**（切り捨てではない）
     unit = int(round_half_up(paid / qty, 0)) if qty else 0
 
-    # Item_Grossweight は **1 個あたり**の kg（ECMS 側が Item_Quantity と掛ける）。
-    # 商品マスタの「产品重量」は **SKU 全体（入数込み）の kg** なので入数で割る:
-    #   4901616011007_3 → 0.444kg / 3 = 0.148 → 0.15（運営の実出力と一致）
-    # マスタに無ければ NST 側（JDL 実測 g）に落とす。
+    # Item_Grossweight = 商品マスタの「产品重量」÷ **Item_Quantity（内件総数）**。
+    #   4901616011007_3（入数 3 × 購入 1 = 3）: 0.444 / 3 = 0.148 → 0.15
+    #   4902111773421  （入数 1 × 購入 2 = 2）: 0.23  / 2 = 0.115 → 0.12
+    # 後者は 0903 のデータで初めて出た形（0902 は購入数が全部 1 で入数と区別が付かない）。
+    # ⚠️ 物理的には「产品重量」が 1 SKU 分なら購入 2 個でも 1 個の重さは 0.23 のはず。
+    #    運営の実出力は 0.12 なので**それに合わせている**。申告重量が実重より軽く出る
+    #    可能性がある点は Boss に報告済み。
     pack_weight = product.get("weight_kg")
     weight_g = master.get("weight")
     if pack_weight:
-        grossweight = round_half_up(float(pack_weight) / max(1, pack), 2)
+        grossweight = round_half_up(float(pack_weight) / max(1, qty), 2)
     elif weight_g:
         grossweight = round_half_up(float(weight_g) / 1000, 2)
     else:
@@ -204,7 +207,9 @@ def build_row(order: dict, product: dict | None, master: dict | None,
         "U": "KR",
         "V": province,
         "W": city,
-        "X": order.get(C_ZIP, ""),
+        # 運営の実ファイルは**数値**（`05564` ではなく `5564`）。前ゼロは落ちるが
+        # ECMS はそれで通っているので合わせる（0902・0903 の 2 回とも数値）。
+        "X": _zip_value(order.get(C_ZIP, "")),
         "Y": order.get(C_ADDR, ""),
         "Z": "ID",
         "AA": order.get(C_PCCC, ""),
@@ -231,6 +236,12 @@ def build_row(order: dict, product: dict | None, master: dict | None,
         "AT": SHIPPER_CODE,
         "AU": oid,
     }
+
+
+def _zip_value(z: str):
+    """郵便番号。運営の実ファイルは数値なので数値で出す（`05564` → `5564`）。"""
+    z = (z or "").strip()
+    return int(z) if z.isdigit() else z
 
 
 def ref_number(seq: int, on: date | None = None) -> str:
@@ -269,7 +280,8 @@ def convert(orders: list[dict], products: dict, masters: dict,
 def to_xlsx(rows: list[dict], path: str | Path) -> Path:
     """ECMS のテンプレート（57 列・ヘッダ 1 行）で書き出す。
 
-    郵便番号と SKU は**文字列**で入れる（`07531` の前ゼロが消えると住所照合に失敗する）。
+    SKU と注文番号は**文字列**で入れる（指数表記や桁落ちを避ける）。
+    郵便番号は運営の実ファイルに合わせて**数値**。
     """
     from openpyxl import Workbook
 
@@ -277,7 +289,7 @@ def to_xlsx(rows: list[dict], path: str | Path) -> Path:
     ws = wb.active
     ws.title = "Sheet1"
     ws.append(HEADERS)
-    text_cols = {"X", "AG", "B"}
+    text_cols = {"AG", "B"}      # 郵便番号は数値。運営の実ファイルに合わせる
     for r in rows:
         line = []
         for col in COLUMNS:

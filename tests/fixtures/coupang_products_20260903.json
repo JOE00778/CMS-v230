@@ -1,0 +1,415 @@
+{
+ "4902111777498_2": {
+  "name_en": "Dove Creamy Body Scrub Cherry & Apricot 298g, 2pcs",
+  "weight_kg": 0.752,
+  "hscode": "340130",
+  "product_id": "9422556323",
+  "option_id": "94963856572"
+ },
+ "7613329143995": {
+  "name_en": "Victorinox Classic SD Multi-Tool Mini Swiss Army Knife, 1 pc, Cherry Blossom",
+  "weight_kg": 0.03,
+  "hscode": "821193",
+  "product_id": "9433235105",
+  "option_id": "95006006820"
+ },
+ "4992440034713_3": {
+  "name_en": "Ishizawa Laboratories Keana Nadeshiko Rice Mask Pack Japan Direct Shipping Skincare Support, 3pcs, 10 Sheets",
+  "weight_kg": 0.549,
+  "hscode": "330499",
+  "product_id": "8925926015",
+  "option_id": "94873027609"
+ },
+ "4902430642699_2": {
+  "name_en": "P&G Febreze Lenor Happiness Antique Rose Floral Original Japan Direct Shipping Deodorizing Care Support, 2pcs, 370ml",
+  "weight_kg": 0.862,
+  "hscode": "330749",
+  "product_id": "9397815850",
+  "option_id": "94871159608"
+ },
+ "4550516485694_4": {
+  "name_en": "Shiseido Tsubaki Premium EX Repair Hair Mask Refill 150g x 4",
+  "weight_kg": 0.628,
+  "hscode": "330590",
+  "product_id": "9371134102",
+  "option_id": "94773692112"
+ },
+ "4550516483782": {
+  "name_en": "TSUBAKI Premium Treatment Water Japan Direct Shipping, 210ml, 1pc",
+  "weight_kg": 0.253,
+  "hscode": "330590",
+  "product_id": "8473911517",
+  "option_id": "95891350035"
+ },
+ "4589546893292": {
+  "name_en": "&honey Melty Moist Rich Hair Oil, 100ml, 1pc",
+  "weight_kg": 0.129,
+  "hscode": "330590",
+  "product_id": "9412832245",
+  "option_id": "94483243388"
+ },
+ "4589546892271_3": {
+  "name_en": "&honey Melty Moist Repair Hair Oil 3.0, 100ml, 3pcs",
+  "weight_kg": 0.405,
+  "hscode": "330590",
+  "product_id": "9377985973",
+  "option_id": "94798480193"
+ },
+ "4562344389174": {
+  "name_en": "THERMOS RFF-004B/DS Insulated Lunch Bag 4L Winnie the Pooh Navy, 1pc",
+  "weight_kg": 0.169,
+  "hscode": "420292",
+  "product_id": "8428644439",
+  "option_id": "94416442092"
+ },
+ "4976631478272_6": {
+  "name_en": "Pelican Peach Hip & Buttocks Exfoliating Body Soap 80g 6-Pack",
+  "weight_kg": 0.51,
+  "hscode": "340130",
+  "product_id": "5340961770",
+  "option_id": "94475214801"
+ },
+ "7611160013590": {
+  "name_en": "Victorinox SwissCard T Card-Type Multi-Tool, 1 pc",
+  "weight_kg": 0.068,
+  "hscode": "821420",
+  "product_id": "9432980445",
+  "option_id": "95005043842"
+ },
+ "4902111736655_2": {
+  "name_en": "Dove Beauty Moisture Facial Cleanser, Moisturizing Cleansing Facial Wash, Direct from Japan, 2 pcs, 130g",
+  "weight_kg": 0.286,
+  "hscode": "340130",
+  "product_id": "9427858181",
+  "option_id": "94984691954"
+ },
+ "4902111773421": {
+  "name_en": "Dove Sensitive Mild Creamy Foam Face Wash, Low-Irritation Moisturizing Cleansing Facial Wash, Direct from Japan, 1 pc, 150ml",
+  "weight_kg": 0.23,
+  "hscode": "340130",
+  "product_id": "9427735836",
+  "option_id": "94984194019"
+ },
+ "4902111775227": {
+  "name_en": "Dove Body Wash Premium Moisture Care, Moisturizing Cleansing Shower Refill, Direct from Japan, 1 pc, 330g",
+  "weight_kg": 0.338,
+  "hscode": "340130",
+  "product_id": "9425781593",
+  "option_id": "94975967473"
+ },
+ "4976631481166_5": {
+  "name_en": "Pelican Hip Care Soap “Lovely Butt”, 80g ×5",
+  "weight_kg": 0.45,
+  "hscode": "340111",
+  "product_id": "9440593751",
+  "option_id": "95034991371"
+ },
+ "4902750915534_6": {
+  "name_en": "UHA Mikakuto Tokuno Milk 8.2 Rich Cafe Au Lait Candy, 6 packs, 93g",
+  "weight_kg": 0.594,
+  "hscode": "170490",
+  "product_id": "9468751344",
+  "option_id": "95135906607"
+ },
+ "4961989409115_3": {
+  "name_en": "PDC Wafood Made Sake Lees Face Mask (Japan), 3 packs (10 sheets)",
+  "weight_kg": 0.57,
+  "hscode": "330499",
+  "product_id": "9466748912",
+  "option_id": "95128274324"
+ },
+ "4971710587548": {
+  "name_en": "CoenRich Q10 Night Moist Hand Cream (Japan Import), 1 pack, 80g",
+  "weight_kg": 0.093,
+  "hscode": "330499",
+  "product_id": "9483227209",
+  "option_id": "95190768945"
+ },
+ "4971710555981_3": {
+  "name_en": "Kose Clear Turn Trouble Care Mask, 3 packs (7 sheets)",
+  "weight_kg": 0.432,
+  "hscode": "330499",
+  "product_id": "9483009031",
+  "option_id": "95189954446"
+ },
+ "4901508966118_2": {
+  "name_en": "Kurobara Camellia Oil for tool maintenance & rust prevention 245ml, 2 packs",
+  "weight_kg": 0.482,
+  "hscode": "151590",
+  "product_id": "9474513153",
+  "option_id": "95157358037"
+ },
+ "4973307670633_3": {
+  "name_en": "Skater SSH4D Straw & Lid Gasket Replacement Set P-SSH4D-SP (3 pack)",
+  "weight_kg": 0.045,
+  "hscode": "392690",
+  "product_id": "9507710042",
+  "option_id": "95283038610"
+ },
+ "4973307670633_4": {
+  "name_en": "Skater SSH4D Straw & Lid Gasket Replacement Set P-SSH4D-SP (4 pack)",
+  "weight_kg": 0.06,
+  "hscode": "392690",
+  "product_id": "9507710042",
+  "option_id": "95283038612"
+ },
+ "7611160206862": {
+  "name_en": "Victorinox Classic SD Precious Alox Infinite Grey Swiss Army Knife Keychain Multi-tool (1 pack)",
+  "weight_kg": 0.047,
+  "hscode": "821193",
+  "product_id": "9507214633",
+  "option_id": "95281391748"
+ },
+ "7611160106094": {
+  "name_en": "Victorinox Huntsman 91mm Multi-tool 15 Functions Transparent Blue (1 pack)",
+  "weight_kg": 0.115,
+  "hscode": "821193",
+  "product_id": "9505907928",
+  "option_id": "95276354156"
+ },
+ "4901301457790": {
+  "name_en": "Kao Humming Flare Fabric Softener Flower Harmony 520ml (Japan), 1 pack",
+  "weight_kg": 0.013,
+  "hscode": "340220",
+  "product_id": "8056408303",
+  "option_id": "95323602638"
+ },
+ "4901301413253_4": {
+  "name_en": "Biore UV Aqua Rich Watery Gel Sunscreen Japan UV Care 70ml 4 Pack",
+  "weight_kg": 0.4,
+  "hscode": "330499",
+  "product_id": "9518126793",
+  "option_id": "95424664036"
+ },
+ "4987643122213": {
+  "name_en": "Apagard Premio Toothpaste Extra Mint (Japan) 53g, 1 pack",
+  "weight_kg": 0.07,
+  "hscode": "330610",
+  "product_id": "9491618834",
+  "option_id": "95299699239"
+ },
+ "4901616013131_3": {
+  "name_en": "Ora2 Premium Stain Clear Toothpaste Premium Mint 100g (Japan), 3 pack",
+  "weight_kg": 0.33,
+  "hscode": "330610",
+  "product_id": "9511734439",
+  "option_id": "95297470452"
+ },
+ "4901301350145_2": {
+  "name_en": "Men's Biore ONE All-in-One Body Wash Herbal Green Scent Body & Shampoo Japan Import,2,480ml",
+  "weight_kg": 1.144,
+  "hscode": "340130",
+  "product_id": "9521978927",
+  "option_id": "95338183162"
+ },
+ "4570110290166": {
+  "name_en": "Off&Relax Spa Shampoo Silky Night Repair Damaged Hair Scalp Care Moist Shine Japan,1,460ml",
+  "weight_kg": 0.625,
+  "hscode": "330510",
+  "product_id": "9521856297",
+  "option_id": "95337749896"
+ },
+ "4970301590196": {
+  "name_en": "Air Spencer Car Air Freshener Marine Squash A19 Japan Original Can Type,1,Marine Squash",
+  "weight_kg": 0.073,
+  "hscode": "330749",
+  "product_id": "9519834910",
+  "option_id": "95329953804"
+ },
+ "4970301590196_3": {
+  "name_en": "Air Spencer Car Air Freshener Marine Squash A19 Japan Original Can Type,3,Marine Squash",
+  "weight_kg": 0.219,
+  "hscode": "330749",
+  "product_id": "9519834910",
+  "option_id": "95329953801"
+ },
+ "4901008318455_2": {
+  "name_en": "Canmake Metalook Mascara Volume Look V01 Black 4g Japan Mascara Metal Brush Volume Curl Long-Lasting, 2 pcs, Deep Black",
+  "weight_kg": 0.028,
+  "hscode": "330420",
+  "product_id": "9535952080",
+  "option_id": "95392237587"
+ },
+ "4901008316598_2": {
+  "name_en": "Canmake Metalook Metal Comb Mascara 01 Black 4.0g, 2 pcs",
+  "weight_kg": 0.044,
+  "hscode": "330420",
+  "product_id": "9535901070",
+  "option_id": "95392073003"
+ },
+ "4901301447647_3": {
+  "name_en": "Biore UV Aqua Rich Watery Essence Sunscreen Japan UV Protection Daily Sunscreen 70g 3 Pack",
+  "weight_kg": 0.249,
+  "hscode": "330499",
+  "product_id": "9544746544",
+  "option_id": "95424772749"
+ },
+ "4901301447647_4": {
+  "name_en": "Biore UV Aqua Rich Watery Essence Sunscreen 70g, 4pcs",
+  "weight_kg": 0.332,
+  "hscode": "330499",
+  "product_id": "8663250735",
+  "option_id": "95599933629"
+ },
+ "4562384603179_6": {
+  "name_en": "Okuchi Lemon Portable Mouthwash Lemon Flavor Mild Oral Care 5pcs 6 Pack",
+  "weight_kg": 0.408,
+  "hscode": "330690",
+  "product_id": "9544433437",
+  "option_id": "95423406796"
+ },
+ "4562384603179_10": {
+  "name_en": "Okuchi Lemon Portable Mouthwash Lemon Flavor Mild Oral Care 5pcs 10 Pack",
+  "weight_kg": 0.68,
+  "hscode": "330690",
+  "product_id": "9544433437",
+  "option_id": "95423406797"
+ },
+ "4901301446183": {
+  "name_en": "THE ANSWER Super Lamellar Shampoo Damaged Hair Care Protein Shine Moisture 400ml 1 Pack",
+  "weight_kg": 0.491,
+  "hscode": "330510",
+  "product_id": "9542240887",
+  "option_id": "95414911902"
+ },
+ "4901008310596_2": {
+  "name_en": "CANMAKE Creamy Touch Liner 02 Medium Brown Gel Eyeliner, 2pcs, 0.08g",
+  "weight_kg": 0.02,
+  "hscode": "330420",
+  "product_id": "9555256150",
+  "option_id": "95460623338"
+ },
+ "4562352081534": {
+  "name_en": "Calypso Magic Concealer E Salmon Beige 6g Dark Circle Blemish Cover Liquid Concealer Japanese Import, 1pc",
+  "weight_kg": 0.032,
+  "hscode": "330499",
+  "product_id": "9548330350",
+  "option_id": "95437296309"
+ },
+ "4987046870025_3": {
+  "name_en": "Kaminomoto B&P Shampoo Scalp Cleansing & Care Japan Direct Import, 3pcs, 300ml",
+  "weight_kg": 1.05,
+  "hscode": "330510",
+  "product_id": "9570607413",
+  "option_id": "95509453874"
+ },
+ "4562384603179_4": {
+  "name_en": "Okuchi Lemon Portable Mouthwash Lemon Flavor, 20pcs, 11ml",
+  "weight_kg": 0.272,
+  "hscode": "330690",
+  "product_id": "9688296589",
+  "option_id": "95904065019"
+ },
+ "4550516483782_3": {
+  "name_en": "TSUBAKI Premium Treatment Water Japan Direct Shipping, 210ml, 3pcs",
+  "weight_kg": 0.759,
+  "hscode": "330590",
+  "product_id": "8473911517",
+  "option_id": "95891350036"
+ },
+ "4571157254340_6": {
+  "name_en": "ORIHIRO Purunto Konjac Jelly Grape Flavor Japan Import, 120g, 6pcs",
+  "weight_kg": 0.792,
+  "hscode": "210690",
+  "product_id": "9238344509",
+  "option_id": "95812908725"
+ },
+ "4571157252674_3": {
+  "name_en": "ORIHIRO Purunto Konjac Jelly Mango & White Peach Assorted Flavor Japan Import, 3pcs, 240g",
+  "weight_kg": 0.792,
+  "hscode": "210690",
+  "product_id": "9414911713",
+  "option_id": "95812843050"
+ },
+ "4571157258249_3": {
+  "name_en": "ORIHIRO Purunto Konjac Jelly Zero Calorie White Peach & Kyoho Grape Assorted Japan Import, 3pcs",
+  "weight_kg": 0.711,
+  "hscode": "210690",
+  "product_id": "8519601105",
+  "option_id": "95812805738"
+ },
+ "4571157258249_6": {
+  "name_en": "ORIHIRO Purunto Konjac Jelly Zero Calorie White Peach & Kyoho Grape Assorted Japan Import, 6pcs",
+  "weight_kg": 1.422,
+  "hscode": "210690",
+  "product_id": "8519601105",
+  "option_id": "95812805740"
+ },
+ "4990110004752": {
+  "name_en": "WHITE CONC Body Wash CII Body Cleanser Japan Import, 1pc, 360ml",
+  "weight_kg": 0.418,
+  "hscode": "340130",
+  "product_id": "8037123766",
+  "option_id": "95786722975"
+ },
+ "4904651186723_2": {
+  "name_en": "Momori Moist & Manageable Hair Cream Peach Scent Japan Hair Care, 2pcs, 150g",
+  "weight_kg": 0.344,
+  "hscode": "330590",
+  "product_id": "8662211699",
+  "option_id": "95747057587"
+ },
+ "4901301350121": {
+  "name_en": "Men's Biore ONE All-in-One Body Cleanser Fruity Savon Scent Pump 480ml, 1pc",
+  "weight_kg": 0.571,
+  "hscode": "340130",
+  "product_id": "6862268823",
+  "option_id": "95659761571"
+ },
+ "4901301350121_3": {
+  "name_en": "Men's Biore ONE All-in-One Body Wash 3-in-1 Hair Shampoo Body Wash Facial Cleanser Fruity Savon Scent, 3pcs, 480ml",
+  "weight_kg": 1.713,
+  "hscode": "340130",
+  "product_id": "8584198687",
+  "option_id": "95659761572"
+ },
+ "4901616011007_3": {
+  "name_en": "Ora2 Me Stain Clear Toothpaste Natural Mint, 130g, 3pcs",
+  "weight_kg": 0.444,
+  "hscode": "336010",
+  "product_id": "8520293773",
+  "option_id": "95619969056"
+ },
+ "4901616011014_6": {
+  "name_en": "SUNSTAR Ora2 Me Stain Clear Toothpaste Peach Leaf Mint, 130g, 6pcs",
+  "weight_kg": 0.882,
+  "hscode": "336010",
+  "product_id": "8511233663",
+  "option_id": "95619912256"
+ },
+ "4902713127288_3": {
+  "name_en": "Marukome Ryotei no Aji Low Salt Instant Miso Soup Assorted 12 Servings, 3pcs",
+  "weight_kg": 0.696,
+  "hscode": "210390",
+  "product_id": "7897817893",
+  "option_id": "95614224222"
+ },
+ "4902111773384_3": {
+  "name_en": "Dove Beauty Moisture Creamy Foam Face Wash, 3pcs, 150ml",
+  "weight_kg": 0.639,
+  "hscode": "340130",
+  "product_id": "7400594659",
+  "option_id": "95878626528"
+ },
+ "4513574033351_3": {
+  "name_en": "Kumano Yushi Reihaku Hatomugi UV Milky Gel SPF50+ PA++++ Pump Type, 250ml, 3pcs",
+  "weight_kg": 0.879,
+  "hscode": "330499",
+  "product_id": "7490261076",
+  "option_id": "95600216909"
+ },
+ "84901360364165": {
+  "name_en": "Bourbon Alfort Mini Chocolate Rich Milk Chocolate Biscuits, 12 Pieces × 10 Packs, 1 Set, 55g",
+  "weight_kg": 0.757,
+  "hscode": "190531",
+  "product_id": "9696684311",
+  "option_id": "95932707264"
+ },
+ "4589546894398_2": {
+  "name_en": "&honey Moist Repair Hair Oil 3.0 Refill, 75ml, 2pcs",
+  "weight_kg": 0.154,
+  "hscode": "330590",
+  "product_id": "8217837777",
+  "option_id": "95983709052"
+ }
+}

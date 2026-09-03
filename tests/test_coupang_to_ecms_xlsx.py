@@ -151,15 +151,14 @@ def test_単価は韓国ウォンの整数():
         assert got["AP"] == int(want["AP"]), (got["B"], got["AP"], want["AP"])
 
 
-def test_邮编は前ゼロを保つ():
-    """`07531` が 7531 になると住所照合が落ちる。文字列で持つこと。"""
-    got = {g["B"]: g for g in _converted()}
-    zips = [g["X"] for g in got.values()]
-    assert all(isinstance(z, str) for z in zips)
-    assert any(z.startswith("0") for z in zips), "前ゼロの検体が fixtures に無い"
-    for g in got.values():
-        want = BY_ORDER[g["B"]]
-        assert int(g["X"]) == int(want["X"])          # 実ファイル側は数値で保存されている
+def test_邮编は数値():
+    """運営の実ファイルは 0902・0903 とも**数値**（`05564` ではなく `5564`）。
+
+    前ゼロは落ちるが ECMS はそれで通っている。文字列で出すと運営の出力と食い違う。
+    """
+    for g in _converted():
+        assert isinstance(g["X"], int), (g["B"], g["X"])
+        assert g["X"] == int(BY_ORDER[g["B"]]["X"])
 
 
 def test_省と市_36件一致():
@@ -220,7 +219,9 @@ def test_xlsx_書き出し(tmp_path):
     assert ws.cell(1, 1).value.startswith("Client Code")
     assert ws.cell(2, 1).value == "LBF"
     zip_col = X.COLUMNS.index("X") + 1
-    assert isinstance(ws.cell(2, zip_col).value, str)         # 前ゼロ保持
+    assert isinstance(ws.cell(2, zip_col).value, int)         # 郵便番号は数値
+    sku_col = X.COLUMNS.index("AG") + 1
+    assert isinstance(ws.cell(2, sku_col).value, str)         # SKU は文字列
 
 
 def test_品牌の日英対応():
@@ -255,7 +256,7 @@ def test_毛重はマスタの入数込み重量を割る():
 def test_世宗市と新設区():
     """世宗は単層制で시군구が無い。검단구は 2026-07 新設で手元の법정동코드に載っていない。"""
     assert X.province_city("세종특별자치시 마음로 67 가락마을")[:2] == \
-        ("세종특별자치시", "세종특별자치시")
+        ("세종특별자치시", "세종시")      # 市欄は略称（運営の実出力）
     assert X.province_city("인천광역시 검단구 원당동 987-1")[:2] == ("인천광역시", "검단구")
 
 
@@ -263,3 +264,47 @@ def test_実在しない行政区は省も空にする():
     """`전남광주통합특별시` は前方一致で전라남도に化ける。実際は광주광역시で通関先が変わる。"""
     p, c, _ = X.province_city("전남광주통합특별시 북구 자미로39번길 9")
     assert (p, c) == ("", "")
+
+
+# ------------------------------------------------------------------
+# 0903（2 組目の正解）· 0902 だけでは出なかった形が入っている
+# ------------------------------------------------------------------
+SRC03 = json.loads((FIX / "coupang_orders_20260903.json").read_text("utf-8"))[1:]
+DST03 = json.loads((FIX / "ecms_upload_20260903.json").read_text("utf-8"))[1:]
+PROD03 = json.loads((FIX / "coupang_products_20260903.json").read_text("utf-8"))
+BY03 = {d["B"]: d for d in DST03}
+
+
+def _converted03():
+    from datetime import date as _d
+    return X.convert(SRC03, PROD03, {}, start_seq=1, on=_d(2026, 9, 3))
+
+
+@pytest.mark.parametrize("col,label", [
+    ("B", "订单号"), ("R", "姓名"), ("S", "电话"), ("X", "邮编"), ("Y", "地址"),
+    ("AA", "PCCC"), ("V", "省"), ("W", "市"), ("AF", "规格型号"), ("AG", "SKU"),
+    ("AJ", "毛重"), ("AO", "数量"), ("AP", "单价"), ("AU", "Platform Id"),
+])
+def test_0903も実出力と一致(col, label):
+    bad = []
+    for got in _converted03():
+        want = BY03[got["B"]]
+        if str(got.get(col, "")) != str(want.get(col, "")):
+            bad.append((got["B"], got.get(col), want.get(col)))
+    assert not bad, f"{label}({col}) 不一致 {len(bad)}/{len(DST03)}: {bad[:3]}"
+
+
+def test_毛重は内件総数で割る():
+    """0903 で初めて出た形: 入数 1 × 購入 2。0902 は購入数が全部 1 で区別が付かなかった。
+
+    4902111773421（入数 1 · 購入 2 · 内件総数 2）: 0.23 / 2 = 0.115 → 0.12
+    入数で割ると 0.23 のままになり、運営の出力と食い違う。
+    """
+    row = X.build_row({X.C_SKU: "4902111773421", X.C_QTY: "2"},
+                      {"weight_kg": 0.23}, {}, "R")
+    assert row["AO"] == 2 and row["AJ"] == 0.12
+
+
+def test_世宗の市欄は略称():
+    """運営の実出力は `세종시`。`세종특별자치시` をそのまま入れない。"""
+    assert X.province_city("세종특별자치시 마음로 67 가락마을")[:2] == ("세종특별자치시", "세종시")
