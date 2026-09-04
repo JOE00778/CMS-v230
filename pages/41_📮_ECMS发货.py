@@ -133,9 +133,12 @@ with tab_cp:
                                  brand_alias=alias)
 
                 view = []
-                for r in rows:
+                for o, r in zip(orders, rows):
                     miss = X.missing(r)
-                    view.append({"缺": "、".join(miss) if miss else "",
+                    tag = "、".join(miss) if miss else ""
+                    if X.pccc_dropped(o):
+                        tag = (tag + "、" if tag else "") + t("PCCC格式不对已删除")
+                    view.append({"缺": tag,
                                  **{f"{c} {X.HEADERS[X.COLUMNS.index(c)].split(chr(10))[0]}":
                                     r.get(c, "")
                                     for c in ("B", "C", "R", "S", "V", "W", "X", "Y", "AA",
@@ -203,8 +206,16 @@ with tab_cp:
                     if not sku:
                         continue
                     jan, pack = X.split_sku(sku)
+                    # 「产品重量」列（SKU 全体・入数込みの kg）。ここを取り忘れていたため
+                    # 毛重が永久に空になっていた（2026-09-04 許慧杰さん指摘）。
+                    w = _c(row, "产品重量", "重量", "weight")
+                    try:
+                        w = float(w) if w else None
+                    except ValueError:
+                        w = None
                     recs.append({"sku": sku, "jan": jan, "pack": pack,
                                  "name_en": _c(row, "英文名称", "英文", "name_en"),
+                                 "weight_kg": w,
                                  "brand": _c(row, "brand", "品牌"),
                                  "hscode": _c(row, "HScode", "HS"),
                                  "product_id": _c(row, "Product ID"),

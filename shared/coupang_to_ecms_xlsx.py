@@ -31,6 +31,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from shared import kr_address
+from shared.coupang_ecms import pccc_valid
 
 TEMPLATE = json.loads((Path(__file__).parent / "ecms_upload_template.json").read_text("utf-8"))
 COLUMNS = [t["col"] for t in TEMPLATE]
@@ -212,7 +213,8 @@ def build_row(order: dict, product: dict | None, master: dict | None,
         "X": _zip_value(order.get(C_ZIP, "")),
         "Y": order.get(C_ADDR, ""),
         "Z": "ID",
-        "AA": order.get(C_PCCC, ""),
+        # 形式(P+12桁)が崩れているものは送らない前に落とす（許慧杰さん運用と同じ）
+        "AA": order.get(C_PCCC, "") if pccc_valid(order.get(C_PCCC, "")) else "",
         "AC": "EN",
         # 商品マスタの brand → メーカー単位の日英対応 → NST 厂商（和名併記を除去）の順
         "AE": (product.get("brand")
@@ -253,6 +255,12 @@ def ref_number(seq: int, on: date | None = None) -> str:
 REQUIRED = {"B": "订单号", "R": "收货人姓名", "S": "收货人电话", "V": "省", "W": "市",
             "X": "邮编", "Y": "地址", "AA": "PCCC", "AE": "品牌", "AG": "SKU",
             "AH": "英文品名", "AJ": "毛重", "AO": "数量", "AP": "单价"}
+
+
+def pccc_dropped(order: dict) -> bool:
+    """原始 PCCC 有值但格式不对，已被清空。给页面标一个「已删除」而不是普通的「缺」。"""
+    raw = (order.get(C_PCCC) or "").strip()
+    return bool(raw) and not pccc_valid(raw)
 
 
 def missing(row: dict) -> list[str]:

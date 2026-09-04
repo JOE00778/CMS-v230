@@ -75,6 +75,25 @@ def split_sku(code: str) -> tuple[str, int]:
 # ------------------------------------------------------------------
 # Coupang の箱 → queue 行
 # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# PCCC（개인통관고유부호）の形式チェック
+# ------------------------------------------------------------------
+# 構造: P + 発給年(2桁) + 発給番号(9桁) + 検証用符号(1桁) = P + 12桁。
+# 出所: 관세청（韓国関税庁）の公式発表・namu.wiki 통관고유부호項。
+#
+# ⚠️ **これは形式チェックだけ**。氏名・電話・（2026-02-02 以降は郵便番号も）本人確認は
+# 韓国関税庁の UNIPASS Open API（`retrievePersEcm`）でしか検証できず、企業登録して
+# 認証キーを発給してもらう必要がある（現状未取得）。
+# 「桁数と接頭辞が正しいだけの偽物」はここで弾けるが、「別人の実在する正しい番号」を
+# 間違って入力したケースは弾けない——それは UNIPASS 側の仕事。
+_PCCC_RE = __import__("re").compile(r"^P\d{12}$")
+
+
+def pccc_valid(pccc: str) -> bool:
+    """P + 12桁の形式か。中身が本人のものかは検証しない（§上のコメント参照）。"""
+    return bool(_PCCC_RE.match((pccc or "").strip().upper()))
+
+
 def pccc_of(box: dict) -> tuple[str, str]:
     """(PCCC, 種別)。通常の個人通関固有符号が無ければ一回限りのものを見る。"""
     o = box.get("overseaShippingInfoDto") or {}
@@ -154,6 +173,11 @@ def to_queue_row(box: dict, products: dict, pulled_at: str,
     a = kr_address.to_ecms(addr_full)
     items = build_items(box, products, masters)
     pccc, kind = pccc_of(box)
+    if pccc and not pccc_valid(pccc):
+        # 許慧杰さん運用「通关号码不对的话上传ecms系统之前会摘掉」と同じ挙動。
+        # 形式が崩れたものを ECMS に送るとエラーで返ってくるだけなので、送る前に落として
+        # 画面に「削除済み」と出す（missing_fields で必須項目扱いにして赤く出す）。
+        pccc, kind = "", "invalid_format"
 
     total_krw = sum(i["krw"] for i in items)
     weights = [i["weight_total_kg"] for i in items if i.get("weight_total_kg") is not None]
