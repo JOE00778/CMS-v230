@@ -239,16 +239,19 @@ def test_品牌の日英対応():
     assert row2["AE"] == "Unilever"
 
 
-def test_毛重はマスタの入数込み重量を割る():
-    """「产品重量」は SKU 全体（入数込み）の kg。ECMS の Item_Grossweight は 1 個あたり。
+def test_毛重は_JDL_優先_無ければ産品重量へ():
+    """Boss 2026-09-04 拍板「毛重用先用JDL的数据」。
 
-    実測: 4901616011007_3 の 0.444kg ÷ 3 = 0.148 → 0.15（運営の実出力と一致）。
-    割らずに出すと 3 倍の重量で申告することになる。
+    JDL（jdl.v_goods_dimensions.wms_gross_weight_g・1 個あたりの g）を最優先。
+    無いときだけ商品マスタの「产品重量」（SKU 全体・入数込み kg）を数量で割る。
     """
-    row = X.build_row({X.C_SKU: "4901616011007_3"}, {"weight_kg": 0.444}, {}, "R")
+    # 両方あれば JDL が勝つ（産品重量を信じると 3 倍の誤差になる例）
+    row = X.build_row({X.C_SKU: "x_1", X.C_QTY: "1"},
+                      {"weight_kg": 0.90}, {"weight": 148.0}, "R")
     assert row["AJ"] == 0.15
-    # マスタに無ければ NST（g）へフォールバック
-    assert X.build_row({X.C_SKU: "x_2"}, {}, {"weight": 148.0}, "R")["AJ"] == 0.15
+    # JDL 無し → 産品重量 ÷ 入数込み数量にフォールバック
+    assert X.build_row({X.C_SKU: "4901616011007_3", X.C_QTY: "1"},
+                       {"weight_kg": 0.444}, {}, "R")["AJ"] == 0.15
     # どちらも無ければ空。0 で埋めない
     assert X.build_row({X.C_SKU: "x_1"}, {}, {}, "R")["AJ"] == ""
 
