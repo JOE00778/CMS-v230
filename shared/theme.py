@@ -98,8 +98,11 @@ def html_table(df, *, num_from_col: int = 1) -> None:
     import re as _re
 
     def _fmt(v) -> str:
-        """单元格 escape 后，给涨跌 (+..%/pp) 上绿、(-..%/pp) 上红（Boss 2026-05-25）。"""
+        """单元格 escape 后，给涨跌 (+..%/pp) 上绿、(-..%/pp) 上红（Boss 2026-05-25）。
+
+        值中的换行 \\n 转 <br>（环比放金额下一行用 · Boss 2026-09-07）。"""
         s = _html.escape(str(v))
+        s = s.replace("\n", "<br>")
         s = _re.sub(r'(\(\+[^)]*\))', r'<span style="color:#16A34A;font-weight:600">\1</span>', s)
         s = _re.sub(r'(\(-[^)]*\))', r'<span style="color:#DC2626;font-weight:600">\1</span>', s)
         return s

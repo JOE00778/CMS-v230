@@ -140,15 +140,18 @@ def _col(key: str) -> str:
 
 
 def _mom_suffix(cur, key, metric, prev_idx, *, pp: bool = False) -> str:
-    """整月环比サフィックス「 (±X.X%)」。上月データなし/0 は「 (—)」。pp=True は百分点(pp)差。"""
+    """整月环比サフィックス「(±X.X%)」。金額の下段に改行表示（Boss 2026-09-07）。
+
+    上月データなし/0 は「(—)」。pp=True は百分点(pp)差。
+    改行 \\n は html_table 側で <br> に変換される。"""
     if prev_idx is None or key not in prev_idx.index:
-        return " (—)"
+        return "\n(—)"
     prev = prev_idx.loc[key, metric]
     if pd.isna(prev) or prev == 0:
-        return " (—)"
+        return "\n(—)"
     if pp:
-        return f" ({cur - prev:+.1f}pp)"
-    return f" ({(cur - prev) / abs(prev) * 100:+.1f}%)"
+        return f"\n({cur - prev:+.1f}pp)"
+    return f"\n({(cur - prev) / abs(prev) * 100:+.1f}%)"
 
 
 def _disp(g: pd.DataFrame, cols: tuple, *, mom_prev=None, dim: str = None) -> pd.DataFrame:
