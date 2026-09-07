@@ -128,6 +128,33 @@ _LBL = {
     "payout_rate":   ("回款率", "入金率"),
 }
 
+# ============================================================
+# 平台分类（Boss 2026-09-07: 筛选加「按平台」）
+#   店名から解析。v_shipped_settlement の platform より細かく
+#   （Amazon / Yahoo / Shopify も分ける）。
+# ============================================================
+ALL_PLATFORMS = ["Shopee", "Lazada", "Coupang", "Amazon", "Yahoo",
+                 "Shopify", "Other"]
+
+
+def _classify_platform(shop) -> str:
+    s = str(shop or "").strip()
+    sl = s.lower()
+    if "coupang" in sl:
+        return "Coupang"
+    if s.startswith("Shopee"):
+        return "Shopee"
+    if s.startswith("Lazada"):
+        return "Lazada"
+    if sl.startswith("shopify"):
+        return "Shopify"
+    if "amazon" in sl:
+        return "Amazon"
+    if "ヤフー" in s or "yahoo" in sl:
+        return "Yahoo"
+    return "Other"
+
+
 _MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm"}
 _PCT = {"gross_margin", "cm_rate"}
 _INT = {"qty", "n_shop", "n_sku"}
@@ -220,7 +247,8 @@ def _prev_month(ym: str) -> str:
 
 
 def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31,
-              owner_map: dict | None = None) -> pd.DataFrame:
+              owner_map: dict | None = None,
+              pf_sel: list | None = None) -> pd.DataFrame:
     """上月 dim别 集計（index=dim）。环比の分母用。dim∈{'owner','shop'}。空なら空DF。
 
     环比口径(Boss 2026-05-25):
@@ -246,6 +274,8 @@ def _agg_prev(prev_ym: str, mk_sel: str, dim: str, max_day: int = 31,
     dfp = add_owner_column(dfp, shop_col="shop", owner_map=owner_map)
     if mk_sel:
         dfp = dfp[dfp["market"].isin(mk_sel)]
+    if pf_sel:
+        dfp = dfp[dfp["shop"].map(_classify_platform).isin(pf_sel)]
     dfp = dfp[dfp["owner"].map(has_owner)]   # 担当者未設定の店舗は集計対象外
     if dfp.empty:
         return pd.DataFrame()
@@ -312,9 +342,12 @@ if months_df is None or months_df.empty:
 # ============================================================
 # フィルタ
 # ============================================================
-c1, c2 = st.columns([1, 2])
+c1, c2, c3 = st.columns([1, 1.5, 1.5])
 ym = c1.selectbox(t("対象月"), months_df["ym"].tolist())
 mk = c2.multiselect(t("市場"), ALL_MARKETS, placeholder=t("全部市场"))  # 空選＝全部市场
+pf = c3.multiselect("プラットフォーム" if get_lang() == "ja" else "平台",
+                    ALL_PLATFORMS,
+                    placeholder="全プラットフォーム" if get_lang() == "ja" else "全部平台")  # 空選＝全部
 
 # ============================================================
 # クエリ（当月の日次明細 + 商品マスタ join）
@@ -368,10 +401,17 @@ if df.empty:
                  "下の「👤 店铺负责人」タブ最下部の設定から担当者を割り当ててください。"))
     st.stop()
 
+df["platform"] = df["shop"].map(_classify_platform)
 if mk:
     df = df[df["market"].isin(mk)]
     if df.empty:
         st.info(t("この市場のデータがありません"))
+        st.stop()
+if pf:
+    df = df[df["platform"].isin(pf)]
+    if df.empty:
+        st.info(("このプラットフォームのデータがありません" if get_lang() == "ja"
+                 else "该平台筛选下无数据"))
         st.stop()
 
 # 上月集計（环比の分母）· 担当者別 / 店舗別
@@ -381,8 +421,10 @@ _real_cur_ym = _today.strftime("%Y-%m")
 _max_day = int(pd.to_datetime(df["sale_date"]).dt.day.max()) if ym == _real_cur_ym else 31
 _prev_ym = _prev_month(ym)
 _omap_prev = load_owner_map(conn_w, _prev_ym)
-_prev_owner = _agg_prev(_prev_ym, mk, "owner", _max_day, owner_map=_omap_prev)
-_prev_shop = _agg_prev(_prev_ym, mk, "shop", _max_day, owner_map=_omap_prev)
+_prev_owner = _agg_prev(_prev_ym, mk, "owner", _max_day, owner_map=_omap_prev,
+                        pf_sel=pf)
+_prev_shop = _agg_prev(_prev_ym, mk, "shop", _max_day, owner_map=_omap_prev,
+                       pf_sel=pf)
 
 # ============================================================
 # CM（Boss 2026-09-07 考核口径）
@@ -1170,6 +1212,8 @@ with tab_alert:
         _aw = _aw[_aw["owner"].map(has_owner)]
         if mk:
             _aw = _aw[_aw["market"].isin(mk)]
+        if pf:
+            _aw = _aw[_aw["shop"].map(_classify_platform).isin(pf)]
         _owner_map = (_aw.drop_duplicates("shop").set_index("shop")["owner"]
                       if not _aw.empty else {})
         _dd = _aw.groupby(["shop", "sale_date"], as_index=False).agg(
@@ -1329,6 +1373,10 @@ with tab_deduct:
                 _keep.add("KOREA")
             if _keep:
                 d = d[d["market"].isin(_keep)]
+        if pf:
+            # ビューの platform 列（Shopee/Lazada/Coupang/Other）ではなく
+            # ページ統一の店名解析（Amazon/Yahoo/Shopify も分ける）で絞る
+            d = d[d["shop"].map(_classify_platform).isin(pf)]
 
         if d.empty:
             st.info(t("当前市场筛选下无数据"))
@@ -1649,6 +1697,8 @@ with tab_loss:
                 _kp.add("KOREA")
             if _kp:
                 L = L[L["market"].isin(_kp)]
+        if pf:
+            L = L[L["shop"].map(_classify_platform).isin(pf)]
 
     if _lo is not None and not _lo.empty and L.empty:
         # 市場フィルタで全部落ちた場合。この先の groupby / 除算が壊れる
@@ -1921,6 +1971,8 @@ with tab_ff3:
         F = add_market_column(F, store_col="shop")
         if mk:
             F = F[F["market"].isin(mk)]
+        if pf:
+            F = F[F["shop"].map(_classify_platform).isin(pf)]
 
         if F.empty:
             st.info(t("当前市场筛选下无数据"))
