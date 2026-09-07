@@ -126,9 +126,14 @@ with tab_cp:
                 jans = sorted({X.split_sku(o.get(X.C_SKU, ""))[0] for o in orders})
                 nm, nm_err = store_cp.nst_master_map(jans)
                 if nm_err:
-                    st.error(t("NST 主档查询失败——品牌和毛重会是空的：") + nm_err)
-                elif not nm:
-                    st.warning(t("NST 主档没查到这批 JAN——品牌和毛重会是空的"))
+                    st.error(t("主档查询出错：") + nm_err)
+                # 命中数は**常に**出す。黙って空を返されると「なぜ品牌と毛重だけ空なのか」が
+                # 画面から判らない（2026-09-07 に実際そうなった）。
+                _mk = sum(1 for v in nm.values() if v.get("maker"))
+                _wt = sum(1 for v in nm.values() if v.get("weight") is not None)
+                st.caption(t("主档命中") + f"：{t('品牌')} {_mk}/{len(jans)} · "
+                           f"{t('毛重')} {_wt}/{len(jans)} "
+                           + t("（品牌来自 NST 厂商，毛重来自 JDL 仓库实测）"))
                 alias = store_cp.brand_alias_map()
                 rows = X.convert(orders, pm, nm, start_seq=int(seq), on=ship_day,
                                  brand_alias=alias)

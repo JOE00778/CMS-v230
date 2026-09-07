@@ -53,40 +53,58 @@ def product_map() -> dict[str, dict]:
         conn.close()
 
 
+def _fetch_by_jan(sql: str, jans: list[str]) -> tuple[list, str]:
+    """`{marks}` を埋めて JAN 群で引く。失敗は握り潰さず (空, 理由) で返す。"""
+    conn = get_connection()
+    try:
+        marks = ",".join("?" * len(jans))
+        return conn.execute(sql.format(marks=marks), tuple(jans)).fetchall(), ""
+    except Exception as e:
+        return [], str(e)
+    finally:
+        conn.close()
+
+
 def nst_master_map(jans: list[str]) -> tuple[dict[str, dict], str]:
     """JAN → {maker, weight(g)}。戻り値は (マップ, エラー文字列)。
 
     品牌 = `nst.item_master_raw.maker`
-    毛重 = **`jdl.v_goods_dimensions.wms_gross_weight_g`**（倉庫実測。page02「毛重(g)」と同じ）
-           ⚠️ `nst.item_master_raw` に `weight` 列は**無い**。2026-09-03 に存在しない列を
-           SELECT していて、しかも例外を握り潰していたため品牌と毛重が両方とも空のまま
-           46 行出力された。**エラーは握り潰さず呼び出し元に返す**。
+    毛重 = `jdl.v_goods_dimensions.wms_gross_weight_g`（倉庫実測。page02「毛重(g)」と同じ）
 
-    jan は一意ではない（15,589 行 / 15,473 distinct）ので、重量が取れた行を優先する。
+    ⚠️ **2 本に分けて引く**（2026-09-07）。最初は 1 本の LEFT JOIN で書いていたが、
+       それだと JDL 側に何かあった（view が無い・権限が無い等）だけで品牌まで道連れに
+       なって、運営の画面に「品牌・毛重が両方とも空」で出た。倉庫の重量が引けない日でも
+       品牌は出したい。**片方が落ちても、もう片方は生かす。**
+       （nst.item_master_raw に weight 列は無い——2026-09-03 にそれで一度やらかしている）
+
+    jan は一意ではない（15,589 行 / 15,473 distinct）ので、値の取れた行を優先する。
     """
     if not jans:
         return {}, ""
-    conn = get_connection()
-    try:
-        marks = ",".join("?" * len(jans))
-        rows = conn.execute(
-            "SELECT im.jan, im.maker, gd.wms_gross_weight_g AS weight"
-            " FROM nst.item_master_raw im"
-            " LEFT JOIN jdl.v_goods_dimensions gd ON gd.jan = im.jan"
-            f" WHERE im.jan IN ({marks})", tuple(jans)).fetchall()
-    except Exception as e:                       # SQLite 本機や列変更を握り潰さない
-        return {}, str(e)
-    finally:
-        conn.close()
 
     out: dict[str, dict] = {}
-    for r in rows:
+    errors: list[str] = []
+
+    makers, err = _fetch_by_jan(
+        "SELECT jan, maker FROM nst.item_master_raw WHERE jan IN ({marks})", jans)
+    if err:
+        errors.append(f"品牌(nst.item_master_raw): {err}")
+    for r in makers:
         jan = str(r["jan"])
-        cur = out.get(jan)
-        # 同じ JAN が複数行ある。重量が取れている行を優先
-        if cur is None or (cur.get("weight") is None and r["weight"] is not None):
-            out[jan] = {"maker": r["maker"], "weight": r["weight"]}
-    return out, ""
+        if r["maker"] and not out.get(jan, {}).get("maker"):
+            out.setdefault(jan, {})["maker"] = r["maker"]
+
+    weights, err = _fetch_by_jan(
+        "SELECT jan, wms_gross_weight_g AS weight FROM jdl.v_goods_dimensions"
+        " WHERE jan IN ({marks})", jans)
+    if err:
+        errors.append(f"毛重(jdl.v_goods_dimensions): {err}")
+    for r in weights:
+        jan = str(r["jan"])
+        if r["weight"] is not None and out.get(jan, {}).get("weight") is None:
+            out.setdefault(jan, {})["weight"] = r["weight"]
+
+    return out, "；".join(errors)
 
 
 # ------------------------------------------------------------------

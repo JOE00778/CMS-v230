@@ -115,3 +115,58 @@ def test_空入力は何もしない():
     assert cs.upsert_queue([]) == (0, 0)
     assert cs.upsert_products([]) == 0
     assert cs.list_queue() == []
+
+
+# ------------------------------------------------------------------
+# NST/JDL 主档の引き当て（2026-09-07 の障害）
+# ------------------------------------------------------------------
+def test_片方の表が落ちてももう片方は生きる(monkeypatch):
+    """1 本の LEFT JOIN で書いていたせいで、JDL 側が引けないだけで**品牌まで道連れ**に
+    なり、運営の画面に「品牌・毛重が両方とも空」で 37/37 出た。
+
+    倉庫の重量が引けない日でも品牌は出したい。片方の失敗をもう片方に波及させないこと。
+    """
+    calls = []
+
+    def fake_fetch(sql, jans):
+        calls.append(sql)
+        if "jdl" in sql:                      # JDL 側だけ落ちる状況を作る
+            return [], 'relation "jdl.v_goods_dimensions" does not exist'
+        return [{"jan": "4901616011007", "maker": "SUNSTAR"}], ""
+
+    monkeypatch.setattr(cs, "_fetch_by_jan", fake_fetch)
+    out, err = cs.nst_master_map(["4901616011007"])
+    assert out["4901616011007"]["maker"] == "SUNSTAR", "JDL の失敗で品牌が消えた"
+    assert out["4901616011007"].get("weight") is None
+    assert "毛重" in err and "does not exist" in err
+    assert len(calls) == 2, "2 本に分けて引いていない"
+
+
+def test_両方引ければ両方入る(monkeypatch):
+    def fake_fetch(sql, jans):
+        if "jdl" in sql:
+            return [{"jan": "4901616011007", "weight": 148.0}], ""
+        return [{"jan": "4901616011007", "maker": "SUNSTAR"}], ""
+
+    monkeypatch.setattr(cs, "_fetch_by_jan", fake_fetch)
+    out, err = cs.nst_master_map(["4901616011007"])
+    assert out["4901616011007"] == {"maker": "SUNSTAR", "weight": 148.0}
+    assert err == ""
+
+
+def test_JAN重複時は値の取れた行を優先(monkeypatch):
+    """nst.item_master_raw の jan は一意でない（15,589 行 / 15,473 distinct）。"""
+    def fake_fetch(sql, jans):
+        if "jdl" in sql:
+            return [], ""
+        return [{"jan": "X", "maker": None}, {"jan": "X", "maker": "KAO"}], ""
+
+    monkeypatch.setattr(cs, "_fetch_by_jan", fake_fetch)
+    out, _ = cs.nst_master_map(["X"])
+    assert out["X"]["maker"] == "KAO", "空の行に上書きされた"
+
+
+def test_空入力は引かない(monkeypatch):
+    monkeypatch.setattr(cs, "_fetch_by_jan",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("引いた")))
+    assert cs.nst_master_map([]) == ({}, "")
