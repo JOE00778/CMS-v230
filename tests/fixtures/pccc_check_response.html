@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="en">
+<head>
+<title>GSI 통관고유부호 검증</title>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.1/jquery.min.js"></script>
+
+<style>
+html,
+body {
+	margin:0;
+	padding:0;
+	font-size:12px;
+	font-family: 'Lato', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+body {
+	-webkit-text-size-adjust:none;
+}
+table.type-row {
+	width:100%;
+	margin:0 0 20px 0;
+	padding:0;
+	border:0;
+}
+table.type-row th,
+table.type-row td {
+	padding:5px 10px;
+	vertical-align:middle;
+}
+table.type-row th {
+	text-align:right;
+}
+table.type-row td {
+	text-align:left;
+}
+table.type-row th.no-count,
+table.type-row td.no-count {
+	width:100%;
+	padding:30px 0;
+	color:#666;
+	text-align:center;
+}
+
+table.type-wordbreak th,
+table.type-wordbreak td {
+	word-wrap:break-word;
+	word-break:break-all;
+}
+
+table.type-align-center thead th,
+table.type-align-center thead td,
+table.type-align-center tbody th,
+table.type-align-center tbody td,
+table.type-align-center tfoot th,
+table.type-align-center tfoot td {
+	text-align:center;
+}
+
+table.type-background-thead thead th,
+table.type-background-tbody tbody th,
+table.type-background-tfoot tfoot th {
+	background-color:#f4f4f4;
+}
+
+table.type-list th,
+table.type-list td {
+	margin:0;
+	padding:7px 5px;
+}
+table.type-list thead th {
+	border-top:solid 1px #d6d6d6;
+	border-bottom:solid 1px #d6d6d6;
+	background-color:#f4f4f4;
+}
+table.type-list thead th:first-child {
+	border-left:solid 1px #d6d6d6;
+}
+table.type-list thead th:last-child {
+	border-right:solid 1px #d6d6d6;
+}
+table.type-list thead th .item {
+	border-right:solid 1px #d6d6d6;
+}
+table.type-list thead th:last-child .item {
+	border-right:none;
+}
+table.type-list tbody td {
+	border-bottom:solid 1px #d6d6d6;
+	text-align:center;
+}
+
+table.type-bordered {
+	border-collapse:collapse;
+}
+table.type-bordered th,
+table.type-bordered td {
+	margin:0;
+	padding:7px 5px;
+	border:solid 1px #d6d6d6;
+}
+
+table.type-form th,
+table.type-form td {
+	padding:7px 10px;
+}
+
+table.type-condensed th,
+table.type-condensed td {
+	padding:5px;
+}
+table.type-condensed-extra th,
+table.type-condensed-extra td {
+	padding:3px;
+}
+
+table.type-article-view {
+	margin:0 0 20px 0;
+	padding:0;
+}
+table.type-article-view th,
+table.type-article-view td {
+	margin:0;
+	padding:10px;
+	border-bottom:solid 1px #d6d6d6;
+	vertical-align:top;
+}
+table.type-article-view th {
+	font-weight:normal;
+	color:#666;
+}
+table.type-article-view td {
+	color:#666;
+}
+input.type-text {
+	height:22px;
+	margin:0;
+	padding:2px;
+	border:solid 1px #ccc;
+	font-size:12px;
+}
+input.wide,
+textarea.wide {
+	width:100%;
+}
+input.type-text,
+select.type-select {
+	vertical-align:middle;
+}
+select.type-select {
+	height:22px !important;
+}
+input.type-text[readonly] {
+	background-color:#f7f7f7;
+}
+</style>
+<script>
+$(document).ready(function(){
+	$("#ship_num").focus();
+ });
+	 
+function data_check()
+{
+
+	if($('textarea[name="chk_data"]').val()=="" )
+	{
+		alert("이름/통관고유부호를 입력해 주세요");
+		$('textarea[name="chk_data"]').focus();
+		return false;
+	}
+	
+	return true;
+}
+</script>
+</head>
+<body>
+ 
+<div class="container">
+
+	<div class="row">
+		<div class="col-lg-12">
+			<h2 class="page-header text-center font-bold" style="font-weight:700;">통관 고유부호 검증</h2>
+		</div>
+
+	</div>
+	
+	<form method="post" action="pcc_chk.php" onSubmit="return data_check();" >
+	<input type="hidden" name="action_type" value="query">
+		<div class="panel panel-info">
+
+			<div class="panel-body" >
+				
+					<div class="row">
+						<div class="col-lg-12">
+							<div class="form-group">
+								<textarea rows="4"  class="form-control" name="chk_data" placeholder="이름/통관고유부호/핸드폰번호/우편번호"></textarea>
+							</div>
+						</div>
+					</div>
+					
+					<div class="row">
+						<div class="col-lg-12  text-center">
+							<div class="form-group">
+								<button type="submit" class="btn btn-primary "><span class="glyphicon glyphicon-ok"></span> 통관부호 검증 확인</button>
+							</div>
+						</div>
+					</div>
+				
+			</div>
+		</div>
+	</form>
+	
+
+	<div class="panel panel-info">
+		<div class="panel-heading" style="height:30px;padding:5px;font-weight:bold">검증결과</div>
+		<div class="panel-body">
+			<table cellspacing="0" class="type-row type-wordbreak type-align-center type-bordered type-background-thead type-content" style="margin-bottom:0px">
+				<colgroup>
+					<col width="12%" />
+					<col width="15%" />
+					<col width="13%" />
+					<col width="10%" />
+					<col width="13%" />
+					<col width="*" />
+				</colgroup>
+				<thead>
+					<tr>
+						<th>이름</th>
+						<th>통관고유부호</th>
+						<th>핸드폰번호</th>
+						<th>우편번호</th>
+						<th>검증 결과</th>
+						<th>검증 결과 메시지</th>
+					</tr>
+				</thead>
+				<tbody>
+
+					<tr>
+						<td style='text-align:center;'>테스트</td>
+						<td style='text-align:center;'>P123412341234</td>
+						<td style='text-align:center;'>01000000000</td>
+						<td style='text-align:center;'>12345</td>
+						<td style='text-align:center;'>오류</td>
+						<td style='text-align:left;'>납세의무자 개인통관고유부호가 존재하지 않습니다.</td>
+					</tr>
+									</tbody>
+			</table>
+		</div>
+	</div>
+	
+	<div class="panel panel-info">
+		<div class="panel-heading" style="height:30px;padding:5px;font-weight:bold">사용방법</div>
+		<div class="panel-body">
+			다건을 조회하기 위해 아래와 같이 입력해 주세요!<br>
+			홍길동/P123412341234/핸드폰번호/우편번호<br>
+			김철수/P123412341234/핸드폰번호/우편번호<br>
+			이영자/P123412341234/핸드폰번호/우편번호<br>
+			
+			<h5 style="height:20px;line-height:20px;vertical-align:middle;"><span  style="font-size:26px;color:#337AB7">■</span>검증결과 확인</h5>
+
+			 <table cellspacing="0" class="type-row type-wordbreak type-align-center type-bordered type-background-thead type-content" style="margin-bottom:0px">
+				<colgroup>
+					<col width="80" />
+					<col />
+					<col />
+				</colgroup>
+				<thead>
+					<tr>
+						<th>검증 결과</th>
+						<th>검증 결과 메시지</th>
+						<th>확인할 사항</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td style="text-align:center;">정상</td>
+						<td style="text-align:left;">없음</td>
+						<td style="text-align:left;">통관 고유 부호와 이름이 일치한 경우</td>
+					</tr>
+					<tr>
+						<td style="text-align:center;">오류</td>
+						<td style="text-align:left;">입력하신 납세의무자명(홍길동)이 개인통관고유부호의 성명과 일치하지 않습니다.</td>
+						<td style="text-align:left;">통관통관부호는 존재하지만 이름과 일치하지 않는 경우</td>
+					</tr>
+					<tr>
+						<td style="text-align:center;">오류</td>
+						<td style="text-align:left;">13자리수 오류</td>
+						<td style="text-align:left;">통관통관부호가 13자리수가 아닌 경우</td>
+					</tr>
+					<tr>
+						<td style="text-align:center;">오류</td>
+						<td style="text-align:left;">P시작 형식 오류</td>
+						<td style="text-align:left;">통관통관부호가 P로 시작하지 않는 경우</td>
+					</tr>
+					<tr>
+						<td style="text-align:center;">장애</td>
+						<td style="text-align:left;">시스템 장애</td>
+						<td style="text-align:left;">관세청 서버에서 장애 발생한 경우(재시도 필요함)</td>
+					</tr>
+					<tr>
+						<td style="text-align:center;">장애</td>
+						<td style="text-align:left;">통신장애</td>
+						<td style="text-align:left;">관세청 서버 통신중 장애 발생한 경우(재시도 필요함)</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+	</div>
+
+	
+	
+	
+
+
+</div>
+
+</body>
+</html>

@@ -30,6 +30,7 @@ from shared import ecms_store as ecms_store
 from shared import coupang_client as cp
 from shared import coupang_ecms as ce
 from shared import coupang_store as store_cp
+from shared import pccc_check as pccc
 from shared import coupang_to_ecms_xlsx as X
 
 require_password()
@@ -132,12 +133,42 @@ with tab_cp:
                 rows = X.convert(orders, pm, nm, start_seq=int(seq), on=ship_day,
                                  brand_alias=alias)
 
+                # ---- PCCC 关税厅核对（按钮触发·不自动跑） ----
+                # 走的是 GSI Express 的免费工具（Boss 2026-09-04「PCCC 走1」）。
+                # 他社サイトなので**自動では叩かない**——運営が押したときだけ。
+                pv = st.session_state.get("cp_pccc_result") or {}
+                pc1, pc2 = st.columns([1, 3])
+                if pc1.button(t("核对 PCCC（关税厅）"), key="cp_pccc_go"):
+                    with st.spinner(t("查询中……")):
+                        res, perr = pccc.check(
+                            [{"name": r["R"], "pccc": r["AA"], "phone": r["S"],
+                              "zip": str(r["X"])} for r in rows if r.get("AA")])
+                    st.session_state["cp_pccc_result"] = pccc.status_map(res)
+                    pv = st.session_state["cp_pccc_result"]
+                    if perr:
+                        st.error(t("核对没跑完：") + perr)
+                    ng = sum(1 for v in pv.values() if v["status"] == pccc.STATUS_NG)
+                    ft = sum(1 for v in pv.values() if v["status"] == pccc.STATUS_FAULT)
+                    st.success(f"ok={len(pv) - ng - ft} ng={ng} "
+                               + (f"关税厅故障={ft}（可重试）" if ft else ""))
+                if pv:
+                    pc2.caption(t("已核对") + f" {len(pv)} " + t("个 PCCC。"
+                                "查出「不存在/姓名不符」的会从输出里去掉，"
+                                "「关税厅故障」的保留原样，可以再点一次重试。"))
+
+                pccc.apply_results(rows, pv)
+
                 view = []
                 for o, r in zip(orders, rows):
                     miss = X.missing(r)
                     tag = "、".join(miss) if miss else ""
                     if X.pccc_dropped(o):
                         tag = (tag + "、" if tag else "") + t("PCCC格式不对已删除")
+                    hit = pv.get((o.get(X.C_PCCC) or "").strip().upper())
+                    if hit and hit["status"] == pccc.STATUS_NG:
+                        tag = (tag + "、" if tag else "") + t("关税厅：") + hit["message"][:28]
+                    elif hit and hit["status"] == pccc.STATUS_FAULT:
+                        tag = (tag + "、" if tag else "") + t("关税厅查询故障，未核对")
                     view.append({"缺": tag,
                                  **{f"{c} {X.HEADERS[X.COLUMNS.index(c)].split(chr(10))[0]}":
                                     r.get(c, "")
