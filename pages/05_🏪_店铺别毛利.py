@@ -100,7 +100,8 @@ else:
 _upd_lbl = "データ更新" if get_lang() == "ja" else "数据更新"
 st.caption(t(
     "NST API 売上データ（日次）· 店舗×月の粗利集計 + 月内日次推移 曲線 · "
-    "粗利/粗利率 自動計算（定義原価ベース）"
+    "粗利/粗利率 自動計算（定義原価ベース）· "
+    "CM = 粗利 − 手数料（注文突合済控除）− 広告費（チャージ月）"
 ) + f" · {_upd_lbl}: {_upd_str}")
 
 # 列見出し: (中文, 日本語) — UI 言語追従
@@ -119,13 +120,19 @@ _LBL = {
     "gross_margin":  ("毛利率", "粗利率"),
     "n_shop":        ("店铺数", "店舗数"),
     "n_sku":         ("SKU数", "SKU数"),
+    "fee":           ("手续费", "手数料"),
+    "ad":            ("广告费", "広告費"),
+    "cm":            ("CM", "CM"),
+    "cm_rate":       ("CM率", "CM率"),
 }
 
-_MONEY = {"revenue", "defined_cost", "gross_profit"}
-_PCT = {"gross_margin"}
+_MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm"}
+_PCT = {"gross_margin", "cm_rate"}
 _INT = {"qty", "n_shop", "n_sku"}
 # 环比対象（相対%）。gross_margin は _PCT で百分点(pp)环比、n_shop/n_sku は構造カウントで环比なし。
 _MOM_VALUE_COLS = {"qty", "revenue", "defined_cost", "gross_profit"}
+# _PCT のうち环比(pp)を付ける列。cm_rate は上月側の再計算が要るため対象外（第1版）。
+_MOM_PCT_COLS = {"gross_margin"}
 
 
 def _col(key: str) -> str:
@@ -160,7 +167,7 @@ def _disp(g: pd.DataFrame, cols: tuple, *, mom_prev=None, dim: str = None) -> pd
             else:
                 d[c] = d[c].apply(lambda x: f"¥{x:,.0f}")
         elif c in _PCT:
-            if keys is not None:
+            if keys is not None and c in _MOM_PCT_COLS:
                 d[c] = [f"{v:.2f}%{_mom_suffix(v, k, c, mom_prev, pp=True)}"
                         for v, k in zip(d[c], keys)]
             else:
@@ -373,6 +380,121 @@ _prev_owner = _agg_prev(_prev_ym, mk, "owner", _max_day, owner_map=_omap_prev)
 _prev_shop = _agg_prev(_prev_ym, mk, "shop", _max_day, owner_map=_omap_prev)
 
 # ============================================================
+# CM（Boss 2026-09-07 考核口径）
+#   CM = 粗利（NST 売上 − 定義原価） − 手数料 − 広告費
+#   - 手数料 = nst.v_shipped_settlement の deduction_jpy + shipping_jpy
+#     （注文番号で突合済 · 調整金額込み ·「店铺扣减」タブの控除合計と同一口径）
+#   - 広告費 = finance.ad_spend_monthly（チャージ月 × 店舗 · 手入力 · 消耗ではない）
+#     外貨は当月 NST 三金レートで円換算（shared.forex.nst_monthly_rates）
+#   粒度は 月×店舗。担当者/市場へは金額を先に合算してから率を出す。
+# ============================================================
+_AD_TBL = "finance.ad_spend_monthly"
+_AD_CURRENCIES = ("JPY", "PHP", "SGD", "MYR", "THB", "VND", "TWD", "USD", "KRW")
+
+
+def _ensure_ad_schema() -> str | None:
+    """広告費テーブル幂等作成（ops.shop_owner と同パターン · PG 前提）。"""
+    try:
+        conn_w.execute("CREATE SCHEMA IF NOT EXISTS finance")
+        conn_w.execute(
+            f"CREATE TABLE IF NOT EXISTS {_AD_TBL} ("
+            "ym TEXT NOT NULL, "                  # 'YYYY-MM' チャージ月
+            "shop TEXT NOT NULL, "
+            "amount NUMERIC NOT NULL, "           # 現地通貨額
+            "currency TEXT NOT NULL DEFAULT 'JPY', "
+            "note TEXT, "
+            "updated_at TIMESTAMPTZ DEFAULT NOW(), "
+            "PRIMARY KEY (ym, shop))")
+        conn_w.commit()
+        return None
+    except Exception as e:  # noqa: BLE001
+        try:
+            conn_w.rollback()
+        except Exception:
+            pass
+        return str(e)
+
+
+_ad_schema_err = _ensure_ad_schema()
+
+# --- 手数料（月×店舗 · 注文突合済控除 + 物流控除）---
+_ded_df, _ded_err = _query(
+    "SELECT trim(shop) AS shop, deduction_jpy, shipping_jpy, orders, matched_orders "
+    "FROM nst.v_shipped_settlement WHERE ym = ?", (ym,))
+if _ded_df is None or _ded_df.empty:
+    _ded_df = pd.DataFrame(columns=["shop", "fee", "orders", "matched_orders"])
+else:
+    for _c in ("deduction_jpy", "shipping_jpy", "orders", "matched_orders"):
+        _ded_df[_c] = pd.to_numeric(_ded_df[_c], errors="coerce").fillna(0).astype(float)
+    _ded_df["fee"] = _ded_df["deduction_jpy"] + _ded_df["shipping_jpy"]
+    _ded_df = _ded_df[["shop", "fee", "orders", "matched_orders"]]
+
+# --- 広告費（チャージ月 · 円換算）---
+_ads_raw = _read_w(
+    f"SELECT shop, amount, currency, note FROM {_AD_TBL} WHERE ym = ?", (ym,))
+if not _ads_raw.empty:
+    from shared.forex import nst_monthly_rates
+    _ads_raw["shop"] = _ads_raw["shop"].astype(str).str.strip()
+    _ads_raw["amount"] = pd.to_numeric(_ads_raw["amount"], errors="coerce").fillna(0).astype(float)
+    _rate_by_cur = {c: nst_monthly_rates(conn, c, [ym])[ym]
+                    for c in _ads_raw["currency"].astype(str).str.upper().unique()}
+    _ads_raw["ad"] = [
+        _rhu(a * _rate_by_cur.get(str(c).upper(), 0.0))
+        for a, c in zip(_ads_raw["amount"], _ads_raw["currency"])]
+    _ad_df = _ads_raw.groupby("shop", as_index=False).agg(ad=("ad", "sum"))
+else:
+    _ad_df = pd.DataFrame(columns=["shop", "ad"])
+
+# per-shop CM 素材（fee/ad を店舗単位で持つ · 各タブが merge して集計）
+_cmb = pd.merge(_ded_df[["shop", "fee"]], _ad_df, on="shop", how="outer")
+_cmb["fee"] = _cmb["fee"].fillna(0.0)
+_cmb["ad"] = _cmb["ad"].fillna(0.0)
+
+# 手数料明細カバレッジ（対象 = 本ページ主計算の店舗 · Σmatched/Σorders）
+_scope_shops = set(df["shop"].unique())
+_dd_scope = _ded_df[_ded_df["shop"].isin(_scope_shops)]
+_cov_o = float(_dd_scope["orders"].sum()) if not _dd_scope.empty else 0.0
+_cov_m = float(_dd_scope["matched_orders"].sum()) if not _dd_scope.empty else 0.0
+_cov_pct = (_cov_m / _cov_o * 100) if _cov_o else None
+# 広告費はあるが当月（担当者あり）売上の無い店舗 = CM に乗らない → 明示
+_ad_orphans = sorted(set(_ad_df["shop"]) - _scope_shops) if not _ad_df.empty else []
+
+_CM_NOTE = (
+    ("CM = 粗利 − 手数料 − 広告費 · 手数料=注文突合済控除+物流控除（調整込み·店铺扣减タブと同口径）· "
+     "広告費=チャージ月全額（消耗ではない·月初は当月CMが低く出る）"
+     if get_lang() == "ja" else
+     "CM = 毛利 − 手续费 − 广告费 · 手续费=按订单号突合的扣减+物流扣减（含调整·与「店铺扣减」tab 同口径）· "
+     "广告费=充值月全额（非消耗·月初看当月 CM 会偏低）")
+    + (f" · 手数料明細カバレッジ {_cov_pct:.1f}%（100%未満は CM が高く出る·Lazada は明細API無し）"
+       if get_lang() == "ja" and _cov_pct is not None else
+       f" · 手续费明细覆盖率 {_cov_pct:.1f}%（低于100%时 CM 偏高·Lazada 无明细API）"
+       if _cov_pct is not None else "")
+    + ((" · ⚠️ 広告費のみで当月売上の無い店舗（未計上）: " if get_lang() == "ja"
+        else " · ⚠️ 有广告费但当月无(有负责人)销售、未计入: ")
+       + "、".join(_ad_orphans) if _ad_orphans else "")
+)
+
+
+def _with_cm(g: pd.DataFrame, dim: str) -> pd.DataFrame:
+    """dim 別集計 g（revenue/gross_profit 円丸め済）に fee/ad/cm/cm_rate を付ける。
+
+    金額を dim へ合算してから率を出す（率の平均はしない）。
+    g に shop 列が無い場合は df の shop→dim 対応で fee/ad を dim へ畳む。
+    """
+    if dim == "shop":
+        m = g.merge(_cmb, on="shop", how="left")
+    else:
+        _map = df[["shop", dim]].drop_duplicates()
+        _fa = _map.merge(_cmb, on="shop", how="inner")
+        _fa = _fa.groupby(dim, as_index=False).agg(fee=("fee", "sum"), ad=("ad", "sum"))
+        m = g.merge(_fa, on=dim, how="left")
+    m["fee"] = m["fee"].fillna(0.0).map(_rhu)
+    m["ad"] = m["ad"].fillna(0.0).map(_rhu)
+    m["cm"] = m["gross_profit"] - m["fee"] - m["ad"]
+    m["cm_rate"] = (m["cm"] / m["revenue"].where(m["revenue"] != 0)).fillna(0) * 100
+    return m
+
+# ============================================================
 # KPI（総）
 # ============================================================
 tot_r = _rhu(df["revenue"].sum())
@@ -522,54 +644,54 @@ with tab_owner:
         st.info(t("この条件のデータがありません"))
     else:
         # ① 负责人汇总（総数据总览）+ 柱状图
+        #   销售数量 / SKU数 列は Boss 2026-09-07 指示で削除 · CM 4 列を追加
         g = _od.groupby("owner", as_index=False).agg(
-            qty=("qty_sold", "sum"),
             revenue=("revenue", "sum"),
             defined_cost=("defined_cost", "sum"),
             gross_profit=("gross_profit", "sum"),
             n_shop=("shop", "nunique"),
-            n_sku=("item_internal_id", "nunique"),
         )
         g = _ns_round_money(g)
         g["gross_margin"] = (
             g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
         ).fillna(0) * 100
+        g = _with_cm(g, "owner")
         g = g.sort_values("gross_profit", ascending=False)
-        owner_cols = ("owner", "qty", "revenue", "defined_cost",
-                      "gross_profit", "gross_margin", "n_shop", "n_sku")
+        owner_cols = ("owner", "revenue", "defined_cost",
+                      "gross_profit", "gross_margin", "fee", "ad",
+                      "cm", "cm_rate", "n_shop")
         html_table(_disp(g, owner_cols, mom_prev=_prev_owner, dim="owner"))
+        st.caption(_CM_NOTE)
         st.altair_chart(_hbar(g, "owner"), use_container_width=True)
 
         st.divider()
 
         # ② 各负责人ごと：名称(総計) + 配下の店舗別明細
+        _gi = g.set_index("owner")
         for _ow in g["owner"].tolist():   # gross_profit 降順
             sub = _od[_od["owner"] == _ow]
-            t_ns = sub["shop"].nunique()
-            t_q = sub["qty_sold"].sum()
-            t_r = _rhu(sub["revenue"].sum())
-            t_g = t_r - _rhu(sub["defined_cost"].sum())  # NST 丸め順
-            t_m = (t_g / t_r * 100) if t_r else 0
+            _r = _gi.loc[_ow]
             st.markdown(
-                f"**👤 {_ow}** &nbsp;｜&nbsp; {_col('n_shop')}: {t_ns} ｜ "
-                f"{_col('qty')}: {int(t_q):,} ｜ "
-                f"{_col('revenue')}: ¥{t_r:,.0f} ｜ {_col('gross_profit')}: ¥{t_g:,.0f} ｜ "
-                f"{_col('gross_margin')}: {t_m:.2f}%"
+                f"**👤 {_ow}** &nbsp;｜&nbsp; {_col('n_shop')}: {int(_r['n_shop'])} ｜ "
+                f"{_col('revenue')}: ¥{_r['revenue']:,.0f} ｜ "
+                f"{_col('gross_profit')}: ¥{_r['gross_profit']:,.0f} ｜ "
+                f"{_col('gross_margin')}: {_r['gross_margin']:.2f}% ｜ "
+                f"{_col('cm')}: ¥{_r['cm']:,.0f} ｜ {_col('cm_rate')}: {_r['cm_rate']:.2f}%"
             )
             sg = sub.groupby("shop", as_index=False).agg(
-                qty=("qty_sold", "sum"),
                 revenue=("revenue", "sum"),
                 defined_cost=("defined_cost", "sum"),
                 gross_profit=("gross_profit", "sum"),
-                n_sku=("item_internal_id", "nunique"),
             )
             sg = _ns_round_money(sg)
             sg["gross_margin"] = (
                 sg["gross_profit"] / sg["revenue"].where(sg["revenue"] != 0)
             ).fillna(0) * 100
+            sg = _with_cm(sg, "shop")
             sg = sg.sort_values("gross_profit", ascending=False)
-            sg_cols = ("shop", "qty", "revenue", "defined_cost",
-                       "gross_profit", "gross_margin", "n_sku")
+            sg_cols = ("shop", "revenue", "defined_cost",
+                       "gross_profit", "gross_margin", "fee", "ad",
+                       "cm", "cm_rate")
             html_table(_disp(sg, sg_cols, mom_prev=_prev_shop, dim="shop"))
 
     # ============================================================
@@ -709,25 +831,26 @@ with tab_owner:
 # Tab 1：店舗別
 # ============================================================
 with tab_shop:
+    # 销售数量 列は Boss 2026-09-07 指示で削除 · CM 4 列を追加
     g = df.groupby(["shop", "owner"], as_index=False).agg(
-        qty=("qty_sold", "sum"),
         revenue=("revenue", "sum"),
         defined_cost=("defined_cost", "sum"),
         gross_profit=("gross_profit", "sum"),
-        n_sku=("item_internal_id", "nunique"),
     )
     g = _ns_round_money(g)
     g["gross_margin"] = (
         g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
     ).fillna(0) * 100
+    g = _with_cm(g, "shop")
     g = g.sort_values("gross_profit", ascending=False)
 
     # 列順は尹雪莉さん 2026-08-03 依頼: owner を最終列へ · SKU数 は表から外す
-    #（SKU数 は 日次/担当者/市場別 タブには残してある）
-    shop_cols = ("shop", "qty", "revenue", "defined_cost",
-                 "gross_profit", "gross_margin", "owner")
+    shop_cols = ("shop", "revenue", "defined_cost",
+                 "gross_profit", "gross_margin", "fee", "ad",
+                 "cm", "cm_rate", "owner")
     _shop_disp = _disp(g, shop_cols, mom_prev=_prev_shop, dim="shop")
     html_table(_shop_disp)
+    st.caption(_CM_NOTE)
     st.download_button(
         "⬇️ CSV ダウンロード" if get_lang() == "ja" else "⬇️ 下载 CSV",
         _shop_disp.to_csv(index=False).encode("utf-8-sig"),
@@ -784,10 +907,110 @@ with tab_shop:
                                    titleFontSize=_CHART_TITLE_FS))
         st.altair_chart(_schart, use_container_width=True)
 
+    # ============================================================
+    # 📝 広告費の録入（チャージ月 × 店舗 · CM の広告費源 · Boss 2026-09-07）
+    #   保存 = 対象月の全行入替（この画面が唯一の書込口 · 行数は月数十行程度）
+    # ============================================================
+    st.divider()
+    st.markdown("##### " + ("📝 広告費の録入（チャージ月 = 上で選択中の月）"
+                            if get_lang() == "ja"
+                            else "📝 广告费录入（充值月 = 上方选中的对象月）"))
+    st.caption(("チャージ月に全額計上（消耗ではない）· 外貨は当月 NST 三金レートで円換算 · "
+                "同一店舗を複数行にした場合は合算されます")
+               if get_lang() == "ja" else
+               "按充值月全额计入（非消耗口径）· 外币按当月 NST 三金汇率换算日元 · "
+               "同一店铺多行时自动合算")
+    if _ad_schema_err:
+        st.info(("⚠️ 広告費テーブル（" + _AD_TBL + "）が使えません（PG 未接続？）: "
+                 if get_lang() == "ja" else
+                 "⚠️ 广告费表（" + _AD_TBL + "）不可用（PG 未连接？）: ") + _ad_schema_err)
+    else:
+        with st.expander(("広告費を録入・変更する" if get_lang() == "ja"
+                          else "录入 / 修改广告费"), expanded=False):
+            # 店舗候補 = 直近12ヶ月に売上のある店舗（担当者設定と同じ範囲）
+            _sh12a, _ = _query(
+                "SELECT DISTINCT trim(shop) AS shop FROM nst.sales_daily "
+                "WHERE sale_date >= ?",
+                ((_today - dt.timedelta(days=365)).isoformat(),))
+            _ad_shop_opts = (sorted({str(x).strip() for x in _sh12a["shop"]
+                                     if str(x).strip()})
+                             if _sh12a is not None and not _sh12a.empty else [])
+            _ad_cur_rows = _read_w(
+                f"SELECT shop, amount, currency, note FROM {_AD_TBL} "
+                "WHERE ym = ? ORDER BY shop", (ym,))
+            if _ad_cur_rows.empty:
+                _ad_cur_rows = pd.DataFrame(
+                    {"shop": pd.Series(dtype=str),
+                     "amount": pd.Series(dtype=float),
+                     "currency": pd.Series(dtype=str),
+                     "note": pd.Series(dtype=str)})
+            _ad_cur_rows["amount"] = pd.to_numeric(
+                _ad_cur_rows["amount"], errors="coerce")
+            _C_AMT = "金額（現地通貨）" if get_lang() == "ja" else "金额（本币）"
+            _C_CUR = "通貨" if get_lang() == "ja" else "币种"
+            _C_NOTE = "備考" if get_lang() == "ja" else "备注"
+            _ad_edit = st.data_editor(
+                _ad_cur_rows,
+                num_rows="dynamic",
+                use_container_width=True,
+                key=f"ad_editor_{ym}",
+                column_config={
+                    "shop": st.column_config.SelectboxColumn(
+                        _col("shop"), options=_ad_shop_opts, required=True),
+                    "amount": st.column_config.NumberColumn(
+                        _C_AMT, min_value=0.0, format="%.2f"),
+                    "currency": st.column_config.SelectboxColumn(
+                        _C_CUR, options=list(_AD_CURRENCIES), default="JPY"),
+                    "note": st.column_config.TextColumn(_C_NOTE),
+                },
+            )
+            if st.button(("💾 保存（" + ym + " の広告費を上書き）") if get_lang() == "ja"
+                         else ("💾 保存（覆盖 " + ym + " 的广告费）"),
+                         key=f"ad_save_{ym}"):
+                _rows_ok, _rows_skip = [], 0
+                _seen: dict[str, list] = {}
+                for _, _r in _ad_edit.iterrows():
+                    _s = str(_r.get("shop") or "").strip()
+                    _a = pd.to_numeric(_r.get("amount"), errors="coerce")
+                    _c = str(_r.get("currency") or "JPY").strip().upper() or "JPY"
+                    _n = str(_r.get("note") or "").strip()
+                    if not _s or pd.isna(_a) or float(_a) <= 0:
+                        _rows_skip += 1
+                        continue
+                    # 同一店舗×通貨は合算（PK が ym×shop のため通貨は最後の行に従う）
+                    if _s in _seen and _seen[_s][1] == _c:
+                        _seen[_s][0] += float(_a)
+                        if _n:
+                            _seen[_s][2] = _n
+                    else:
+                        _seen[_s] = [float(_a), _c, _n]
+                _rows_ok = [(ym, s, v[0], v[1], v[2] or None)
+                            for s, v in _seen.items()]
+                try:
+                    conn_w.execute(f"DELETE FROM {_AD_TBL} WHERE ym = ?", (ym,))
+                    for _row in _rows_ok:
+                        conn_w.execute(
+                            f"INSERT INTO {_AD_TBL} (ym, shop, amount, currency, note) "
+                            "VALUES (?, ?, ?, ?, ?)", _row)
+                    conn_w.commit()
+                    st.success((f"保存完了 ok={len(_rows_ok)} skipped={_rows_skip}"
+                                "（空店舗/金額0）" if get_lang() == "ja" else
+                                f"已保存 ok={len(_rows_ok)} skipped={_rows_skip}"
+                                "（店铺空/金额0）"))
+                    st.rerun()
+                except Exception as _e:  # noqa: BLE001
+                    try:
+                        conn_w.rollback()
+                    except Exception:
+                        pass
+                    st.error(("保存失敗: " if get_lang() == "ja" else "保存失败: ")
+                             + str(_e))
+
 # ============================================================
 # Tab 2：市場別
 # ============================================================
 with tab_market:
+    # 销售数量 / SKU数 は市場別のみ残す（Boss 2026-09-07）· CM 4 列を追加
     g = df.groupby("market", as_index=False).agg(
         qty=("qty_sold", "sum"),
         revenue=("revenue", "sum"),
@@ -800,11 +1023,14 @@ with tab_market:
     g["gross_margin"] = (
         g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
     ).fillna(0) * 100
+    g = _with_cm(g, "market")
     g = g.sort_values("gross_profit", ascending=False)
 
     mkt_cols = ("market", "qty", "revenue", "defined_cost",
-                "gross_profit", "gross_margin", "n_shop", "n_sku")
+                "gross_profit", "gross_margin", "fee", "ad",
+                "cm", "cm_rate", "n_shop", "n_sku")
     html_table(_disp(g, mkt_cols))
+    st.caption(_CM_NOTE)
     st.altair_chart(_hbar(g, "market"), use_container_width=True)
 
     # ── 🚫 担当者なし（上の市場統計・KPI には入っていない分）──
