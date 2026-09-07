@@ -124,6 +124,8 @@ _LBL = {
     "ad":            ("广告费", "広告費"),
     "cm":            ("CM", "CM"),
     "cm_rate":       ("CM率", "CM率"),
+    "fee_match":     ("费用匹配率", "突合率"),
+    "payout_rate":   ("回款率", "入金率"),
 }
 
 _MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm"}
@@ -421,16 +423,26 @@ def _ensure_ad_schema() -> str | None:
 _ad_schema_err = _ensure_ad_schema()
 
 # --- 手数料（月×店舗 · 注文突合済控除 + 物流控除）---
+#     orders/matched = 費用匹配率、settled = 回款率（入金）。
+#     Lazada/Other は明細 API 無しで入金判定不能 → 回款率の分母から外す
+#     （orders_payable/settled_payable = 判定可能プラットフォームのみの件数）。
+_DED_COLS_ALL = ["shop", "fee", "orders", "matched_orders",
+                 "orders_payable", "settled_payable"]
 _ded_df, _ded_err = _query(
-    "SELECT trim(shop) AS shop, deduction_jpy, shipping_jpy, orders, matched_orders "
+    "SELECT trim(shop) AS shop, platform, deduction_jpy, shipping_jpy, "
+    "orders, matched_orders, settled_orders "
     "FROM nst.v_shipped_settlement WHERE ym = ?", (ym,))
 if _ded_df is None or _ded_df.empty:
-    _ded_df = pd.DataFrame(columns=["shop", "fee", "orders", "matched_orders"])
+    _ded_df = pd.DataFrame(columns=_DED_COLS_ALL)
 else:
-    for _c in ("deduction_jpy", "shipping_jpy", "orders", "matched_orders"):
+    for _c in ("deduction_jpy", "shipping_jpy", "orders",
+               "matched_orders", "settled_orders"):
         _ded_df[_c] = pd.to_numeric(_ded_df[_c], errors="coerce").fillna(0).astype(float)
     _ded_df["fee"] = _ded_df["deduction_jpy"] + _ded_df["shipping_jpy"]
-    _ded_df = _ded_df[["shop", "fee", "orders", "matched_orders"]]
+    _payable = ~_ded_df["platform"].isin(("Lazada", "Other"))
+    _ded_df["orders_payable"] = _ded_df["orders"].where(_payable, 0.0)
+    _ded_df["settled_payable"] = _ded_df["settled_orders"].where(_payable, 0.0)
+    _ded_df = _ded_df[_DED_COLS_ALL]
 
 # --- 広告費（チャージ月 · 円換算）---
 _ads_raw = _read_w(
@@ -448,10 +460,11 @@ if not _ads_raw.empty:
 else:
     _ad_df = pd.DataFrame(columns=["shop", "ad"])
 
-# per-shop CM 素材（fee/ad を店舗単位で持つ · 各タブが merge して集計）
-_cmb = pd.merge(_ded_df[["shop", "fee"]], _ad_df, on="shop", how="outer")
-_cmb["fee"] = _cmb["fee"].fillna(0.0)
-_cmb["ad"] = _cmb["ad"].fillna(0.0)
+# per-shop CM 素材（fee/ad + 突合/入金件数を店舗単位で持つ · 各タブが merge して集計）
+_cmb = pd.merge(_ded_df, _ad_df, on="shop", how="outer")
+for _c in ("fee", "ad", "orders", "matched_orders",
+           "orders_payable", "settled_payable"):
+    _cmb[_c] = pd.to_numeric(_cmb.get(_c), errors="coerce").fillna(0.0)
 
 # 手数料明細カバレッジ（対象 = 本ページ主計算の店舗 · Σmatched/Σorders）
 _scope_shops = set(df["shop"].unique())
@@ -464,10 +477,12 @@ _ad_orphans = sorted(set(_ad_df["shop"]) - _scope_shops) if not _ad_df.empty els
 
 _CM_NOTE = (
     ("CM = 粗利 − 手数料 − 広告費 · 手数料=注文突合済控除+物流控除（調整込み·店铺扣减タブと同口径）· "
-     "広告費=チャージ月全額（消耗ではない·月初は当月CMが低く出る）"
+     "広告費=チャージ月全額（消耗ではない·月初は当月CMが低く出る）· "
+     "入金率=着金済注文の割合（出荷後1〜2週で着金·月内は低くて正常·Lazada 判定不能=—）"
      if get_lang() == "ja" else
      "CM = 毛利 − 手续费 − 广告费 · 手续费=按订单号突合的扣减+物流扣减（含调整·与「店铺扣减」tab 同口径）· "
-     "广告费=充值月全额（非消耗·月初看当月 CM 会偏低）")
+     "广告费=充值月全额（非消耗·月初看当月 CM 会偏低）· "
+     "回款率=已到账订单比例（发货后1~2周到账·月内偏低正常·Lazada 不可判定=—）")
     + (f" · 手数料明細カバレッジ {_cov_pct:.1f}%（100%未満は CM が高く出る·Lazada は明細API無し）"
        if get_lang() == "ja" and _cov_pct is not None else
        f" · 手续费明细覆盖率 {_cov_pct:.1f}%（低于100%时 CM 偏高·Lazada 无明细API）"
@@ -478,23 +493,38 @@ _CM_NOTE = (
 )
 
 
-def _with_cm(g: pd.DataFrame, dim: str) -> pd.DataFrame:
-    """dim 別集計 g（revenue/gross_profit 円丸め済）に fee/ad/cm/cm_rate を付ける。
+_CM_NUM_COLS = ("fee", "ad", "orders", "matched_orders",
+                "orders_payable", "settled_payable")
 
-    金額を dim へ合算してから率を出す（率の平均はしない）。
-    g に shop 列が無い場合は df の shop→dim 対応で fee/ad を dim へ畳む。
+
+def _with_cm(g: pd.DataFrame, dim: str) -> pd.DataFrame:
+    """dim 別集計 g（revenue/gross_profit 円丸め済）に fee/ad/cm/cm_rate と
+    費用匹配率(fee_match)/回款率(payout_rate) を付ける。
+
+    金額・件数を dim へ合算してから率を出す（率の平均はしない）。
+    g に shop 列が無い場合は df の shop→dim 対応で dim へ畳む。
+    回款率は Lazada/Other（明細 API 無し）を分母から外す。判定可能件数 0 は「—」。
     """
     if dim == "shop":
         m = g.merge(_cmb, on="shop", how="left")
     else:
         _map = df[["shop", dim]].drop_duplicates()
         _fa = _map.merge(_cmb, on="shop", how="inner")
-        _fa = _fa.groupby(dim, as_index=False).agg(fee=("fee", "sum"), ad=("ad", "sum"))
+        _fa = _fa.groupby(dim, as_index=False).agg(
+            **{c: (c, "sum") for c in _CM_NUM_COLS})
         m = g.merge(_fa, on=dim, how="left")
-    m["fee"] = m["fee"].fillna(0.0).map(_rhu)
-    m["ad"] = m["ad"].fillna(0.0).map(_rhu)
+    for _c in _CM_NUM_COLS:
+        m[_c] = pd.to_numeric(m.get(_c), errors="coerce").fillna(0.0)
+    m["fee"] = m["fee"].map(_rhu)
+    m["ad"] = m["ad"].map(_rhu)
     m["cm"] = m["gross_profit"] - m["fee"] - m["ad"]
     m["cm_rate"] = (m["cm"] / m["revenue"].where(m["revenue"] != 0)).fillna(0) * 100
+    m["fee_match"] = [
+        f"{mo / o * 100:.1f}%" if o else "—"
+        for mo, o in zip(m["matched_orders"], m["orders"])]
+    m["payout_rate"] = [
+        f"{s / o * 100:.1f}%" if o else "—"
+        for s, o in zip(m["settled_payable"], m["orders_payable"])]
     return m
 
 # ============================================================
@@ -662,7 +692,7 @@ with tab_owner:
         g = g.sort_values("gross_profit", ascending=False)
         owner_cols = ("owner", "revenue", "defined_cost",
                       "gross_profit", "gross_margin", "fee", "ad",
-                      "cm", "cm_rate", "n_shop")
+                      "cm", "cm_rate", "fee_match", "payout_rate", "n_shop")
         html_table(_disp(g, owner_cols, mom_prev=_prev_owner, dim="owner"))
         st.caption(_CM_NOTE)
         st.altair_chart(_hbar(g, "owner"), use_container_width=True)
@@ -694,7 +724,7 @@ with tab_owner:
             sg = sg.sort_values("gross_profit", ascending=False)
             sg_cols = ("shop", "revenue", "defined_cost",
                        "gross_profit", "gross_margin", "fee", "ad",
-                       "cm", "cm_rate")
+                       "cm", "cm_rate", "fee_match", "payout_rate")
             html_table(_disp(sg, sg_cols, mom_prev=_prev_shop, dim="shop"))
 
     # ============================================================
@@ -850,7 +880,7 @@ with tab_shop:
     # 列順は尹雪莉さん 2026-08-03 依頼: owner を最終列へ · SKU数 は表から外す
     shop_cols = ("shop", "revenue", "defined_cost",
                  "gross_profit", "gross_margin", "fee", "ad",
-                 "cm", "cm_rate", "owner")
+                 "cm", "cm_rate", "fee_match", "payout_rate", "owner")
     _shop_disp = _disp(g, shop_cols, mom_prev=_prev_shop, dim="shop")
     html_table(_shop_disp)
     st.caption(_CM_NOTE)
@@ -1031,7 +1061,7 @@ with tab_market:
 
     mkt_cols = ("market", "qty", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "fee", "ad",
-                "cm", "cm_rate", "n_shop", "n_sku")
+                "cm", "cm_rate", "fee_match", "payout_rate", "n_shop", "n_sku")
     html_table(_disp(g, mkt_cols))
     st.caption(_CM_NOTE)
     st.altair_chart(_hbar(g, "market"), use_container_width=True)
