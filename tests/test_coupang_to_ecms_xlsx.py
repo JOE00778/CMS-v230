@@ -220,6 +220,9 @@ def test_xlsx_書き出し(tmp_path):
     assert ws.cell(2, 1).value == "LBF"
     zip_col = X.COLUMNS.index("X") + 1
     assert isinstance(ws.cell(2, zip_col).value, int)         # 郵便番号は数値
+    # 値は数値のまま、**表示は 5 桁**（運営の実ファイルと同じ `00000`）。
+    # 2026-09-08 運営「2585 显示为 02585」。これが無いと前ゼロが見た目からも消える
+    assert ws.cell(2, zip_col).number_format == "00000"
     sku_col = X.COLUMNS.index("AG") + 1
     assert isinstance(ws.cell(2, sku_col).value, str)         # SKU は文字列
 
@@ -434,3 +437,24 @@ def test_合流した2品の合計で判定する():
 def test_運営の実データは1件も超えない():
     """0902 の 37 行は最大 $40。誤検知するようなら閾値か換算が壊れている。"""
     assert X.over_duty_free(_converted(), rate=0.00068) == {}
+
+
+# ------------------------------------------------------------------
+# 郵便番号の前ゼロ（2026-09-08 運営指摘 → 実測で根因確定）
+# ------------------------------------------------------------------
+def test_zip5は前ゼロを戻す():
+    assert X.zip5(2585) == "02585"          # Excel が落とした前ゼロ
+    assert X.zip5("2585") == "02585"
+    assert X.zip5(47515) == "47515"         # 5 桁はそのまま
+    assert X.zip5("") == ""
+    assert X.zip5(None) == ""
+    assert X.zip5("123-456") == "123-456"   # 数字でなければ触らない
+
+
+def test_PCCC核対に渡す郵便番号は5桁():
+    """関税庁は郵便番号を**文字列で**照合する（実測: `047515` → 오류）。
+    `str(r["X"])` のまま送ると、ソウルの客（01xxx〜09xxx）が全部 오류 になる。
+    """
+    page = (Path(__file__).parents[1] / "pages" / "41_📮_ECMS发货.py").read_text("utf-8")
+    assert 'X.zip5(r["X"])' in page
+    assert '"zip": str(r["X"])' not in page

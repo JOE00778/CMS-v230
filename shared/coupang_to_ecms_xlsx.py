@@ -242,9 +242,31 @@ def build_row(order: dict, product: dict | None, master: dict | None,
 
 
 def _zip_value(z: str):
-    """郵便番号。運営の実ファイルは数値なので数値で出す（`05564` → `5564`）。"""
+    """郵便番号。運営の実ファイルは数値なので数値で出す（`05564` → `5564`）。
+
+    ⚠️ ここで**前ゼロが落ちる**。ECMS へ出すファイルはこれで正しい（運営の実物も
+    数値 + 表示形式 `00000`）が、この値を**そのまま他所へ渡してはいけない**。
+    人に見せる・外部へ問い合わせるときは必ず `zip5()` を通すこと。
+    """
     z = (z or "").strip()
     return int(z) if z.isdigit() else z
+
+
+def zip5(v) -> str:
+    """韓国の郵便番号は 2015 年から**5 桁固定**。`2585` → `02585` に戻す。
+
+    関税庁は郵便番号を**文字列で**照合する。2026-09-08 に運営の実データで実測:
+      正しい `47515` → 정상 ／ 頭に 0 を足した `047515` → 오류
+      「입력하신 우편번호가 개인통관고유부호 우편번호(배송주소)와 일치하지 않습니다」
+    数値として正規化はしてくれない。つまり `2585` を送れば**必ず**対不上になる。
+
+    44 件中 **6 件（14%）は関税庁側に配送地郵便番号が登録されていて照合対象**
+    （残り 38 件は郵便番号を 99999 にしても 정상 のまま＝未登録で照合しない）。
+    ソウルの郵便番号は 01xxx〜09xxx なので、前ゼロが落ちた時点でその客は全滅する。
+    運営 2026-09-08「PCCC显示错误这部分应该是邮编格式的问题」の指摘どおりだった。
+    """
+    s = str(v or "").strip()
+    return s.zfill(5) if s.isdigit() and len(s) < 5 else s
 
 
 def ref_number(seq: int, on: date | None = None) -> str:
@@ -336,7 +358,8 @@ def to_xlsx(rows: list[dict], path: str | Path) -> Path:
     """ECMS のテンプレート（57 列・ヘッダ 1 行）で書き出す。
 
     SKU と注文番号は**文字列**で入れる（指数表記や桁落ちを避ける）。
-    郵便番号は運営の実ファイルに合わせて**数値**。
+    郵便番号は運営の実ファイルに合わせて**数値 + 表示形式 `00000`**——値は 2585 でも
+    セル上は 02585 と 5 桁で見える（運営 2026-09-08 の要望。実物もこの形式）。
     """
     from openpyxl import Workbook
 
@@ -351,11 +374,13 @@ def to_xlsx(rows: list[dict], path: str | Path) -> Path:
             v = r.get(col, "")
             line.append(str(v) if col in text_cols and v not in (None, "") else v)
         ws.append(line)
+    fmt = {c: "@" for c in text_cols}
+    fmt["X"] = "00000"           # 郵便番号は 5 桁表示。運営の実ファイルと同じ表示形式
     for idx, col in enumerate(COLUMNS, start=1):
-        if col in text_cols:
+        if col in fmt:
             for cell in ws.iter_cols(min_col=idx, max_col=idx, min_row=2):
                 for c in cell:
-                    c.number_format = "@"
+                    c.number_format = fmt[col]
     path = Path(path)
     wb.save(path)
     return path

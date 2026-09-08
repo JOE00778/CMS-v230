@@ -146,8 +146,11 @@ with tab_cp:
                 if pc1.button(t("核对 PCCC（关税厅）"), key="cp_pccc_go"):
                     with st.spinner(t("查询中……")):
                         res, perr = pccc.check(
+                            # ⚠️ 邮编必须补回 5 位。关税厅按字符串比对，`2585` 送过去
+                            #    必然报「우편번호 불일치」——首尔全域都是 0 开头（实测
+                            #    2026-09-08：44 条里 6 条会比对邮编）。
                             [{"name": r["R"], "pccc": r["AA"], "phone": r["S"],
-                              "zip": str(r["X"])} for r in rows if r.get("AA")])
+                              "zip": X.zip5(r["X"])} for r in rows if r.get("AA")])
                     st.session_state["cp_pccc_result"] = pccc.status_map(res)
                     pv = st.session_state["cp_pccc_result"]
                     if perr:
@@ -180,7 +183,7 @@ with tab_cp:
                         tag = (tag + "、" if tag else "") + t("关税厅查询故障，未核对")
                     view.append({"缺": tag,
                                  **{f"{c} {X.HEADERS[X.COLUMNS.index(c)].split(chr(10))[0]}":
-                                    r.get(c, "")
+                                    (X.zip5(r.get(c)) if c == "X" else r.get(c, ""))
                                     for c in ("B", "C", "R", "S", "V", "W", "X", "Y", "AA",
                                               "AE", "AG", "AH", "AJ", "AO", "AP")}})
                 # 免税枠超え（運営 2026-09-08 要望）。包裹単位で合計する
