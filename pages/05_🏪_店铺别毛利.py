@@ -126,6 +126,7 @@ _LBL = {
     "ad":            ("广告费", "広告費"),
     "cm":            ("CM", "CM"),
     "cm_rate":       ("CM率", "CM率"),
+    "cm_est":        ("CM(日估)", "CM(日次推定)"),
     "fee_match":     ("费用匹配率", "突合率"),
     "payout_rate":   ("回款率", "入金率"),
 }
@@ -158,7 +159,7 @@ def _classify_platform(shop) -> str:
 
 
 _MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm",
-          "cancel_est", "revenue_adj"}
+          "cancel_est", "revenue_adj", "cm_est"}
 _PCT = {"gross_margin", "cm_rate"}
 _INT = {"qty", "n_shop", "n_sku"}
 # 环比対象（相対%）。gross_margin は _PCT で百分点(pp)环比、n_shop/n_sku は構造カウントで环比なし。
@@ -736,6 +737,35 @@ with tab_day:
         daily["gross_profit"] / daily["revenue"].where(daily["revenue"] != 0)
     ).fillna(0) * 100
 
+    # ── 日次広告費（Shopee Ads 消耗 · JPY）+ 日次CM(推定)（Boss 2026-09-08）──
+    #   広告費は真の日次値（自動源）。手数料/取消控除は月次概念のため、
+    #   日次CM は推定式: 日粗利 − 日広告費 − 日収益×当月手数料率。
+    #   手入力広告費（Coupang 等·月次）は日次に按分しない（月次 CM のみ計上）。
+    _adly, _ = _query(
+        "SELECT a.perf_date AS sale_date, trim(m.nst_shop) AS shop, "
+        "upper(left(a.country, 2)) AS cc, sum(a.expense) AS amt "
+        "FROM shopee.ads_daily a "
+        "JOIN shopee.v_nst_shop_map m ON m.shop_key = a.country "
+        "WHERE to_char(a.perf_date, 'YYYY-MM') = ? "
+        "GROUP BY 1, 2, 3", (ym,))
+    if _adly is not None and not _adly.empty:
+        _adly = _adly[_adly["shop"].isin(set(df["shop"].unique()))].copy()
+    if _adly is not None and not _adly.empty:
+        _adly["amt"] = pd.to_numeric(_adly["amt"], errors="coerce").fillna(0.0)
+        _r2 = {cc: nst_monthly_rates(conn, COUNTRY_TO_CURRENCY.get(cc, cc), [ym])[ym]
+               for cc in _adly["cc"].unique()}
+        _adly["ad"] = [a * _r2.get(cc, 0.0)
+                       for a, cc in zip(_adly["amt"], _adly["cc"])]
+        daily = daily.merge(
+            _adly.groupby("sale_date", as_index=False).agg(ad=("ad", "sum")),
+            on="sale_date", how="left")
+    if "ad" not in daily.columns:
+        daily["ad"] = 0.0
+    daily["ad"] = daily["ad"].fillna(0.0).map(_rhu)
+    _fee_rate_day = (tot_fee_k / tot_r) if tot_r else 0.0
+    daily["cm_est"] = (daily["gross_profit"] - daily["ad"]
+                       - (daily["revenue"] * _fee_rate_day).map(_rhu))
+
     # 前日データ = 昨日(今日-1)の実績。当月以外/欠測時は「昨日以前の最新日」に回退
     _yest = _today - dt.timedelta(days=1)
     _elig = daily[daily["sale_date"] <= _yest]
@@ -763,11 +793,13 @@ with tab_day:
         rate = (diff / prev * 100) if prev else 0.0
         return f"{diff:+,.0f} ({rate:+.1f}%)"
 
-    pq, pr, pg, pm = st.columns(4)
+    pq, pr, pg, pm, pa, pc = st.columns(6)
     pq.metric(_col("qty"), f"{int(_last['qty']):,}", _delta("qty"))
     pr.metric(_col("revenue"), f"¥{_last['revenue']:,.0f}", _delta("revenue"))
     pg.metric(_col("gross_profit"), f"¥{_last['gross_profit']:,.0f}", _delta("gross_profit"))
     pm.metric(_col("gross_margin"), f"{_last['gross_margin']:.2f}%", _delta("gross_margin", pct=True))
+    pa.metric(_col("ad"), f"¥{_last['ad']:,.0f}", _delta("ad"))
+    pc.metric(_col("cm_est"), f"¥{_last['cm_est']:,.0f}", _delta("cm_est"))
 
     # x 軸 = 日付。月選択済みなので "N日" 形式で簡潔表示（chart 用に datetime 化）
     chart_src = daily.copy()
@@ -829,8 +861,16 @@ with tab_day:
 
     # 明细表（日付倒序·最近日在上。daily 本体は昇順維持＝前日指標/曲線図が依存）
     day_cols = ("sale_date", "qty", "revenue", "defined_cost",
-                "gross_profit", "gross_margin", "n_shop", "n_sku")
+                "gross_profit", "gross_margin", "ad", "cm_est",
+                "n_shop", "n_sku")
     html_table(_disp(daily.sort_values("sale_date", ascending=False), day_cols))
+    st.caption(("広告費=Shopee Ads 日次消耗（円換算·手入力の月次分は含まず）· "
+                "CM(日次推定)=日粗利 − 日広告費 − 日収益×当月手数料率"
+                "（手数料/取消控除は月次概念のため率で按分した推定値·月次 CM が正）")
+               if get_lang() == "ja" else
+               "广告费=Shopee Ads 日消耗（日元换算·不含手工录入的月度部分）· "
+               "CM(日估)=日毛利 − 日广告费 − 日收益×当月手续费率"
+               "（手续费/取消冲减是月度概念，按率摊算的估值·以月度 CM 为准）")
 
 # ============================================================
 # Tab：担当者別（日本店=対象外 は除外）
@@ -2237,39 +2277,6 @@ with tab_ads:
                "Coupang 广告请每月把 WING 广告后台的当月消耗填在这里）· "
                "同店同月有手工记录时覆盖自动值 · 日元换算按当月 NST 三金汇率")
 
-    # ── 当月一覧（自動 / 手入力 / 採用値）──
-    _AD_L = (("店铺", "自动(Ads消耗)", "手工录入", "计入CM", "来源")
-             if get_lang() != "ja" else
-             ("店舗", "自動(Ads消耗)", "手入力", "CM計上", "採用"))
-    if _ad_detail.empty:
-        st.info(("この月の広告費データはまだありません（自動も手入力も無し）"
-                 if get_lang() == "ja" else "该月尚无广告费数据（自动与手工均无）"))
-    else:
-        _adv = _ad_detail.copy()
-        for _c in ("auto", "manual"):
-            if _c not in _adv.columns:
-                _adv[_c] = pd.NA
-        _adv["used"] = _adv["manual"].where(_adv["manual"].notna(), _adv["auto"])
-        _adv["src"] = [("手入力" if get_lang() == "ja" else "手工")
-                       if pd.notna(m) else "Ads"
-                       for m in _adv["manual"]]
-        _adv = _adv.sort_values("used", ascending=False)
-
-        def _yen(v):
-            return f"¥{v:,.0f}" if pd.notna(v) else "—"
-
-        _adt = pd.DataFrame({
-            _AD_L[0]: _adv["shop"],
-            _AD_L[1]: _adv["auto"].map(_yen),
-            _AD_L[2]: _adv["manual"].map(_yen),
-            _AD_L[3]: _adv["used"].map(_yen),
-            _AD_L[4]: _adv["src"],
-        })
-        html_table(_adt)
-        _t_used = float(_adv["used"].fillna(0).sum())
-        st.caption((f"合計（CM 計上）: ¥{_t_used:,.0f}" if get_lang() == "ja"
-                    else f"合计（计入 CM）: ¥{_t_used:,.0f}"))
-
     # ── 店舗別 日次明細（Shopee Ads · Boss 2026-09-08 依頼の表形式）──
     st.divider()
     _ja_ad = get_lang() == "ja"
@@ -2332,6 +2339,11 @@ with tab_ads:
                 _ADL_COLS[7]: _adl["roas"].map(lambda v: f"{v:,.2f}"),
             })
             html_table(_adt2)
+            st.download_button(
+                "⬇️ CSV ダウンロード" if _ja_ad else "⬇️ 下载 CSV",
+                _adt2.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"広告費日次_{_sel_ad_shop}_{ym}.csv",
+                mime="text/csv", key=f"dl_ads_{ym}")
             # 日次消耗の推移（棒グラフ）
             _adc = _adl.copy()
             _adc["perf_date"] = pd.to_datetime(_adc["perf_date"])
@@ -2355,6 +2367,46 @@ with tab_ads:
                 .configure_axis(labelFontSize=_CHART_LABEL_FS,
                                 titleFontSize=_CHART_TITLE_FS),
                 use_container_width=True)
+
+    st.divider()
+    # ── 当月一覧（自動 / 手入力 / 採用値）──
+    _AD_L = (("店铺", "自动(Ads消耗)", "手工录入", "计入CM", "来源")
+             if get_lang() != "ja" else
+             ("店舗", "自動(Ads消耗)", "手入力", "CM計上", "採用"))
+    if _ad_detail.empty:
+        st.info(("この月の広告費データはまだありません（自動も手入力も無し）"
+                 if get_lang() == "ja" else "该月尚无广告费数据（自动与手工均无）"))
+    else:
+        _adv = _ad_detail.copy()
+        for _c in ("auto", "manual"):
+            if _c not in _adv.columns:
+                _adv[_c] = pd.NA
+        _adv["used"] = _adv["manual"].where(_adv["manual"].notna(), _adv["auto"])
+        _adv["src"] = [("手入力" if get_lang() == "ja" else "手工")
+                       if pd.notna(m) else "Ads"
+                       for m in _adv["manual"]]
+        # 全 0 の行はノイズなので出さない（Boss 2026-09-08「乱」対策）
+        _adv = _adv[_adv["used"].fillna(0) != 0]
+        _adv = _adv.sort_values("used", ascending=False)
+
+        def _yen(v):
+            return f"¥{v:,.0f}" if pd.notna(v) else "—"
+
+        if _adv.empty:
+            st.info(("この月は広告費が全店 0 です" if get_lang() == "ja"
+                     else "该月全部店铺广告费为 0"))
+        else:
+            _adt = pd.DataFrame({
+                _AD_L[0]: _adv["shop"],
+                _AD_L[1]: _adv["auto"].map(_yen),
+                _AD_L[2]: _adv["manual"].map(_yen),
+                _AD_L[3]: _adv["used"].map(_yen),
+                _AD_L[4]: _adv["src"],
+            })
+            html_table(_adt)
+            _t_used = float(_adv["used"].fillna(0).sum())
+            st.caption((f"合計（CM 計上）: ¥{_t_used:,.0f}" if get_lang() == "ja"
+                        else f"合计（计入 CM）: ¥{_t_used:,.0f}"))
 
     st.divider()
     # ============================================================
