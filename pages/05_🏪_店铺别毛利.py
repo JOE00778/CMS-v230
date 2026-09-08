@@ -114,7 +114,9 @@ _LBL = {
     "maker":         ("厂商", "メーカー名"),
     "item_rank":     ("商品等级", "商品ランク"),
     "qty":           ("销售数量", "販売数量"),
-    "revenue":       ("总收益", "総収益"),
+    "revenue":       ("总收益(NST)", "総収益(NST)"),
+    "cancel_est":    ("取消冲减估", "取消控除見込"),
+    "revenue_adj":   ("调整后营业额", "調整後売上"),
     "defined_cost":  ("定义原价", "定義原価"),
     "gross_profit":  ("毛利", "粗利"),
     "gross_margin":  ("毛利率", "粗利率"),
@@ -155,7 +157,8 @@ def _classify_platform(shop) -> str:
     return "Other"
 
 
-_MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm"}
+_MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm",
+          "cancel_est", "revenue_adj"}
 _PCT = {"gross_margin", "cm_rate"}
 _INT = {"qty", "n_shop", "n_sku"}
 # 环比対象（相対%）。gross_margin は _PCT で百分点(pp)环比、n_shop/n_sku は構造カウントで环比なし。
@@ -502,10 +505,27 @@ if not _ads_raw.empty:
 else:
     _ad_df = pd.DataFrame(columns=["shop", "ad"])
 
-# per-shop CM 素材（fee/ad + 突合/入金件数を店舗単位で持つ · 各タブが merge して集計）
+# --- 取消冲减估（月×店舗 · Boss 2026-09-08 A案）---
+#     NST は出荷で売上計上、取消の控除（貸方票）は Shopee 財務報表待ちで
+#     1〜2 ヶ月遅れる（Boss 確認済の構造的タイムラグ）。
+#     予估池 = 平台側既知の取消（出荷前 preship_void + 出荷後 loss）。
+#     金額 = nst_amount_jpy（NST 請求書按分の純額）——貸方票が入った注文は
+#     この値が自動で 0 になる（2026-09-08 標定: 既冲 6,886 件の残額 ¥8.4万）ため、
+#     入账済みとの二重控除は構造上起きない。財務が補票すると本列が減り
+#     NST 売上が下がり、調整後売上はほぼ動かない。
+_cxl_df, _cxl_err = _query(
+    "SELECT trim(shop) AS shop, sum(coalesce(nst_amount_jpy,0)) AS cancel_est "
+    "FROM nst.v_shipped_order "
+    "WHERE ym = ? AND settle_status IN ('loss','preship_void') "
+    "GROUP BY 1", (ym,))
+if _cxl_df is None or _cxl_df.empty:
+    _cxl_df = pd.DataFrame(columns=["shop", "cancel_est"])
+
+# per-shop CM 素材（fee/ad/取消估 + 突合/入金件数を店舗単位で持つ · 各タブが merge して集計）
 _cmb = pd.merge(_ded_df, _ad_df, on="shop", how="outer")
+_cmb = pd.merge(_cmb, _cxl_df, on="shop", how="outer")
 for _c in ("fee", "ad", "orders", "matched_orders",
-           "orders_payable", "settled_payable"):
+           "orders_payable", "settled_payable", "cancel_est"):
     _cmb[_c] = pd.to_numeric(_cmb.get(_c), errors="coerce").fillna(0.0)
 
 # 手数料明細カバレッジ（対象 = 本ページ主計算の店舗 · Σmatched/Σorders）
@@ -518,12 +538,16 @@ _cov_pct = (_cov_m / _cov_o * 100) if _cov_o else None
 _ad_orphans = sorted(set(_ad_df["shop"]) - _scope_shops) if not _ad_df.empty else []
 
 _CM_NOTE = (
-    ("CM = 粗利 − 手数料 − 広告費 · 手数料=注文突合済控除+物流控除（調整込み·店铺扣减タブと同口径）· "
+    ("CM(調整後) = (粗利 − 取消控除見込×NST粗利率) − 手数料 − 広告費 · CM率=CM÷調整後売上 · "
+     "取消控除見込=平台側既知の取消（出荷前+出荷後）のうち NST 未入账分（純額按分·財務が貸方票を起こすと本列が減り NST 売上が下がり、調整後売上はほぼ動かない·Lazada は取消を取得できず高止まり）· "
+     "手数料=注文突合済控除+物流控除（調整込み·店铺扣减タブと同口径）· "
      "広告費=チャージ月全額（消耗ではない·月初は当月CMが低く出る）· "
      "突合率=その店の当月出荷注文のうち、プラットフォーム側で費用明細を照合できた割合（100%未満は CM が高く出る·Lazada は明細API無し）· "
      "入金率=当月出荷注文のうち、着金済みの割合（出荷後1〜2週で着金·月内は低くて正常·Lazada 判定不能=—）"
      if get_lang() == "ja" else
-     "CM = 毛利 − 手续费 − 广告费 · 手续费=按订单号突合的扣减+物流扣减（含调整·与「店铺扣减」tab 同口径）· "
+     "CM(调整后) = (毛利 − 取消冲减估×NST毛利率) − 手续费 − 广告费 · CM率=CM÷调整后营业额 · "
+     "取消冲减估=平台侧已知取消（出货前+出货后）中 NST 尚未入账的部分（净额按分·财务开贷方票后此列自动减少、NST 总收益下降、调整后营业额基本不变·Lazada 抓不到取消仍偏高）· "
+     "手续费=按订单号突合的扣减+物流扣减（含调整·与「店铺扣减」tab 同口径）· "
      "广告费=充值月全额（非消耗·月初看当月 CM 会偏低）· "
      "费用匹配率=该店当月发货的订单中，能在平台侧查到费用明细的比例（低于100%时 CM 偏高·Lazada 无明细API）· "
      "回款率=该月发货的订单中，钱已经到账的比例（发货后1~2周到账·月内偏低正常·Lazada 不可判定=—）")
@@ -538,13 +562,17 @@ _CM_NOTE = (
 
 
 _CM_NUM_COLS = ("fee", "ad", "orders", "matched_orders",
-                "orders_payable", "settled_payable")
+                "orders_payable", "settled_payable", "cancel_est")
 
 
 def _with_cm(g: pd.DataFrame, dim: str) -> pd.DataFrame:
-    """dim 別集計 g（revenue/gross_profit 円丸め済）に fee/ad/cm/cm_rate と
-    費用匹配率(fee_match)/回款率(payout_rate) を付ける。
+    """dim 別集計 g（revenue/gross_profit 円丸め済）に CM（調整後口径 · A案）を付ける。
 
+    - cancel_est   取消冲减估（NST 未入账の取消 · 純額按分）
+    - revenue_adj  調整後売上 = revenue − cancel_est
+    - cm           調整後CM = (粗利 − cancel_est×NST粗利率) − 手数料 − 広告費
+                   （取消注文の粗利は当該行の NST 粗利率で折算して冲掉）
+    - cm_rate      調整後CM ÷ 調整後売上
     金額・件数を dim へ合算してから率を出す（率の平均はしない）。
     g に shop 列が無い場合は df の shop→dim 対応で dim へ畳む。
     回款率は Lazada/Other（明細 API 無し）を分母から外す。判定可能件数 0 は「—」。
@@ -561,8 +589,14 @@ def _with_cm(g: pd.DataFrame, dim: str) -> pd.DataFrame:
         m[_c] = pd.to_numeric(m.get(_c), errors="coerce").fillna(0.0)
     m["fee"] = m["fee"].map(_rhu)
     m["ad"] = m["ad"].map(_rhu)
-    m["cm"] = m["gross_profit"] - m["fee"] - m["ad"]
-    m["cm_rate"] = (m["cm"] / m["revenue"].where(m["revenue"] != 0)).fillna(0) * 100
+    m["cancel_est"] = m["cancel_est"].map(_rhu)
+    m["revenue_adj"] = m["revenue"] - m["cancel_est"]
+    _nst_margin = (m["gross_profit"]
+                   / m["revenue"].where(m["revenue"] != 0)).fillna(0)
+    _gp_adj = m["gross_profit"] - (m["cancel_est"] * _nst_margin).map(_rhu)
+    m["cm"] = _gp_adj - m["fee"] - m["ad"]
+    m["cm_rate"] = (m["cm"]
+                    / m["revenue_adj"].where(m["revenue_adj"] != 0)).fillna(0) * 100
     m["fee_match"] = [
         f"{mo / o * 100:.1f}%" if o else "—"
         for mo, o in zip(m["matched_orders"], m["orders"])]
@@ -572,23 +606,36 @@ def _with_cm(g: pd.DataFrame, dim: str) -> pd.DataFrame:
     return m
 
 # ============================================================
-# KPI（総）
+# KPI（総）· A案: NST 値 + 調整後（取消冲减估を反映）+ CM
 # ============================================================
 tot_r = _rhu(df["revenue"].sum())
 tot_c = _rhu(df["defined_cost"].sum())
 tot_g = tot_r - tot_c  # NST 表示丸め順(原価丸め→差)·半円境界の±1円ズレ防止
 margin = (tot_g / tot_r * 100) if tot_r else 0
 
+_kb = _cmb[_cmb["shop"].isin(set(df["shop"].unique()))]
+tot_cancel = _rhu(float(_kb["cancel_est"].sum()))
+tot_fee_k = _rhu(float(_kb["fee"].sum()))
+tot_ad_k = _rhu(float(_kb["ad"].sum()))
+tot_rev_adj = tot_r - tot_cancel
+tot_cm = (tot_g - _rhu(tot_cancel * (tot_g / tot_r if tot_r else 0))
+          ) - tot_fee_k - tot_ad_k
+tot_cm_rate = (tot_cm / tot_rev_adj * 100) if tot_rev_adj else 0
+
 if _no_owner:
     st.caption(("⚠️ 担当者未設定のため集計から除外: " if get_lang() == "ja"
                 else "⚠️ 未设定负责人，已从全部计算中剔除：")
                + "、".join(_no_owner))
 
-m2, m3, m4, m5 = st.columns(4)
-m2.metric(t("総収益 計"), f"¥{tot_r:,.0f}")
-m3.metric(t("定義原価 計"), f"¥{tot_c:,.0f}")
-m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}")
-m5.metric(t("粗利率"), f"{margin:.2f}%")
+m1, m2, m3, m4, m5, m6 = st.columns(6)
+_ja_kpi = get_lang() == "ja"
+m1.metric("総収益(NST)" if _ja_kpi else "总收益(NST)", f"¥{tot_r:,.0f}")
+m2.metric("取消控除見込" if _ja_kpi else "取消冲减估", f"¥{tot_cancel:,.0f}",
+          delta=None)
+m3.metric("調整後売上" if _ja_kpi else "调整后营业额", f"¥{tot_rev_adj:,.0f}")
+m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}", f"{margin:.2f}%", delta_color="off")
+m5.metric("CM(調整後)" if _ja_kpi else "CM(调整后)", f"¥{tot_cm:,.0f}")
+m6.metric("CM率(調整後)" if _ja_kpi else "CM率(调整后)", f"{tot_cm_rate:.2f}%")
 
 st.divider()
 
@@ -734,9 +781,10 @@ with tab_owner:
         ).fillna(0) * 100
         g = _with_cm(g, "owner")
         g = g.sort_values("gross_profit", ascending=False)
-        owner_cols = ("owner", "revenue", "defined_cost",
-                      "gross_profit", "gross_margin", "fee", "ad",
-                      "cm", "cm_rate", "fee_match", "payout_rate", "n_shop")
+        owner_cols = ("owner", "revenue", "cancel_est", "revenue_adj",
+                      "defined_cost", "gross_profit", "gross_margin",
+                      "fee", "ad", "cm", "cm_rate",
+                      "fee_match", "payout_rate", "n_shop")
         html_table(_disp(g, owner_cols, mom_prev=_prev_owner, dim="owner"))
         st.caption(_CM_NOTE)
         st.altair_chart(_hbar(g, "owner"), use_container_width=True)
@@ -766,9 +814,10 @@ with tab_owner:
             ).fillna(0) * 100
             sg = _with_cm(sg, "shop")
             sg = sg.sort_values("gross_profit", ascending=False)
-            sg_cols = ("shop", "revenue", "defined_cost",
-                       "gross_profit", "gross_margin", "fee", "ad",
-                       "cm", "cm_rate", "fee_match", "payout_rate")
+            sg_cols = ("shop", "revenue", "cancel_est", "revenue_adj",
+                       "defined_cost", "gross_profit", "gross_margin",
+                       "fee", "ad", "cm", "cm_rate",
+                       "fee_match", "payout_rate")
             html_table(_disp(sg, sg_cols, mom_prev=_prev_shop, dim="shop"))
 
     # ============================================================
@@ -922,9 +971,10 @@ with tab_shop:
     g = g.sort_values("gross_profit", ascending=False)
 
     # 列順は尹雪莉さん 2026-08-03 依頼: owner を最終列へ · SKU数 は表から外す
-    shop_cols = ("shop", "revenue", "defined_cost",
-                 "gross_profit", "gross_margin", "fee", "ad",
-                 "cm", "cm_rate", "fee_match", "payout_rate", "owner")
+    shop_cols = ("shop", "revenue", "cancel_est", "revenue_adj",
+                 "defined_cost", "gross_profit", "gross_margin",
+                 "fee", "ad", "cm", "cm_rate",
+                 "fee_match", "payout_rate", "owner")
     _shop_disp = _disp(g, shop_cols, mom_prev=_prev_shop, dim="shop")
     html_table(_shop_disp)
     st.caption(_CM_NOTE)
@@ -1103,9 +1153,10 @@ with tab_market:
     g = _with_cm(g, "market")
     g = g.sort_values("gross_profit", ascending=False)
 
-    mkt_cols = ("market", "qty", "revenue", "defined_cost",
-                "gross_profit", "gross_margin", "fee", "ad",
-                "cm", "cm_rate", "fee_match", "payout_rate", "n_shop", "n_sku")
+    mkt_cols = ("market", "qty", "revenue", "cancel_est", "revenue_adj",
+                "defined_cost", "gross_profit", "gross_margin",
+                "fee", "ad", "cm", "cm_rate",
+                "fee_match", "payout_rate", "n_shop", "n_sku")
     html_table(_disp(g, mkt_cols))
     st.caption(_CM_NOTE)
     st.altair_chart(_hbar(g, "market"), use_container_width=True)
