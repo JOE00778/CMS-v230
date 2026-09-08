@@ -115,33 +115,33 @@ def test_status_map_は大文字で引ける():
 
 
 # ------------------------------------------------------------------
-# 検証結果の反映（ここを間違えると正しい PCCC を消す）
+# 検証結果を**出力に反映させない**（2026-09-08 撤去）
 # ------------------------------------------------------------------
-def _row(pccc):
-    return {"B": "order1", "AA": pccc}
+# 以前は 오류 の PCCC を自動で消していた（`apply_results`）。運営が実運用で
+# 「人工核后确认实际信息是正确的，但是这个功能显示是错误的」——関税庁は
+# 番号 + 氏名 + 電話 + **登録済み配送地の郵便番号**を照合するので、客が引っ越し
+# 後に関税庁側を更新していないだけで 오류 になる。番号は生きている。
+# 自動削除は**正しい番号を捨てる**動きだったので消した。ここは戻さないこと。
+PAGE = (Path(__file__).parents[1] / "pages" / "41_📮_ECMS发货.py").read_text("utf-8")
 
 
-def test_NG_は落とす_OK_はそのまま():
-    rows = [_row("P111111111111"), _row("P222222222222")]
-    smap = {
-        "P111111111111": {"status": P.STATUS_OK, "message": ""},
-        "P222222222222": {"status": P.STATUS_NG, "message": "존재하지 않습니다"},
-    }
-    assert P.apply_results(rows, smap) == 1
-    assert rows[0]["AA"] == "P111111111111"
-    assert rows[1]["AA"] == ""
+def test_自動削除の関数はもう無い():
+    assert not hasattr(P, "apply_results"), (
+        "PCCC を自動で消す関数を復活させない。関税庁の 오류 は「登録情報が古い」でも出る")
 
 
-def test_関税庁の障害では落とさない():
-    """장애 は相手側の一時障害。ここで消すと**正しい番号を捨てる**ことになる。
-    運営が再試行できるよう、番号は残したまま画面に理由だけ出す。"""
-    rows = [_row("P333333333333")]
-    smap = {"P333333333333": {"status": P.STATUS_FAULT, "message": "시스템 장애"}}
-    assert P.apply_results(rows, smap) == 0
-    assert rows[0]["AA"] == "P333333333333"
+def test_ページも検証結果で行を書き換えない():
+    """UI 側は単体テストで追えないので静的に釘を刺す（`test_ecms_page41_product_import`
+    と同じ手）。検証結果を使って PCCC 欄へ代入していたら落とす。"""
+    assert "apply_results" not in PAGE
+    for line in PAGE.splitlines():
+        body = line.strip()
+        if body.startswith("#"):
+            continue
+        assert not (body.startswith(("r[\"AA\"]", "r['AA']")) and "=" in body), \
+            f"検証結果で PCCC を消している疑い: {body}"
 
 
-def test_未検証の行は触らない():
-    rows = [_row("P444444444444"), _row("")]
-    assert P.apply_results(rows, {}) == 0
-    assert rows[0]["AA"] == "P444444444444"
+def test_ページに_150ドル警告がある():
+    """運営 2026-09-08「订单金额超过150美金时，可以也增加一个人工提示信息吗」。"""
+    assert "over_duty_free" in PAGE

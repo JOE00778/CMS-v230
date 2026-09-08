@@ -49,6 +49,7 @@ REF_PREFIX = "EC" + CLIENT_CODE
 RENAMED_SIDO = {"강원도", "전라북도", "제주도", "세종특별시"}
 
 # Coupang の受注 Excel（Delivery シート）の列
+C_BUNDLE = "B"        # Bundle delivery number（묶음배송번호）= Coupang の**発送単位**
 C_ORDER_NO = "C"      # Order number
 C_OPTION_NAME = "L"   # Registered option name → 規格型号
 C_PRODUCT_ID = "N"    # Displayed product ID
@@ -272,17 +273,63 @@ def missing(row: dict) -> list[str]:
 def convert(orders: list[dict], products: dict, masters: dict,
             start_seq: int = 1, on: date | None = None,
             brand_alias: dict | None = None) -> list[dict]:
-    """Coupang の全行 → ECMS の全行。1 注文 1 行（実データも 37→37 の 1 対 1）。
+    """Coupang の全行 → ECMS の全行。**行数は 1 対 1 のまま**、
+    同じ包裹に属する行は**同じ頭程運単号を共有する**（＝ 1 個口として発送）。
+
+    包裹の単位は Coupang の **묶음배송번호（B 列 Bundle delivery number）**。
+    注文番号ではない——Coupang が「一緒に送る」と決めた単位がこれ。無い行は
+    注文番号、それも無ければ行単独で 1 包裹とする。
+
+    運営の実ファイル `0908ecms上传-新订单.xlsx` で確認（44 行 → 43 運単号）:
+      · 注文 27102800205993 の 2 行が `ECLBF26090800010` を共有
+      · **包裹側の欄（A/B/C/L/Q/R/S/U/V/W/X/Y/Z/AA）は 2 行とも同じ値を繰り返す**
+        （先頭行だけに書く形ではない。build_row は毎行フル出力なので自然にこうなる）
+      · 内件側（AE/AF/AG/AH/AJ/AN/AP/AU）は各行それぞれ
+      · **AD 内件序号は運営も空**にしている → こちらも埋めない
+      · 連番は**包裹ごと**に進む（1..43 が連続。合流した分で番号は飛ばない）
 
     products は **SKU** キー、masters は **JAN** キー。
     """
-    out = []
+    out: list[dict] = []
+    refs: dict[str, str] = {}
     for i, o in enumerate(orders):
+        key = ((o.get(C_BUNDLE) or "").strip()
+               or (o.get(C_ORDER_NO) or "").strip()
+               or f"#{i}")          # 番号が無い行同士を 1 包裹にまとめないための保険
+        if key not in refs:
+            refs[key] = ref_number(start_seq + len(refs), on)
         sku = (o.get(C_SKU) or "").strip()
         jan, _ = split_sku(sku)
         out.append(build_row(o, products.get(sku), masters.get(jan),
-                             ref_number(start_seq + i, on), brand_alias))
+                             refs[key], brand_alias))
     return out
+
+
+def over_duty_free(rows: list[dict], rate: float | None = None) -> dict[str, float]:
+    """頭程運単号 → 申告合計 USD。**免税枠を超えた包裹だけ**返す。
+
+    韓国の個人通関は $150 未満なら目録通関、以上は一般申告になり手続きが変わる
+    （運営 2026-09-08「订单金额超过 150 美金时，可以也增加一个人工提示信息吗」）。
+
+    合計は**包裹単位**（同じ運単号の行を足す）。1 行ずつ見ていると、合流した
+    2 品で超えるケースを取り逃がす。
+
+    ⚠️ 出力ファイルは**変えない**。運営の実ファイルは M 列（清关模式）が 0902・0903・
+       0908 の 3 回とも空——こちらの判断で埋めない。画面に出すだけ。
+    """
+    from shared.coupang_ecms import DUTY_FREE_USD, fx_rate
+
+    rate = fx_rate() if rate is None else rate
+    krw: dict[str, float] = {}
+    for r in rows:
+        try:
+            amount = float(r.get("AO") or 0) * float(r.get("AP") or 0)
+        except (TypeError, ValueError):
+            continue
+        ref = str(r.get("C") or "")
+        krw[ref] = krw.get(ref, 0.0) + amount
+    return {ref: round(v * rate, 2) for ref, v in krw.items()
+            if v * rate >= DUTY_FREE_USD}
 
 
 def to_xlsx(rows: list[dict], path: str | Path) -> Path:

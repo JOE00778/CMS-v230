@@ -339,3 +339,98 @@ def test_pccc_dropped_で画面に理由を出せる():
     assert X.pccc_dropped({X.C_PCCC: "ABC12345"}) is True
     assert X.pccc_dropped({X.C_PCCC: "P842160107476"}) is False
     assert X.pccc_dropped({X.C_PCCC: ""}) is False       # 元から空はケース違い（missing 側で拾う）
+
+
+# ==================================================================
+# 同じ包裹は 1 運単号（2026-09-08 運営「同一订单只生成一个运单号」）
+# ------------------------------------------------------------------
+# 根拠は運営の実ファイル `0908ecms上传-新订单.xlsx`（44 行 → 43 運単号）。
+# 注文 27102800205993 の 2 行が `ECLBF26090800010` を共有し、包裹側の欄は
+# **2 行とも同じ値を繰り返して**いた。以下は個人情報を伏せた同じ形。
+# ==================================================================
+def _line(bundle, order, sku="4901616011007", name="홍길동", phone="010-0000-0000",
+          zipcode="41089", addr="대구광역시 동구 신서동 561", pccc="P180000808356",
+          paid="20300", qty="1", opt="1개 28개입", oid="94872008944"):
+    return {X.C_BUNDLE: bundle, X.C_ORDER_NO: order, X.C_SKU: sku, X.C_NAME: name,
+            X.C_PHONE: phone, X.C_ZIP: zipcode, X.C_ADDR: addr, X.C_PCCC: pccc,
+            X.C_PAID: paid, X.C_QTY: qty, X.C_OPTION_NAME: opt, X.C_OPTION_ID: oid}
+
+
+BUNDLE_SRC = [
+    _line("726914767306793", "10102665473152", "4901616011007"),
+    # ↓ 同一注文の 2 品目。묶음배송번호も同じ＝ 1 個口で送る
+    _line("727888000000001", "27102800205993", "4987176292643", opt="1개 28개입",
+          oid="94872008944", paid="20300"),
+    _line("727888000000001", "27102800205993", "4901301457790", opt="520g 1개",
+          oid="95323602638", paid="13800"),
+    _line("726920228372543", "28102665852701", "4902111773421"),
+]
+
+
+def _bundle_rows():
+    return X.convert(BUNDLE_SRC, {}, {}, start_seq=1, on=date(2026, 9, 8))
+
+
+def test_同じ包裹は同じ運単号_行数は減らない():
+    rows = _bundle_rows()
+    assert len(rows) == 4, "行は商品ごとに出す。まとめるのは運単号だけ"
+    assert rows[1]["C"] == rows[2]["C"]
+    assert rows[0]["C"] != rows[1]["C"] != rows[3]["C"]
+
+
+def test_連番は包裹ごとに進む_合流しても飛ばない():
+    """実ファイルの連番は 1..43 が連続。合流した分で番号を空けたりしない。"""
+    assert [r["C"][-5:] for r in _bundle_rows()] == ["00001", "00002", "00002", "00003"]
+    assert _bundle_rows()[0]["C"] == "ECLBF26090800001"
+
+
+def test_包裹側の欄は2行とも同じ値を繰り返す():
+    """先頭行だけに書く形ではない——運営の実ファイルがそうなっている。"""
+    a, b = _bundle_rows()[1], _bundle_rows()[2]
+    for col in ("A", "B", "C", "L", "Q", "R", "S", "U", "V", "W", "X", "Y", "Z", "AA"):
+        assert a[col] == b[col], f"{col} が 2 行で食い違っている"
+
+
+def test_内件側は行ごとに別():
+    a, b = _bundle_rows()[1], _bundle_rows()[2]
+    assert a["AG"] != b["AG"] and a["AP"] != b["AP"] and a["AU"] != b["AU"]
+
+
+def test_内件序号_AD_は空のまま():
+    """運営の実ファイルは AD が全行空。ECMS は Optional なので合わせる。"""
+    assert all(not r.get("AD") for r in _bundle_rows())
+
+
+def test_묶음배송번호が無ければ注文番号でまとめる():
+    src = [_line("", "SAME"), _line("", "SAME"), _line("", "OTHER")]
+    rows = X.convert(src, {}, {}, start_seq=1, on=date(2026, 9, 8))
+    assert rows[0]["C"] == rows[1]["C"] != rows[2]["C"]
+
+
+def test_番号が両方とも無い行は合流させない():
+    """空文字同士を 1 包裹にまとめると、赤の他人の荷物が 1 個口になる。"""
+    src = [_line("", ""), _line("", "")]
+    rows = X.convert(src, {}, {}, start_seq=1, on=date(2026, 9, 8))
+    assert rows[0]["C"] != rows[1]["C"]
+
+
+# ==================================================================
+# 免税枠 $150（2026-09-08 運営「订单金额超过150美金时，可以也增加一个人工提示」）
+# ==================================================================
+def test_免税枠を超えた包裹だけ返す():
+    rows = [{"C": "REF1", "AO": 1, "AP": 300000},      # ≒ $204
+            {"C": "REF2", "AO": 1, "AP": 10000}]       # ≒ $6.8
+    over = X.over_duty_free(rows, rate=0.00068)
+    assert set(over) == {"REF1"} and 200 < over["REF1"] < 210
+
+
+def test_合流した2品の合計で判定する():
+    """1 行ずつ見ていると、2 品合わせて超えるケースを取り逃がす。"""
+    rows = [{"C": "REF1", "AO": 1, "AP": 120000},
+            {"C": "REF1", "AO": 1, "AP": 120000}]      # 単体では届かないが合計で超える
+    assert "REF1" in X.over_duty_free(rows, rate=0.00068)
+
+
+def test_運営の実データは1件も超えない():
+    """0902 の 37 行は最大 $40。誤検知するようなら閾値か換算が壊れている。"""
+    assert X.over_duty_free(_converted(), rate=0.00068) == {}

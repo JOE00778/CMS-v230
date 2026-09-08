@@ -157,11 +157,15 @@ with tab_cp:
                     st.success(f"ok={len(pv) - ng - ft} ng={ng} "
                                + (f"关税厅故障={ft}（可重试）" if ft else ""))
                 if pv:
+                    # ⚠️ 核对结果**只提示，不动输出**（2026-09-08 运营反馈：人工核过是
+                    #    对的，工具却报错）。关税厅比对的是「号码+姓名+电话+**登记的
+                    #    配送地邮编**」四项，客户搬家/换号没更新、或寄到公司家人处，
+                    #    都会报「不一致」但号码本身有效。以前这里会自动摘掉，等于
+                    #    替运营删了正确的号码。
                     pc2.caption(t("已核对") + f" {len(pv)} " + t("个 PCCC。"
-                                "查出「不存在/姓名不符」的会从输出里去掉，"
-                                "「关税厅故障」的保留原样，可以再点一次重试。"))
-
-                pccc.apply_results(rows, pv)
+                                "**结果只做提示，不会动输出文件**——关税厅比对的是"
+                                "号码+姓名+电话+登记的配送地邮编，客户没更新登记信息"
+                                "也会报不一致，但号码本身多半是好的。看了理由自己决定摘不摘。"))
 
                 view = []
                 for o, r in zip(orders, rows):
@@ -171,7 +175,7 @@ with tab_cp:
                         tag = (tag + "、" if tag else "") + t("PCCC格式不对已删除")
                     hit = pv.get((o.get(X.C_PCCC) or "").strip().upper())
                     if hit and hit["status"] == pccc.STATUS_NG:
-                        tag = (tag + "、" if tag else "") + t("关税厅：") + hit["message"][:28]
+                        tag = (tag + "、" if tag else "") + t("关税厅对不上（未删）：") + hit["message"][:24]
                     elif hit and hit["status"] == pccc.STATUS_FAULT:
                         tag = (tag + "、" if tag else "") + t("关税厅查询故障，未核对")
                     view.append({"缺": tag,
@@ -179,6 +183,18 @@ with tab_cp:
                                     r.get(c, "")
                                     for c in ("B", "C", "R", "S", "V", "W", "X", "Y", "AA",
                                               "AE", "AG", "AH", "AJ", "AO", "AP")}})
+                # 免税枠超え（運営 2026-09-08 要望）。包裹単位で合計する
+                over = X.over_duty_free(rows)
+                if over:
+                    for v, r in zip(view, rows):
+                        u = over.get(r.get("C", ""))
+                        if u:
+                            v["缺"] = ((v["缺"] + "、" if v["缺"] else "")
+                                       + t("⚠超免税额 $") + f"{u:.0f}")
+                    st.warning(t("超过 $150 免税额的包裹") + f"：{len(over)} "
+                               + t("个（韩国个人通关 $150 以上要走一般申告，"
+                                   "清关模式列没有自动改，请人工确认）"))
+
                 bad = sum(1 for v in view if v["缺"])
                 if bad:
                     st.warning(t("有缺项的行") + f"：{bad} / {len(rows)}　"
