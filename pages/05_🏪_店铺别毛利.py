@@ -530,12 +530,17 @@ if not _ads_raw.empty:
 
 if _ad_parts:
     _ad_all = pd.concat(_ad_parts, ignore_index=True)
+    # 広告費タブの対照一覧用（自動/手入力を並べる）
+    _ad_detail = (_ad_all.pivot_table(index="shop", columns="_src",
+                                      values="ad", aggfunc="sum")
+                  .reindex(columns=["auto", "manual"]).reset_index())
     # 手入力優先: 同一店に manual があれば auto を捨てる
     _ad_all["_pri"] = (_ad_all["_src"] == "manual").astype(int)
     _ad_all = (_ad_all.sort_values("_pri", ascending=False)
                .drop_duplicates("shop", keep="first"))
     _ad_df = _ad_all[["shop", "ad"]].reset_index(drop=True)
 else:
+    _ad_detail = pd.DataFrame(columns=["shop", "auto", "manual"])
     _ad_df = pd.DataFrame(columns=["shop", "ad"])
 
 # --- 取消冲减估（月×店舗 · Boss 2026-09-08 A案）---
@@ -687,11 +692,12 @@ m6.metric("CM率(調整後)" if _ja_kpi else "CM率(调整后)", f"{tot_cm_rate:
 st.divider()
 
 _owner_tab = "👤 担当者別" if get_lang() == "ja" else "👤 店铺负责人"
+_ad_tab_lbl = "📝 広告費" if get_lang() == "ja" else "📝 广告费"
 (tab_day, tab_owner, tab_shop, tab_market, tab_sku, tab_alert, tab_deduct,
- tab_payout, tab_loss, tab_ff3) = st.tabs(
+ tab_payout, tab_loss, tab_ff3, tab_ads) = st.tabs(
     [t("📈 月内日次推移"), _owner_tab, t("🏪 店舗別"), t("🌐 市場別"),
      t("🏆 TOP SKU"), t("⚠️ 价格预警"), t("🧾 店铺扣减"), t("💵 拨款明细"),
-     t("🩸 未结算/损失"), t("💸 退款明细")]
+     t("🩸 未结算/损失"), t("💸 退款明细"), _ad_tab_lbl]
 )
 
 # ============================================================
@@ -1080,109 +1086,6 @@ with tab_shop:
                    .configure_axis(labelFontSize=_CHART_LABEL_FS,
                                    titleFontSize=_CHART_TITLE_FS))
         st.altair_chart(_schart, use_container_width=True)
-
-    # ============================================================
-    # 📝 広告費の録入（チャージ月 × 店舗 · CM の広告費源 · Boss 2026-09-07）
-    #   保存 = 対象月の全行入替（この画面が唯一の書込口 · 行数は月数十行程度）
-    # ============================================================
-    st.divider()
-    st.markdown("##### " + ("📝 広告費の録入（チャージ月 = 上で選択中の月）"
-                            if get_lang() == "ja"
-                            else "📝 广告费录入（充值月 = 上方选中的对象月）"))
-    st.caption(("Shopee 店は Ads 消耗が自動計上されるため通常入力不要。"
-                "手入力は非 Shopee 渠道（Coupang 広告等）や手動補正用 · "
-                "同一店×月に手入力があると自動値を**上書き**します · "
-                "外貨は当月 NST 三金レートで円換算 · 同一店舗複数行は合算")
-               if get_lang() == "ja" else
-               "Shopee 店的广告消耗已自动计入，通常无需录入。"
-               "手工录入用于非 Shopee 渠道（如 Coupang 广告）或手动修正 · "
-               "同店同月有手工记录时将**覆盖**自动值 · "
-               "外币按当月 NST 三金汇率换算日元 · 同一店铺多行时合算")
-    if _ad_schema_err:
-        st.info(("⚠️ 広告費テーブル（" + _AD_TBL + "）が使えません（PG 未接続？）: "
-                 if get_lang() == "ja" else
-                 "⚠️ 广告费表（" + _AD_TBL + "）不可用（PG 未连接？）: ") + _ad_schema_err)
-    else:
-        with st.expander(("広告費を録入・変更する" if get_lang() == "ja"
-                          else "录入 / 修改广告费"), expanded=False):
-            # 店舗候補 = 直近12ヶ月に売上のある店舗（担当者設定と同じ範囲）
-            _sh12a, _ = _query(
-                "SELECT DISTINCT trim(shop) AS shop FROM nst.sales_daily "
-                "WHERE sale_date >= ?",
-                ((_today - dt.timedelta(days=365)).isoformat(),))
-            _ad_shop_opts = (sorted({str(x).strip() for x in _sh12a["shop"]
-                                     if str(x).strip()})
-                             if _sh12a is not None and not _sh12a.empty else [])
-            _ad_cur_rows = _read_w(
-                f"SELECT shop, amount, currency, note FROM {_AD_TBL} "
-                "WHERE ym = ? ORDER BY shop", (ym,))
-            if _ad_cur_rows.empty:
-                _ad_cur_rows = pd.DataFrame(
-                    {"shop": pd.Series(dtype=str),
-                     "amount": pd.Series(dtype=float),
-                     "currency": pd.Series(dtype=str),
-                     "note": pd.Series(dtype=str)})
-            _ad_cur_rows["amount"] = pd.to_numeric(
-                _ad_cur_rows["amount"], errors="coerce")
-            _C_AMT = "金額（現地通貨）" if get_lang() == "ja" else "金额（本币）"
-            _C_CUR = "通貨" if get_lang() == "ja" else "币种"
-            _C_NOTE = "備考" if get_lang() == "ja" else "备注"
-            _ad_edit = st.data_editor(
-                _ad_cur_rows,
-                num_rows="dynamic",
-                use_container_width=True,
-                key=f"ad_editor_{ym}",
-                column_config={
-                    "shop": st.column_config.SelectboxColumn(
-                        _col("shop"), options=_ad_shop_opts, required=True),
-                    "amount": st.column_config.NumberColumn(
-                        _C_AMT, min_value=0.0, format="%.2f"),
-                    "currency": st.column_config.SelectboxColumn(
-                        _C_CUR, options=list(_AD_CURRENCIES), default="JPY"),
-                    "note": st.column_config.TextColumn(_C_NOTE),
-                },
-            )
-            if st.button(("💾 保存（" + ym + " の広告費を上書き）") if get_lang() == "ja"
-                         else ("💾 保存（覆盖 " + ym + " 的广告费）"),
-                         key=f"ad_save_{ym}"):
-                _rows_ok, _rows_skip = [], 0
-                _seen: dict[str, list] = {}
-                for _, _r in _ad_edit.iterrows():
-                    _s = str(_r.get("shop") or "").strip()
-                    _a = pd.to_numeric(_r.get("amount"), errors="coerce")
-                    _c = str(_r.get("currency") or "JPY").strip().upper() or "JPY"
-                    _n = str(_r.get("note") or "").strip()
-                    if not _s or pd.isna(_a) or float(_a) <= 0:
-                        _rows_skip += 1
-                        continue
-                    # 同一店舗×通貨は合算（PK が ym×shop のため通貨は最後の行に従う）
-                    if _s in _seen and _seen[_s][1] == _c:
-                        _seen[_s][0] += float(_a)
-                        if _n:
-                            _seen[_s][2] = _n
-                    else:
-                        _seen[_s] = [float(_a), _c, _n]
-                _rows_ok = [(ym, s, v[0], v[1], v[2] or None)
-                            for s, v in _seen.items()]
-                try:
-                    conn_w.execute(f"DELETE FROM {_AD_TBL} WHERE ym = ?", (ym,))
-                    for _row in _rows_ok:
-                        conn_w.execute(
-                            f"INSERT INTO {_AD_TBL} (ym, shop, amount, currency, note) "
-                            "VALUES (?, ?, ?, ?, ?)", _row)
-                    conn_w.commit()
-                    st.success((f"保存完了 ok={len(_rows_ok)} skipped={_rows_skip}"
-                                "（空店舗/金額0）" if get_lang() == "ja" else
-                                f"已保存 ok={len(_rows_ok)} skipped={_rows_skip}"
-                                "（店铺空/金额0）"))
-                    st.rerun()
-                except Exception as _e:  # noqa: BLE001
-                    try:
-                        conn_w.rollback()
-                    except Exception:
-                        pass
-                    st.error(("保存失敗: " if get_lang() == "ja" else "保存失败: ")
-                             + str(_e))
 
 # ============================================================
 # Tab 2：市場別
@@ -2299,3 +2202,153 @@ st.caption(
     t("対象月") + f"：{ym} · " + t("市場") + f"：{mk} · "
     + t("表示行（明細）: ") + f"{len(df):,}"
 )
+
+# ============================================================
+# Tab：📝 広告費（韓国運営の手入力口 + 当月一覧 · Boss 2026-09-08）
+#   自動 = Shopee Ads 日次消耗（毎日 05:50 取得）· 手入力 = 非 Shopee 渠道
+#   （Coupang 広告は API 無しと実証済 → ここで毎月手入力）
+# ============================================================
+with tab_ads:
+    st.caption(("広告費 = Shopee Ads 消耗（自動）+ 手入力（非Shopee渠道 · "
+                "Coupang 広告は WING 広告後台の月次消耗をここで入力）· "
+                "同一店×月に手入力があると自動値を上書き · 円換算は当月 NST 三金レート")
+               if get_lang() == "ja" else
+               "广告费 = Shopee Ads 消耗（自动）+ 手工录入（非 Shopee 渠道 · "
+               "Coupang 广告请每月把 WING 广告后台的当月消耗填在这里）· "
+               "同店同月有手工记录时覆盖自动值 · 日元换算按当月 NST 三金汇率")
+
+    # ── 当月一覧（自動 / 手入力 / 採用値）──
+    _AD_L = (("店铺", "自动(Ads消耗)", "手工录入", "计入CM", "来源")
+             if get_lang() != "ja" else
+             ("店舗", "自動(Ads消耗)", "手入力", "CM計上", "採用"))
+    if _ad_detail.empty:
+        st.info(("この月の広告費データはまだありません（自動も手入力も無し）"
+                 if get_lang() == "ja" else "该月尚无广告费数据（自动与手工均无）"))
+    else:
+        _adv = _ad_detail.copy()
+        for _c in ("auto", "manual"):
+            if _c not in _adv.columns:
+                _adv[_c] = pd.NA
+        _adv["used"] = _adv["manual"].where(_adv["manual"].notna(), _adv["auto"])
+        _adv["src"] = [("手入力" if get_lang() == "ja" else "手工")
+                       if pd.notna(m) else "Ads"
+                       for m in _adv["manual"]]
+        _adv = _adv.sort_values("used", ascending=False)
+
+        def _yen(v):
+            return f"¥{v:,.0f}" if pd.notna(v) else "—"
+
+        _adt = pd.DataFrame({
+            _AD_L[0]: _adv["shop"],
+            _AD_L[1]: _adv["auto"].map(_yen),
+            _AD_L[2]: _adv["manual"].map(_yen),
+            _AD_L[3]: _adv["used"].map(_yen),
+            _AD_L[4]: _adv["src"],
+        })
+        html_table(_adt)
+        _t_used = float(_adv["used"].fillna(0).sum())
+        st.caption((f"合計（CM 計上）: ¥{_t_used:,.0f}" if get_lang() == "ja"
+                    else f"合计（计入 CM）: ¥{_t_used:,.0f}"))
+
+    st.divider()
+    # ============================================================
+    # 📝 広告費の録入（対象月 × 店舗 · 手入力（非Shopee渠道）· Boss 2026-09-08 独立タブ化）
+    #   保存 = 対象月の全行入替（この画面が唯一の書込口 · 行数は月数十行程度）
+    # ============================================================
+    st.markdown("##### " + ("📝 広告費の録入（対象月 = 上で選択中の月）"
+                            if get_lang() == "ja"
+                            else "📝 广告费录入（对象月 = 上方选中的月份）"))
+    st.caption(("Shopee 店は Ads 消耗が自動計上されるため通常入力不要。"
+                "手入力は非 Shopee 渠道（Coupang 広告等）や手動補正用 · "
+                "同一店×月に手入力があると自動値を**上書き**します · "
+                "外貨は当月 NST 三金レートで円換算 · 同一店舗複数行は合算")
+               if get_lang() == "ja" else
+               "Shopee 店的广告消耗已自动计入，通常无需录入。"
+               "手工录入用于非 Shopee 渠道（如 Coupang 广告）或手动修正 · "
+               "同店同月有手工记录时将**覆盖**自动值 · "
+               "外币按当月 NST 三金汇率换算日元 · 同一店铺多行时合算")
+    if _ad_schema_err:
+        st.info(("⚠️ 広告費テーブル（" + _AD_TBL + "）が使えません（PG 未接続？）: "
+                 if get_lang() == "ja" else
+                 "⚠️ 广告费表（" + _AD_TBL + "）不可用（PG 未连接？）: ") + _ad_schema_err)
+    else:
+        with st.expander(("広告費を録入・変更する" if get_lang() == "ja"
+                          else "录入 / 修改广告费"), expanded=False):
+            # 店舗候補 = 直近12ヶ月に売上のある店舗（担当者設定と同じ範囲）
+            _sh12a, _ = _query(
+                "SELECT DISTINCT trim(shop) AS shop FROM nst.sales_daily "
+                "WHERE sale_date >= ?",
+                ((_today - dt.timedelta(days=365)).isoformat(),))
+            _ad_shop_opts = (sorted({str(x).strip() for x in _sh12a["shop"]
+                                     if str(x).strip()})
+                             if _sh12a is not None and not _sh12a.empty else [])
+            _ad_cur_rows = _read_w(
+                f"SELECT shop, amount, currency, note FROM {_AD_TBL} "
+                "WHERE ym = ? ORDER BY shop", (ym,))
+            if _ad_cur_rows.empty:
+                _ad_cur_rows = pd.DataFrame(
+                    {"shop": pd.Series(dtype=str),
+                     "amount": pd.Series(dtype=float),
+                     "currency": pd.Series(dtype=str),
+                     "note": pd.Series(dtype=str)})
+            _ad_cur_rows["amount"] = pd.to_numeric(
+                _ad_cur_rows["amount"], errors="coerce")
+            _C_AMT = "金額（現地通貨）" if get_lang() == "ja" else "金额（本币）"
+            _C_CUR = "通貨" if get_lang() == "ja" else "币种"
+            _C_NOTE = "備考" if get_lang() == "ja" else "备注"
+            _ad_edit = st.data_editor(
+                _ad_cur_rows,
+                num_rows="dynamic",
+                use_container_width=True,
+                key=f"ad_editor_{ym}",
+                column_config={
+                    "shop": st.column_config.SelectboxColumn(
+                        _col("shop"), options=_ad_shop_opts, required=True),
+                    "amount": st.column_config.NumberColumn(
+                        _C_AMT, min_value=0.0, format="%.2f"),
+                    "currency": st.column_config.SelectboxColumn(
+                        _C_CUR, options=list(_AD_CURRENCIES), default="JPY"),
+                    "note": st.column_config.TextColumn(_C_NOTE),
+                },
+            )
+            if st.button(("💾 保存（" + ym + " の広告費を上書き）") if get_lang() == "ja"
+                         else ("💾 保存（覆盖 " + ym + " 的广告费）"),
+                         key=f"ad_save_{ym}"):
+                _rows_ok, _rows_skip = [], 0
+                _seen: dict[str, list] = {}
+                for _, _r in _ad_edit.iterrows():
+                    _s = str(_r.get("shop") or "").strip()
+                    _a = pd.to_numeric(_r.get("amount"), errors="coerce")
+                    _c = str(_r.get("currency") or "JPY").strip().upper() or "JPY"
+                    _n = str(_r.get("note") or "").strip()
+                    if not _s or pd.isna(_a) or float(_a) <= 0:
+                        _rows_skip += 1
+                        continue
+                    # 同一店舗×通貨は合算（PK が ym×shop のため通貨は最後の行に従う）
+                    if _s in _seen and _seen[_s][1] == _c:
+                        _seen[_s][0] += float(_a)
+                        if _n:
+                            _seen[_s][2] = _n
+                    else:
+                        _seen[_s] = [float(_a), _c, _n]
+                _rows_ok = [(ym, s, v[0], v[1], v[2] or None)
+                            for s, v in _seen.items()]
+                try:
+                    conn_w.execute(f"DELETE FROM {_AD_TBL} WHERE ym = ?", (ym,))
+                    for _row in _rows_ok:
+                        conn_w.execute(
+                            f"INSERT INTO {_AD_TBL} (ym, shop, amount, currency, note) "
+                            "VALUES (?, ?, ?, ?, ?)", _row)
+                    conn_w.commit()
+                    st.success((f"保存完了 ok={len(_rows_ok)} skipped={_rows_skip}"
+                                "（空店舗/金額0）" if get_lang() == "ja" else
+                                f"已保存 ok={len(_rows_ok)} skipped={_rows_skip}"
+                                "（店铺空/金额0）"))
+                    st.rerun()
+                except Exception as _e:  # noqa: BLE001
+                    try:
+                        conn_w.rollback()
+                    except Exception:
+                        pass
+                    st.error(("保存失敗: " if get_lang() == "ja" else "保存失败: ")
+                             + str(_e))
