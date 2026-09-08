@@ -508,15 +508,27 @@ else:
 # --- 取消冲减估（月×店舗 · Boss 2026-09-08 A案）---
 #     NST は出荷で売上計上、取消の控除（貸方票）は Shopee 財務報表待ちで
 #     1〜2 ヶ月遅れる（Boss 確認済の構造的タイムラグ）。
-#     予估池 = 平台側既知の取消（出荷前 preship_void + 出荷後 loss）。
-#     金額 = nst_amount_jpy（NST 請求書按分の純額）——貸方票が入った注文は
-#     この値が自動で 0 になる（2026-09-08 標定: 既冲 6,886 件の残額 ¥8.4万）ため、
-#     入账済みとの二重控除は構造上起きない。財務が補票すると本列が減り
-#     NST 売上が下がり、調整後売上はほぼ動かない。
+#     予估池 = 平台側既知の取消（出荷前 preship_void + 出荷後 loss）のうち
+#     **まだ貸方票が起票されていない注文だけ**（has_credit=負票行あり=起票済 → 除外）。
+#     金額 = 正票行の nst_amount_jpy（請求書按分）。
+#     ⚠️ 起票済注文を「正負相殺」で残すと按分残差が乗る：負票は注文実額・
+#        正票行は合併票の均攤値で、取消注文（高客単ほど拒収されやすい）は
+#        票均値より高く、月合計が負に振れる（2026-05 実測 −¥88万）。
+#        起票済は NST 売上に反映済みなので推定から丸ごと外すのが正しい。
+#     注文の帰属月 = min(ym)（出荷正票の月）。財務が補票すると当該注文が
+#     除外に回り本列が減り、NST 売上が下がり、調整後売上はほぼ動かない。
 _cxl_df, _cxl_err = _query(
-    "SELECT trim(shop) AS shop, sum(coalesce(nst_amount_jpy,0)) AS cancel_est "
-    "FROM nst.v_shipped_order "
-    "WHERE ym = ? AND settle_status IN ('loss','preship_void') "
+    "WITH o AS ("
+    "  SELECT trim(shop) AS shop, order_no, min(ym) AS ym0, "
+    "         sum(coalesce(nst_amount_jpy,0)) "
+    "           FILTER (WHERE nst_amount_jpy > 0) AS pos_amt, "
+    "         bool_or(nst_amount_jpy < 0) AS has_credit "
+    "  FROM nst.v_shipped_order "
+    "  WHERE settle_status IN ('loss','preship_void') "
+    "  GROUP BY 1, 2"
+    ") "
+    "SELECT shop, sum(coalesce(pos_amt,0)) AS cancel_est "
+    "FROM o WHERE ym0 = ? AND NOT has_credit "
     "GROUP BY 1", (ym,))
 if _cxl_df is None or _cxl_df.empty:
     _cxl_df = pd.DataFrame(columns=["shop", "cancel_est"])
@@ -633,7 +645,9 @@ m1.metric("総収益(NST)" if _ja_kpi else "总收益(NST)", f"¥{tot_r:,.0f}")
 m2.metric("取消控除見込" if _ja_kpi else "取消冲减估", f"¥{tot_cancel:,.0f}",
           delta=None)
 m3.metric("調整後売上" if _ja_kpi else "调整后营业额", f"¥{tot_rev_adj:,.0f}")
-m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}", f"{margin:.2f}%", delta_color="off")
+m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}",
+          ("粗利率 " if get_lang() == "ja" else "毛利率 ") + f"{margin:.2f}%",
+          delta_color="off")
 m5.metric("CM(調整後)" if _ja_kpi else "CM(调整后)", f"¥{tot_cm:,.0f}")
 m6.metric("CM率(調整後)" if _ja_kpi else "CM率(调整后)", f"{tot_cm_rate:.2f}%")
 
