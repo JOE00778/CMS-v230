@@ -101,7 +101,7 @@ _upd_lbl = "データ更新" if get_lang() == "ja" else "数据更新"
 st.caption(t(
     "NST API 売上データ（日次）· 店舗×月の粗利集計 + 月内日次推移 曲線 · "
     "粗利/粗利率 自動計算（定義原価ベース）· "
-    "CM = 粗利 − 手数料（注文突合済控除）− 広告費（チャージ月）"
+    "CM = 粗利 − 手数料（注文突合済控除）− 広告費（Shopee Ads 消耗自動 + 手入力）"
 ) + f" · {_upd_lbl}: {_upd_str}")
 
 # 列見出し: (中文, 日本語) — UI 言語追従
@@ -489,11 +489,35 @@ else:
     _ded_df["settled_payable"] = _ded_df["settled_orders"].where(_payable, 0.0)
     _ded_df = _ded_df[_DED_COLS_ALL]
 
-# --- 広告費（チャージ月 · 円換算）---
+# --- 広告費（円換算）---
+#   ① 自動源 = Shopee Ads 日次消耗（shopee.ads_daily · 消耗月口径 · Boss 2026-09-08「用2」）
+#      country → 店舗名は shopee.v_nst_shop_map、通貨は country 頭2字 → NST 月次レート
+#   ② 手入力 = finance.ad_spend_monthly（非 Shopee 渠道用に残す）
+#   同一店×月に両方あれば **手入力優先**（二重計上防止 · 手動修正の逃げ道）
+from shared.forex import COUNTRY_TO_CURRENCY, nst_monthly_rates
+
+_ad_auto_df, _ad_auto_err = _query(
+    "SELECT trim(m.nst_shop) AS shop, upper(left(a.country, 2)) AS cc, "
+    "sum(a.expense) AS amount "
+    "FROM shopee.ads_daily a "
+    "JOIN shopee.v_nst_shop_map m ON m.shop_key = a.country "
+    "WHERE to_char(a.perf_date, 'YYYY-MM') = ? AND a.expense IS NOT NULL "
+    "GROUP BY 1, 2", (ym,))
+_ad_parts = []
+if _ad_auto_df is not None and not _ad_auto_df.empty:
+    _ad_auto_df["amount"] = pd.to_numeric(
+        _ad_auto_df["amount"], errors="coerce").fillna(0).astype(float)
+    _auto_rate = {cc: nst_monthly_rates(conn, COUNTRY_TO_CURRENCY.get(cc, cc), [ym])[ym]
+                  for cc in _ad_auto_df["cc"].unique()}
+    _ad_auto_df["ad"] = [
+        _rhu(a * _auto_rate.get(cc, 0.0))
+        for a, cc in zip(_ad_auto_df["amount"], _ad_auto_df["cc"])]
+    _ad_parts.append(_ad_auto_df.groupby("shop", as_index=False)
+                     .agg(ad=("ad", "sum")).assign(_src="auto"))
+
 _ads_raw = _read_w(
     f"SELECT shop, amount, currency, note FROM {_AD_TBL} WHERE ym = ?", (ym,))
 if not _ads_raw.empty:
-    from shared.forex import nst_monthly_rates
     _ads_raw["shop"] = _ads_raw["shop"].astype(str).str.strip()
     _ads_raw["amount"] = pd.to_numeric(_ads_raw["amount"], errors="coerce").fillna(0).astype(float)
     _rate_by_cur = {c: nst_monthly_rates(conn, c, [ym])[ym]
@@ -501,7 +525,16 @@ if not _ads_raw.empty:
     _ads_raw["ad"] = [
         _rhu(a * _rate_by_cur.get(str(c).upper(), 0.0))
         for a, c in zip(_ads_raw["amount"], _ads_raw["currency"])]
-    _ad_df = _ads_raw.groupby("shop", as_index=False).agg(ad=("ad", "sum"))
+    _ad_parts.append(_ads_raw.groupby("shop", as_index=False)
+                     .agg(ad=("ad", "sum")).assign(_src="manual"))
+
+if _ad_parts:
+    _ad_all = pd.concat(_ad_parts, ignore_index=True)
+    # 手入力優先: 同一店に manual があれば auto を捨てる
+    _ad_all["_pri"] = (_ad_all["_src"] == "manual").astype(int)
+    _ad_all = (_ad_all.sort_values("_pri", ascending=False)
+               .drop_duplicates("shop", keep="first"))
+    _ad_df = _ad_all[["shop", "ad"]].reset_index(drop=True)
 else:
     _ad_df = pd.DataFrame(columns=["shop", "ad"])
 
@@ -553,14 +586,14 @@ _CM_NOTE = (
     ("CM(調整後) = (粗利 − 取消控除見込×NST粗利率) − 手数料 − 広告費 · CM率=CM÷調整後売上 · "
      "取消控除見込=平台側既知の取消（出荷前+出荷後）のうち NST 未入账分（純額按分·財務が貸方票を起こすと本列が減り NST 売上が下がり、調整後売上はほぼ動かない·Lazada は取消を取得できず高止まり）· "
      "手数料=注文突合済控除+物流控除（調整込み·店铺扣减タブと同口径）· "
-     "広告費=チャージ月全額（消耗ではない·月初は当月CMが低く出る）· "
+     "広告費=Shopee Ads 日次消耗の月合算（自動·消耗月口径）+手入力（非Shopee渠道·同店同月は手入力優先）· "
      "突合率=その店の当月出荷注文のうち、プラットフォーム側で費用明細を照合できた割合（100%未満は CM が高く出る·Lazada は明細API無し）· "
      "入金率=当月出荷注文のうち、着金済みの割合（出荷後1〜2週で着金·月内は低くて正常·Lazada 判定不能=—）"
      if get_lang() == "ja" else
      "CM(调整后) = (毛利 − 取消冲减估×NST毛利率) − 手续费 − 广告费 · CM率=CM÷调整后营业额 · "
      "取消冲减估=平台侧已知取消（出货前+出货后）中 NST 尚未入账的部分（净额按分·财务开贷方票后此列自动减少、NST 总收益下降、调整后营业额基本不变·Lazada 抓不到取消仍偏高）· "
      "手续费=按订单号突合的扣减+物流扣减（含调整·与「店铺扣减」tab 同口径）· "
-     "广告费=充值月全额（非消耗·月初看当月 CM 会偏低）· "
+     "广告费=Shopee Ads 日消耗按月合算（自动·消耗月口径）+手工录入（非Shopee渠道·同店同月手工优先）· "
      "费用匹配率=该店当月发货的订单中，能在平台侧查到费用明细的比例（低于100%时 CM 偏高·Lazada 无明细API）· "
      "回款率=该月发货的订单中，钱已经到账的比例（发货后1~2周到账·月内偏低正常·Lazada 不可判定=—）")
     + (f" · 手数料明細カバレッジ {_cov_pct:.1f}%（100%未満は CM が高く出る·Lazada は明細API無し）"
@@ -1056,11 +1089,15 @@ with tab_shop:
     st.markdown("##### " + ("📝 広告費の録入（チャージ月 = 上で選択中の月）"
                             if get_lang() == "ja"
                             else "📝 广告费录入（充值月 = 上方选中的对象月）"))
-    st.caption(("チャージ月に全額計上（消耗ではない）· 外貨は当月 NST 三金レートで円換算 · "
-                "同一店舗を複数行にした場合は合算されます")
+    st.caption(("Shopee 店は Ads 消耗が自動計上されるため通常入力不要。"
+                "手入力は非 Shopee 渠道（Coupang 広告等）や手動補正用 · "
+                "同一店×月に手入力があると自動値を**上書き**します · "
+                "外貨は当月 NST 三金レートで円換算 · 同一店舗複数行は合算")
                if get_lang() == "ja" else
-               "按充值月全额计入（非消耗口径）· 外币按当月 NST 三金汇率换算日元 · "
-               "同一店铺多行时自动合算")
+               "Shopee 店的广告消耗已自动计入，通常无需录入。"
+               "手工录入用于非 Shopee 渠道（如 Coupang 广告）或手动修正 · "
+               "同店同月有手工记录时将**覆盖**自动值 · "
+               "外币按当月 NST 三金汇率换算日元 · 同一店铺多行时合算")
     if _ad_schema_err:
         st.info(("⚠️ 広告費テーブル（" + _AD_TBL + "）が使えません（PG 未接続？）: "
                  if get_lang() == "ja" else
