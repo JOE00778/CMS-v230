@@ -27,6 +27,10 @@ def classify_market(store: str | None) -> str:
     s_lower = s.lower()
     if s.startswith("Shopee") or s.startswith("Lazada"):
         return MARKET_SEA
+    # SmikieJapan_cosme.my はマレーシアの店（Boss 2026-09-08 確認）。
+    # Shopee/Lazada 前缀が無いため個別扱いで東南亜へ
+    if s_lower == "smikiejapan_cosme.my":
+        return MARKET_SEA
     if "coupang" in s_lower:
         return MARKET_KOREA
     return MARKET_JAPAN
