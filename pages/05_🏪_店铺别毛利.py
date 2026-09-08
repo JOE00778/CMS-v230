@@ -587,28 +587,48 @@ _cov_pct = (_cov_m / _cov_o * 100) if _cov_o else None
 # 広告費はあるが当月（担当者あり）売上の無い店舗 = CM に乗らない → 明示
 _ad_orphans = sorted(set(_ad_df["shop"]) - _scope_shops) if not _ad_df.empty else []
 
-_CM_NOTE = (
-    ("CM(調整後) = (粗利 − 取消控除見込×NST粗利率) − 手数料 − 広告費 · CM率=CM÷調整後売上 · "
-     "取消控除見込=平台側既知の取消（出荷前+出荷後）のうち NST 未入账分（純額按分·財務が貸方票を起こすと本列が減り NST 売上が下がり、調整後売上はほぼ動かない·Lazada は取消を取得できず高止まり）· "
-     "手数料=注文突合済控除+物流控除（調整込み·店铺扣减タブと同口径）· "
-     "広告費=Shopee Ads 日次消耗の月合算（自動·消耗月口径）+手入力（非Shopee渠道·同店同月は手入力優先）· "
-     "突合率=その店の当月出荷注文のうち、プラットフォーム側で費用明細を照合できた割合（100%未満は CM が高く出る·Lazada は明細API無し）· "
-     "入金率=当月出荷注文のうち、着金済みの割合（出荷後1〜2週で着金·月内は低くて正常·Lazada 判定不能=—）"
-     if get_lang() == "ja" else
-     "CM(调整后) = (毛利 − 取消冲减估×NST毛利率) − 手续费 − 广告费 · CM率=CM÷调整后营业额 · "
-     "取消冲减估=平台侧已知取消（出货前+出货后）中 NST 尚未入账的部分（净额按分·财务开贷方票后此列自动减少、NST 总收益下降、调整后营业额基本不变·Lazada 抓不到取消仍偏高）· "
-     "手续费=按订单号突合的扣减+物流扣减（含调整·与「店铺扣减」tab 同口径）· "
-     "广告费=Shopee Ads 日消耗按月合算（自动·消耗月口径）+手工录入（非Shopee渠道·同店同月手工优先）· "
-     "费用匹配率=该店当月发货的订单中，能在平台侧查到费用明细的比例（低于100%时 CM 偏高·Lazada 无明细API）· "
-     "回款率=该月发货的订单中，钱已经到账的比例（发货后1~2周到账·月内偏低正常·Lazada 不可判定=—）")
-    + (f" · 手数料明細カバレッジ {_cov_pct:.1f}%（100%未満は CM が高く出る·Lazada は明細API無し）"
-       if get_lang() == "ja" and _cov_pct is not None else
-       f" · 手续费明细覆盖率 {_cov_pct:.1f}%（低于100%时 CM 偏高·Lazada 无明细API）"
-       if _cov_pct is not None else "")
+# 表下の常時表示は「当月の動的シグナル」だけ（短い1行）。口径の定義は折りたたみへ
+# （Boss 2026-09-08: 長すぎて乱れる → 分段+折叠）
+_CM_WARN = (
+    ((f"手数料明細カバレッジ {_cov_pct:.1f}%（100%未満は CM が高く出る）"
+      if get_lang() == "ja" else
+      f"手续费明细覆盖率 {_cov_pct:.1f}%（低于100%时 CM 偏高）")
+     if _cov_pct is not None else "")
     + ((" · ⚠️ 広告費のみで当月売上の無い店舗（未計上）: " if get_lang() == "ja"
         else " · ⚠️ 有广告费但当月无(有负责人)销售、未计入: ")
        + "、".join(_ad_orphans) if _ad_orphans else "")
 )
+
+_CM_NOTE_MD_JA = """
+- **CM(調整後)** = (粗利 − 取消控除見込 × NST粗利率) − 手数料 − 広告費
+- **CM率** = CM ÷ 調整後売上
+- **調整後売上** = 総収益(NST) − 取消控除見込
+- **取消控除見込**：平台側既知の取消（出荷前＋出荷後）のうち NST 未入账分（純額按分）。財務が貸方票を起こすと本列が自動で減り、NST 総収益が下がり、調整後売上はほぼ動かない。⚠️ Lazada は取消を取得できず高止まり
+- **手数料**：注文番号で突合した控除＋物流控除（調整込み）。「店铺扣减」タブと同口径
+- **広告費**：Shopee Ads 日次消耗の月合算（自動・消耗月口径）＋手入力（非 Shopee 渠道）。同一店×月は手入力優先
+- **突合率（費用匹配率）**：当月出荷注文のうちプラットフォーム側で費用明細を照合できた割合。100% 未満は CM が高く出る（Lazada は明細 API 無し）
+- **入金率（回款率）**：当月出荷注文のうち着金済みの割合。出荷後 1〜2 週で着金するため月内は低くて正常（Lazada 判定不能＝—）
+"""
+
+_CM_NOTE_MD_ZH = """
+- **CM(调整后)** = (毛利 − 取消冲减估 × NST毛利率) − 手续费 − 广告费
+- **CM率** = CM ÷ 调整后营业额
+- **调整后营业额** = 总收益(NST) − 取消冲减估
+- **取消冲减估**：平台侧已知取消（出货前＋出货后）中 NST 尚未入账的部分（净额按分）。财务开贷方票后此列自动减少、NST 总收益下降、调整后营业额基本不变。⚠️ Lazada 抓不到取消，其数字仍偏高
+- **手续费**：按订单号突合的扣减＋物流扣减（含调整）。与「店铺扣减」tab 同口径
+- **广告费**：Shopee Ads 日消耗按月合算（自动・消耗月口径）＋手工录入（非 Shopee 渠道）。同店同月手工优先
+- **费用匹配率**：该店当月发货的订单中，能在平台侧查到费用明细的比例。低于 100% 时 CM 偏高（Lazada 无明细 API）
+- **回款率**：该月发货的订单中，钱已经到账的比例。发货后 1~2 周到账，月内偏低正常（Lazada 不可判定＝—）
+"""
+
+
+def _cm_note(*, key: str) -> None:
+    """表格下の注記: 動的シグナル1行 + 口径説明の折りたたみ。"""
+    if _CM_WARN:
+        st.caption(_CM_WARN)
+    with st.expander("📖 CM 口径の説明" if get_lang() == "ja"
+                     else "📖 CM 口径说明", expanded=False):
+        st.markdown(_CM_NOTE_MD_JA if get_lang() == "ja" else _CM_NOTE_MD_ZH)
 
 
 _CM_NUM_COLS = ("fee", "ad", "orders", "matched_orders",
@@ -839,7 +859,7 @@ with tab_owner:
                       "fee", "ad", "cm", "cm_rate",
                       "fee_match", "payout_rate", "n_shop")
         html_table(_disp(g, owner_cols, mom_prev=_prev_owner, dim="owner"))
-        st.caption(_CM_NOTE)
+        _cm_note(key="owner")
         st.altair_chart(_hbar(g, "owner"), use_container_width=True)
 
         st.divider()
@@ -1030,7 +1050,7 @@ with tab_shop:
                  "fee_match", "payout_rate", "owner")
     _shop_disp = _disp(g, shop_cols, mom_prev=_prev_shop, dim="shop")
     html_table(_shop_disp)
-    st.caption(_CM_NOTE)
+    _cm_note(key="shop")
     st.download_button(
         "⬇️ CSV ダウンロード" if get_lang() == "ja" else "⬇️ 下载 CSV",
         _shop_disp.to_csv(index=False).encode("utf-8-sig"),
@@ -1112,7 +1132,7 @@ with tab_market:
                 "fee", "ad", "cm", "cm_rate",
                 "fee_match", "payout_rate", "n_shop", "n_sku")
     html_table(_disp(g, mkt_cols))
-    st.caption(_CM_NOTE)
+    _cm_note(key="market")
     st.altair_chart(_hbar(g, "market"), use_container_width=True)
 
     # ── 🚫 担当者なし（上の市場統計・KPI には入っていない分）──
@@ -2249,6 +2269,92 @@ with tab_ads:
         _t_used = float(_adv["used"].fillna(0).sum())
         st.caption((f"合計（CM 計上）: ¥{_t_used:,.0f}" if get_lang() == "ja"
                     else f"合计（计入 CM）: ¥{_t_used:,.0f}"))
+
+    # ── 店舗別 日次明細（Shopee Ads · Boss 2026-09-08 依頼の表形式）──
+    st.divider()
+    _ja_ad = get_lang() == "ja"
+    st.markdown("##### " + ("📅 店舗別 日次消耗明細（Shopee Ads · 現地通貨）"
+                            if _ja_ad else
+                            "📅 店铺日级消耗明细（Shopee Ads · 本币）"))
+    _ads_shops, _ = _query(
+        "SELECT trim(m.nst_shop) AS shop, sum(a.expense) AS exp "
+        "FROM shopee.ads_daily a "
+        "JOIN shopee.v_nst_shop_map m ON m.shop_key = a.country "
+        "WHERE to_char(a.perf_date, 'YYYY-MM') = ? "
+        "GROUP BY 1 HAVING sum(coalesce(a.expense, 0)) > 0 "
+        "ORDER BY 2 DESC", (ym,))
+    if _ads_shops is None or _ads_shops.empty:
+        st.info(("この月の Ads 日次データがありません" if _ja_ad
+                 else "该月无 Ads 日级数据"))
+    else:
+        _sel_ad_shop = st.selectbox(
+            _col("shop"), _ads_shops["shop"].tolist(), key=f"ads_shop_{ym}")
+        _adl, _ = _query(
+            "SELECT a.perf_date, a.expense, a.clicks, a.impression, "
+            "coalesce(a.direct_order, 0) + coalesce(a.broad_order, 0) AS ad_orders, "
+            "coalesce(a.direct_gmv, 0) + coalesce(a.broad_gmv, 0) AS ad_gmv "
+            "FROM shopee.ads_daily a "
+            "JOIN shopee.v_nst_shop_map m ON m.shop_key = a.country "
+            "WHERE trim(m.nst_shop) = ? AND to_char(a.perf_date, 'YYYY-MM') = ? "
+            "ORDER BY a.perf_date DESC", (_sel_ad_shop, ym))
+        if _adl is None or _adl.empty:
+            st.info(t("この条件のデータがありません"))
+        else:
+            for _c in ("expense", "clicks", "impression", "ad_orders", "ad_gmv"):
+                _adl[_c] = pd.to_numeric(_adl[_c], errors="coerce").fillna(0).astype(float)
+            _adl["ctr"] = (_adl["clicks"]
+                           / _adl["impression"].where(_adl["impression"] != 0)).fillna(0) * 100
+            _adl["roas"] = (_adl["ad_gmv"]
+                            / _adl["expense"].where(_adl["expense"] != 0)).fillna(0)
+            # KPI 行（月合計）
+            _te, _tc, _ti = (_adl["expense"].sum(), _adl["clicks"].sum(),
+                             _adl["impression"].sum())
+            _to, _tg = _adl["ad_orders"].sum(), _adl["ad_gmv"].sum()
+            _k1, _k2, _k3, _k4, _k5, _k6 = st.columns(6)
+            _k1.metric("消耗 計" if _ja_ad else "消耗 合计", f"{_te:,.2f}")
+            _k2.metric("クリック" if _ja_ad else "点击", f"{_tc:,.0f}")
+            _k3.metric("表示" if _ja_ad else "曝光", f"{_ti:,.0f}")
+            _k4.metric("広告注文" if _ja_ad else "广告订单", f"{_to:,.0f}")
+            _k5.metric("広告GMV", f"{_tg:,.0f}")
+            _k6.metric("ROAS", f"{(_tg / _te):,.2f}" if _te else "—")
+            _ADL_COLS = (("日期", "消耗", "点击", "曝光", "CTR", "广告订单",
+                          "广告GMV", "ROAS") if not _ja_ad else
+                         ("日付", "消耗", "クリック", "表示", "CTR", "広告注文",
+                          "広告GMV", "ROAS"))
+            _adt2 = pd.DataFrame({
+                _ADL_COLS[0]: _adl["perf_date"].astype(str),
+                _ADL_COLS[1]: _adl["expense"].map(lambda v: f"{v:,.2f}"),
+                _ADL_COLS[2]: _adl["clicks"].map(lambda v: f"{v:,.0f}"),
+                _ADL_COLS[3]: _adl["impression"].map(lambda v: f"{v:,.0f}"),
+                _ADL_COLS[4]: _adl["ctr"].map(lambda v: f"{v:.2f}%"),
+                _ADL_COLS[5]: _adl["ad_orders"].map(lambda v: f"{v:,.0f}"),
+                _ADL_COLS[6]: _adl["ad_gmv"].map(lambda v: f"{v:,.0f}"),
+                _ADL_COLS[7]: _adl["roas"].map(lambda v: f"{v:,.2f}"),
+            })
+            html_table(_adt2)
+            # 日次消耗の推移（棒グラフ）
+            _adc = _adl.copy()
+            _adc["perf_date"] = pd.to_datetime(_adc["perf_date"])
+            st.altair_chart(
+                alt.Chart(_adc).mark_bar(color="#4F46E5").encode(
+                    x=alt.X("perf_date:T", title=None,
+                            axis=alt.Axis(format="%-d日", labelAngle=0)),
+                    y=alt.Y("expense:Q",
+                            title="消耗" if _ja_ad else "消耗"),
+                    tooltip=[
+                        alt.Tooltip("perf_date:T", title=_ADL_COLS[0],
+                                    format="%Y-%m-%d"),
+                        alt.Tooltip("expense:Q", title=_ADL_COLS[1],
+                                    format=",.2f"),
+                        alt.Tooltip("clicks:Q", title=_ADL_COLS[2],
+                                    format=",.0f"),
+                        alt.Tooltip("impression:Q", title=_ADL_COLS[3],
+                                    format=",.0f"),
+                    ],
+                ).properties(height=220)
+                .configure_axis(labelFontSize=_CHART_LABEL_FS,
+                                titleFontSize=_CHART_TITLE_FS),
+                use_container_width=True)
 
     st.divider()
     # ============================================================
