@@ -793,13 +793,15 @@ with tab_day:
         rate = (diff / prev * 100) if prev else 0.0
         return f"{diff:+,.0f} ({rate:+.1f}%)"
 
-    pq, pr, pg, pm, pa, pc = st.columns(6)
+    # ⚠️ 列変数に `pa` を使うな — shared.price_alert の import 別名を遮蔽して
+    #    価格預警タブが落ちる（2026-09-08 実際に発生）
+    pq, pr, pg, pm, p_ad, p_cm = st.columns(6)
     pq.metric(_col("qty"), f"{int(_last['qty']):,}", _delta("qty"))
     pr.metric(_col("revenue"), f"¥{_last['revenue']:,.0f}", _delta("revenue"))
     pg.metric(_col("gross_profit"), f"¥{_last['gross_profit']:,.0f}", _delta("gross_profit"))
     pm.metric(_col("gross_margin"), f"{_last['gross_margin']:.2f}%", _delta("gross_margin", pct=True))
-    pa.metric(_col("ad"), f"¥{_last['ad']:,.0f}", _delta("ad"))
-    pc.metric(_col("cm_est"), f"¥{_last['cm_est']:,.0f}", _delta("cm_est"))
+    p_ad.metric(_col("ad"), f"¥{_last['ad']:,.0f}", _delta("ad"))
+    p_cm.metric(_col("cm_est"), f"¥{_last['cm_est']:,.0f}", _delta("cm_est"))
 
     # x 軸 = 日付。月選択済みなので "N日" 形式で簡潔表示（chart 用に datetime 化）
     chart_src = daily.copy()
