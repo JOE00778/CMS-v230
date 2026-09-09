@@ -6,6 +6,8 @@ pandas>=2.2
 plotly>=5.20
 openpyxl>=3.1
 requests>=2.31
+# Page 42 ECMS 面单合集拆分 · PDF 文字提取、固定区域渲染和原页复制
+PyMuPDF>=1.24
 # T-309 Shopee 上架 page 依赖（pipeline import 自 ~/CC/shopee-listing/scripts/）
 pyyaml>=6.0
 python-calamine>=0.2

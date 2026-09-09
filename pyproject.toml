@@ -10,6 +10,7 @@ dependencies = [
     "plotly>=5.20",
     "google-genai>=0.3",
     "requests>=2.31",
+    "PyMuPDF>=1.24",
 ]
 
 [project.optional-dependencies]
