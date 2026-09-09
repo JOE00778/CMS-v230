@@ -32,7 +32,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.auth import is_admin, require_admin
-from shared.db import get_readonly_connection, DATA_DIR
+from shared.db import get_readonly_connection, get_connection, DATA_DIR
 from shared.i18n import get_lang, lang_selector, t
 from shared.i18n_columns import localize_df
 from shared.n8n_client import (
@@ -131,8 +131,8 @@ def _df_to_clean_csv_path(df: pd.DataFrame) -> Path:
 # --------------------------------------------------------------------------- #
 # 3 Tab
 # --------------------------------------------------------------------------- #
-tab_auto, tab_refs, tab_history = st.tabs(
-    ["🤖 全自动管线", "🎨 参考图库", "📜 历史运行"]
+tab_auto, tab_review, tab_refs, tab_history = st.tabs(
+    ["🤖 全自动管线", "✅ 待确认", "🎨 参考图库", "📜 历史运行"]
 )
 
 
@@ -151,7 +151,7 @@ with tab_auto:
     with col_left:
         market = st.selectbox(
             "🌏 Shopee 站点",
-            ["TW", "SG", "MY", "PH", "TH", "VN", "ID"],
+            ["PH", "MY", "SG", "TH", "VN", "TW", "BR"],  # 实际 20 店 = 7 国，无 ID 有 BR
             help="N8N 用对应市场的 Shopee Partner API 鉴权",
             key="auto_market",
         )
@@ -249,6 +249,182 @@ with tab_auto:
             time.sleep(1.5)
         else:
             placeholder.info("仍在处理中 — 切到「📜 历史运行」Tab 或刷新页面继续观察")
+
+
+# ============================================================
+# Tab 2 · ✅ 待确认（运营确认队列 · 2026-09-09）
+# ============================================================
+# 数据来自 shopee.listing_draft / listing_draft_sku（workflow-automation/shopee-listing/scripts/run_pipeline.py 写入）。
+# 这里只做「看 · 改 · 批准/拒绝」，不发布。发布器另写，只吃 status='approved'。
+# 表不存在时给提示而不是报错（本机 SQLite 开发态没有这两张表）。
+_DRAFT_T = "shopee.listing_draft"
+_DRAFT_SKU_T = "shopee.listing_draft_sku"
+_MARKETS_ORDER = ["PH", "MY", "SG", "TH", "VN", "TW", "BR"]
+
+
+def _draft_counts(c) -> dict:
+    rows = c.execute(f"SELECT status, COUNT(*) AS n FROM {_DRAFT_T} GROUP BY status").fetchall()
+    return {r["status"]: int(r["n"]) for r in rows}
+
+
+def _draft_list(c, status: str | None, limit: int = 200) -> list[dict]:
+    if status:
+        rows = c.execute(
+            f"SELECT d.spu_key, d.status, d.title, d.category_id, d.model, d.updated_at, d.approved_by, "
+            f"(SELECT COUNT(*) FROM {_DRAFT_SKU_T} s WHERE s.spu_key=d.spu_key) AS sku_n "
+            f"FROM {_DRAFT_T} d WHERE d.status=? ORDER BY d.updated_at DESC LIMIT {int(limit)}", (status,)).fetchall()
+    else:
+        rows = c.execute(
+            f"SELECT d.spu_key, d.status, d.title, d.category_id, d.model, d.updated_at, d.approved_by, "
+            f"(SELECT COUNT(*) FROM {_DRAFT_SKU_T} s WHERE s.spu_key=d.spu_key) AS sku_n "
+            f"FROM {_DRAFT_T} d ORDER BY d.updated_at DESC LIMIT {int(limit)}").fetchall()
+    return [dict(r) for r in rows]
+
+
+def _draft_get(c, spu_key: str) -> dict | None:
+    r = c.execute(f"SELECT * FROM {_DRAFT_T} WHERE spu_key=?", (spu_key,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    for k in ("key_features_json", "how_to_use_json", "attributes_json", "dropped_json", "publish_json"):
+        try:
+            d[k[:-5]] = json.loads(d[k]) if d.get(k) else None
+        except Exception:
+            d[k[:-5]] = None
+    skus = c.execute(f"SELECT * FROM {_DRAFT_SKU_T} WHERE spu_key=? ORDER BY jan", (spu_key,)).fetchall()
+    d["skus"] = []
+    for s_ in skus:
+        sd = dict(s_)
+        try:
+            sd["prices"] = json.loads(sd.get("prices_json") or "{}")
+        except Exception:
+            sd["prices"] = {}
+        d["skus"].append(sd)
+    return d
+
+
+def _draft_write(sql: str, params: tuple) -> int:
+    """写操作单独拿写连接；失败回滚并把原因抛给页面。"""
+    wc = get_connection()
+    try:
+        cur = wc.execute(sql, params)
+        wc.commit()
+        return cur.rowcount
+    except Exception:
+        try:
+            wc.rollback()
+        except Exception:
+            pass
+        raise
+
+
+with tab_review:
+    st.subheader(t("上架草稿确认：看 → 改 → 批准，批准后才进发布队列"))
+    st.caption(t("草稿由流水线生成（AI 文案 · 38% 原価率 7 国价 · 模板图）。这里不发布；发布器只吃「approved」。"))
+    try:
+        counts = _draft_counts(conn)
+    except Exception as e:  # 表不存在 / 无权限
+        st.info(t("草稿表还没就位：先在元川 PG 跑 workflow-automation/shopee-listing/sql/001_listing_draft.sql，"
+                  "再用 run_pipeline.py 生成草稿。") + f"（{type(e).__name__}）")
+        counts = None
+    if counts is not None:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("待确认 draft", counts.get("draft", 0))
+        c2.metric("已批准 approved", counts.get("approved", 0))
+        c3.metric("已拒绝 rejected", counts.get("rejected", 0))
+        c4.metric("已发布 published", counts.get("published", 0))
+
+        status_pick = st.selectbox("状态", ["draft", "approved", "rejected", "published", "全部"], key="rv_status")
+        drafts = _draft_list(conn, None if status_pick == "全部" else status_pick)
+        if not drafts:
+            st.info(t("这个状态下没有草稿"))
+        else:
+            tbl = pd.DataFrame([{
+                "SPU": d["spu_key"], "状态": d["status"], "标题": (d["title"] or "")[:70],
+                "类目": d["category_id"], "SKU数": d["sku_n"], "模型": d["model"],
+                "更新": (d["updated_at"] or "")[:19], "批准人": d["approved_by"] or "",
+            } for d in drafts])
+            st.dataframe(tbl, use_container_width=True, hide_index=True)
+            st.caption(f"命中 {len(drafts)} 个 SPU")
+
+            sel = st.selectbox("打开一个 SPU", [d["spu_key"] for d in drafts], key="rv_sel")
+            d = _draft_get(conn, sel) if sel else None
+            if d:
+                if str(d.get("title", "")).startswith("<MOCK>"):
+                    st.warning(t("这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能批准上架。"))
+                left, right = st.columns([3, 2])
+                with left:
+                    new_title = st.text_input("标题（80–120 字符）", value=d.get("title") or "", key=f"rv_title_{sel}")
+                    st.caption(f"{len(new_title)} 字符")
+                    new_desc = st.text_area("描述", value=d.get("description") or "", height=320, key=f"rv_desc_{sel}")
+                    st.caption(f"{len(new_desc)} 字符 · Shopee 上限 3000")
+                    new_cat = st.text_input("Shopee 类目 ID", value=d.get("category_id") or "", key=f"rv_cat_{sel}")
+                with right:
+                    st.markdown(f"**品牌** {d.get('brand') or '-'} · **Hook** {d.get('hook') or '-'} · **模型** {d.get('model') or '-'}")
+                    if d.get("key_features"):
+                        st.markdown("**卖点**\n" + "\n".join(f"- {x}" for x in d["key_features"]))
+                    if d.get("dropped"):
+                        st.warning("输入里被剔掉的 JAN：\n" + "\n".join(f"- {x}" for x in d["dropped"]))
+                    if d.get("attributes"):
+                        with st.expander("Shopee 属性", expanded=False):
+                            st.json(d["attributes"])
+                    spu_img = d.get("spu_image_path")
+                    if spu_img and Path(spu_img).exists():
+                        st.image(spu_img, caption="SPU 拼图", use_container_width=True)
+                    elif spu_img:
+                        st.caption(f"SPU 拼图路径（此机不可见）：`{spu_img}`")
+                    else:
+                        st.caption("无 SPU 拼图")
+
+                st.markdown("**SKU 与 7 国价格**（原価率 38% · 汇率取生成当时 NST 值）")
+                rows = []
+                for s_ in d["skus"]:
+                    row = {"JAN": s_["jan"], "日文名": (s_.get("name_jp") or "")[:40], "品牌": s_.get("maker"),
+                           "原価¥": s_.get("cost_jpy"), "毛重g": s_.get("weight_g")}
+                    for mk in _MARKETS_ORDER:
+                        p = (s_.get("prices") or {}).get(mk) or {}
+                        row[f"{mk} {p.get('currency','')}".strip()] = p.get("price") or (p.get("error") and "⚠")
+                    row["图"] = "✅" if s_.get("image_path") and not s_.get("image_error") else (s_.get("image_error") or "-")[:30]
+                    rows.append(row)
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                user_email = st.session_state.get("user_email", "admin")
+                note = st.text_input("备注（拒绝原因 / 修改说明）", key=f"rv_note_{sel}")
+                b1, b2, b3 = st.columns(3)
+                is_mock = str(d.get("title", "")).startswith("<MOCK>") or new_title.startswith("<MOCK>")
+                if b1.button("💾 保存修改（回到 draft 待再确认）", key=f"rv_save_{sel}", use_container_width=True):
+                    try:
+                        n = _draft_write(
+                            f"UPDATE {_DRAFT_T} SET title=?, description=?, category_id=?, review_note=?, "
+                            f"status='draft', updated_at=? WHERE spu_key=?",
+                            (new_title, new_desc, new_cat or None, note or None,
+                             datetime.utcnow().isoformat(timespec="seconds") + "Z", sel))
+                        st.success(f"已保存 {n} 行") if n else st.warning("没有行被更新")
+                    except Exception as e:
+                        st.error(f"保存失败：{e}")
+                if b2.button("✅ 批准（进发布队列）", type="primary", key=f"rv_ok_{sel}",
+                             disabled=is_mock or d.get("status") == "published", use_container_width=True):
+                    try:
+                        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+                        n = _draft_write(
+                            f"UPDATE {_DRAFT_T} SET status='approved', approved_by=?, approved_at=?, "
+                            f"review_note=COALESCE(?, review_note), updated_at=? WHERE spu_key=? AND status<>'published'",
+                            (user_email, now, note or None, now, sel))
+                        st.success(f"已批准 {sel}") if n else st.warning("没有行被更新（可能已发布）")
+                    except Exception as e:
+                        st.error(f"批准失败：{e}")
+                if b3.button("❌ 拒绝", key=f"rv_no_{sel}", disabled=d.get("status") == "published", use_container_width=True):
+                    if not note.strip():
+                        st.warning("拒绝要写原因")
+                    else:
+                        try:
+                            n = _draft_write(
+                                f"UPDATE {_DRAFT_T} SET status='rejected', review_note=?, updated_at=? "
+                                f"WHERE spu_key=? AND status<>'published'",
+                                (note, datetime.utcnow().isoformat(timespec="seconds") + "Z", sel))
+                            st.success(f"已拒绝 {sel}") if n else st.warning("没有行被更新")
+                        except Exception as e:
+                            st.error(f"拒绝失败：{e}")
 
 
 # ============================================================
