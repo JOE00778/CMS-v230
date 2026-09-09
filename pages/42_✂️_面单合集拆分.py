@@ -19,7 +19,7 @@ inject_theme()
 lang_selector()
 
 st.title(t("✂️ 面单合集拆分"))
-st.caption(t("上传一页一张的 ECMS 面单 PDF，按每页 13 位单号拆分并打包下载"))
+st.caption(t("上传一页一张的 ECMS 面单 PDF，按每页平台单号（Shopee 13 位 / Coupang 14 位）拆分并打包下载；ECMS 运单号一并记入结果表"))
 st.info(t("面单只在 CMS 内存中处理，不上传外部服务，也不写入数据库或服务器文件。"))
 
 uploaded = st.file_uploader(

@@ -19,3 +19,7 @@ google-genai>=0.3
 # Page 22 画像検索 · OCR 检测带文字水印图 (~50MB 含 ONNX 模型)
 # 缺失时 page 22 优雅降级为仅 shop 黑名单过滤
 rapidocr-onnxruntime>=1.3
+# 面单拆分の条码読取（ECMS 運単号 → 結果表併記 · 任意依存: 未インストールでも動く）
+# ⚠️ 元川容器は redeploy.bat で rebuild しないと入らない（SSH では build 不可）
+zxing-cpp>=2.2
+pillow>=10
