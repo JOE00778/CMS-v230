@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 import pymupdf as fitz
 
@@ -11,6 +11,7 @@ LABEL_NUMBER_REGION = (0.68, 0.34, 0.99, 0.41)
 TRACKING_RE = re.compile(r"(?<!\d)\d{13}(?!\d)")
 
 Status = Literal["success", "unrecognized", "ambiguous", "duplicate"]
+OcrCallable = Callable[[bytes], tuple[object, object]]
 
 
 class LabelPdfError(ValueError):
@@ -68,7 +69,60 @@ def _text_candidates(page: fitz.Page) -> tuple[str, ...]:
     return find_tracking_candidates(page.get_text("text", clip=_clip_for(page)))
 
 
-def split_label_pdf(pdf_bytes: bytes, *, ocr=True) -> SplitResult:
+def _load_local_ocr() -> OcrCallable | None:
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+
+        return RapidOCR()
+    except Exception:
+        return None
+
+
+def _ocr_candidates(page: fitz.Page, ocr: OcrCallable) -> tuple[str, ...]:
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(4, 4),
+        clip=_clip_for(page),
+        alpha=False,
+    )
+    result, _ = ocr(pix.tobytes("png"))
+    texts = []
+    for entry in result or []:
+        if len(entry) >= 2:
+            texts.append(str(entry[1]))
+    return find_tracking_candidates("\n".join(texts))
+
+
+def _recognize_page(
+    page: fitz.Page,
+    ocr: OcrCallable | Literal[False] | None,
+) -> tuple[Status, str, str, str]:
+    text_candidates = _text_candidates(page)
+    if len(text_candidates) == 1:
+        return "success", text_candidates[0], "text", ""
+
+    engine = _load_local_ocr() if ocr is None else ocr
+    if engine is False or engine is None:
+        status: Status = "ambiguous" if len(text_candidates) > 1 else "unrecognized"
+        reason = (
+            "本地 OCR 不可用"
+            if engine is None
+            else "固定区域未找到唯一的 13 位单号"
+        )
+        return status, "", "", reason
+
+    ocr_candidates = _ocr_candidates(page, engine)
+    if len(ocr_candidates) == 1:
+        return "success", ocr_candidates[0], "ocr", ""
+    if len(ocr_candidates) > 1:
+        return "ambiguous", "", "ocr", "固定区域识别到多个 13 位单号"
+    return "unrecognized", "", "ocr", "固定区域未识别到 13 位单号"
+
+
+def split_label_pdf(
+    pdf_bytes: bytes,
+    *,
+    ocr: OcrCallable | Literal[False] | None = None,
+) -> SplitResult:
     """Read strict tracking numbers from the fixed region of every PDF page."""
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -83,15 +137,14 @@ def split_label_pdf(pdf_bytes: bytes, *, ocr=True) -> SplitResult:
 
         rows = []
         for index, page in enumerate(doc):
-            candidates = _text_candidates(page)
-            number = candidates[0] if len(candidates) == 1 else ""
-            status: Status = "success" if number else "unrecognized"
+            status, number, method, reason = _recognize_page(page, ocr)
             rows.append(
                 PageResult(
                     page_number=index + 1,
                     status=status,
                     tracking_number=number,
-                    recognition_method="text" if number else "",
+                    recognition_method=method,
+                    reason=reason,
                 )
             )
         return SplitResult(doc.page_count, tuple(rows), b"")
