@@ -98,6 +98,11 @@ services:
       COUPANG_VENDOR_ID: ${COUPANG_VENDOR_ID:-}
       # KRW→USD 換算係数。既定 0.00068 は運営 Excel の固定値（実勢レートではない）
       COUPANG_KRW_USD_RATE: ${COUPANG_KRW_USD_RATE:-}
+      # Shopee 上架草稿流水线（page21「✅ 待确认」· 2026-09-09）。run_pipeline.py 在本容器内跑：
+      #   GEMINI_API_KEY 未設定なら --mock-llm しか動かない（<MOCK> 文案は批准不可）。key は deploy/windows/.env に置く。
+      #   IMAGE_PROCESSOR_URL: smikie_image_processor は別 stack（smikie_n8n_net）なので host.docker.internal 経由。
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      IMAGE_PROCESSOR_URL: ${IMAGE_PROCESSOR_URL:-http://host.docker.internal:8788}
       TZ: Asia/Tokyo
     volumes:
       # 代码 bind mount（2026-05-19）: git pull 后立即生效，不需 --build
@@ -109,6 +114,9 @@ services:
       - ../../data_warehouse:/app/data_warehouse:ro
       - ../../tools:/app/tools:ro
       - ../../.streamlit:/app/.streamlit:ro
+      # image-processor の出力（抠图+模板成品 / SPU 拼图）を page21 で表示するための只読 mount（2026-09-09）。
+      # smikie_image_processor は D:/Smikie-Images を /data/whitebg に rw mount している。同じコンテナ内パスで見せる。
+      - ${SMIKIE_IMAGES_DIR:-D:/Smikie-Images}:/data/whitebg:ro
       - ../../assets:/app/assets:ro
       - ../../README.md:/app/README.md:ro
       # PG schema（2026-09-02）: これを外していたせいで git pull しても新テーブルの
