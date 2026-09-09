@@ -3,11 +3,16 @@ from __future__ import annotations
 import csv
 import io
 import zipfile
+from pathlib import Path
 
 import pymupdf as fitz
 import pytest
 
 from shared import ecms_label_splitter as splitter
+
+ROOT = Path(__file__).resolve().parents[1]
+PAGE_PATH = ROOT / "pages" / "42_✂️_面单合集拆分.py"
+I18N_PATH = ROOT / "shared" / "i18n.py"
 
 
 def make_pdf(numbers: list[str | None], *, outside_number: str | None = None) -> bytes:
@@ -118,6 +123,10 @@ def test_missing_local_ocr_is_reported_without_page_content(monkeypatch):
     assert row.reason == "本地 OCR 不可用"
 
 
+def test_local_ocr_dependency_is_available():
+    assert splitter._load_local_ocr() is not None
+
+
 def read_zip(data: bytes) -> zipfile.ZipFile:
     return zipfile.ZipFile(io.BytesIO(data))
 
@@ -180,3 +189,22 @@ def test_ambiguous_page_is_preserved_in_failure_folder():
     assert result.results[0].status == "ambiguous"
     with read_zip(result.zip_bytes) as archive:
         assert "识别失败/第001页.pdf" in archive.namelist()
+
+
+def test_page_exists():
+    assert PAGE_PATH.exists(), "CMS 面单拆分页尚未创建"
+
+
+def test_page_is_registered_in_tools_navigation():
+    nav = I18N_PATH.read_text(encoding="utf-8")
+    assert '("pages/42_✂️_面单合集拆分.py", "✂️ 面单合集拆分")' in nav
+
+
+def test_page_keeps_processing_local_and_in_memory():
+    if not PAGE_PATH.exists():
+        pytest.fail("CMS 面单拆分页尚未创建")
+    source = PAGE_PATH.read_text(encoding="utf-8")
+    assert "split_label_pdf(upload_bytes)" in source
+    assert "st.download_button" in source
+    assert "requests." not in source
+    assert ".write_bytes(" not in source
