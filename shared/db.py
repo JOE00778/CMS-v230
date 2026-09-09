@@ -191,7 +191,12 @@ class _AutoFinishCursor:
     def execute(self, sql, params=None):
         finish = (self._conn_raw.get_transaction_status() == _TXN_IDLE
                   and _PostgresAdapter._is_readonly_sql(sql))
-        self._cur.execute(sql, params or ())
+        try:
+            self._cur.execute(sql, params or ())
+        except Exception:
+            if finish:
+                self._conn_raw.rollback()
+            raise
         if finish:
             self._conn_raw.commit()
         return self._cur
@@ -375,7 +380,12 @@ class _PostgresAdapter:
         finish = (self._raw.get_transaction_status() == _TXN_IDLE
                   and self._is_readonly_sql(sql))
         cur = self._raw.cursor()
-        cur.execute(self._adapt_sql(sql), params or ())
+        try:
+            cur.execute(self._adapt_sql(sql), params or ())
+        except Exception:
+            if finish:
+                self._raw.rollback()
+            raise
         if finish:
             # client-side cursor は結果を取得済みなので commit 後も fetchall 可能
             self._raw.commit()

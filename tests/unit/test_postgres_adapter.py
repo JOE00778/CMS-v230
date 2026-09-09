@@ -142,7 +142,7 @@ def test_all_known_ingest_tables_register():
 # ============================================================
 from shared.db import _AutoFinishCursor  # noqa: E402
 
-_TXN_IDLE, _TXN_INTRANS = 0, 2  # psycopg2: PQTRANS_IDLE / PQTRANS_INTRANS
+_TXN_IDLE, _TXN_INTRANS, _TXN_INERROR = 0, 2, 3
 
 
 class _FakeCursor:
@@ -187,6 +187,18 @@ class _FakeRaw:
         self.status = _TXN_IDLE
 
 
+class _FailingCursor(_FakeCursor):
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        self._raw.status = _TXN_INERROR
+        raise RuntimeError("relation does not exist")
+
+
+class _FailingRaw(_FakeRaw):
+    def cursor(self, *a, **k):
+        return _FailingCursor(self)
+
+
 def _adapter(status=_TXN_IDLE):
     raw = _FakeRaw(status)
     return _PostgresAdapter(raw), raw
@@ -196,6 +208,28 @@ def test_readonly_select_autocommits_and_leaves_no_txn():
     conn, raw = _adapter()
     conn.execute("SELECT jan FROM nst.item_master_raw WHERE jan = ?", ("4901",))
     assert raw.commits == 1 and raw.status == _TXN_IDLE
+
+
+def test_failed_standalone_readonly_select_rolls_back_connection():
+    """捕获 UndefinedTable 后，同一连接仍须能执行后续历史查询。"""
+    raw = _FailingRaw()
+    conn = _PostgresAdapter(raw)
+
+    with pytest.raises(RuntimeError, match="relation does not exist"):
+        conn.execute("SELECT status, COUNT(*) FROM shopee.listing_draft GROUP BY status")
+
+    assert raw.rollbacks == 1 and raw.status == _TXN_IDLE
+
+
+def test_failed_read_inside_existing_write_txn_does_not_rollback_caller_work():
+    """调用者已开启的写事务不能被适配器擅自回滚。"""
+    raw = _FailingRaw(status=_TXN_INTRANS)
+    conn = _PostgresAdapter(raw)
+
+    with pytest.raises(RuntimeError):
+        conn.execute("SELECT * FROM t")
+
+    assert raw.rollbacks == 0
 
 
 def test_write_does_not_autocommit():
@@ -263,6 +297,16 @@ def test_pandas_cursor_path_autocommits_readonly():
     assert raw.commits == 1 and raw.status == _TXN_IDLE
     assert cur.fetchall() == []          # 透過委譲
     cur.close()
+
+
+def test_pandas_cursor_failed_standalone_read_rolls_back_connection():
+    raw = _FailingRaw()
+    conn = _PostgresAdapter(raw)
+
+    with pytest.raises(RuntimeError, match="relation does not exist"):
+        conn.cursor().execute("SELECT * FROM shopee.listing_draft")
+
+    assert raw.rollbacks == 1 and raw.status == _TXN_IDLE
 
 
 def test_pandas_cursor_path_write_untouched():
