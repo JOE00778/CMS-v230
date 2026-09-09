@@ -74,6 +74,8 @@ conn = get_readonly_connection()
 # 三语 i18n 兜底
 # --------------------------------------------------------------------------- #
 _PAGE_STRINGS_EN: Dict[str, str] = {
+    "🤖 全自动管线": "🤖 Auto pipeline", "✅ 待确认": "✅ Review queue", "🎨 参考图库": "🎨 Reference images", "📜 历史运行": "📜 Run history",
+    "草稿待确认": "Pending review", "已批准": "Approved", "已拒绝": "Rejected", "已发布": "Published", "状态": "Status", "全部": "All",
     "Shopee 上架": "Shopee Listing",
     "全自动管线 / 手工模式 / 参考图库 / 历史运行 一站式":
         "Auto pipeline / Manual / Reference library / History — all in one",
@@ -132,7 +134,7 @@ def _df_to_clean_csv_path(df: pd.DataFrame) -> Path:
 # 3 Tab
 # --------------------------------------------------------------------------- #
 tab_auto, tab_review, tab_refs, tab_history = st.tabs(
-    ["🤖 全自动管线", "✅ 待确认", "🎨 参考图库", "📜 历史运行"]
+    [tt("🤖 全自动管线"), tt("✅ 待确认"), tt("🎨 参考图库"), tt("📜 历史运行")]
 )
 
 
@@ -260,6 +262,14 @@ with tab_auto:
 _DRAFT_T = "shopee.listing_draft"
 _DRAFT_SKU_T = "shopee.listing_draft_sku"
 _MARKETS_ORDER = ["PH", "MY", "SG", "TH", "VN", "TW", "BR"]
+# 状态值在库里固定为英文（发布器/流水线按它判断），**显示层**按 UI 语言翻译（Boss 2026-09-09「匹配为中文和日文UI」）。
+# 中文 key 进 shared/i18n.py 的 TRANSLATIONS_JA；英文在本页 _PAGE_STRINGS_EN。
+_STATUS_LABELS = {"draft": "草稿待确认", "approved": "已批准", "rejected": "已拒绝", "published": "已发布"}
+_STATUS_ALL = "__all__"
+
+
+def _st_label(v: str) -> str:
+    return tt("全部") if v == _STATUS_ALL else tt(_STATUS_LABELS.get(v, v))
 
 
 def _draft_counts(c) -> dict:
@@ -319,90 +329,90 @@ def _draft_write(sql: str, params: tuple) -> int:
 
 
 with tab_review:
-    st.subheader(t("上架草稿确认：看 → 改 → 批准，批准后才进发布队列"))
-    st.caption(t("草稿由流水线生成（AI 文案 · 38% 原価率 7 国价 · 模板图）。这里不发布；发布器只吃「approved」。"))
+    st.subheader(tt("上架草稿确认：看 → 改 → 批准，批准后才进发布队列"))
+    st.caption(tt("草稿由流水线生成（AI 文案 · 38% 原価率 7 国价 · 模板图）。这里不发布；发布器只处理「已批准」。"))
     try:
         counts = _draft_counts(conn)
     except Exception as e:  # 表不存在 / 无权限
-        st.info(t("草稿表还没就位：先在元川 PG 跑 workflow-automation/shopee-listing/sql/001_listing_draft.sql，"
-                  "再用 run_pipeline.py 生成草稿。") + f"（{type(e).__name__}）")
+        st.info(tt("草稿表还没就位：先在元川 PG 跑 workflow-automation/shopee-listing/sql/001_listing_draft.sql，再用 run_pipeline.py 生成草稿。") + f"（{type(e).__name__}）")
         counts = None
     if counts is not None:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("待确认 draft", counts.get("draft", 0))
-        c2.metric("已批准 approved", counts.get("approved", 0))
-        c3.metric("已拒绝 rejected", counts.get("rejected", 0))
-        c4.metric("已发布 published", counts.get("published", 0))
+        c1.metric(_st_label("draft"), counts.get("draft", 0))
+        c2.metric(_st_label("approved"), counts.get("approved", 0))
+        c3.metric(_st_label("rejected"), counts.get("rejected", 0))
+        c4.metric(_st_label("published"), counts.get("published", 0))
 
-        status_pick = st.selectbox("状态", ["draft", "approved", "rejected", "published", "全部"], key="rv_status")
-        drafts = _draft_list(conn, None if status_pick == "全部" else status_pick)
+        status_pick = st.selectbox(tt("状态"), ["draft", "approved", "rejected", "published", _STATUS_ALL],
+                                   format_func=_st_label, key="rv_status")
+        drafts = _draft_list(conn, None if status_pick == _STATUS_ALL else status_pick)
         if not drafts:
-            st.info(t("这个状态下没有草稿"))
+            st.info(tt("这个状态下没有草稿"))
         else:
             tbl = pd.DataFrame([{
-                "SPU": d["spu_key"], "状态": d["status"], "标题": (d["title"] or "")[:70],
-                "类目": d["category_id"], "SKU数": d["sku_n"], "模型": d["model"],
-                "更新": (d["updated_at"] or "")[:19], "批准人": d["approved_by"] or "",
+                "spu_key": d["spu_key"], "status": _st_label(d["status"]), "title": (d["title"] or "")[:70],
+                "category_id": d["category_id"], "sku_count": d["sku_n"], "model": d["model"],
+                "updated_at": (d["updated_at"] or "")[:19], "approved_by": d["approved_by"] or "",
             } for d in drafts])
-            st.dataframe(tbl, use_container_width=True, hide_index=True)
-            st.caption(f"命中 {len(drafts)} 个 SPU")
+            st.dataframe(localize_df(tbl), use_container_width=True, hide_index=True)
+            st.caption(tt("命中 {n} 个 SPU").format(n=len(drafts)))
 
-            sel = st.selectbox("打开一个 SPU", [d["spu_key"] for d in drafts], key="rv_sel")
+            sel = st.selectbox(tt("打开一个 SPU"), [d["spu_key"] for d in drafts], key="rv_sel")
             d = _draft_get(conn, sel) if sel else None
             if d:
                 if str(d.get("title", "")).startswith("<MOCK>"):
-                    st.warning(t("这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能批准上架。"))
+                    st.warning(tt("这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能批准上架。"))
                 left, right = st.columns([3, 2])
                 with left:
-                    new_title = st.text_input("标题（80–120 字符）", value=d.get("title") or "", key=f"rv_title_{sel}")
-                    st.caption(f"{len(new_title)} 字符")
-                    new_desc = st.text_area("描述", value=d.get("description") or "", height=320, key=f"rv_desc_{sel}")
-                    st.caption(f"{len(new_desc)} 字符 · Shopee 上限 3000")
-                    new_cat = st.text_input("Shopee 类目 ID", value=d.get("category_id") or "", key=f"rv_cat_{sel}")
+                    new_title = st.text_input(tt("标题（80–120 字符）"), value=d.get("title") or "", key=f"rv_title_{sel}")
+                    st.caption(tt("{n} 字符").format(n=len(new_title)))
+                    new_desc = st.text_area(tt("描述"), value=d.get("description") or "", height=320, key=f"rv_desc_{sel}")
+                    st.caption(tt("{n} 字符 · Shopee 上限 3000").format(n=len(new_desc)))
+                    new_cat = st.text_input(tt("Shopee 类目 ID"), value=d.get("category_id") or "", key=f"rv_cat_{sel}")
                 with right:
-                    st.markdown(f"**品牌** {d.get('brand') or '-'} · **Hook** {d.get('hook') or '-'} · **模型** {d.get('model') or '-'}")
+                    st.markdown(f"**{tt('品牌')}** {d.get('brand') or '-'} · **Hook** {d.get('hook') or '-'} · **{tt('模型')}** {d.get('model') or '-'}")
                     if d.get("key_features"):
-                        st.markdown("**卖点**\n" + "\n".join(f"- {x}" for x in d["key_features"]))
+                        st.markdown(f"**{tt('卖点')}**\n" + "\n".join(f"- {x}" for x in d["key_features"]))
                     if d.get("dropped"):
-                        st.warning("输入里被剔掉的 JAN：\n" + "\n".join(f"- {x}" for x in d["dropped"]))
+                        st.warning(tt("输入里被剔掉的 JAN：") + "\n" + "\n".join(f"- {x}" for x in d["dropped"]))
                     if d.get("attributes"):
-                        with st.expander("Shopee 属性", expanded=False):
+                        with st.expander(tt("Shopee 属性"), expanded=False):
                             st.json(d["attributes"])
                     spu_img = d.get("spu_image_path")
                     if spu_img and Path(spu_img).exists():
-                        st.image(spu_img, caption="SPU 拼图", use_container_width=True)
+                        st.image(spu_img, caption=tt("SPU 拼图"), use_container_width=True)
                     elif spu_img:
-                        st.caption(f"SPU 拼图路径（此机不可见）：`{spu_img}`")
+                        st.caption(tt("SPU 拼图路径（此机不可见）：") + f"`{spu_img}`")
                     else:
-                        st.caption("无 SPU 拼图")
+                        st.caption(tt("无 SPU 拼图"))
 
-                st.markdown("**SKU 与 7 国价格**（原価率 38% · 汇率取生成当时 NST 值）")
+                st.markdown(tt("**SKU 与 7 国价格**（原価率 38% · 汇率取生成当时 NST 值）"))
                 rows = []
                 for s_ in d["skus"]:
-                    row = {"JAN": s_["jan"], "日文名": (s_.get("name_jp") or "")[:40], "品牌": s_.get("maker"),
-                           "原価¥": s_.get("cost_jpy"), "毛重g": s_.get("weight_g")}
+                    row = {"jan": s_["jan"], "name_jp": (s_.get("name_jp") or "")[:40], "maker": s_.get("maker"),
+                           "cost_jpy": s_.get("cost_jpy"), "weight_g": s_.get("weight_g")}
                     for mk in _MARKETS_ORDER:
                         p = (s_.get("prices") or {}).get(mk) or {}
                         row[f"{mk} {p.get('currency','')}".strip()] = p.get("price") or (p.get("error") and "⚠")
-                    row["图"] = "✅" if s_.get("image_path") and not s_.get("image_error") else (s_.get("image_error") or "-")[:30]
+                    row["image"] = "✅" if s_.get("image_path") and not s_.get("image_error") else (s_.get("image_error") or "-")[:30]
                     rows.append(row)
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(localize_df(pd.DataFrame(rows)), use_container_width=True, hide_index=True)
 
                 user_email = st.session_state.get("user_email", "admin")
-                note = st.text_input("备注（拒绝原因 / 修改说明）", key=f"rv_note_{sel}")
+                note = st.text_input(tt("备注（拒绝原因 / 修改说明）"), key=f"rv_note_{sel}")
                 b1, b2, b3 = st.columns(3)
                 is_mock = str(d.get("title", "")).startswith("<MOCK>") or new_title.startswith("<MOCK>")
-                if b1.button("💾 保存修改（回到 draft 待再确认）", key=f"rv_save_{sel}", use_container_width=True):
+                if b1.button(tt("💾 保存修改（回到待确认，需再次确认）"), key=f"rv_save_{sel}", use_container_width=True):
                     try:
                         n = _draft_write(
                             f"UPDATE {_DRAFT_T} SET title=?, description=?, category_id=?, review_note=?, "
                             f"status='draft', updated_at=? WHERE spu_key=?",
                             (new_title, new_desc, new_cat or None, note or None,
                              datetime.utcnow().isoformat(timespec="seconds") + "Z", sel))
-                        st.success(f"已保存 {n} 行") if n else st.warning("没有行被更新")
+                        st.success(tt("已保存 {n} 行").format(n=n)) if n else st.warning(tt("没有行被更新"))
                     except Exception as e:
-                        st.error(f"保存失败：{e}")
-                if b2.button("✅ 批准（进发布队列）", type="primary", key=f"rv_ok_{sel}",
+                        st.error(tt("保存失败：") + str(e))
+                if b2.button(tt("✅ 批准（进发布队列）"), type="primary", key=f"rv_ok_{sel}",
                              disabled=is_mock or d.get("status") == "published", use_container_width=True):
                     try:
                         now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -410,21 +420,21 @@ with tab_review:
                             f"UPDATE {_DRAFT_T} SET status='approved', approved_by=?, approved_at=?, "
                             f"review_note=COALESCE(?, review_note), updated_at=? WHERE spu_key=? AND status<>'published'",
                             (user_email, now, note or None, now, sel))
-                        st.success(f"已批准 {sel}") if n else st.warning("没有行被更新（可能已发布）")
+                        st.success(tt("已批准 {k}").format(k=sel)) if n else st.warning(tt("没有行被更新（可能已发布）"))
                     except Exception as e:
-                        st.error(f"批准失败：{e}")
-                if b3.button("❌ 拒绝", key=f"rv_no_{sel}", disabled=d.get("status") == "published", use_container_width=True):
+                        st.error(tt("批准失败：") + str(e))
+                if b3.button(tt("❌ 拒绝"), key=f"rv_no_{sel}", disabled=d.get("status") == "published", use_container_width=True):
                     if not note.strip():
-                        st.warning("拒绝要写原因")
+                        st.warning(tt("拒绝要写原因"))
                     else:
                         try:
                             n = _draft_write(
                                 f"UPDATE {_DRAFT_T} SET status='rejected', review_note=?, updated_at=? "
                                 f"WHERE spu_key=? AND status<>'published'",
                                 (note, datetime.utcnow().isoformat(timespec="seconds") + "Z", sel))
-                            st.success(f"已拒绝 {sel}") if n else st.warning("没有行被更新")
+                            st.success(tt("已拒绝 {k}").format(k=sel)) if n else st.warning(tt("没有行被更新"))
                         except Exception as e:
-                            st.error(f"拒绝失败：{e}")
+                            st.error(tt("拒绝失败：") + str(e))
 
 
 # ============================================================

@@ -216,6 +216,20 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
     "order_date":       {"ja": "注文日",        "zh": "订单日期",   "en": "Order Date"},
     "order_id":         {"ja": "注文ID",        "zh": "订单 ID",    "en": "Order ID"},
     "memo":             {"ja": "メモ",          "zh": "备注",       "en": "Memo"},
+
+    # ── page21 ✅ 待确认（Shopee 上架草稿）2026-09-09 ──
+    "spu_key":          {"ja": "SPU",           "zh": "SPU",        "en": "SPU"},
+    "status":           {"ja": "状態",          "zh": "状态",       "en": "Status"},
+    "title":            {"ja": "タイトル",      "zh": "标题",       "en": "Title"},
+    "category_id":      {"ja": "カテゴリID",    "zh": "类目",       "en": "Category"},
+    "sku_count":        {"ja": "SKU数",         "zh": "SKU数",      "en": "SKUs"},
+    "model":            {"ja": "モデル",        "zh": "模型",       "en": "Model"},
+    "updated_at":       {"ja": "更新",          "zh": "更新",       "en": "Updated"},
+    "approved_by":      {"ja": "承認者",        "zh": "批准人",     "en": "Approved by"},
+    "name_jp":          {"ja": "日本語名",      "zh": "日文名",     "en": "JP Name"},
+    "cost_jpy":         {"ja": "原価¥",         "zh": "原価¥",      "en": "Cost ¥"},
+    "weight_g":         {"ja": "毛重g",         "zh": "毛重g",      "en": "Gross g"},
+    "image":            {"ja": "画像",          "zh": "图",         "en": "Image"},
 }
 
 
