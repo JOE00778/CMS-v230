@@ -1,7 +1,10 @@
 """Split one-label-per-page ECMS PDFs without storing customer data."""
 from __future__ import annotations
 
+import csv
+import io
 import re
+import zipfile
 from dataclasses import dataclass
 from typing import Callable, Literal
 
@@ -12,6 +15,14 @@ TRACKING_RE = re.compile(r"(?<!\d)\d{13}(?!\d)")
 
 Status = Literal["success", "unrecognized", "ambiguous", "duplicate"]
 OcrCallable = Callable[[bytes], tuple[object, object]]
+MANIFEST_FIELDS = (
+    "page_number",
+    "status",
+    "tracking_number",
+    "recognition_method",
+    "output_path",
+    "reason",
+)
 
 
 class LabelPdfError(ValueError):
@@ -118,6 +129,24 @@ def _recognize_page(
     return "unrecognized", "", "ocr", "固定区域未识别到 13 位单号"
 
 
+def _single_page_pdf(source: fitz.Document, page_index: int) -> bytes:
+    output = fitz.open()
+    try:
+        output.insert_pdf(source, from_page=page_index, to_page=page_index)
+        return output.tobytes(garbage=4, deflate=True)
+    finally:
+        output.close()
+
+
+def _manifest_bytes(results: list[PageResult]) -> bytes:
+    text = io.StringIO(newline="")
+    writer = csv.DictWriter(text, fieldnames=MANIFEST_FIELDS)
+    writer.writeheader()
+    for item in results:
+        writer.writerow({field: getattr(item, field) for field in MANIFEST_FIELDS})
+    return text.getvalue().encode("utf-8-sig")
+
+
 def split_label_pdf(
     pdf_bytes: bytes,
     *,
@@ -135,18 +164,56 @@ def split_label_pdf(
         if doc.page_count == 0:
             raise LabelPdfError("PDF 没有页面")
 
-        rows = []
+        seen: set[str] = set()
+        rows: list[PageResult] = []
+        page_files: list[tuple[str, bytes]] = []
         for index, page in enumerate(doc):
-            status, number, method, reason = _recognize_page(page, ocr)
-            rows.append(
-                PageResult(
-                    page_number=index + 1,
-                    status=status,
-                    tracking_number=number,
-                    recognition_method=method,
-                    reason=reason,
+            page_number = index + 1
+            try:
+                status, number, method, reason = _recognize_page(page, ocr)
+            except Exception:
+                status, number, method, reason = (
+                    "unrecognized",
+                    "",
+                    "",
+                    "该页处理失败",
                 )
+
+            if status == "success" and number in seen:
+                status = "duplicate"
+                reason = "单号与前面的成功页面重复"
+
+            if status == "success":
+                seen.add(number)
+                output_path = f"{number}.pdf"
+            elif status == "duplicate":
+                output_path = f"识别失败/重复单号-第{page_number:03d}页.pdf"
+            else:
+                output_path = f"识别失败/第{page_number:03d}页.pdf"
+
+            row = PageResult(
+                page_number=page_number,
+                status=status,
+                tracking_number=number,
+                recognition_method=method,
+                output_path=output_path,
+                reason=reason,
             )
-        return SplitResult(doc.page_count, tuple(rows), b"")
+            rows.append(row)
+            try:
+                page_files.append((output_path, _single_page_pdf(doc, index)))
+            except Exception as exc:
+                raise LabelPdfError(f"无法复制第 {page_number} 页") from exc
+
+        zip_buffer = io.BytesIO()
+        try:
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                for path, data in page_files:
+                    archive.writestr(path, data)
+                archive.writestr("处理结果.csv", _manifest_bytes(rows))
+        except Exception as exc:
+            raise LabelPdfError("无法生成下载 ZIP") from exc
+
+        return SplitResult(doc.page_count, tuple(rows), zip_buffer.getvalue())
     finally:
         doc.close()
