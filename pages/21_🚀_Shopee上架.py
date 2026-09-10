@@ -105,7 +105,7 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "启动失败：": "Failed to start: ", "运行状态": "Run status", "还没有运行记录": "No runs yet",
     "运行中": "Running", "已完成": "Done", "失败": "Failed",
     "中断（容器重启？用「▶ 补齐店铺版」接着跑）": "Interrupted (container restart? use \"Fill in missing shop versions\")",
-    "LLM key：": "LLM keys: ", "未配置任何 LLM key，只能出 <MOCK> 占位文案": "No LLM key configured — only <MOCK> placeholders",
+    "LLM key：": "LLM keys: ", "LLM_COMPAT_API_KEY 有了，但 BASE_URL / MODEL 没配全，这家不会被使用。": "LLM_COMPAT_API_KEY is set but BASE_URL / MODEL are not — this provider will be ignored.", "未配置任何 LLM key，只能出 <MOCK> 占位文案": "No LLM key configured — only <MOCK> placeholders",
     "批次": "Batch", "命中 {n} 个 SPU": "{n} SPUs", "这个状态下没有草稿": "No drafts in this status",
     "草稿表还没就位：先在元川 PG 跑 sql/001 + 002，再从「生成母版」出草稿。": "Draft tables missing: run sql/001 + 002 on the PG first, then generate from the first tab.",
     "备注（修改说明）": "Note (edit memo)", "🗑 删除": "🗑 Delete", "确认删除": "Confirm delete", "已删除 {k}": "Deleted {k}",
@@ -340,8 +340,15 @@ with tab_auto:
     st.subheader(tt("生成英文母版：一行一个 SPU 地粘 JAN → 流水线出文案 · 7 国价 · 图 → 进「待确认」"))
     if not PIPE_OK:
         st.error(tt("流水线代码不可用：") + PIPE_ERR + f"（SHOPEE_LISTING_DIR={_SL_DIR}）")
-    keys_on = [k for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY") if os.environ.get(k, "").strip()]
-    st.caption(tt("LLM key：") + (" → ".join(k.replace("_API_KEY", "") for k in keys_on) if keys_on else tt("未配置任何 LLM key，只能出 <MOCK> 占位文案")))
+    keys_on = [k for k in ("LLM_COMPAT_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY")
+               if os.environ.get(k, "").strip()]
+    if "LLM_COMPAT_API_KEY" in keys_on and not (os.environ.get("LLM_COMPAT_BASE_URL", "").strip()
+                                                and os.environ.get("LLM_COMPAT_MODEL", "").strip()):
+        keys_on.remove("LLM_COMPAT_API_KEY")      # 3 つ揃っていないと流水线は使わない
+        st.warning(tt("LLM_COMPAT_API_KEY 有了，但 BASE_URL / MODEL 没配全，这家不会被使用。"))
+    _key_name = {"LLM_COMPAT_API_KEY": os.environ.get("LLM_COMPAT_MODEL", "compat")}
+    st.caption(tt("LLM key：") + (" → ".join(_key_name.get(k, k.replace("_API_KEY", "")) for k in keys_on)
+                                  if keys_on else tt("未配置任何 LLM key，只能出 <MOCK> 占位文案")))
 
     # ── 一行一个 SPU：行内多个 JAN = 该 SPU 的多个 SKU（Boss 2026-09-10）──
     jan_text = st.text_area(tt("JAN（一行一个 SPU；同一行多个 JAN = 一个 SPU 的多个 SKU）"), height=140, key="gen_jans",

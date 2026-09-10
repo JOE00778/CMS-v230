@@ -104,6 +104,12 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       #   GROQ_API_KEY（2026-09-10 Boss「groq+gemini吧」）：配了就 Groq 优先、撞 429 自动切 Gemini。
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      #   任意の OpenAI 互換エンドポイント（2026-09-10）：Gemini 無料枠 20 回/日では回らないので
+      #   智谱 z.ai / 阿里百炼 / 火山方舟 / DeepSeek などをここで指す。3 つ揃った時だけ最優先で使う。
+      #   例) BASE=https://api.z.ai/api/paas/v4  MODEL=glm-4.7-flash
+      LLM_COMPAT_BASE_URL: ${LLM_COMPAT_BASE_URL:-}
+      LLM_COMPAT_API_KEY: ${LLM_COMPAT_API_KEY:-}
+      LLM_COMPAT_MODEL: ${LLM_COMPAT_MODEL:-}
       IMAGE_PROCESSOR_URL: ${IMAGE_PROCESSOR_URL:-http://host.docker.internal:8788}
       #   page21 直接 import workflow-automation/shopee-listing 的流水线代码（下面 mount 到 /opt/shopee-listing）
       SHOPEE_LISTING_DIR: /opt/shopee-listing
