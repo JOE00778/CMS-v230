@@ -43,8 +43,8 @@ def test_pipeline_code_imported_not_copied():
     """ロジックは workflow-automation 側。page は import するだけ（二重実装禁止）。"""
     assert "SHOPEE_LISTING_DIR" in SRC and "/opt/shopee-listing" in SRC
     for fn in ("delete_drafts", "set_sku_image", "set_spu_image", "set_sku_option", "missing_options",
-               "list_shops", "list_shop_drafts",
-               "set_shop_status", "update_shop_text", "lang_for_shop", "build_shop_images", "ImageProcessorClient"):
+               "list_shops", "list_shop_drafts", "get_shop_draft",
+               "set_shop_status", "update_shop_text", "build_shop_images", "ImageProcessorClient"):
         assert re.search(rf"\b{fn}\b", SRC), fn
     assert "SHOPEE_LISTING_DIR" in COMPOSE and "/opt/shopee-listing:ro" in COMPOSE
     assert "GROQ_API_KEY" in COMPOSE
@@ -78,7 +78,7 @@ def test_tab1_runs_pipeline_in_background_and_supports_no_images():
 def test_review_writes_go_through_write_connection():
     assert "get_connection" in SRC, "写操作要拿写连接，不能用 get_readonly_connection"
     # 読みは只読接続 conn、書きは直前に get_connection()
-    assert SRC.count("wc = get_connection()") >= 8
+    assert SRC.count("wc = get_connection()") >= 6
 
 
 def test_list_layer_is_browse_only_and_no_reject():
@@ -96,7 +96,7 @@ def test_list_layer_is_browse_only_and_no_reject():
 
 def test_approve_is_worded_as_listing_backend_draft():
     """Boss 2026-09-10「最后批准改为上架后台（草稿）」。DB の値は approved のまま。"""
-    assert "📤 上架后台（草稿）· 含全部店铺版" in SRC
+    assert "📤 上架后台（草稿）· 含勾选店铺" in SRC
     assert '"approved": "上架后台（草稿）"' in SRC
     assert 'set_status(wc, sel, "approved"' in SRC
     # ボタン文言に「批准」は残さない（Boss 用語＝上架后台（草稿））
@@ -117,13 +117,31 @@ def test_image_two_modes_and_templated_checkbox():
     assert "compose_spu(sel, good, overwrite=True)" in SRC
 
 
-def test_one_step_flow_shops_chosen_at_generation_and_single_approval():
-    """Boss 2026-09-10「太繁琐」：生成时选店一口气出店铺版；1 回の操作で全店舗版がキューに入る。"""
-    assert '"--shops"' in SRC and 'key="gen_shops"' in SRC
-    assert "localize_spu" not in SRC and "🌏 生成本地化版" not in SRC
-    # 店铺区只做剔店 / 恢复 / 改文案 / 重出图
-    assert 'set_shop_status(wc, sel, k, "rejected"' in SRC and 'set_shop_status(wc, sel, k, "approved"' in SRC
+def test_shop_selection_is_a_country_column_checkbox_grid():
+    """Boss 2026-09-10「用打勾选项形式…按照国家，按列分」：生成と上架の両方でグリッド。"""
+    assert "def _shop_grid(" in SRC and "st.checkbox(k" in SRC
+    assert '_shop_grid(gen_shops, "gen_shop")' in SRC          # 生成タブ
+    assert '_shop_grid(shops, f"rv_pub_{sel}"' in SRC          # 待确认タブ
+    assert "st.multiselect(" not in SRC                        # 旧 multiselect は廃止
+    assert '"--shops"' in SRC and "localize_spu" not in SRC
+    # 勾上 = approved（上架）／未勾 = rejected（剔掉）を 1 回で書く
+    assert 'set_shop_status(wc, sel, k, "approved" if want else "rejected"' in SRC
     assert "build_shop_images(sel," in SRC
+
+
+def test_detail_has_per_shop_version_viewer_and_no_shop_table():
+    """Boss 2026-09-10「待确认中的店铺版整个删掉」+「旁边加一个店铺选择」。"""
+    assert 'tt("看哪个版本（国家 · 店铺）")' in SRC and '_MASTER = "__master__"' in SRC
+    for gone in ("🌏 店铺版", "lc_editor_", "打开一个店铺版", "shop_counts"):
+        assert gone not in SRC, gone
+    # 店舗版を選んだら保存はそのショップ行へ
+    assert "update_shop_text(wc, sel, view," in SRC
+
+
+def test_batch_id_is_date_plus_sequence():
+    """Boss 2026-09-10「批次号简单些，日期加01 02 这种」。"""
+    assert "def _next_batch_id(" in SRC and '%Y%m%d' in SRC and '{today}-{n:02d}' in SRC
+    assert "_next_batch_id(conn)" in SRC and "ops-" not in SRC
 
 
 def test_template_tab_uploads_via_sidecar_not_local_fs():
@@ -136,13 +154,14 @@ def test_template_tab_uploads_via_sidecar_not_local_fs():
 # ---- 状态与文案按 UI 语言显示（Boss 2026-09-09「匹配为中文和日文UI」）----
 def test_status_values_never_shown_raw():
     assert "_STATUS_LABELS" in SRC and "format_func=_st_label" in SRC
-    assert '"status": _st_label(d["status"])' in SRC and '"status": _st_label(r["status"])' in SRC
+    assert '"status": _st_label(d["status"])' in SRC
 
 
 def test_new_strings_have_japanese_and_english():
     page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
-    for zh in ("🤖 生成母版", "🎨 主图模板", "🌏 店铺版", "店铺（默认全部）", "上架后台（草稿）",
-               "📤 上架后台（草稿）· 含全部店铺版", "❌ 剔掉勾选的店", "🗑 删除", "确认删除",
+    for zh in ("🤖 生成母版", "🎨 主图模板", "上架后台（草稿）",
+               "📤 上架后台（草稿）· 含勾选店铺", "出到哪些店铺（按国家分列）", "母版（英文）",
+               "看哪个版本（国家 · 店铺）", "勾上 {n} 家", "🗑 删除", "确认删除",
                "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
                "批次", "自动出图", "先不出图（之后在详情页手传）",
                "JAN（一行一个 SPU；同一行多个 JAN = 一个 SPU 的多个 SKU）", "💾 保存规格名", "多 SKU：",
