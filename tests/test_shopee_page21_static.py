@@ -109,8 +109,10 @@ def test_list_layer_is_browse_only_and_no_reject():
     # Boss 2026-09-10「不需要已拒绝」：UI 无拒绝；不要的直接删
     assert "拒绝" not in SRC and '"rejected"' not in SRC.split("_STATUS_LABELS")[1].split("\n")[0]
     assert '["draft", "approved", "published", _STATUS_ALL]' in SRC
-    # 削除は詳細だけ · 二次確認あり · published は消さない（delete_drafts 側で保証）
+    # 削除は詳細（1 件）と専用の一括削除だけ · どちらも二次確認あり · published は消さない
     assert "delete_drafts(wc, [sel])" in SRC and SRC.count('tt("确认删除")') == 1
+    assert "delete_drafts(wc, keys)" in SRC and "🧹 清空（不可撤销）" in SRC
+    assert 'disabled=not purge_ok' in SRC and 'key="rv_purge_ok"' in SRC
 
 
 def test_approve_is_worded_as_listing_backend_draft():
@@ -180,6 +182,7 @@ def test_new_strings_have_japanese_and_english():
     page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
     for zh in ("🤖 生成母版", "🎨 主图模板", "上架后台（草稿）",
                "📤 上架后台（草稿）· 含勾选店铺", "出到哪些店铺（按国家分列）", "母版（英文）",
+               "🧹 清空（不可撤销）",
                "看哪个版本（国家 · 店铺）", "勾上 {n} 家", "🗑 删除", "确认删除",
                "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
                "批次", "自动出图", "先不出图（之后在详情页手传）", "运行状态", "运行中", "已完成",

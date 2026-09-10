@@ -109,6 +109,10 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "批次": "Batch", "命中 {n} 个 SPU": "{n} SPUs", "这个状态下没有草稿": "No drafts in this status",
     "草稿表还没就位：先在元川 PG 跑 sql/001 + 002，再从「生成母版」出草稿。": "Draft tables missing: run sql/001 + 002 on the PG first, then generate from the first tab.",
     "备注（修改说明）": "Note (edit memo)", "🗑 删除": "🗑 Delete", "确认删除": "Confirm delete", "已删除 {k}": "Deleted {k}",
+    "🧹 清空（不可撤销）": "🧹 Purge (cannot be undone)",
+    "🧹 清空草稿：范围 = 现在筛出的 {n} 条（状态 {st} · 批次 {b}）。已发布的不删，图片文件保留。": "🧹 Purge drafts: scope = the {n} rows currently filtered (status {st} · batch {b}). Published rows and image files are kept.",
+    "我确认要删除这 {n} 条": "I confirm deleting these {n} rows",
+    "已清空 {ok} 条，跳过 {fail} 条（已发布）": "Purged {ok}, skipped {fail} (published)",
     "打开一个 SPU": "Open an SPU", "这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能送上架后台。": "This is a <MOCK> placeholder (no LLM key) — cannot be sent.",
     "标题（80–120 字符）": "Title (80–120 chars)", "{n} 字符": "{n} chars", "描述": "Description", "{n} 字符 · Shopee 上限 3000": "{n} chars · Shopee max 3000",
     "Shopee 类目 ID": "Shopee category ID", "品牌": "Brand", "模型": "Model", "卖点": "Key features", "输入里被剔掉的 JAN：": "JANs dropped from input:",
@@ -534,6 +538,19 @@ with tab_review:
                 },
             )
             st.caption(tt("命中 {n} 个 SPU").format(n=len(drafts)))
+
+            # 专门的清空按钮（Boss 2026-09-11）。范围 = 当前筛选（状态 + 批次），已发布的不删。
+            pg1, pg2, pg3 = st.columns([3, 1, 1])
+            pg1.caption(tt("🧹 清空草稿：范围 = 现在筛出的 {n} 条（状态 {st} · 批次 {b}）。已发布的不删，图片文件保留。")
+                        .format(n=len(drafts), st=_st_label(status_pick),
+                                b=tt("全部") if batch_pick == _BATCH_ALL else batch_pick))
+            purge_ok = pg2.checkbox(tt("我确认要删除这 {n} 条").format(n=len(drafts)), key="rv_purge_ok")
+            if pg3.button(tt("🧹 清空（不可撤销）"), disabled=not purge_ok, key="rv_purge", use_container_width=True):
+                wc = get_connection()
+                ok, failed = delete_drafts(wc, keys)
+                st.success(tt("已清空 {ok} 条，跳过 {fail} 条（已发布）").format(ok=ok, fail=len(failed)))
+                _thumb.clear()
+                st.rerun()
 
             # ---------------- 详情层（1 SPU · 可切到某店铺版本看） ----------------
             st.divider()
