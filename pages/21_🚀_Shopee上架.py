@@ -101,8 +101,10 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "主档没有，流水线会报 fail：": "Not in item master — pipeline will fail: ", "先输入 JAN": "Enter JANs first",
     "主图": "Main images", "自动出图": "Auto images", "先不出图（之后在详情页手传）": "Skip images (upload later in detail view)",
     "批次号": "Batch ID", "🚀 生成母版": "🚀 Generate master", 
-    "已启动，批次 {b}。生成需要几分钟，下面看日志；完成后到「待确认」按批次筛。": "Started batch {b}. Takes a few minutes — see log below; then filter by batch in Review queue.",
-    "启动失败：": "Failed to start: ", "最近运行日志": "Recent run logs", "🔄 刷新": "🔄 Refresh",
+    "已启动，批次 {b}。下面「运行状态」会自动刷新，跑完变「已完成」。": "Started batch {b}. The run status below refreshes itself and turns to Done when finished.",
+    "启动失败：": "Failed to start: ", "运行状态": "Run status", "还没有运行记录": "No runs yet",
+    "运行中": "Running", "已完成": "Done", "失败": "Failed",
+    "中断（容器重启？用「▶ 补齐店铺版」接着跑）": "Interrupted (container restart? use \"Fill in missing shop versions\")",
     "LLM key：": "LLM keys: ", "未配置任何 LLM key，只能出 <MOCK> 占位文案": "No LLM key configured — only <MOCK> placeholders",
     "批次": "Batch", "命中 {n} 个 SPU": "{n} SPUs", "这个状态下没有草稿": "No drafts in this status",
     "草稿表还没就位：先在元川 PG 跑 sql/001 + 002，再从「生成母版」出草稿。": "Draft tables missing: run sql/001 + 002 on the PG first, then generate from the first tab.",
@@ -275,6 +277,40 @@ def _spawn(script: str, args: list[str], log_name: str) -> Path:
     return log_path
 
 
+_STALE_SEC = 600          # これ以上更新が無く結果行も無い → 中断（コンテナ再起動で子プロセスが死ぬ）
+
+
+def _job_state(log_path: Path) -> tuple[str, str]:
+    """実行ログ → (状態, 一行説明)。状態は running / done / failed / stalled。
+
+    run_pipeline も localize も最後に `ok=N fail=M …` を出す。それが有れば完了。
+    無いまま _STALE_SEC 過ぎていたら中断（2026-09-10：デプロイの docker restart で実際に起きた）。
+    """
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        mtime = log_path.stat().st_mtime
+    except OSError as e:
+        return "failed", str(e)
+    lines = [l for l in text.splitlines() if l.strip()]
+    result = next((l for l in reversed(lines) if l.startswith("ok=")), None)
+    if result:
+        fail_n = 0
+        try:
+            fail_n = int(result.split("fail=")[1].split()[0])
+        except Exception:  # noqa: BLE001
+            pass
+        return ("failed" if fail_n else "done"), result
+    if "Traceback" in text:
+        return "failed", next((l for l in reversed(lines) if "Error" in l or "Exception" in l), lines[-1] if lines else "")
+    if time.time() - mtime > _STALE_SEC:
+        return "stalled", lines[-1] if lines else ""
+    return "running", lines[-1] if lines else ""
+
+
+_JOB_ICON = {"running": "⏳", "done": "✅", "failed": "❌", "stalled": "⚠️"}
+_JOB_LABEL = {"running": "运行中", "done": "已完成", "failed": "失败", "stalled": "中断（容器重启？用「▶ 补齐店铺版」接着跑）"}
+
+
 def _next_batch_id(c) -> str:
     """批次号 = 日期 + 两位序号（Boss 2026-09-10「日期加01 02 这种」）。当天已用的往后排。"""
     today = datetime.now().strftime("%Y%m%d")
@@ -390,23 +426,35 @@ with tab_auto:
             _spawn("run_pipeline.py", args, safe_batch)
             st.session_state["gen_last_batch"] = safe_batch
             st.session_state.pop("gen_names", None)
-            st.success(tt("已启动，批次 {b}。生成需要几分钟，下面看日志；完成后到「待确认」按批次筛。").format(b=safe_batch))
+            st.success(tt("已启动，批次 {b}。下面「运行状态」会自动刷新，跑完变「已完成」。").format(b=safe_batch))
         except Exception as e:  # noqa: BLE001
             st.error(tt("启动失败：") + str(e))
     elif not jans:
         st.info(tt("先输入 JAN"))
 
     st.divider()
-    st.markdown(f"**{tt('最近运行日志')}**")
-    if st.button(tt("🔄 刷新"), key="gen_refresh"):
-        st.rerun()
-    logs = sorted(JOB_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:5] if JOB_DIR.exists() else []
-    st.caption(tt("⚠️ 生成期间不要重启 CMS 容器：子进程会被一起杀掉，只写进已完成的部分（用详情页「▶ 补齐店铺版」接着跑）。"))
-    for lp in logs:
-        tail = lp.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
-        done = any(l.startswith("ok=") or l.startswith("本地化：") or "ok=" in l for l in tail[-3:])
-        with st.expander(f"{'✅' if done else '⏳'} {lp.stem} · {datetime.fromtimestamp(lp.stat().st_mtime):%m-%d %H:%M}", expanded=(lp.stem == st.session_state.get("gen_last_batch"))):
-            st.code("\n".join(tail) or "(empty)")
+
+    @st.fragment(run_every=6)
+    def _run_panel():
+        """8 秒ごとに自分だけ再実行して状態を更新（Boss 2026-09-10「完成后自动变已完成」）。
+        ページ全体を rerun しないので、入力中の JAN やチェックが消えない。"""
+        st.markdown(f"**{tt('运行状态')}**")
+        logs = sorted(JOB_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:5] if JOB_DIR.exists() else []
+        if not logs:
+            st.caption(tt("还没有运行记录"))
+            return
+        cur = st.session_state.get("gen_last_batch")
+        for lp in logs:
+            state, detail = _job_state(lp)
+            head = (f"{_JOB_ICON[state]} {lp.stem} · {tt(_JOB_LABEL[state])} · "
+                    f"{datetime.fromtimestamp(lp.stat().st_mtime):%m-%d %H:%M}")
+            if lp.stem == cur:
+                {"done": st.success, "running": st.info, "failed": st.error, "stalled": st.warning}[state](head + " · " + detail[:120])
+            with st.expander(head, expanded=(lp.stem == cur and state == "running")):
+                st.code("\n".join(lp.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]) or "(empty)")
+        st.caption(tt("⚠️ 生成期间不要重启 CMS 容器：子进程会被一起杀掉，只写进已完成的部分（用详情页「▶ 补齐店铺版」接着跑）。"))
+
+    _run_panel()
 
 
 # ============================================================

@@ -76,6 +76,16 @@ def test_tab1_runs_pipeline_in_background_and_supports_no_images():
     assert "postgresql://***" in SRC
 
 
+def test_run_status_auto_refreshes_and_has_terminal_states():
+    """Boss 2026-09-10「已启动加一个状态变化，已完成，完成后自动变已完成」。"""
+    assert "@st.fragment(run_every=" in SRC and "def _run_panel(" in SRC
+    assert "def _job_state(" in SRC and 'startswith("ok=")' in SRC
+    for st_key in ("running", "done", "failed", "stalled"):
+        assert f'"{st_key}"' in SRC, st_key
+    assert '_JOB_LABEL = {"running": "运行中", "done": "已完成", "failed": "失败"' in SRC
+    assert "_STALE_SEC" in SRC              # 結果行が無いまま止まったら「中断」
+
+
 def test_interrupted_run_can_be_resumed_per_spu():
     """2026-09-10 実障害：デプロイの docker restart が生成の子プロセスを殺し、pt-BR 群だけ書けて止まった。
     → 欠けた店舗版だけ localize.py で追いかける導線と、再起動注意の掲示を固定する。"""
@@ -172,7 +182,7 @@ def test_new_strings_have_japanese_and_english():
                "📤 上架后台（草稿）· 含勾选店铺", "出到哪些店铺（按国家分列）", "母版（英文）",
                "看哪个版本（国家 · 店铺）", "勾上 {n} 家", "🗑 删除", "确认删除",
                "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
-               "批次", "自动出图", "先不出图（之后在详情页手传）",
+               "批次", "自动出图", "先不出图（之后在详情页手传）", "运行状态", "运行中", "已完成",
                "JAN（一行一个 SPU；同一行多个 JAN = 一个 SPU 的多个 SKU）", "💾 保存规格名", "多 SKU：",
                "这些 JAN 还没有规格名，送不了上架后台："):
         assert f'"{zh}":' in I18N, f"JA 缺 {zh}"
