@@ -2,7 +2,7 @@
 
 四个 Tab（Boss 2026-09-10 拍板的流程：英文母版 → 勾店铺 → 每店本地化 → 再定是否上传）：
 
-    🤖 生成母版     →  上传 SPU CSV → 容器内跑 run_pipeline.py（AI 文案 · 38% 原価率 7 国价 · 模板图）→ 进待确认
+    🤖 生成母版     →  直接输 JAN、勾选合并成 SPU → 容器内跑 run_pipeline.py（AI 文案 · 38% 原価率 7 国价 · 模板图）→ 进待确认
     ✅ 待确认       →  列表层批量批准/拒绝 + 详情层改文案/换图 + 店铺本地化（语言 · 不重复标题 · 店铺模板主图）
     🎨 主图模板     →  每店一张 1500×1500 透明 PNG（方框 + 店铺 logo），CMS 上传即生效，不进镜像
     📜 历史运行     →  automation_runs（旧 N8N 线的记录，只读）
@@ -52,6 +52,7 @@ try:
                              get_shop_draft, set_shop_status, update_shop_text, shop_counts)
     from image_pipeline import ImageProcessorClient, build_shop_images  # noqa: E402
     from localize import localize_spu, lang_for_shop  # noqa: E402
+    from sku_source import load_skus  # noqa: E402
     PIPE_OK, PIPE_ERR = True, ""
 except Exception as _e:  # noqa: BLE001
     PIPE_OK, PIPE_ERR = False, f"{type(_e).__name__}: {_e}"
@@ -87,11 +88,16 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "草稿待确认": "Pending review", "已批准": "Approved", "已拒绝": "Rejected", "已发布": "Published", "状态": "Status", "全部": "All",
     "Shopee 上架": "Shopee Listing",
     "生成母版 / 待确认 / 主图模板 / 历史运行 一站式": "Generate / Review / Templates / History — all in one",
-    "生成英文母版：上传 SPU CSV → 流水线出文案 · 7 国价 · 图 → 进「待确认」": "Generate the English master: upload SPU CSV → pipeline writes copy · 7-country prices · images → Review queue",
+    "生成英文母版：输 JAN → 勾选合并成 SPU → 流水线出文案 · 7 国价 · 图 → 进「待确认」": "Generate the English master: enter JANs → merge into SPUs → pipeline writes copy · 7-country prices · images → Review queue",
     "流水线代码不可用：": "Pipeline code unavailable: ",
-    "SPU+JAN 两列 CSV（A=SPU, B=JAN）": "Two-column CSV (A=SPU, B=JAN)",
+    "JAN（一行一个，或空格/逗号分隔）": "JANs (one per line, or space/comma separated)",
+    "忽略了 {n} 个不是 8/13 位数字的：": "Ignored {n} tokens that are not 8/13-digit numbers: ", "查主档失败：": "Item master lookup failed: ",
+    "主档无此 JAN": "Not in item master", "同名 = 同一个 SPU；可直接改": "Same name = same SPU; edit freely",
+    "合并后的 SPU 名": "Merged SPU name", "🔗 勾选的合并成一个 SPU": "🔗 Merge selected into one SPU", "↩ 全部拆开": "↩ Split all",
+    "{s} 个 SPU · {j} 个 JAN": "{s} SPUs · {j} JANs", "取扱中止/廃盤，流水线会自动剔除：": "Discontinued — pipeline will drop: ",
+    "主档没有，流水线会报 fail：": "Not in item master — pipeline will fail: ", "先输入 JAN": "Enter JANs first",
     "主图": "Main images", "自动出图": "Auto images", "先不出图（之后在详情页手传）": "Skip images (upload later in detail view)",
-    "批次号": "Batch ID", "🚀 生成母版": "🚀 Generate master", "先上传 CSV": "Upload a CSV first",
+    "批次号": "Batch ID", "🚀 生成母版": "🚀 Generate master", 
     "已启动，批次 {b}。生成需要几分钟，下面看日志；完成后到「待确认」按批次筛。": "Started batch {b}. Takes a few minutes — see log below; then filter by batch in Review queue.",
     "启动失败：": "Failed to start: ", "最近运行日志": "Recent run logs", "🔄 刷新": "🔄 Refresh",
     "LLM key：": "LLM keys: ", "未配置任何 LLM key，只能出 <MOCK> 占位文案": "No LLM key configured — only <MOCK> placeholders",
@@ -185,30 +191,23 @@ def _b64_of_upload(f) -> str:
     return base64.b64encode(f.getvalue()).decode("ascii")
 
 
-def _read_uploaded_csv(uploaded) -> pd.DataFrame:
-    raw = uploaded.read()
-    try:
-        return pd.read_csv(io.BytesIO(raw), dtype=str, encoding="utf-8-sig", keep_default_na=False)
-    except UnicodeDecodeError:
-        return pd.read_csv(io.BytesIO(raw), dtype=str, encoding="cp932", keep_default_na=False)
+_JAN_SPLIT = __import__("re").compile(r"[\s,;、，]+")
 
 
-def _validate_and_dedup(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    warnings: list[str] = []
-    if df.shape[1] < 2:
-        raise ValueError("❌ CSV 至少需要 A 列 (SPU) + B 列 (SKU)")
-    df = df.copy()
-    cols = list(df.columns)
-    df = df.rename(columns={cols[0]: "SPU", cols[1]: "SKU"})
-    df["SPU"] = df["SPU"].astype(str).str.strip()
-    df["SKU"] = df["SKU"].astype(str).str.strip()
-    df = df[(df["SPU"] != "") & (df["SKU"] != "")].reset_index(drop=True)
-    dup_mask = df["SKU"].duplicated(keep="first")
-    if dup_mask.any():
-        dup_skus = df.loc[dup_mask, "SKU"].tolist()
-        warnings.append("⚠️ SKU 重复，已自动去重（保留首次出现）：" + ", ".join(dup_skus[:10]) + ("..." if len(dup_skus) > 10 else ""))
-        df = df[~dup_mask].reset_index(drop=True)
-    return df, warnings
+def _parse_jans(text: str) -> tuple[list[str], list[str]]:
+    """粘贴的 JAN（换行/空格/逗号分隔）→ (去重后的合法 JAN, 非法 token)。合法 = 8 或 13 位数字。"""
+    good, bad, seen = [], [], set()
+    for tok in _JAN_SPLIT.split(text or ""):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.isdigit() and len(tok) in (8, 13):
+            if tok not in seen:
+                seen.add(tok)
+                good.append(tok)
+        else:
+            bad.append(tok)
+    return good, bad
 
 
 def _sku_summary(c, keys: list[str]) -> dict:
@@ -256,28 +255,94 @@ tab_auto, tab_review, tab_refs, tab_history = st.tabs(
 # Tab 1 · 🤖 生成母版（run_pipeline.py 在本容器后台跑）
 # ============================================================
 with tab_auto:
-    st.subheader(tt("生成英文母版：上传 SPU CSV → 流水线出文案 · 7 国价 · 图 → 进「待确认」"))
+    st.subheader(tt("生成英文母版：输 JAN → 勾选合并成 SPU → 流水线出文案 · 7 国价 · 图 → 进「待确认」"))
     if not PIPE_OK:
         st.error(tt("流水线代码不可用：") + PIPE_ERR + f"（SHOPEE_LISTING_DIR={_SL_DIR}）")
     keys_on = [k for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY") if os.environ.get(k, "").strip()]
     st.caption(tt("LLM key：") + (" → ".join(k.replace("_API_KEY", "") for k in keys_on) if keys_on else tt("未配置任何 LLM key，只能出 <MOCK> 占位文案")))
 
-    csv_file = st.file_uploader(tt("SPU+JAN 两列 CSV（A=SPU, B=JAN）"), type=["csv"], key="gen_csv")
+    # ── JAN 直接在 CMS 输入；勾几个合并成一个 SPU（Boss 2026-09-10「改成直接在CMS中输入JAN，可选与其他JAN是否组成一个SPU」）──
+    jan_text = st.text_area(tt("JAN（一行一个，或空格/逗号分隔）"), height=120, key="gen_jans",
+                            placeholder="4513163978 4513163985\n4901234567890")
+    jans, bad = _parse_jans(jan_text)
+    if bad:
+        st.warning(tt("忽略了 {n} 个不是 8/13 位数字的：").format(n=len(bad)) + " ".join(bad[:10]))
+    if jans and PIPE_OK:
+        try:
+            recs = load_skus(conn, jans)
+        except Exception as e:  # noqa: BLE001
+            recs = {}
+            st.error(tt("查主档失败：") + str(e))
+        # SPU 分组存在 session：默认每个 JAN 自成一个 SPU（key = JAN）
+        groups: dict = st.session_state.setdefault("gen_groups", {})
+        for j in jans:
+            groups.setdefault(j, j)
+        for j in list(groups):
+            if j not in jans:
+                groups.pop(j)
+        rows = []
+        for j in jans:
+            r = recs.get(j)
+            rows.append({
+                "select": False, "jan": j, "spu_key": groups[j],
+                "name_jp": (r.name_jp or "")[:50] if r else "",
+                "maker": (r.maker or "") if r else "",
+                "cost_jpy": r.cost_jpy if r else None,
+                "sellable": ("✅" if r.sellable else "⛔ " + (r.handling or "")) if r else tt("主档无此 JAN"),
+            })
+        gdf = pd.DataFrame(rows)
+        edited = st.data_editor(
+            gdf, hide_index=True, use_container_width=True, num_rows="fixed", key=f"gen_editor_{len(jans)}",
+            column_config={
+                "select": st.column_config.CheckboxColumn(label("select"), default=False),
+                "jan": st.column_config.TextColumn("JAN", disabled=True),
+                "spu_key": st.column_config.TextColumn(label("spu_key"), help=tt("同名 = 同一个 SPU；可直接改")),
+                "name_jp": st.column_config.TextColumn(label("name_jp"), disabled=True),
+                "maker": st.column_config.TextColumn(label("maker"), disabled=True),
+                "cost_jpy": st.column_config.NumberColumn(label("cost_jpy"), disabled=True),
+                "sellable": st.column_config.TextColumn(label("sellable"), disabled=True),
+            })
+        for r in edited.itertuples():
+            groups[r.jan] = (r.spu_key or r.jan).strip() or r.jan
+        picked = edited[edited["select"] == True]["jan"].tolist()  # noqa: E712
+        g1, g2, g3 = st.columns([2, 1, 1])
+        first = recs.get(picked[0]) if picked else None
+        default_name = ("-".join(x for x in [(first.maker or "").split()[0] if first and first.maker else "", picked[0]] if x)
+                        if picked else "")
+        merge_name = g1.text_input(tt("合并后的 SPU 名"), value=default_name, key=f"gen_merge_name_{'-'.join(picked)}")
+        if g2.button(tt("🔗 勾选的合并成一个 SPU"), disabled=len(picked) < 2 or not merge_name.strip(), key="gen_merge", use_container_width=True):
+            for j in picked:
+                groups[j] = merge_name.strip()
+            st.rerun()
+        if g3.button(tt("↩ 全部拆开"), key="gen_split", use_container_width=True):
+            for j in jans:
+                groups[j] = j
+            st.rerun()
+        spus = {}
+        for j in jans:
+            spus.setdefault(groups[j], []).append(j)
+        st.caption(tt("{s} 个 SPU · {j} 个 JAN").format(s=len(spus), j=len(jans)) + " · " +
+                   " · ".join(f"{k}({len(v)})" for k, v in spus.items() if len(v) > 1))
+        unsellable = [j for j in jans if j in recs and not recs[j].sellable]
+        missing = [j for j in jans if j not in recs]
+        if unsellable:
+            st.warning(tt("取扱中止/廃盤，流水线会自动剔除：") + " ".join(unsellable))
+        if missing:
+            st.warning(tt("主档没有，流水线会报 fail：") + " ".join(missing))
+    else:
+        spus = {}
+
     c1, c2 = st.columns([1, 1])
     img_mode = c1.radio(tt("主图"), [tt("自动出图"), tt("先不出图（之后在详情页手传）")], key="gen_img_mode", horizontal=True)
-    default_batch = f"{Path(csv_file.name).stem}-{datetime.now():%Y%m%d-%H%M}" if csv_file else ""
+    default_batch = f"ops-{datetime.now():%Y%m%d-%H%M}"
     batch_id = c2.text_input(tt("批次号"), value=default_batch, key="gen_batch")
 
-    if st.button(tt("🚀 生成母版"), type="primary", disabled=not (csv_file and PIPE_OK), use_container_width=True, key="gen_go"):
+    if st.button(tt("🚀 生成母版"), type="primary", disabled=not (spus and PIPE_OK), use_container_width=True, key="gen_go"):
         try:
-            df = _read_uploaded_csv(csv_file)
-            df, warns = _validate_and_dedup(df)
-            for w in warns:
-                st.warning(w)
             JOB_DIR.mkdir(parents=True, exist_ok=True)
-            safe_batch = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in (batch_id or default_batch or "batch"))
+            safe_batch = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in (batch_id or default_batch))
             csv_path = JOB_DIR / f"{safe_batch}.csv"
-            df[["SPU", "SKU"]].to_csv(csv_path, index=False)
+            pd.DataFrame([{"SPU": k, "SKU": j} for k, js in spus.items() for j in js]).to_csv(csv_path, index=False)
             log_path = JOB_DIR / f"{safe_batch}.log"
             cmd = [sys.executable, str(_SL_DIR / "scripts" / "run_pipeline.py"), "--csv", str(csv_path),
                    "--db-url", os.environ.get("DATABASE_URL", ""), "--batch-id", safe_batch]
@@ -291,11 +356,12 @@ with tab_auto:
                 lf.write(f"# {_now()} {' '.join(c if 'postgresql://' not in c else 'postgresql://***' for c in cmd)}\n".encode())
                 subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=os.environ.copy(), cwd=str(_SL_DIR))
             st.session_state["gen_last_batch"] = safe_batch
+            st.session_state.pop("gen_groups", None)
             st.success(tt("已启动，批次 {b}。生成需要几分钟，下面看日志；完成后到「待确认」按批次筛。").format(b=safe_batch))
         except Exception as e:  # noqa: BLE001
             st.error(tt("启动失败：") + str(e))
-    elif not csv_file:
-        st.info(tt("先上传 CSV"))
+    elif not jans:
+        st.info(tt("先输入 JAN"))
 
     st.divider()
     st.markdown(f"**{tt('最近运行日志')}**")

@@ -244,6 +244,7 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
     "template_updated": {"ja": "テンプレ更新",  "zh": "模板更新",   "en": "Template updated"},
     "image_source":     {"ja": "画像ソース",    "zh": "图来源",     "en": "Image source"},
     "ph_price":         {"ja": "PH価格",        "zh": "PH 价",      "en": "PH price"},
+    "sellable":         {"ja": "販売可",        "zh": "可售",       "en": "Sellable"},
 }
 
 

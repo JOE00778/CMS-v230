@@ -49,6 +49,15 @@ def test_pipeline_code_imported_not_copied():
     assert "GROQ_API_KEY" in COMPOSE
 
 
+def test_tab1_jan_input_and_spu_merge_no_csv_upload():
+    """Boss 2026-09-10：CSV 上传改成直接输 JAN，勾选合并成 SPU。"""
+    assert "st.file_uploader" not in SRC.split("with tab_review:")[0].split("with tab_auto:")[1]
+    assert "_parse_jans(" in SRC and "load_skus(conn, jans)" in SRC
+    assert "🔗 勾选的合并成一个 SPU" in SRC and "↩ 全部拆开" in SRC and '"gen_groups"' in SRC
+    # 仍然走 run_pipeline --csv：把分组写成 SPU/SKU 两列临时 CSV，不另写一套入口
+    assert '[{"SPU": k, "SKU": j} for k, js in spus.items() for j in js]' in SRC
+
+
 def test_tab1_runs_pipeline_in_background_and_supports_no_images():
     assert "run_pipeline.py" in SRC and "subprocess.Popen" in SRC
     assert '"--batch-id"' in SRC and '"--no-images"' in SRC and '"--mock-llm"' in SRC
@@ -105,7 +114,7 @@ def test_new_strings_have_japanese_and_english():
     page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
     for zh in ("🤖 生成母版", "🎨 主图模板", "✅ 批准勾选", "❌ 拒绝勾选", "💾 保存标题修改", "🌏 店铺本地化",
                "🌏 生成本地化版", "✅ 批准勾选（=要上传）", "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
-               "批次", "自动出图", "先不出图（之后在详情页手传）"):
+               "批次", "自动出图", "先不出图（之后在详情页手传）", "JAN（一行一个，或空格/逗号分隔）", "🔗 勾选的合并成一个 SPU", "合并后的 SPU 名"):
         assert f'"{zh}":' in I18N, f"JA 缺 {zh}"
         assert f'"{zh}":' in page_en, f"EN 缺 {zh}"
     for zh, ja in [("草稿待确认", "確認待ち"), ("已批准", "承認済み"), ("已拒绝", "却下"), ("已发布", "公開済み"), ("✅ 待确认", "✅ 確認待ち")]:
@@ -114,7 +123,8 @@ def test_new_strings_have_japanese_and_english():
 
 def test_editor_columns_registered_in_i18n_columns():
     for col in ("select", "thumb", "title_len", "batch_id", "shops_done", "shop_key", "shop_name", "lang", "template",
-                "template_updated", "image_source", "ph_price", "spu_key", "status", "title", "sku_count", "image", "country_code"):
+                "template_updated", "image_source", "ph_price", "spu_key", "status", "title", "sku_count", "image", "country_code",
+                "sellable", "maker", "cost_jpy"):
         assert f'"{col}":' in COLS, f"i18n_columns 缺列键 {col}"
     # 列表层/店铺层的 column_config 都用 label()，不写死中文
     assert SRC.count('label("') >= 20
