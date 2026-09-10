@@ -69,10 +69,19 @@ def test_sku_option_name_editable_and_gates_approval():
 
 
 def test_tab1_runs_pipeline_in_background_and_supports_no_images():
-    assert "run_pipeline.py" in SRC and "subprocess.Popen" in SRC
+    assert "def _spawn(" in SRC and "subprocess.Popen" in SRC
+    assert '_spawn("run_pipeline.py", args, safe_batch)' in SRC
     assert '"--batch-id"' in SRC and '"--no-images"' in SRC and '"--mock-llm"' in SRC
     # DB URL はログに出さない
     assert "postgresql://***" in SRC
+
+
+def test_interrupted_run_can_be_resumed_per_spu():
+    """2026-09-10 実障害：デプロイの docker restart が生成の子プロセスを殺し、pt-BR 群だけ書けて止まった。
+    → 欠けた店舗版だけ localize.py で追いかける導線と、再起動注意の掲示を固定する。"""
+    assert '_spawn("localize.py", ["--spu", sel, "--shops"' in SRC
+    assert "▶ 补齐店铺版（{n} 家）" in SRC and "miss_shops" in SRC
+    assert "生成期间不要重启 CMS 容器" in SRC
 
 
 def test_review_writes_go_through_write_connection():

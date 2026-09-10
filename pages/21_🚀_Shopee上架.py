@@ -119,8 +119,11 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "上架后台（草稿）": "Listing backend (draft)",
     "出到哪些店铺（按国家分列）": "Which shops to generate for (columns = country)",
     "上架到哪些店铺（按国家分列 · 只有生成过版本的店可选）": "Which shops to list on (columns = country; only shops that have a version)",
-    "这个 SPU 没有店铺版（生成时没勾店铺）。只送母版。": "This SPU has no shop versions (no shops ticked at generation). Master only.",
-    "勾上 {n} 家": "{n} shops ticked", "店铺版表还没就位：先在元川 PG 跑 sql/002。": "Shop-version table missing: run sql/002 on the PG.",
+    "勾上 {n} 家": "{n} shops ticked",
+    "这个 SPU 还没有店铺版（生成被打断或生成时没勾店铺）。": "This SPU has no shop versions yet (generation was interrupted, or no shops were ticked).",
+    "缺 {n} 家店的版本": "{n} shops missing a version", "▶ 补齐店铺版（{n} 家）": "▶ Fill in missing shop versions ({n})",
+    "已在后台补齐，几分钟后刷新看；日志 {p}": "Running in the background — refresh in a few minutes; log {p}",
+    "⚠️ 生成期间不要重启 CMS 容器：子进程会被一起杀掉，只写进已完成的部分（用详情页「▶ 补齐店铺版」接着跑）。": "⚠️ Don't restart the CMS container while a run is in progress — the child process is killed with it and only finished parts are saved (use \"Fill in missing shop versions\" to continue).", "店铺版表还没就位：先在元川 PG 跑 sql/002。": "Shop-version table missing: run sql/002 on the PG.",
     "母版（英文）": "Master (English)", "看哪个版本（国家 · 店铺）": "Which version (country · shop)",
     "语言": "Language", "模板": "Template",
     "📤 上架后台（草稿）· 含勾选店铺": "📤 Send to listing backend (draft) · ticked shops",
@@ -256,6 +259,22 @@ def _shop_grid(shops: list[dict], key_prefix: str, *, on_keys: Optional[set] = N
     return picked
 
 
+def _spawn(script: str, args: list[str], log_name: str) -> Path:
+    """在本容器里后台跑流水线脚本，输出追加到 data/files/shopee-listing/<log_name>.log。
+
+    ⚠️ 子进程随本容器生存：**重启 cms_streamlit 会杀掉正在跑的生成**（2026-09-10 实际踩过：
+    部署重启把运营的一批生成打断，只写进了第一个语言组的店铺版）。所以日志里没有结尾
+    `ok=` / `本地化：` 行的批次就是「跑到一半」，用「▶ 补齐店铺版」接着跑。
+    """
+    JOB_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = JOB_DIR / f"{log_name}.log"
+    cmd = [sys.executable, str(_SL_DIR / "scripts" / script), "--db-url", os.environ.get("DATABASE_URL", ""), *args]
+    with open(log_path, "ab") as lf:
+        lf.write(f"# {_now()} {' '.join(c if 'postgresql://' not in c else 'postgresql://***' for c in cmd)}\n".encode())
+        subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=os.environ.copy(), cwd=str(_SL_DIR))
+    return log_path
+
+
 def _next_batch_id(c) -> str:
     """批次号 = 日期 + 两位序号（Boss 2026-09-10「日期加01 02 这种」）。当天已用的往后排。"""
     today = datetime.now().strftime("%Y%m%d")
@@ -361,20 +380,14 @@ with tab_auto:
             safe_batch = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in (batch_id or default_batch))
             csv_path = JOB_DIR / f"{safe_batch}.csv"
             pd.DataFrame([{"SPU": k, "SKU": j} for k, js in spus.items() for j in js]).to_csv(csv_path, index=False)
-            log_path = JOB_DIR / f"{safe_batch}.log"
-            cmd = [sys.executable, str(_SL_DIR / "scripts" / "run_pipeline.py"), "--csv", str(csv_path),
-                   "--db-url", os.environ.get("DATABASE_URL", ""), "--batch-id", safe_batch]
-            if IMAGE_PROCESSOR_URL and img_mode == tt("自动出图"):
-                cmd += ["--image-processor-url", IMAGE_PROCESSOR_URL]
-            else:
-                cmd += ["--no-images"]
+            args = ["--csv", str(csv_path), "--batch-id", safe_batch]
+            args += (["--image-processor-url", IMAGE_PROCESSOR_URL]
+                     if (IMAGE_PROCESSOR_URL and img_mode == tt("自动出图")) else ["--no-images"])
             if not keys_on:
-                cmd += ["--mock-llm"]
+                args += ["--mock-llm"]
             if gen_pick:
-                cmd += ["--shops", ",".join(gen_pick)]
-            with open(log_path, "ab") as lf:
-                lf.write(f"# {_now()} {' '.join(c if 'postgresql://' not in c else 'postgresql://***' for c in cmd)}\n".encode())
-                subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=os.environ.copy(), cwd=str(_SL_DIR))
+                args += ["--shops", ",".join(gen_pick)]
+            _spawn("run_pipeline.py", args, safe_batch)
             st.session_state["gen_last_batch"] = safe_batch
             st.session_state.pop("gen_names", None)
             st.success(tt("已启动，批次 {b}。生成需要几分钟，下面看日志；完成后到「待确认」按批次筛。").format(b=safe_batch))
@@ -388,9 +401,10 @@ with tab_auto:
     if st.button(tt("🔄 刷新"), key="gen_refresh"):
         st.rerun()
     logs = sorted(JOB_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:5] if JOB_DIR.exists() else []
+    st.caption(tt("⚠️ 生成期间不要重启 CMS 容器：子进程会被一起杀掉，只写进已完成的部分（用详情页「▶ 补齐店铺版」接着跑）。"))
     for lp in logs:
         tail = lp.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
-        done = any(l.startswith("ok=") for l in tail[-3:])
+        done = any(l.startswith("ok=") or l.startswith("本地化：") or "ok=" in l for l in tail[-3:])
         with st.expander(f"{'✅' if done else '⏳'} {lp.stem} · {datetime.fromtimestamp(lp.stat().st_mtime):%m-%d %H:%M}", expanded=(lp.stem == st.session_state.get("gen_last_batch"))):
             st.code("\n".join(tail) or "(empty)")
 
@@ -622,14 +636,26 @@ with tab_review:
 
                 # ---- 上架到哪些店铺：勾选网格（唯一决定元）----
                 st.markdown(f"**{tt('上架到哪些店铺（按国家分列 · 只有生成过版本的店可选）')}**")
-                if not versions:
-                    st.info(tt("这个 SPU 没有店铺版（生成时没勾店铺）。只送母版。"))
-                    pub_pick: list[str] = []
+                pub_pick = _shop_grid(shops, f"rv_pub_{sel}",
+                                      on_keys={k for k, r in versions.items() if r["status"] != "rejected"},
+                                      enabled_keys=set(versions)) if versions else []
+                miss_shops = [sh["shop_key"] for sh in shops if sh["shop_key"] not in versions]
+                g1, g2 = st.columns([3, 2])
+                if versions:
+                    g1.caption(tt("勾上 {n} 家").format(n=len(pub_pick)))
                 else:
-                    pub_pick = _shop_grid(shops, f"rv_pub_{sel}",
-                                          on_keys={k for k, r in versions.items() if r["status"] != "rejected"},
-                                          enabled_keys=set(versions))
-                    st.caption(tt("勾上 {n} 家").format(n=len(pub_pick)))
+                    g1.info(tt("这个 SPU 还没有店铺版（生成被打断或生成时没勾店铺）。"))
+                if miss_shops:
+                    g2.caption(tt("缺 {n} 家店的版本").format(n=len(miss_shops)))
+                    if g2.button(tt("▶ 补齐店铺版（{n} 家）").format(n=len(miss_shops)), key=f"rv_fill_{sel}",
+                                 disabled=not keys_on, use_container_width=True):
+                        try:
+                            lp = _spawn("localize.py", ["--spu", sel, "--shops", ",".join(miss_shops)] +
+                                        (["--image-processor-url", IMAGE_PROCESSOR_URL] if IMAGE_PROCESSOR_URL else ["--no-images"]),
+                                        f"fill-{sel}")
+                            st.success(tt("已在后台补齐，几分钟后刷新看；日志 {p}").format(p=lp.name))
+                        except Exception as e:  # noqa: BLE001
+                            st.error(tt("启动失败：") + str(e))
 
                 note = st.text_input(tt("备注（修改说明）"), key=f"rv_note_{sel}")
                 c1, c2, c4 = st.columns(3)
