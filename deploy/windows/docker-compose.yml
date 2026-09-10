@@ -102,7 +102,11 @@ services:
       #   GEMINI_API_KEY 未設定なら --mock-llm しか動かない（<MOCK> 文案は批准不可）。key は deploy/windows/.env に置く。
       #   IMAGE_PROCESSOR_URL: smikie_image_processor は別 stack（smikie_n8n_net）なので host.docker.internal 経由。
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      #   GROQ_API_KEY（2026-09-10 Boss「groq+gemini吧」）：配了就 Groq 优先、撞 429 自动切 Gemini。
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
       IMAGE_PROCESSOR_URL: ${IMAGE_PROCESSOR_URL:-http://host.docker.internal:8788}
+      #   page21 直接 import workflow-automation/shopee-listing 的流水线代码（下面 mount 到 /opt/shopee-listing）
+      SHOPEE_LISTING_DIR: /opt/shopee-listing
       TZ: Asia/Tokyo
     volumes:
       # 代码 bind mount（2026-05-19）: git pull 后立即生效，不需 --build
@@ -117,6 +121,9 @@ services:
       # image-processor の出力（抠图+模板成品 / SPU 拼图）を page21 で表示するための只読 mount（2026-09-09）。
       # smikie_image_processor は D:/Smikie-Images を /data/whitebg に rw mount している。同じコンテナ内パスで見せる。
       - ${SMIKIE_IMAGES_DIR:-D:/Smikie-Images}:/data/whitebg:ro
+      # Shopee 上架流水线代码（workflow-automation 仓 · 元川 git clone 一次，之后 git pull 同 CMS）。
+      # 只读 mount：CMS 只 import 跑，不改它。写图/写模板都经 image-processor sidecar，CMS 对 /data/whitebg 仍只读。
+      - ${SHOPEE_LISTING_DIR:-C:/Users/smiki/workflow-automation/shopee-listing}:/opt/shopee-listing:ro
       - ../../assets:/app/assets:ro
       - ../../README.md:/app/README.md:ro
       # PG schema（2026-09-02）: これを外していたせいで git pull しても新テーブルの

@@ -2,6 +2,9 @@
 
 2026-09-07 の教訓：commit メッセージに書いたのに実装していなかった／市場リストが
 2026-05-17 の Boss 校正（ID→BR）を 4 ヶ月追従していなかった。
+2026-09-10 v3：N8N 版 Tab1 を新パイプライン入口へ、一覧一括承認、画像差し替え、店舗ローカライズ、
+テンプレート管理。ロジックは workflow-automation/shopee-listing の draft_store / localize / image_pipeline に
+あり（そちらは pytest で本物のテスト）。ここは「page が本当にそれを呼んでいるか」だけ固定する。
 """
 from __future__ import annotations
 
@@ -9,67 +12,109 @@ import ast
 import re
 from pathlib import Path
 
-PAGE = Path(__file__).resolve().parent.parent / "pages" / "21_🚀_Shopee上架.py"
+ROOT = Path(__file__).resolve().parent.parent
+PAGE = ROOT / "pages" / "21_🚀_Shopee上架.py"
 SRC = PAGE.read_text(encoding="utf-8")
+I18N = (ROOT / "shared" / "i18n.py").read_text(encoding="utf-8")
+COLS = (ROOT / "shared" / "i18n_columns.py").read_text(encoding="utf-8")
+COMPOSE = (ROOT / "deploy" / "windows" / "docker-compose.yml").read_text(encoding="utf-8")
 
 
 def test_page_parses():
     ast.parse(SRC)
 
 
-def test_market_list_matches_actual_20_shops():
-    """実店は 7 国 = PH/MY/SG/TH/VN/TW/BR（ID なし・BR あり）。"""
-    m = re.search(r'st\.selectbox\(\s*"🌏 Shopee 站点",\s*\[([^\]]+)\]', SRC)
-    assert m, "市场 selectbox 不见了"
-    markets = re.findall(r'"([A-Z]{2})"', m.group(1))
-    assert markets == ["PH", "MY", "SG", "TH", "VN", "TW", "BR"]
+def test_market_order_matches_actual_7_countries():
+    """実店は 7 国 = PH/MY/SG/TH/VN/TW/BR（ID なし・BR あり）。価格表の列順に使う。"""
+    m = re.search(r'_MARKETS_ORDER = \[([^\]]+)\]', SRC)
+    assert m
+    assert re.findall(r'"([A-Z]{2})"', m.group(1)) == ["PH", "MY", "SG", "TH", "VN", "TW", "BR"]
 
 
-def test_has_review_tab_wired():
+def test_four_tabs_and_n8n_trigger_gone():
     assert 'tab_auto, tab_review, tab_refs, tab_history = st.tabs(' in SRC
-    assert '"✅ 待确认"' in SRC
-    assert "with tab_review:" in SRC
+    for name in ('"🤖 生成母版"', '"✅ 待确认"', '"🎨 主图模板"', '"📜 历史运行"'):
+        assert name in SRC, name
+    # 旧 N8N 触发（B1 の /api/sku/master は 2026-08-21 削除・リンク切れ）は page から消す
+    assert "trigger_workflow" not in SRC and "shopee-mass-upload" not in SRC
 
 
-def test_review_tab_reads_draft_tables_and_writes_via_write_conn():
-    assert 'shopee.listing_draft' in SRC and 'shopee.listing_draft_sku' in SRC
+def test_pipeline_code_imported_not_copied():
+    """ロジックは workflow-automation 側。page は import するだけ（二重実装禁止）。"""
+    assert "SHOPEE_LISTING_DIR" in SRC and "/opt/shopee-listing" in SRC
+    for fn in ("bulk_set_status", "set_sku_image", "set_spu_image", "list_shops", "list_shop_drafts",
+               "set_shop_status", "update_shop_text", "localize_spu", "build_shop_images", "ImageProcessorClient"):
+        assert re.search(rf"\b{fn}\b", SRC), fn
+    assert "SHOPEE_LISTING_DIR" in COMPOSE and "/opt/shopee-listing:ro" in COMPOSE
+    assert "GROQ_API_KEY" in COMPOSE
+
+
+def test_tab1_runs_pipeline_in_background_and_supports_no_images():
+    assert "run_pipeline.py" in SRC and "subprocess.Popen" in SRC
+    assert '"--batch-id"' in SRC and '"--no-images"' in SRC and '"--mock-llm"' in SRC
+    # DB URL はログに出さない
+    assert "postgresql://***" in SRC
+
+
+def test_review_writes_go_through_write_connection():
     assert "get_connection" in SRC, "写操作要拿写连接，不能用 get_readonly_connection"
-    # 批准/拒绝/保存 三个写路径都走 _draft_write（带 commit/rollback）
-    assert SRC.count("_draft_write(") >= 4  # 1 def + 3 calls
+    # 読みは只読接続 conn、書きは直前に get_connection()
+    assert SRC.count("wc = get_connection()") >= 8
+
+
+def test_batch_actions_and_isolation():
+    assert "st.data_editor(" in SRC and "CheckboxColumn" in SRC and "ImageColumn" in SRC
+    assert 'bulk_set_status(wc, picked, "approved"' in SRC and 'bulk_set_status(wc, picked, "rejected"' in SRC
+    assert "批量批准 ok={ok} fail={fail}" in SRC   # 逐项报数
 
 
 def test_mock_draft_cannot_be_approved():
-    """<MOCK> 占位文案不能进发布队列。"""
-    assert "startswith(\"<MOCK>\")" in SRC
+    assert 'startswith("<MOCK>")' in SRC
     assert "disabled=is_mock" in SRC
 
 
+def test_image_two_modes_and_templated_checkbox():
+    """Boss 2026-09-10：一键自动出图 / 上传主图；上传原图 → ☑ 也走抠图套模板。"""
+    assert "先不出图（之后在详情页手传）" in SRC and "自动出图" in SRC
+    assert "原图 → 也走抠图套模板" in SRC and "manual_image(" in SRC and "templated=templated" in SRC
+    # 换图后拼图重做
+    assert "compose_spu(sel, good, overwrite=True)" in SRC
+
+
+def test_localization_requires_master_approval_and_is_per_shop():
+    assert '("approved", "published")' in SRC and "母版批准后才能出店铺版" in SRC
+    assert "localize_spu(wc, sel, pick" in SRC
+    assert "fallback_template" in SRC            # 默认模板回落要标出来
+    assert 'set_shop_status(wc, sel, k, "approved"' in SRC
+
+
+def test_template_tab_uploads_via_sidecar_not_local_fs():
+    """CMS は /data/whitebg を只読 mount。テンプレートも画像も sidecar 経由でしか書かない。"""
+    assert "put_template(" in SRC and "delete_template(" in SRC and "list_templates()" in SRC
+    assert "REFERENCE_DIR" not in SRC and ".write_bytes(" not in SRC
+    assert "/data/whitebg:ro" in COMPOSE
+
+
 # ---- 状态与文案按 UI 语言显示（Boss 2026-09-09「匹配为中文和日文UI」）----
-I18N = (Path(__file__).resolve().parent.parent / "shared" / "i18n.py").read_text(encoding="utf-8")
-COLS = (Path(__file__).resolve().parent.parent / "shared" / "i18n_columns.py").read_text(encoding="utf-8")
-
-
 def test_status_values_never_shown_raw():
-    for raw in ('"待确认 draft"', '"已批准 approved"', '"已拒绝 rejected"', '"已发布 published"'):
-        assert raw not in SRC, raw
     assert "_STATUS_LABELS" in SRC and "format_func=_st_label" in SRC
-    assert '"status": _st_label(d["status"])' in SRC
+    assert '"status": _st_label(d["status"])' in SRC and '"status": _st_label(r["status"])' in SRC
 
 
-def test_review_tab_strings_have_japanese():
-    for zh, ja in [("草稿待确认", "確認待ち"), ("已批准", "承認済み"), ("已拒绝", "却下"), ("已发布", "公開済み"),
-                   ("✅ 待确认", "✅ 確認待ち"), ("状态", "状態"), ("命中 {n} 个 SPU", "該当 {n} SPU")]:
+def test_new_strings_have_japanese_and_english():
+    page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
+    for zh in ("🤖 生成母版", "🎨 主图模板", "✅ 批准勾选", "❌ 拒绝勾选", "💾 保存标题修改", "🌏 店铺本地化",
+               "🌏 生成本地化版", "✅ 批准勾选（=要上传）", "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
+               "批次", "自动出图", "先不出图（之后在详情页手传）"):
+        assert f'"{zh}":' in I18N, f"JA 缺 {zh}"
+        assert f'"{zh}":' in page_en, f"EN 缺 {zh}"
+    for zh, ja in [("草稿待确认", "確認待ち"), ("已批准", "承認済み"), ("已拒绝", "却下"), ("已发布", "公開済み"), ("✅ 待确认", "✅ 確認待ち")]:
         assert f'"{zh}": "{ja}"' in I18N, zh
-    # tab 内不再有裸 t()/裸中文按钮：关键控件都过 tt()
-    for s in ('tt("状态")', 'tt("打开一个 SPU")', 'tt("❌ 拒绝")', 'tt("✅ 批准（进发布队列）")'):
-        assert s in SRC, s
 
 
-def test_review_tables_use_localize_df_and_columns_have_ja():
-    assert SRC.count("localize_df(") >= 3     # 历史 tab 原有 1 + 待确认 tab 两张表
-    for col in ("spu_key", "status", "title", "category_id", "sku_count", "approved_by", "name_jp", "cost_jpy", "weight_g", "image"):
+def test_editor_columns_registered_in_i18n_columns():
+    for col in ("select", "thumb", "title_len", "batch_id", "shops_done", "shop_key", "shop_name", "lang", "template",
+                "template_updated", "image_source", "ph_price", "spu_key", "status", "title", "sku_count", "image", "country_code"):
         assert f'"{col}":' in COLS, f"i18n_columns 缺列键 {col}"
-    # 表格行字典必须用英文列键（localize_df 按英文键翻 ja/zh/en）
-    for k in ('"spu_key": d["spu_key"]', '"status": _st_label(d["status"])', '"title": (d["title"]',
-              '"jan": s_["jan"]', '"name_jp": (s_.get("name_jp")', 'row["image"] ='):
-        assert k in SRC, k
+    # 列表层/店铺层的 column_config 都用 label()，不写死中文
+    assert SRC.count('label("') >= 20

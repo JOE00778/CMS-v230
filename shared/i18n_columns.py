@@ -230,6 +230,20 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
     "cost_jpy":         {"ja": "原価¥",         "zh": "原価¥",      "en": "Cost ¥"},
     "weight_g":         {"ja": "毛重g",         "zh": "毛重g",      "en": "Gross g"},
     "image":            {"ja": "画像",          "zh": "图",         "en": "Image"},
+    # ── page21 批量审核 / 店铺本地化 / 主图模板 2026-09-10 ──
+    "select":           {"ja": "選択",          "zh": "选",         "en": "Select"},
+    "thumb":            {"ja": "サムネ",        "zh": "缩略图",     "en": "Thumb"},
+    "title_len":        {"ja": "文字数",        "zh": "字数",       "en": "Chars"},
+    "batch_id":         {"ja": "バッチ",        "zh": "批次",       "en": "Batch"},
+    "shops_done":       {"ja": "店舗版",        "zh": "店铺版",     "en": "Shop versions"},
+    "shop_key":         {"ja": "店舗キー",      "zh": "店铺",       "en": "Shop"},
+    "shop_name":        {"ja": "店舗名",        "zh": "店名",       "en": "Shop name"},
+    "country_code":     {"ja": "国",            "zh": "国家",       "en": "Country"},
+    "lang":             {"ja": "言語",          "zh": "语言",       "en": "Lang"},
+    "template":         {"ja": "テンプレート",  "zh": "模板",       "en": "Template"},
+    "template_updated": {"ja": "テンプレ更新",  "zh": "模板更新",   "en": "Template updated"},
+    "image_source":     {"ja": "画像ソース",    "zh": "图来源",     "en": "Image source"},
+    "ph_price":         {"ja": "PH価格",        "zh": "PH 价",      "en": "PH price"},
 }
 
 
