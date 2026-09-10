@@ -667,7 +667,6 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
         ("pages/14_💱_財務.py", "💱 财务"),
         ("pages/17_💰_价格改善.py", "💰 价格改善"),
         ("pages/11_💡_运营调整建议.py", "💡 运营调整建议"),
-        ("pages/21_🚀_Shopee上架.py", "🚀 Shopee 上架"),
     ]),
     ("🌐 自建站", [
         ("pages/38_📣_广告状态看板.py", "📣 广告状态看板"),
@@ -691,6 +690,7 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
     ]),
     ("🛠️ 工具", [
         ("pages/15_📝_商品登录.py", "📝 商品登录"),
+        ("pages/21_🚀_Shopee上架.py", "🚀 Shopee 上架"),
         ("pages/22_🔍_画像検索.py", "🔍 画像検索"),
         ("pages/24_♻️_不良品処分CSV.py", "♻️ 不良品处分 CSV"),
         ("pages/26_🌐_图片翻译.py", "🌐 图片翻译"),

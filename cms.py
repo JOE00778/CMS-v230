@@ -421,7 +421,7 @@ with st.expander(f"🗂️ {t('功能模块速查')}"):
         ("💱 Shopee財務", "Phase 4", "拨款 + 订单级对账"),
         ("📝 商品登录", "Phase 5", "新品工作流 → NetSuite Item Create CSV"),
         ("📈 等级历史趋势", "Phase 3", "Sankey 图跨季度等级流向"),
-        ("🚀 Shopee上架", "Phase 5", "SPU+SKU CSV → AI 文案 → 店小秘 / Shopee mass upload xlsx"),
+        ("🚀 Shopee上架", "Phase 5", "输 JAN → AI 英文母版 → 审核 → 店铺本地化 · 主图模板"),
         ("🛡️ 库存风控", "Phase 4", "月完売率 → 断货 / 压库存 风险监控（不出订货量）"),
     ]
 
