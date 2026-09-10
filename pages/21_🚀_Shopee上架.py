@@ -1,6 +1,6 @@
 """模块 #21 Shopee 上架（v3 草稿审核线 · 2026-09-10 重构）
 
-四个 Tab（Boss 2026-09-10 拍板的流程：英文母版 → 勾店铺 → 每店本地化 → 再定是否上传）：
+四个 Tab（Boss 2026-09-10 拍板：生成时选店一口气出英文母版 + 各店语言版 + 各店模板图；审核一次批准 = 全部进上传队列）：
 
     🤖 生成母版     →  直接输 JAN、勾选合并成 SPU → 容器内跑 run_pipeline.py（AI 文案 · 38% 原価率 7 国价 · 模板图）→ 进待确认
     ✅ 待确认       →  列表层批量批准/拒绝 + 详情层改文案/换图 + 店铺本地化（语言 · 不重复标题 · 店铺模板主图）
@@ -51,7 +51,7 @@ try:
                              bulk_set_status, set_sku_image, set_spu_image, list_shops, list_shop_drafts,
                              get_shop_draft, set_shop_status, update_shop_text, shop_counts)
     from image_pipeline import ImageProcessorClient, build_shop_images  # noqa: E402
-    from localize import localize_spu, lang_for_shop  # noqa: E402
+    from localize import lang_for_shop  # noqa: E402
     from sku_source import load_skus  # noqa: E402
     PIPE_OK, PIPE_ERR = True, ""
 except Exception as _e:  # noqa: BLE001
@@ -101,7 +101,6 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "已启动，批次 {b}。生成需要几分钟，下面看日志；完成后到「待确认」按批次筛。": "Started batch {b}. Takes a few minutes — see log below; then filter by batch in Review queue.",
     "启动失败：": "Failed to start: ", "最近运行日志": "Recent run logs", "🔄 刷新": "🔄 Refresh",
     "LLM key：": "LLM keys: ", "未配置任何 LLM key，只能出 <MOCK> 占位文案": "No LLM key configured — only <MOCK> placeholders",
-    "上架草稿确认：列表批量批 → 详情改文案换图 → 母版批准后勾店铺出本地化版 → 每店再批一次": "Review: batch-approve in the list → fix copy / images in detail → after master approval pick shops for localized versions → approve per shop",
     "批次": "Batch", "命中 {n} 个 SPU": "{n} SPUs", "这个状态下没有草稿": "No drafts in this status",
     "草稿表还没就位：先在元川 PG 跑 sql/001 + 002，再从「生成母版」出草稿。": "Draft tables missing: run sql/001 + 002 on the PG first, then generate from the first tab.",
     "勾选后批量操作（{n} 个）": "Batch actions on {n} selected",
@@ -116,14 +115,12 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "**SKU 与 7 国价格**（原価率 38% · 汇率取生成当时 NST 值）": "**SKUs & 7-country prices** (38% cost ratio · FX at generation time)",
     "🖼 换主图（按 JAN）": "🖼 Replace main image (per JAN)", "图片处理服务未配置（IMAGE_PROCESSOR_URL）": "Image processor not configured (IMAGE_PROCESSOR_URL)",
     "原图 → 也走抠图套模板": "Raw photo → also cut out + apply template", "上传": "Upload", "已换图 {j}（{s}）": "Replaced image {j} ({s})", "换图失败：": "Image upload failed: ",
-    "💾 保存修改（回到待确认，需再次确认）": "💾 Save (back to pending, re-confirm)", "已保存": "Saved", "没有行被更新": "No rows updated", "保存失败：": "Save failed: ",
-    "✅ 批准母版（进入店铺本地化）": "✅ Approve master (unlock shop localization)", "已批准 {k}": "Approved {k}", "批准失败：": "Approve failed: ",
+    "💾 保存修改（回到待确认，需再次确认）": "💾 Save (back to pending, re-confirm)", "已保存": "Saved", "没有行被更新": "No rows updated", "保存失败：": "Save failed: ", "已批准 {k}": "Approved {k}", "批准失败：": "Approve failed: ",
     "❌ 拒绝": "❌ Reject", "已拒绝 {k}": "Rejected {k}", "拒绝失败：": "Reject failed: ",
-    "🌏 店铺本地化": "🌏 Shop localization", "母版批准后才能出店铺版": "Approve the master first",
-    "勾选店铺": "Pick shops", "覆盖已批准的店铺版": "Overwrite approved shop versions", "同时出该店模板主图": "Also render shop-template images",
-    "🌏 生成本地化版": "🌏 Generate localized versions", "本地化：{s}": "Localization: {s}", "用了默认红模板的店（先到「主图模板」传该店模板）：": "Shops on default red template (upload their template first): ",
-    "本地化失败：": "Localization failed: ", "还没有店铺版": "No shop versions yet",
-    "✅ 批准勾选（=要上传）": "✅ Approve selected (= to publish)", "店铺版 {s}": "Shop versions {s}",
+    "🌏 店铺版": "🌏 Shop versions", "店铺（默认全部）": "Shops (default: all)",
+    "店铺版随母版一起批准/拒绝。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。": "Shop versions follow the master's approval. Use this only to exclude a shop, edit its title/description, or re-render its images.",
+    "✅ 批准（含全部店铺版）": "✅ Approve (incl. all shop versions)", "✅ 恢复勾选的店（重新纳入）": "✅ Re-include selected shops", "❌ 剔掉勾选的店": "❌ Exclude selected shops",
+    "上架草稿确认：勾选 → 批准（母版 + 全部店铺版一起进上传队列）；要改文案/换图/剔店才点进详情": "Review: select → approve (master + all shop versions enter the publish queue); open detail only to edit copy, replace images or exclude shops", "还没有店铺版": "No shop versions yet", "店铺版 {s}": "Shop versions {s}",
     "打开一个店铺版": "Open a shop version", "🔁 按当前模板重出该店图": "🔁 Re-render this shop's images with current template", "已重出 {k} 的图（{n} 张）": "Re-rendered {k} images ({n})",
     "每店一张主图模板：1500×1500 PNG，中间透明，四周方框 + 店铺 logo。上传即替换，之后出图自动用新模板；已出的图不自动重出（详情页有「重出」按钮）。": "One template per shop: 1500×1500 PNG, transparent middle, frame + shop logo. Uploading replaces it; new renders use it immediately; existing images are not re-rendered automatically (use the button in detail view).",
     "选店铺": "Shop", "模板 PNG（1500×1500 · 透明通道）": "Template PNG (1500×1500 · alpha)", "⬆️ 上传 / 替换模板": "⬆️ Upload / replace template", "已上传 {k} 模板": "Template {k} uploaded", "上传失败：": "Upload failed: ",
@@ -336,6 +333,15 @@ with tab_auto:
     img_mode = c1.radio(tt("主图"), [tt("自动出图"), tt("先不出图（之后在详情页手传）")], key="gen_img_mode", horizontal=True)
     default_batch = f"ops-{datetime.now():%Y%m%d-%H%M}"
     batch_id = c2.text_input(tt("批次号"), value=default_batch, key="gen_batch")
+    # 店铺一次选好：母版 + 各店语言版 + 各店模板图一口气出（Boss 2026-09-10「太繁琐」）
+    try:
+        gen_shops = list_shops(conn) if PIPE_OK else []
+    except Exception as e:  # noqa: BLE001
+        gen_shops = []
+        st.error(str(e))
+    gen_pick = st.multiselect(tt("店铺（默认全部）"), [x["shop_key"] for x in gen_shops], default=[x["shop_key"] for x in gen_shops],
+                              format_func=lambda k: f"{k} · {next(x['shop_name'] for x in gen_shops if x['shop_key'] == k)} · {lang_for_shop(next(x for x in gen_shops if x['shop_key'] == k))}",
+                              key="gen_shops")
 
     if st.button(tt("🚀 生成母版"), type="primary", disabled=not (spus and PIPE_OK), use_container_width=True, key="gen_go"):
         try:
@@ -352,6 +358,8 @@ with tab_auto:
                 cmd += ["--no-images"]
             if not keys_on:
                 cmd += ["--mock-llm"]
+            if gen_pick:
+                cmd += ["--shops", ",".join(gen_pick)]
             with open(log_path, "ab") as lf:
                 lf.write(f"# {_now()} {' '.join(c if 'postgresql://' not in c else 'postgresql://***' for c in cmd)}\n".encode())
                 subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=os.environ.copy(), cwd=str(_SL_DIR))
@@ -379,7 +387,7 @@ with tab_auto:
 # Tab 2 · ✅ 待确认（列表批量 → 详情 → 店铺本地化）
 # ============================================================
 with tab_review:
-    st.subheader(tt("上架草稿确认：列表批量批 → 详情改文案换图 → 母版批准后勾店铺出本地化版 → 每店再批一次"))
+    st.subheader(tt("上架草稿确认：勾选 → 批准（母版 + 全部店铺版一起进上传队列）；要改文案/换图/剔店才点进详情"))
     counts = None
     if PIPE_OK:
         try:
@@ -561,7 +569,7 @@ with tab_review:
                         st.success(tt("已保存")) if n else st.warning(tt("没有行被更新"))
                     except Exception as e:  # noqa: BLE001
                         st.error(tt("保存失败：") + str(e))
-                if c2.button(tt("✅ 批准母版（进入店铺本地化）"), type="primary", key=f"rv_ok_{sel}",
+                if c2.button(tt("✅ 批准（含全部店铺版）"), type="primary", key=f"rv_ok_{sel}",
                              disabled=is_mock or new_title.startswith("<MOCK>") or d.get("status") == "published", use_container_width=True):
                     try:
                         wc = get_connection()
@@ -582,40 +590,17 @@ with tab_review:
 
                 # ---------------- 店铺本地化 ----------------
                 st.divider()
-                st.subheader(tt("🌏 店铺本地化"))
-                if d.get("status") not in ("approved", "published"):
-                    st.info(tt("母版批准后才能出店铺版"))
-                else:
-                    try:
-                        shops = list_shops(conn)
-                    except Exception as e:  # noqa: BLE001
-                        shops = []
-                        st.error(str(e))
-                    shop_by_key = {s["shop_key"]: s for s in shops}
-                    existing = {r["shop_key"]: r for r in list_shop_drafts(conn, spu_key=sel)}
-                    fmt = lambda k: f"{k} · {shop_by_key[k]['shop_name']} · {lang_for_shop(shop_by_key[k])}" + ("  ✔" if k in existing else "")  # noqa: E731
-                    pick = st.multiselect(tt("勾选店铺"), [s["shop_key"] for s in shops], default=[s["shop_key"] for s in shops],
-                                          format_func=fmt, key=f"lc_pick_{sel}")
-                    o1, o2 = st.columns(2)
-                    force = o1.checkbox(tt("覆盖已批准的店铺版"), value=False, key=f"lc_force_{sel}")
-                    with_img = o2.checkbox(tt("同时出该店模板主图"), value=bool(_ip_client()), key=f"lc_img_{sel}", disabled=_ip_client() is None)
-                    if st.button(tt("🌏 生成本地化版"), type="primary", disabled=not pick, key=f"lc_go_{sel}"):
-                        try:
-                            wc = get_connection()
-                            with st.spinner("LLM…"):
-                                rep = localize_spu(wc, sel, pick, image_client=_ip_client() if with_img else None, force=force)
-                            st.success(tt("本地化：{s}").format(s=rep.summary()))
-                            if rep.fallback_template:
-                                st.warning(tt("用了默认红模板的店（先到「主图模板」传该店模板）：") + ", ".join(rep.fallback_template))
-                            for k, m in rep.fail:
-                                st.error(f"{k}: {m}")
-                            for k, m in rep.skipped:
-                                st.caption(f"SKIP {k}: {m}")
-                            _thumb.clear()
-                            existing = {r["shop_key"]: r for r in list_shop_drafts(conn, spu_key=sel)}
-                        except Exception as e:  # noqa: BLE001
-                            st.error(tt("本地化失败：") + str(e))
-
+                st.subheader(tt("🌏 店铺版"))
+                st.caption(tt("店铺版随母版一起批准/拒绝。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。"))
+                try:
+                    shops = list_shops(conn)
+                except Exception as e:  # noqa: BLE001
+                    shops = []
+                    st.error(str(e))
+                shop_by_key = {s["shop_key"]: s for s in shops}
+                existing = {r["shop_key"]: r for r in list_shop_drafts(conn, spu_key=sel)}
+                fmt = lambda k: f"{k} · {(shop_by_key.get(k) or {}).get('shop_name', '')} · {existing[k]['lang'] if k in existing else ''}"  # noqa: E731
+                if True:
                     if not existing:
                         st.info(tt("还没有店铺版"))
                     else:
@@ -647,11 +632,11 @@ with tab_review:
                         schanged = {r.shop_key: r.title for r in sed.itertuples() if (r.title or "") != (existing[r.shop_key]["title"] or "")}
                         snote = st.text_input(tt("备注（拒绝原因 / 修改说明）"), key=f"lc_note_{sel}")
                         s1, s2, s3 = st.columns(3)
-                        if s1.button(tt("✅ 批准勾选（=要上传）"), type="primary", disabled=not spicked, key=f"lc_ok_{sel}", use_container_width=True):
+                        if s1.button(tt("✅ 恢复勾选的店（重新纳入）"), disabled=not spicked, key=f"lc_ok_{sel}", use_container_width=True):
                             wc = get_connection()
                             ok = sum(1 for k in spicked if set_shop_status(wc, sel, k, "approved", by=user_email, note=snote or None))
                             st.success(tt("批量批准 ok={ok} fail={fail}").format(ok=ok, fail=len(spicked) - ok))
-                        if s2.button(tt("❌ 拒绝勾选"), disabled=not spicked, key=f"lc_no_{sel}", use_container_width=True):
+                        if s2.button(tt("❌ 剔掉勾选的店"), disabled=not spicked, key=f"lc_no_{sel}", use_container_width=True):
                             if not snote.strip():
                                 st.warning(tt("拒绝要写原因"))
                             else:

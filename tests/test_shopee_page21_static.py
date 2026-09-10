@@ -43,7 +43,7 @@ def test_pipeline_code_imported_not_copied():
     """ロジックは workflow-automation 側。page は import するだけ（二重実装禁止）。"""
     assert "SHOPEE_LISTING_DIR" in SRC and "/opt/shopee-listing" in SRC
     for fn in ("bulk_set_status", "set_sku_image", "set_spu_image", "list_shops", "list_shop_drafts",
-               "set_shop_status", "update_shop_text", "localize_spu", "build_shop_images", "ImageProcessorClient"):
+               "set_shop_status", "update_shop_text", "lang_for_shop", "build_shop_images", "ImageProcessorClient"):
         assert re.search(rf"\b{fn}\b", SRC), fn
     assert "SHOPEE_LISTING_DIR" in COMPOSE and "/opt/shopee-listing:ro" in COMPOSE
     assert "GROQ_API_KEY" in COMPOSE
@@ -90,11 +90,14 @@ def test_image_two_modes_and_templated_checkbox():
     assert "compose_spu(sel, good, overwrite=True)" in SRC
 
 
-def test_localization_requires_master_approval_and_is_per_shop():
-    assert '("approved", "published")' in SRC and "母版批准后才能出店铺版" in SRC
-    assert "localize_spu(wc, sel, pick" in SRC
-    assert "fallback_template" in SRC            # 默认模板回落要标出来
-    assert 'set_shop_status(wc, sel, k, "approved"' in SRC
+def test_one_step_flow_shops_chosen_at_generation_and_single_approval():
+    """Boss 2026-09-10「太繁琐」：生成时选店一口气出店铺版；审核一次批准级联。页面不再有单独的本地化按钮。"""
+    assert '"--shops"' in SRC and 'key="gen_shops"' in SRC
+    assert "localize_spu" not in SRC and "🌏 生成本地化版" not in SRC and "母版批准后才能出店铺版" not in SRC
+    assert "✅ 批准（含全部店铺版）" in SRC
+    # 店铺区只做剔店 / 恢复 / 改文案 / 重出图
+    assert 'set_shop_status(wc, sel, k, "rejected"' in SRC and 'set_shop_status(wc, sel, k, "approved"' in SRC
+    assert "build_shop_images(sel," in SRC
 
 
 def test_template_tab_uploads_via_sidecar_not_local_fs():
@@ -112,8 +115,8 @@ def test_status_values_never_shown_raw():
 
 def test_new_strings_have_japanese_and_english():
     page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
-    for zh in ("🤖 生成母版", "🎨 主图模板", "✅ 批准勾选", "❌ 拒绝勾选", "💾 保存标题修改", "🌏 店铺本地化",
-               "🌏 生成本地化版", "✅ 批准勾选（=要上传）", "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
+    for zh in ("🤖 生成母版", "🎨 主图模板", "✅ 批准勾选", "❌ 拒绝勾选", "💾 保存标题修改", "🌏 店铺版", "店铺（默认全部）",
+               "✅ 批准（含全部店铺版）", "❌ 剔掉勾选的店", "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
                "批次", "自动出图", "先不出图（之后在详情页手传）", "JAN（一行一个，或空格/逗号分隔）", "🔗 勾选的合并成一个 SPU", "合并后的 SPU 名"):
         assert f'"{zh}":' in I18N, f"JA 缺 {zh}"
         assert f'"{zh}":' in page_en, f"EN 缺 {zh}"
