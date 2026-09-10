@@ -3,7 +3,7 @@
 四个 Tab（Boss 2026-09-10 拍板：生成时选店一口气出英文母版 + 各店语言版 + 各店模板图；审核一次批准 = 全部进上传队列）：
 
     🤖 生成母版     →  直接输 JAN、勾选合并成 SPU → 容器内跑 run_pipeline.py（AI 文案 · 38% 原価率 7 国价 · 模板图）→ 进待确认
-    ✅ 待确认       →  列表层批量批准/拒绝 + 详情层改文案/换图 + 店铺本地化（语言 · 不重复标题 · 店铺模板主图）
+    ✅ 待确认       →  列表层批量批准 + 详情层改文案/换图 + 店铺本地化（语言 · 不重复标题 · 店铺模板主图）
     🎨 主图模板     →  每店一张 1500×1500 透明 PNG（方框 + 店铺 logo），CMS 上传即生效，不进镜像
     📜 历史运行     →  automation_runs（旧 N8N 线的记录，只读）
 
@@ -85,7 +85,7 @@ conn = get_readonly_connection()
 # --------------------------------------------------------------------------- #
 _PAGE_STRINGS_EN: Dict[str, str] = {
     "🤖 生成母版": "🤖 Generate master", "✅ 待确认": "✅ Review queue", "🎨 主图模板": "🎨 Image templates", "📜 历史运行": "📜 Run history",
-    "草稿待确认": "Pending review", "已批准": "Approved", "已拒绝": "Rejected", "已发布": "Published", "状态": "Status", "全部": "All",
+    "草稿待确认": "Pending review", "已批准": "Approved", "已发布": "Published", "状态": "Status", "全部": "All",
     "Shopee 上架": "Shopee Listing",
     "生成母版 / 待确认 / 主图模板 / 历史运行 一站式": "Generate / Review / Templates / History — all in one",
     "生成英文母版：输 JAN → 勾选合并成 SPU → 流水线出文案 · 7 国价 · 图 → 进「待确认」": "Generate the English master: enter JANs → merge into SPUs → pipeline writes copy · 7-country prices · images → Review queue",
@@ -104,12 +104,12 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "批次": "Batch", "命中 {n} 个 SPU": "{n} SPUs", "这个状态下没有草稿": "No drafts in this status",
     "草稿表还没就位：先在元川 PG 跑 sql/001 + 002，再从「生成母版」出草稿。": "Draft tables missing: run sql/001 + 002 on the PG first, then generate from the first tab.",
     "勾选后批量操作（{n} 个）": "Batch actions on {n} selected",
-    "✅ 批准勾选": "✅ Approve selected", "❌ 拒绝勾选": "❌ Reject selected", "💾 保存标题修改": "💾 Save title edits",
+    "✅ 批准勾选": "✅ Approve selected", "💾 保存标题修改": "💾 Save title edits",
+    "备注（修改说明）": "Note (edit memo)", "已剔掉 {ok} 家店": "Excluded {ok} shops",
     "🗑 删除勾选": "🗑 Delete selected", "🗑 删除": "🗑 Delete", "确认删除": "Confirm delete",
     "已删除 {ok} 个，跳过 {fail} 个（已发布的不删）": "Deleted {ok}, skipped {fail} (published are kept)", "已删除 {k}": "Deleted {k}",
-    "已拒绝 = 退回待改：改完文案/换图后保存会回到待确认，可再批准；不要的用删除。": "Rejected = sent back: edit copy / images and save to return it to pending, then approve; use Delete to discard.",
-    "批量批准 ok={ok} fail={fail}": "Batch approve ok={ok} fail={fail}", "批量拒绝 ok={ok} fail={fail}": "Batch reject ok={ok} fail={fail}",
-    "失败/跳过：": "Failed/skipped: ", "拒绝要写原因": "Rejection needs a reason", "备注（拒绝原因 / 修改说明）": "Note (reason / edit memo)",
+    "批量批准 ok={ok} fail={fail}": "Batch approve ok={ok} fail={fail}",
+    "失败/跳过：": "Failed/skipped: ",
     "标题改了 {n} 条（回到待确认）": "Updated {n} titles (back to pending)",
     "打开一个 SPU": "Open an SPU", "这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能批准上架。": "This is a <MOCK> placeholder (no LLM key) — cannot be approved.",
     "标题（80–120 字符）": "Title (80–120 chars)", "{n} 字符": "{n} chars", "描述": "Description", "{n} 字符 · Shopee 上限 3000": "{n} chars · Shopee max 3000",
@@ -119,9 +119,8 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "🖼 换主图（按 JAN）": "🖼 Replace main image (per JAN)", "图片处理服务未配置（IMAGE_PROCESSOR_URL）": "Image processor not configured (IMAGE_PROCESSOR_URL)",
     "原图 → 也走抠图套模板": "Raw photo → also cut out + apply template", "上传": "Upload", "已换图 {j}（{s}）": "Replaced image {j} ({s})", "换图失败：": "Image upload failed: ",
     "💾 保存修改（回到待确认，需再次确认）": "💾 Save (back to pending, re-confirm)", "已保存": "Saved", "没有行被更新": "No rows updated", "保存失败：": "Save failed: ", "已批准 {k}": "Approved {k}", "批准失败：": "Approve failed: ",
-    "❌ 拒绝": "❌ Reject", "已拒绝 {k}": "Rejected {k}", "拒绝失败：": "Reject failed: ",
     "🌏 店铺版": "🌏 Shop versions", "店铺（默认全部）": "Shops (default: all)",
-    "店铺版随母版一起批准/拒绝。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。": "Shop versions follow the master's approval. Use this only to exclude a shop, edit its title/description, or re-render its images.",
+    "店铺版随母版一起批准。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。": "Shop versions follow the master's approval. Use this only to exclude a shop, edit its title/description, or re-render its images.",
     "✅ 批准（含全部店铺版）": "✅ Approve (incl. all shop versions)", "✅ 恢复勾选的店（重新纳入）": "✅ Re-include selected shops", "❌ 剔掉勾选的店": "❌ Exclude selected shops",
     "上架草稿确认：勾选 → 批准（母版 + 全部店铺版一起进上传队列）；要改文案/换图/剔店才点进详情": "Review: select → approve (master + all shop versions enter the publish queue); open detail only to edit copy, replace images or exclude shops", "还没有店铺版": "No shop versions yet", "店铺版 {s}": "Shop versions {s}",
     "打开一个店铺版": "Open a shop version", "🔁 按当前模板重出该店图": "🔁 Re-render this shop's images with current template", "已重出 {k} 的图（{n} 张）": "Re-rendered {k} images ({n})",
@@ -147,7 +146,7 @@ _DRAFT_SKU_T = "shopee.listing_draft_sku"
 _DRAFT_SHOP_T = "shopee.listing_draft_shop"
 _MARKETS_ORDER = ["PH", "MY", "SG", "TH", "VN", "TW", "BR"]
 # 状态值在库里固定为英文（发布器/流水线按它判断），**显示层**按 UI 语言翻译（Boss 2026-09-09「匹配为中文和日文UI」）。
-_STATUS_LABELS = {"draft": "草稿待确认", "approved": "已批准", "rejected": "已拒绝", "published": "已发布"}
+_STATUS_LABELS = {"draft": "草稿待确认", "approved": "已批准", "published": "已发布"}   # rejected 只在店铺层内部用（剔店），UI 不露
 _STATUS_ALL = "__all__"
 _BATCH_ALL = "__all__"
 
@@ -402,14 +401,13 @@ with tab_review:
 
     if counts is not None:
         user_email = st.session_state.get("user_email", "admin")
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3 = st.columns(3)
         m1.metric(_st_label("draft"), counts.get("draft", 0))
         m2.metric(_st_label("approved"), counts.get("approved", 0))
-        m3.metric(_st_label("rejected"), counts.get("rejected", 0))
-        m4.metric(_st_label("published"), counts.get("published", 0))
+        m3.metric(_st_label("published"), counts.get("published", 0))
 
         f1, f2 = st.columns([1, 2])
-        status_pick = f1.selectbox(tt("状态"), ["draft", "approved", "rejected", "published", _STATUS_ALL],
+        status_pick = f1.selectbox(tt("状态"), ["draft", "approved", "published", _STATUS_ALL],
                                    format_func=_st_label, key="rv_status")
         batches = list_batches(conn)
         batch_pick = f2.selectbox(tt("批次"), [_BATCH_ALL] + [b for b, _ in batches],
@@ -462,24 +460,14 @@ with tab_review:
             changed_titles = {r.spu_key: r.title for r in edited.itertuples()
                               if (r.title or "") != (next(d["title"] for d in drafts if d["spu_key"] == r.spu_key) or "")}
             st.markdown(f"**{tt('勾选后批量操作（{n} 个）').format(n=len(picked))}**")
-            st.caption(tt("已拒绝 = 退回待改：改完文案/换图后保存会回到待确认，可再批准；不要的用删除。"))
-            bnote = st.text_input(tt("备注（拒绝原因 / 修改说明）"), key="rv_bulk_note")
-            b1, b2, b3, b4 = st.columns(4)
+            bnote = st.text_input(tt("备注（修改说明）"), key="rv_bulk_note")
+            b1, b3, b4 = st.columns(3)
             if b1.button(tt("✅ 批准勾选"), type="primary", disabled=not picked, key="rv_bulk_ok", use_container_width=True):
                 wc = get_connection()
                 ok, failed = bulk_set_status(wc, picked, "approved", by=user_email, note=bnote or None)
                 st.success(tt("批量批准 ok={ok} fail={fail}").format(ok=ok, fail=len(failed)))
                 if failed:
                     st.warning(tt("失败/跳过：") + ", ".join(failed))
-            if b2.button(tt("❌ 拒绝勾选"), disabled=not picked, key="rv_bulk_no", use_container_width=True):
-                if not bnote.strip():
-                    st.warning(tt("拒绝要写原因"))
-                else:
-                    wc = get_connection()
-                    ok, failed = bulk_set_status(wc, picked, "rejected", note=bnote)
-                    st.success(tt("批量拒绝 ok={ok} fail={fail}").format(ok=ok, fail=len(failed)))
-                    if failed:
-                        st.warning(tt("失败/跳过：") + ", ".join(failed))
             if b3.button(tt("💾 保存标题修改"), disabled=not changed_titles, key="rv_bulk_title", use_container_width=True):
                 wc = get_connection()
                 n = 0
@@ -570,8 +558,8 @@ with tab_review:
                             except Exception as e:  # noqa: BLE001
                                 st.error(tt("换图失败：") + str(e))
 
-                note = st.text_input(tt("备注（拒绝原因 / 修改说明）"), key=f"rv_note_{sel}")
-                c1, c2, c3, c4 = st.columns(4)
+                note = st.text_input(tt("备注（修改说明）"), key=f"rv_note_{sel}")
+                c1, c2, c4 = st.columns(3)
                 if c1.button(tt("💾 保存修改（回到待确认，需再次确认）"), key=f"rv_save_{sel}", use_container_width=True):
                     try:
                         wc = get_connection()
@@ -588,16 +576,6 @@ with tab_review:
                         st.success(tt("已批准 {k}").format(k=sel)) if n else st.warning(tt("没有行被更新"))
                     except Exception as e:  # noqa: BLE001
                         st.error(tt("批准失败：") + str(e))
-                if c3.button(tt("❌ 拒绝"), key=f"rv_no_{sel}", disabled=d.get("status") == "published", use_container_width=True):
-                    if not note.strip():
-                        st.warning(tt("拒绝要写原因"))
-                    else:
-                        try:
-                            wc = get_connection()
-                            n = set_status(wc, sel, "rejected", note=note)
-                            st.success(tt("已拒绝 {k}").format(k=sel)) if n else st.warning(tt("没有行被更新"))
-                        except Exception as e:  # noqa: BLE001
-                            st.error(tt("拒绝失败：") + str(e))
                 with c4:
                     d_ok = st.checkbox(tt("确认删除"), key=f"rv_del_ok_{sel}", disabled=d.get("status") == "published")
                     if st.button(tt("🗑 删除"), disabled=not d_ok, key=f"rv_del_{sel}", use_container_width=True):
@@ -609,7 +587,7 @@ with tab_review:
                 # ---------------- 店铺本地化 ----------------
                 st.divider()
                 st.subheader(tt("🌏 店铺版"))
-                st.caption(tt("店铺版随母版一起批准/拒绝。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。"))
+                st.caption(tt("店铺版随母版一起批准。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。"))
                 try:
                     shops = list_shops(conn)
                 except Exception as e:  # noqa: BLE001
@@ -648,19 +626,16 @@ with tab_review:
                             })
                         spicked = sed[sed["select"] == True]["shop_key"].tolist()  # noqa: E712
                         schanged = {r.shop_key: r.title for r in sed.itertuples() if (r.title or "") != (existing[r.shop_key]["title"] or "")}
-                        snote = st.text_input(tt("备注（拒绝原因 / 修改说明）"), key=f"lc_note_{sel}")
+                        snote = st.text_input(tt("备注（修改说明）"), key=f"lc_note_{sel}")
                         s1, s2, s3 = st.columns(3)
                         if s1.button(tt("✅ 恢复勾选的店（重新纳入）"), disabled=not spicked, key=f"lc_ok_{sel}", use_container_width=True):
                             wc = get_connection()
                             ok = sum(1 for k in spicked if set_shop_status(wc, sel, k, "approved", by=user_email, note=snote or None))
                             st.success(tt("批量批准 ok={ok} fail={fail}").format(ok=ok, fail=len(spicked) - ok))
                         if s2.button(tt("❌ 剔掉勾选的店"), disabled=not spicked, key=f"lc_no_{sel}", use_container_width=True):
-                            if not snote.strip():
-                                st.warning(tt("拒绝要写原因"))
-                            else:
-                                wc = get_connection()
-                                ok = sum(1 for k in spicked if set_shop_status(wc, sel, k, "rejected", note=snote))
-                                st.success(tt("批量拒绝 ok={ok} fail={fail}").format(ok=ok, fail=len(spicked) - ok))
+                            wc = get_connection()
+                            ok = sum(1 for k in spicked if set_shop_status(wc, sel, k, "rejected", note=snote or None))
+                            st.success(tt("已剔掉 {ok} 家店").format(ok=ok))
                         if s3.button(tt("💾 保存标题修改"), disabled=not schanged, key=f"lc_title_{sel}", use_container_width=True):
                             wc = get_connection()
                             n = sum(1 for k, v in schanged.items() if update_shop_text(wc, sel, k, title=v))

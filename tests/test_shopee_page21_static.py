@@ -73,7 +73,10 @@ def test_review_writes_go_through_write_connection():
 
 def test_batch_actions_and_isolation():
     assert "st.data_editor(" in SRC and "CheckboxColumn" in SRC and "ImageColumn" in SRC
-    assert 'bulk_set_status(wc, picked, "approved"' in SRC and 'bulk_set_status(wc, picked, "rejected"' in SRC
+    assert 'bulk_set_status(wc, picked, "approved"' in SRC
+    # Boss 2026-09-10「不需要已拒绝」：UI 无拒绝；不要的直接删
+    assert "拒绝" not in SRC and '"rejected"' not in SRC.split("_STATUS_LABELS")[1].split("\n")[0]
+    assert '["draft", "approved", "published", _STATUS_ALL]' in SRC
     assert "批量批准 ok={ok} fail={fail}" in SRC   # 逐项报数
     # 删除要二次确认，且走 delete_drafts（published 不删）
     assert "delete_drafts(wc, picked)" in SRC and "delete_drafts(wc, [sel])" in SRC and SRC.count('tt("确认删除")') == 2
@@ -117,12 +120,12 @@ def test_status_values_never_shown_raw():
 
 def test_new_strings_have_japanese_and_english():
     page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
-    for zh in ("🤖 生成母版", "🎨 主图模板", "✅ 批准勾选", "❌ 拒绝勾选", "💾 保存标题修改", "🌏 店铺版", "店铺（默认全部）",
+    for zh in ("🤖 生成母版", "🎨 主图模板", "✅ 批准勾选", "💾 保存标题修改", "🌏 店铺版", "店铺（默认全部）",
                "✅ 批准（含全部店铺版）", "❌ 剔掉勾选的店", "🗑 删除勾选", "确认删除", "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
                "批次", "自动出图", "先不出图（之后在详情页手传）", "JAN（一行一个，或空格/逗号分隔）", "🔗 勾选的合并成一个 SPU", "合并后的 SPU 名"):
         assert f'"{zh}":' in I18N, f"JA 缺 {zh}"
         assert f'"{zh}":' in page_en, f"EN 缺 {zh}"
-    for zh, ja in [("草稿待确认", "確認待ち"), ("已批准", "承認済み"), ("已拒绝", "却下"), ("已发布", "公開済み"), ("✅ 待确认", "✅ 確認待ち")]:
+    for zh, ja in [("草稿待确认", "確認待ち"), ("已批准", "承認済み"), ("已发布", "公開済み"), ("✅ 待确认", "✅ 確認待ち")]:
         assert f'"{zh}": "{ja}"' in I18N, zh
 
 
