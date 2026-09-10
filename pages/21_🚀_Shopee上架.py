@@ -48,7 +48,7 @@ if str(_SL_DIR / "scripts") not in sys.path:
     sys.path.insert(0, str(_SL_DIR / "scripts"))
 try:
     from draft_store import (list_drafts, list_batches, get_draft, set_status, update_text, counts_by_status,  # noqa: E402
-                             bulk_set_status, set_sku_image, set_spu_image, list_shops, list_shop_drafts,
+                             bulk_set_status, delete_drafts, set_sku_image, set_spu_image, list_shops, list_shop_drafts,
                              get_shop_draft, set_shop_status, update_shop_text, shop_counts)
     from image_pipeline import ImageProcessorClient, build_shop_images  # noqa: E402
     from localize import lang_for_shop  # noqa: E402
@@ -105,6 +105,9 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "草稿表还没就位：先在元川 PG 跑 sql/001 + 002，再从「生成母版」出草稿。": "Draft tables missing: run sql/001 + 002 on the PG first, then generate from the first tab.",
     "勾选后批量操作（{n} 个）": "Batch actions on {n} selected",
     "✅ 批准勾选": "✅ Approve selected", "❌ 拒绝勾选": "❌ Reject selected", "💾 保存标题修改": "💾 Save title edits",
+    "🗑 删除勾选": "🗑 Delete selected", "🗑 删除": "🗑 Delete", "确认删除": "Confirm delete",
+    "已删除 {ok} 个，跳过 {fail} 个（已发布的不删）": "Deleted {ok}, skipped {fail} (published are kept)", "已删除 {k}": "Deleted {k}",
+    "已拒绝 = 退回待改：改完文案/换图后保存会回到待确认，可再批准；不要的用删除。": "Rejected = sent back: edit copy / images and save to return it to pending, then approve; use Delete to discard.",
     "批量批准 ok={ok} fail={fail}": "Batch approve ok={ok} fail={fail}", "批量拒绝 ok={ok} fail={fail}": "Batch reject ok={ok} fail={fail}",
     "失败/跳过：": "Failed/skipped: ", "拒绝要写原因": "Rejection needs a reason", "备注（拒绝原因 / 修改说明）": "Note (reason / edit memo)",
     "标题改了 {n} 条（回到待确认）": "Updated {n} titles (back to pending)",
@@ -459,8 +462,9 @@ with tab_review:
             changed_titles = {r.spu_key: r.title for r in edited.itertuples()
                               if (r.title or "") != (next(d["title"] for d in drafts if d["spu_key"] == r.spu_key) or "")}
             st.markdown(f"**{tt('勾选后批量操作（{n} 个）').format(n=len(picked))}**")
+            st.caption(tt("已拒绝 = 退回待改：改完文案/换图后保存会回到待确认，可再批准；不要的用删除。"))
             bnote = st.text_input(tt("备注（拒绝原因 / 修改说明）"), key="rv_bulk_note")
-            b1, b2, b3 = st.columns(3)
+            b1, b2, b3, b4 = st.columns(4)
             if b1.button(tt("✅ 批准勾选"), type="primary", disabled=not picked, key="rv_bulk_ok", use_container_width=True):
                 wc = get_connection()
                 ok, failed = bulk_set_status(wc, picked, "approved", by=user_email, note=bnote or None)
@@ -487,6 +491,13 @@ with tab_review:
                         wc.rollback()
                         st.error(f"{k}: {e}")
                 st.success(tt("标题改了 {n} 条（回到待确认）").format(n=n))
+            with b4:
+                del_ok = st.checkbox(tt("确认删除"), key="rv_bulk_del_ok", disabled=not picked)
+                if st.button(tt("🗑 删除勾选"), disabled=not (picked and del_ok), key="rv_bulk_del", use_container_width=True):
+                    wc = get_connection()
+                    ok, failed = delete_drafts(wc, picked)
+                    st.success(tt("已删除 {ok} 个，跳过 {fail} 个（已发布的不删）").format(ok=ok, fail=len(failed)))
+                    st.rerun()
 
             # ---------------- 详情层 ----------------
             st.divider()
@@ -560,7 +571,7 @@ with tab_review:
                                 st.error(tt("换图失败：") + str(e))
 
                 note = st.text_input(tt("备注（拒绝原因 / 修改说明）"), key=f"rv_note_{sel}")
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 if c1.button(tt("💾 保存修改（回到待确认，需再次确认）"), key=f"rv_save_{sel}", use_container_width=True):
                     try:
                         wc = get_connection()
@@ -587,6 +598,13 @@ with tab_review:
                             st.success(tt("已拒绝 {k}").format(k=sel)) if n else st.warning(tt("没有行被更新"))
                         except Exception as e:  # noqa: BLE001
                             st.error(tt("拒绝失败：") + str(e))
+                with c4:
+                    d_ok = st.checkbox(tt("确认删除"), key=f"rv_del_ok_{sel}", disabled=d.get("status") == "published")
+                    if st.button(tt("🗑 删除"), disabled=not d_ok, key=f"rv_del_{sel}", use_container_width=True):
+                        wc = get_connection()
+                        ok, failed = delete_drafts(wc, [sel])
+                        st.success(tt("已删除 {k}").format(k=sel)) if ok else st.warning(tt("没有行被更新"))
+                        st.rerun()
 
                 # ---------------- 店铺本地化 ----------------
                 st.divider()
