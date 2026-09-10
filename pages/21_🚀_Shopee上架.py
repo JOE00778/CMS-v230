@@ -1,9 +1,9 @@
 """模块 #21 Shopee 上架（v3 草稿审核线 · 2026-09-10 重构）
 
-四个 Tab（Boss 2026-09-10 拍板：生成时选店一口气出英文母版 + 各店语言版 + 各店模板图；审核一次批准 = 全部进上传队列）：
+四个 Tab（Boss 2026-09-10 拍板：生成时选店一口气出英文母版 + 各店语言版 + 各店模板图；确认一次 = 母版和全部店铺版一起送上架后台）：
 
     🤖 生成母版     →  一行一个 SPU 地粘 JAN（行内多个 = 多 SKU）→ 容器内跑 run_pipeline.py（AI 文案 · 38% 原価率 7 国价 · 模板图）→ 进待确认
-    ✅ 待确认       →  列表层批量批准 + 详情层改文案/换图 + 店铺本地化（语言 · 不重复标题 · 店铺模板主图）
+    ✅ 待确认       →  列表只看 · 打开一个 SPU 改文案/换图/剔店 → 送上架后台（草稿）
     🎨 主图模板     →  每店一张 1500×1500 透明 PNG（方框 + 店铺 logo），CMS 上传即生效，不进镜像
     📜 历史运行     →  automation_runs（旧 N8N 线的记录，只读）
 
@@ -48,7 +48,7 @@ if str(_SL_DIR / "scripts") not in sys.path:
     sys.path.insert(0, str(_SL_DIR / "scripts"))
 try:
     from draft_store import (list_drafts, list_batches, get_draft, set_status, update_text, counts_by_status,  # noqa: E402
-                             bulk_set_status, delete_drafts, set_sku_image, set_spu_image, set_sku_option,
+                             delete_drafts, set_sku_image, set_spu_image, set_sku_option,
                              missing_options, list_shops, list_shop_drafts,
                              get_shop_draft, set_shop_status, update_shop_text, shop_counts)
     from image_pipeline import ImageProcessorClient, build_shop_images  # noqa: E402
@@ -86,7 +86,7 @@ conn = get_readonly_connection()
 # --------------------------------------------------------------------------- #
 _PAGE_STRINGS_EN: Dict[str, str] = {
     "🤖 生成母版": "🤖 Generate master", "✅ 待确认": "✅ Review queue", "🎨 主图模板": "🎨 Image templates", "📜 历史运行": "📜 Run history",
-    "草稿待确认": "Pending review", "已批准": "Approved", "已发布": "Published", "状态": "Status", "全部": "All",
+    "草稿待确认": "Pending review", "已发布": "Published", "状态": "Status", "全部": "All",
     "Shopee 上架": "Shopee Listing",
     "生成母版 / 待确认 / 主图模板 / 历史运行 一站式": "Generate / Review / Templates / History — all in one",
     "生成英文母版：一行一个 SPU 地粘 JAN → 流水线出文案 · 7 国价 · 图 → 进「待确认」": "Generate the English master: enter JANs → merge into SPUs → pipeline writes copy · 7-country prices · images → Review queue",
@@ -95,7 +95,7 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "同名 = 同一个 SPU；改名即改分组": "Same name = same SPU; rename to regroup", "多 SKU：": "Multi-SKU: ",
     "💾 保存规格名": "💾 Save option names", "已保存 {n} 个规格名": "Saved {n} option names",
     "买家在 Shopee 看到的规格名（英文 · ≤20 字符）": "The variation name buyers see on Shopee (English, max 20 chars)",
-    "这些 JAN 还没有规格名，批准会被挡下：": "These JANs still have no option name — approval is blocked: ",
+    "这些 JAN 还没有规格名，送不了上架后台：": "These JANs still have no option name — cannot send yet: ",
     "忽略了 {n} 个不是 8/13 位数字的：": "Ignored {n} tokens that are not 8/13-digit numbers: ", "查主档失败：": "Item master lookup failed: ",
     "主档无此 JAN": "Not in item master",
     "{s} 个 SPU · {j} 个 JAN": "{s} SPUs · {j} JANs", "取扱中止/廃盤，流水线会自动剔除：": "Discontinued — pipeline will drop: ",
@@ -107,26 +107,22 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "LLM key：": "LLM keys: ", "未配置任何 LLM key，只能出 <MOCK> 占位文案": "No LLM key configured — only <MOCK> placeholders",
     "批次": "Batch", "命中 {n} 个 SPU": "{n} SPUs", "这个状态下没有草稿": "No drafts in this status",
     "草稿表还没就位：先在元川 PG 跑 sql/001 + 002，再从「生成母版」出草稿。": "Draft tables missing: run sql/001 + 002 on the PG first, then generate from the first tab.",
-    "勾选后批量操作（{n} 个）": "Batch actions on {n} selected",
-    "✅ 批准勾选": "✅ Approve selected", "💾 保存标题修改": "💾 Save title edits",
-    "备注（修改说明）": "Note (edit memo)", "已剔掉 {ok} 家店": "Excluded {ok} shops",
-    "🗑 删除勾选": "🗑 Delete selected", "🗑 删除": "🗑 Delete", "确认删除": "Confirm delete",
-    "已删除 {ok} 个，跳过 {fail} 个（已发布的不删）": "Deleted {ok}, skipped {fail} (published are kept)", "已删除 {k}": "Deleted {k}",
-    "批量批准 ok={ok} fail={fail}": "Batch approve ok={ok} fail={fail}",
-    "失败/跳过：": "Failed/skipped: ",
-    "标题改了 {n} 条（回到待确认）": "Updated {n} titles (back to pending)",
-    "打开一个 SPU": "Open an SPU", "这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能批准上架。": "This is a <MOCK> placeholder (no LLM key) — cannot be approved.",
+    "备注（修改说明）": "Note (edit memo)", "已剔掉 {ok} 家店": "Excluded {ok} shops", "🗑 删除": "🗑 Delete", "确认删除": "Confirm delete", "已删除 {k}": "Deleted {k}",
+    "打开一个 SPU": "Open an SPU", "这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能送上架后台。": "This is a <MOCK> placeholder (no LLM key) — cannot be sent.",
     "标题（80–120 字符）": "Title (80–120 chars)", "{n} 字符": "{n} chars", "描述": "Description", "{n} 字符 · Shopee 上限 3000": "{n} chars · Shopee max 3000",
     "Shopee 类目 ID": "Shopee category ID", "品牌": "Brand", "模型": "Model", "卖点": "Key features", "输入里被剔掉的 JAN：": "JANs dropped from input:",
     "Shopee 属性": "Shopee attributes", "SPU 拼图": "SPU composite", "SPU 拼图路径（此机不可见）：": "SPU composite path (not visible here): ", "无 SPU 拼图": "No SPU composite",
     "**SKU 与 7 国价格**（原価率 38% · 汇率取生成当时 NST 值）": "**SKUs & 7-country prices** (38% cost ratio · FX at generation time)",
     "🖼 换主图（按 JAN）": "🖼 Replace main image (per JAN)", "图片处理服务未配置（IMAGE_PROCESSOR_URL）": "Image processor not configured (IMAGE_PROCESSOR_URL)",
     "原图 → 也走抠图套模板": "Raw photo → also cut out + apply template", "上传": "Upload", "已换图 {j}（{s}）": "Replaced image {j} ({s})", "换图失败：": "Image upload failed: ",
-    "💾 保存修改（回到待确认，需再次确认）": "💾 Save (back to pending, re-confirm)", "已保存": "Saved", "没有行被更新": "No rows updated", "保存失败：": "Save failed: ", "已批准 {k}": "Approved {k}", "批准失败：": "Approve failed: ",
+    "💾 保存修改（回到待确认，需再次确认）": "💾 Save (back to pending, re-confirm)", "已保存": "Saved", "没有行被更新": "No rows updated", "保存失败：": "Save failed: ",
     "🌏 店铺版": "🌏 Shop versions", "店铺（默认全部）": "Shops (default: all)",
-    "店铺版随母版一起批准。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。": "Shop versions follow the master's approval. Use this only to exclude a shop, edit its title/description, or re-render its images.",
-    "✅ 批准（含全部店铺版）": "✅ Approve (incl. all shop versions)", "✅ 恢复勾选的店（重新纳入）": "✅ Re-include selected shops", "❌ 剔掉勾选的店": "❌ Exclude selected shops",
-    "上架草稿确认：勾选 → 批准（母版 + 全部店铺版一起进上传队列）；要改文案/换图/剔店才点进详情": "Review: select → approve (master + all shop versions enter the publish queue); open detail only to edit copy, replace images or exclude shops", "还没有店铺版": "No shop versions yet", "店铺版 {s}": "Shop versions {s}",
+    "店铺版随母版一起送上架后台。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。": "Shop versions go with the master. Use this only to exclude a shop, edit its title/description, or re-render its images.", "✅ 恢复勾选的店（重新纳入）": "✅ Re-include selected shops", "❌ 剔掉勾选的店": "❌ Exclude selected shops",
+    "上架草稿确认：列表只看 → 打开一个 SPU 确认 → 送上架后台（草稿）": "Review: browse the list, open one SPU to confirm, then send it to the listing backend as a draft",
+    "上架后台（草稿）": "Listing backend (draft)",
+    "📤 上架后台（草稿）· 含全部店铺版": "📤 Send to listing backend (draft) · incl. all shop versions",
+    "已送上架后台（草稿）：{k}": "Sent to listing backend as draft: {k}", "送上架后台失败：": "Send failed: ",
+    "还没有店铺版": "No shop versions yet", "店铺版 {s}": "Shop versions {s}",
     "打开一个店铺版": "Open a shop version", "🔁 按当前模板重出该店图": "🔁 Re-render this shop's images with current template", "已重出 {k} 的图（{n} 张）": "Re-rendered {k} images ({n})",
     "每店一张主图模板：1500×1500 PNG，中间透明，四周方框 + 店铺 logo。上传即替换，之后出图自动用新模板；已出的图不自动重出（详情页有「重出」按钮）。": "One template per shop: 1500×1500 PNG, transparent middle, frame + shop logo. Uploading replaces it; new renders use it immediately; existing images are not re-rendered automatically (use the button in detail view).",
     "选店铺": "Shop", "模板 PNG（1500×1500 · 透明通道）": "Template PNG (1500×1500 · alpha)", "⬆️ 上传 / 替换模板": "⬆️ Upload / replace template", "已上传 {k} 模板": "Template {k} uploaded", "上传失败：": "Upload failed: ",
@@ -150,7 +146,9 @@ _DRAFT_SKU_T = "shopee.listing_draft_sku"
 _DRAFT_SHOP_T = "shopee.listing_draft_shop"
 _MARKETS_ORDER = ["PH", "MY", "SG", "TH", "VN", "TW", "BR"]
 # 状态值在库里固定为英文（发布器/流水线按它判断），**显示层**按 UI 语言翻译（Boss 2026-09-09「匹配为中文和日文UI」）。
-_STATUS_LABELS = {"draft": "草稿待确认", "approved": "已批准", "published": "已发布"}   # rejected 只在店铺层内部用（剔店），UI 不露
+# approved = 「上架后台（草稿）」= 発行キュー入り（Boss 2026-09-10「最后批准改为上架后台（草稿）」）。
+# DB の値は draft / approved / published のまま（発行器がこれで判定する）。表示だけ変える。
+_STATUS_LABELS = {"draft": "草稿待确认", "approved": "上架后台（草稿）", "published": "已发布"}   # rejected 只在店铺层内部用（剔店），UI 不露
 _STATUS_ALL = "__all__"
 _BATCH_ALL = "__all__"
 
@@ -252,7 +250,7 @@ def _sku_summary(c, keys: list[str]) -> dict:
 
 
 def _shop_summary(c, keys: list[str]) -> dict:
-    """{spu_key: (店铺版数, 已批准数)}"""
+    """{spu_key: (店铺版数, 已送上架后台数)}"""
     if not keys:
         return {}
     ph = ",".join("?" * len(keys))
@@ -394,7 +392,7 @@ with tab_auto:
 # Tab 2 · ✅ 待确认（列表批量 → 详情 → 店铺本地化）
 # ============================================================
 with tab_review:
-    st.subheader(tt("上架草稿确认：勾选 → 批准（母版 + 全部店铺版一起进上传队列）；要改文案/换图/剔店才点进详情"))
+    st.subheader(tt("上架草稿确认：列表只看 → 打开一个 SPU 确认 → 送上架后台（草稿）"))
     counts = None
     if PIPE_OK:
         try:
@@ -426,8 +424,9 @@ with tab_review:
             keys = [d["spu_key"] for d in drafts]
             sku_sum = _sku_summary(conn, keys)
             shop_sum = _shop_summary(conn, keys)
+            # 一览はブラウズ専用（Boss 2026-09-10「这一步的审批都删除掉，直接到单个SPU确认环节」）。
+            # 操作は下の詳細（1 SPU）だけ。ここで一括承認していた 3 ボタンは廃止。
             tbl = pd.DataFrame([{
-                "select": False,
                 "spu_key": d["spu_key"],
                 "thumb": _thumb_of(d.get("spu_image_path")),
                 "title": d["title"] or "",
@@ -441,56 +440,24 @@ with tab_review:
                 "batch_id": d.get("batch_id") or "",
                 "updated_at": (d.get("updated_at") or "")[:16],
             } for d in drafts])
-            edited = st.data_editor(
-                tbl, hide_index=True, use_container_width=True, num_rows="fixed",
-                key=f"rv_editor_{status_pick}_{batch_pick}",
+            st.dataframe(
+                tbl, hide_index=True, use_container_width=True,
                 column_config={
-                    "select": st.column_config.CheckboxColumn(label("select"), default=False),
-                    "spu_key": st.column_config.TextColumn(label("spu_key"), disabled=True),
+                    "spu_key": st.column_config.TextColumn(label("spu_key")),
                     "thumb": st.column_config.ImageColumn(label("thumb")),
                     "title": st.column_config.TextColumn(label("title"), width="large"),
-                    "title_len": st.column_config.NumberColumn(label("title_len"), disabled=True),
-                    "sku_count": st.column_config.NumberColumn(label("sku_count"), disabled=True),
-                    "ph_price": st.column_config.TextColumn(label("ph_price"), disabled=True),
-                    "image": st.column_config.TextColumn(label("image"), disabled=True),
-                    "status": st.column_config.TextColumn(label("status"), disabled=True),
-                    "shops_done": st.column_config.TextColumn(label("shops_done"), disabled=True),
-                    "model": st.column_config.TextColumn(label("model"), disabled=True),
-                    "batch_id": st.column_config.TextColumn(label("batch_id"), disabled=True),
-                    "updated_at": st.column_config.TextColumn(label("updated_at"), disabled=True),
+                    "title_len": st.column_config.NumberColumn(label("title_len")),
+                    "sku_count": st.column_config.NumberColumn(label("sku_count")),
+                    "ph_price": st.column_config.TextColumn(label("ph_price")),
+                    "image": st.column_config.TextColumn(label("image")),
+                    "status": st.column_config.TextColumn(label("status")),
+                    "shops_done": st.column_config.TextColumn(label("shops_done")),
+                    "model": st.column_config.TextColumn(label("model")),
+                    "batch_id": st.column_config.TextColumn(label("batch_id")),
+                    "updated_at": st.column_config.TextColumn(label("updated_at")),
                 },
             )
             st.caption(tt("命中 {n} 个 SPU").format(n=len(drafts)))
-            picked = edited[edited["select"] == True]["spu_key"].tolist()  # noqa: E712
-            changed_titles = {r.spu_key: r.title for r in edited.itertuples()
-                              if (r.title or "") != (next(d["title"] for d in drafts if d["spu_key"] == r.spu_key) or "")}
-            st.markdown(f"**{tt('勾选后批量操作（{n} 个）').format(n=len(picked))}**")
-            bnote = st.text_input(tt("备注（修改说明）"), key="rv_bulk_note")
-            b1, b3, b4 = st.columns(3)
-            if b1.button(tt("✅ 批准勾选"), type="primary", disabled=not picked, key="rv_bulk_ok", use_container_width=True):
-                wc = get_connection()
-                ok, failed = bulk_set_status(wc, picked, "approved", by=user_email, note=bnote or None)
-                st.success(tt("批量批准 ok={ok} fail={fail}").format(ok=ok, fail=len(failed)))
-                if failed:
-                    st.warning(tt("失败/跳过：") + ", ".join(failed))
-            if b3.button(tt("💾 保存标题修改"), disabled=not changed_titles, key="rv_bulk_title", use_container_width=True):
-                wc = get_connection()
-                n = 0
-                for k, new_title in changed_titles.items():
-                    try:
-                        if update_text(wc, k, title=new_title) and set_status(wc, k, "draft"):
-                            n += 1
-                    except Exception as e:  # noqa: BLE001
-                        wc.rollback()
-                        st.error(f"{k}: {e}")
-                st.success(tt("标题改了 {n} 条（回到待确认）").format(n=n))
-            with b4:
-                del_ok = st.checkbox(tt("确认删除"), key="rv_bulk_del_ok", disabled=not picked)
-                if st.button(tt("🗑 删除勾选"), disabled=not (picked and del_ok), key="rv_bulk_del", use_container_width=True):
-                    wc = get_connection()
-                    ok, failed = delete_drafts(wc, picked)
-                    st.success(tt("已删除 {ok} 个，跳过 {fail} 个（已发布的不删）").format(ok=ok, fail=len(failed)))
-                    st.rerun()
 
             # ---------------- 详情层 ----------------
             st.divider()
@@ -499,7 +466,7 @@ with tab_review:
             if d:
                 is_mock = str(d.get("title", "")).startswith("<MOCK>")
                 if is_mock:
-                    st.warning(tt("这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能批准上架。"))
+                    st.warning(tt("这条是 <MOCK> 占位文案（流水线没配 LLM key 时的产物），不能送上架后台。"))
                 left, right = st.columns([3, 2])
                 with left:
                     new_title = st.text_input(tt("标题（80–120 字符）"), value=d.get("title") or "", key=f"rv_title_{sel}")
@@ -560,7 +527,7 @@ with tab_review:
                         st.rerun()
                     lack = missing_options(conn, sel)
                     if lack:
-                        st.warning(tt("这些 JAN 还没有规格名，批准会被挡下：") + " ".join(lack))
+                        st.warning(tt("这些 JAN 还没有规格名，送不了上架后台：") + " ".join(lack))
                 else:
                     st.dataframe(localize_df(pd.DataFrame(rows)), use_container_width=True, hide_index=True)
 
@@ -600,15 +567,15 @@ with tab_review:
                         st.success(tt("已保存")) if n else st.warning(tt("没有行被更新"))
                     except Exception as e:  # noqa: BLE001
                         st.error(tt("保存失败：") + str(e))
-                if c2.button(tt("✅ 批准（含全部店铺版）"), type="primary", key=f"rv_ok_{sel}",
+                if c2.button(tt("📤 上架后台（草稿）· 含全部店铺版"), type="primary", key=f"rv_ok_{sel}",
                              disabled=is_mock or new_title.startswith("<MOCK>") or d.get("status") == "published"
                              or bool(missing_options(conn, sel)), use_container_width=True):
                     try:
                         wc = get_connection()
                         n = set_status(wc, sel, "approved", by=user_email, note=note or None)
-                        st.success(tt("已批准 {k}").format(k=sel)) if n else st.warning(tt("没有行被更新"))
+                        st.success(tt("已送上架后台（草稿）：{k}").format(k=sel)) if n else st.warning(tt("没有行被更新"))
                     except Exception as e:  # noqa: BLE001
-                        st.error(tt("批准失败：") + str(e))
+                        st.error(tt("送上架后台失败：") + str(e))
                 with c4:
                     d_ok = st.checkbox(tt("确认删除"), key=f"rv_del_ok_{sel}", disabled=d.get("status") == "published")
                     if st.button(tt("🗑 删除"), disabled=not d_ok, key=f"rv_del_{sel}", use_container_width=True):
@@ -620,7 +587,7 @@ with tab_review:
                 # ---------------- 店铺本地化 ----------------
                 st.divider()
                 st.subheader(tt("🌏 店铺版"))
-                st.caption(tt("店铺版随母版一起批准。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。"))
+                st.caption(tt("店铺版随母版一起送上架后台。这里只用来剔掉某家店、改某店标题/描述、或重出某店的图。"))
                 try:
                     shops = list_shops(conn)
                 except Exception as e:  # noqa: BLE001

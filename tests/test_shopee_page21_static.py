@@ -42,7 +42,7 @@ def test_four_tabs_and_n8n_trigger_gone():
 def test_pipeline_code_imported_not_copied():
     """ロジックは workflow-automation 側。page は import するだけ（二重実装禁止）。"""
     assert "SHOPEE_LISTING_DIR" in SRC and "/opt/shopee-listing" in SRC
-    for fn in ("bulk_set_status", "set_sku_image", "set_spu_image", "set_sku_option", "missing_options",
+    for fn in ("delete_drafts", "set_sku_image", "set_spu_image", "set_sku_option", "missing_options",
                "list_shops", "list_shop_drafts",
                "set_shop_status", "update_shop_text", "lang_for_shop", "build_shop_images", "ImageProcessorClient"):
         assert re.search(rf"\b{fn}\b", SRC), fn
@@ -65,7 +65,7 @@ def test_sku_option_name_editable_and_gates_approval():
     assert "set_sku_option(" in SRC and "missing_options(conn, sel)" in SRC
     assert 'label("option_name")' in SRC and '"option_name":' in COLS
     assert "or bool(missing_options(conn, sel))" in SRC      # 承認ボタンの disabled 条件
-    assert "这些 JAN 还没有规格名，批准会被挡下：" in SRC
+    assert "这些 JAN 还没有规格名，送不了上架后台：" in SRC
 
 
 def test_tab1_runs_pipeline_in_background_and_supports_no_images():
@@ -81,15 +81,27 @@ def test_review_writes_go_through_write_connection():
     assert SRC.count("wc = get_connection()") >= 8
 
 
-def test_batch_actions_and_isolation():
-    assert "st.data_editor(" in SRC and "CheckboxColumn" in SRC and "ImageColumn" in SRC
-    assert 'bulk_set_status(wc, picked, "approved"' in SRC
+def test_list_layer_is_browse_only_and_no_reject():
+    """Boss 2026-09-10「这一步的审批都删除掉，直接到单个SPU确认环节」→ 一覧に操作は無い。"""
+    list_block = SRC.split("# ---------------- 详情层 ----------------")[0].split("with tab_review:")[1]
+    for gone in ("CheckboxColumn", "bulk_set_status", "勾选后批量操作", "批准勾选", "删除勾选", "保存标题修改"):
+        assert gone not in list_block, gone
+    assert "st.dataframe(" in list_block and "ImageColumn" in list_block
     # Boss 2026-09-10「不需要已拒绝」：UI 无拒绝；不要的直接删
     assert "拒绝" not in SRC and '"rejected"' not in SRC.split("_STATUS_LABELS")[1].split("\n")[0]
     assert '["draft", "approved", "published", _STATUS_ALL]' in SRC
-    assert "批量批准 ok={ok} fail={fail}" in SRC   # 逐项报数
-    # 删除要二次确认，且走 delete_drafts（published 不删）
-    assert "delete_drafts(wc, picked)" in SRC and "delete_drafts(wc, [sel])" in SRC and SRC.count('tt("确认删除")') == 2
+    # 削除は詳細だけ · 二次確認あり · published は消さない（delete_drafts 側で保証）
+    assert "delete_drafts(wc, [sel])" in SRC and SRC.count('tt("确认删除")') == 1
+
+
+def test_approve_is_worded_as_listing_backend_draft():
+    """Boss 2026-09-10「最后批准改为上架后台（草稿）」。DB の値は approved のまま。"""
+    assert "📤 上架后台（草稿）· 含全部店铺版" in SRC
+    assert '"approved": "上架后台（草稿）"' in SRC
+    assert 'set_status(wc, sel, "approved"' in SRC
+    # ボタン文言に「批准」は残さない（Boss 用語＝上架后台（草稿））
+    assert not re.findall(r'button\(tt\("[^"]*批准', SRC)
+    assert "已批准" not in SRC
 
 
 def test_mock_draft_cannot_be_approved():
@@ -106,10 +118,9 @@ def test_image_two_modes_and_templated_checkbox():
 
 
 def test_one_step_flow_shops_chosen_at_generation_and_single_approval():
-    """Boss 2026-09-10「太繁琐」：生成时选店一口气出店铺版；审核一次批准级联。页面不再有单独的本地化按钮。"""
+    """Boss 2026-09-10「太繁琐」：生成时选店一口气出店铺版；1 回の操作で全店舗版がキューに入る。"""
     assert '"--shops"' in SRC and 'key="gen_shops"' in SRC
-    assert "localize_spu" not in SRC and "🌏 生成本地化版" not in SRC and "母版批准后才能出店铺版" not in SRC
-    assert "✅ 批准（含全部店铺版）" in SRC
+    assert "localize_spu" not in SRC and "🌏 生成本地化版" not in SRC
     # 店铺区只做剔店 / 恢复 / 改文案 / 重出图
     assert 'set_shop_status(wc, sel, k, "rejected"' in SRC and 'set_shop_status(wc, sel, k, "approved"' in SRC
     assert "build_shop_images(sel," in SRC
@@ -130,19 +141,21 @@ def test_status_values_never_shown_raw():
 
 def test_new_strings_have_japanese_and_english():
     page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
-    for zh in ("🤖 生成母版", "🎨 主图模板", "✅ 批准勾选", "💾 保存标题修改", "🌏 店铺版", "店铺（默认全部）",
-               "✅ 批准（含全部店铺版）", "❌ 剔掉勾选的店", "🗑 删除勾选", "确认删除", "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
+    for zh in ("🤖 生成母版", "🎨 主图模板", "🌏 店铺版", "店铺（默认全部）", "上架后台（草稿）",
+               "📤 上架后台（草稿）· 含全部店铺版", "❌ 剔掉勾选的店", "🗑 删除", "确认删除",
+               "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
                "批次", "自动出图", "先不出图（之后在详情页手传）",
                "JAN（一行一个 SPU；同一行多个 JAN = 一个 SPU 的多个 SKU）", "💾 保存规格名", "多 SKU：",
-               "这些 JAN 还没有规格名，批准会被挡下："):
+               "这些 JAN 还没有规格名，送不了上架后台："):
         assert f'"{zh}":' in I18N, f"JA 缺 {zh}"
         assert f'"{zh}":' in page_en, f"EN 缺 {zh}"
-    for zh, ja in [("草稿待确认", "確認待ち"), ("已批准", "承認済み"), ("已发布", "公開済み"), ("✅ 待确认", "✅ 確認待ち")]:
+    for zh, ja in [("草稿待确认", "確認待ち"), ("已发布", "公開済み"), ("✅ 待确认", "✅ 確認待ち"),
+                   ("上架后台（草稿）", "出品バックエンド（下書き）")]:
         assert f'"{zh}": "{ja}"' in I18N, zh
 
 
 def test_editor_columns_registered_in_i18n_columns():
-    for col in ("select", "thumb", "title_len", "batch_id", "shops_done", "shop_key", "shop_name", "lang", "template",
+    for col in ("thumb", "title_len", "batch_id", "shops_done", "shop_key", "shop_name", "lang", "template",
                 "template_updated", "image_source", "ph_price", "spu_key", "status", "title", "sku_count", "image", "country_code",
                 "sellable", "maker", "cost_jpy", "option_name"):
         assert f'"{col}":' in COLS, f"i18n_columns 缺列键 {col}"
