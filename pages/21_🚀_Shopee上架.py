@@ -2,7 +2,7 @@
 
 四个 Tab（Boss 2026-09-10 拍板：生成时选店一口气出英文母版 + 各店语言版 + 各店模板图；审核一次批准 = 全部进上传队列）：
 
-    🤖 生成母版     →  直接输 JAN、勾选合并成 SPU → 容器内跑 run_pipeline.py（AI 文案 · 38% 原価率 7 国价 · 模板图）→ 进待确认
+    🤖 生成母版     →  一行一个 SPU 地粘 JAN（行内多个 = 多 SKU）→ 容器内跑 run_pipeline.py（AI 文案 · 38% 原価率 7 国价 · 模板图）→ 进待确认
     ✅ 待确认       →  列表层批量批准 + 详情层改文案/换图 + 店铺本地化（语言 · 不重复标题 · 店铺模板主图）
     🎨 主图模板     →  每店一张 1500×1500 透明 PNG（方框 + 店铺 logo），CMS 上传即生效，不进镜像
     📜 历史运行     →  automation_runs（旧 N8N 线的记录，只读）
@@ -48,7 +48,8 @@ if str(_SL_DIR / "scripts") not in sys.path:
     sys.path.insert(0, str(_SL_DIR / "scripts"))
 try:
     from draft_store import (list_drafts, list_batches, get_draft, set_status, update_text, counts_by_status,  # noqa: E402
-                             bulk_set_status, delete_drafts, set_sku_image, set_spu_image, list_shops, list_shop_drafts,
+                             bulk_set_status, delete_drafts, set_sku_image, set_spu_image, set_sku_option,
+                             missing_options, list_shops, list_shop_drafts,
                              get_shop_draft, set_shop_status, update_shop_text, shop_counts)
     from image_pipeline import ImageProcessorClient, build_shop_images  # noqa: E402
     from localize import lang_for_shop  # noqa: E402
@@ -88,12 +89,15 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "草稿待确认": "Pending review", "已批准": "Approved", "已发布": "Published", "状态": "Status", "全部": "All",
     "Shopee 上架": "Shopee Listing",
     "生成母版 / 待确认 / 主图模板 / 历史运行 一站式": "Generate / Review / Templates / History — all in one",
-    "生成英文母版：输 JAN → 勾选合并成 SPU → 流水线出文案 · 7 国价 · 图 → 进「待确认」": "Generate the English master: enter JANs → merge into SPUs → pipeline writes copy · 7-country prices · images → Review queue",
+    "生成英文母版：一行一个 SPU 地粘 JAN → 流水线出文案 · 7 国价 · 图 → 进「待确认」": "Generate the English master: enter JANs → merge into SPUs → pipeline writes copy · 7-country prices · images → Review queue",
     "流水线代码不可用：": "Pipeline code unavailable: ",
-    "JAN（一行一个，或空格/逗号分隔）": "JANs (one per line, or space/comma separated)",
+    "JAN（一行一个 SPU；同一行多个 JAN = 一个 SPU 的多个 SKU）": "JANs — one line per SPU; several JANs on one line = one SPU with several SKUs",
+    "同名 = 同一个 SPU；改名即改分组": "Same name = same SPU; rename to regroup", "多 SKU：": "Multi-SKU: ",
+    "💾 保存规格名": "💾 Save option names", "已保存 {n} 个规格名": "Saved {n} option names",
+    "买家在 Shopee 看到的规格名（英文 · ≤20 字符）": "The variation name buyers see on Shopee (English, max 20 chars)",
+    "这些 JAN 还没有规格名，批准会被挡下：": "These JANs still have no option name — approval is blocked: ",
     "忽略了 {n} 个不是 8/13 位数字的：": "Ignored {n} tokens that are not 8/13-digit numbers: ", "查主档失败：": "Item master lookup failed: ",
-    "主档无此 JAN": "Not in item master", "同名 = 同一个 SPU；可直接改": "Same name = same SPU; edit freely",
-    "合并后的 SPU 名": "Merged SPU name", "🔗 勾选的合并成一个 SPU": "🔗 Merge selected into one SPU", "↩ 全部拆开": "↩ Split all",
+    "主档无此 JAN": "Not in item master",
     "{s} 个 SPU · {j} 个 JAN": "{s} SPUs · {j} JANs", "取扱中止/廃盤，流水线会自动剔除：": "Discontinued — pipeline will drop: ",
     "主档没有，流水线会报 fail：": "Not in item master — pipeline will fail: ", "先输入 JAN": "Enter JANs first",
     "主图": "Main images", "自动出图": "Auto images", "先不出图（之后在详情页手传）": "Skip images (upload later in detail view)",
@@ -190,23 +194,41 @@ def _b64_of_upload(f) -> str:
     return base64.b64encode(f.getvalue()).decode("ascii")
 
 
-_JAN_SPLIT = __import__("re").compile(r"[\s,;、，]+")
+_JAN_SPLIT = __import__("re").compile(r"[\s,;、，/]+")
 
 
-def _parse_jans(text: str) -> tuple[list[str], list[str]]:
-    """粘贴的 JAN（换行/空格/逗号分隔）→ (去重后的合法 JAN, 非法 token)。合法 = 8 或 13 位数字。"""
-    good, bad, seen = [], [], set()
-    for tok in _JAN_SPLIT.split(text or ""):
-        tok = tok.strip()
-        if not tok:
-            continue
-        if tok.isdigit() and len(tok) in (8, 13):
-            if tok not in seen:
-                seen.add(tok)
-                good.append(tok)
-        else:
-            bad.append(tok)
-    return good, bad
+def _parse_jan_lines(text: str) -> tuple[list[list[str]], list[str]]:
+    """**一行 = 一个 SPU**（Boss 2026-09-10）。行内空格/逗号分隔的多个 JAN = 该 SPU 的多个 SKU。
+
+    → (每行的 JAN 列表, 非法 token)。合法 JAN = 8 或 13 位数字。
+    重复的 JAN 只保留第一次出现（同一个 JAN 不能属于两个 SPU）。
+    """
+    groups: list[list[str]] = []
+    bad: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        row: list[str] = []
+        for tok in _JAN_SPLIT.split(line):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if tok.isdigit() and len(tok) in (8, 13):
+                if tok not in seen:
+                    seen.add(tok)
+                    row.append(tok)
+            else:
+                bad.append(tok)
+        if row:
+            groups.append(row)
+    return groups, bad
+
+
+def _default_spu_key(jans: list[str], recs: dict) -> str:
+    """SPU 名 = 厂商首词 + 首个 JAN（改得动，只是省得运营自己起名）。"""
+    r = recs.get(jans[0])
+    maker = ((r.maker or "").split() or [""])[0] if r else ""
+    maker = "".join(ch for ch in maker if ch.isalnum() or ch in "-_")
+    return f"{maker}-{jans[0]}" if maker else jans[0]
 
 
 def _sku_summary(c, keys: list[str]) -> dict:
@@ -254,82 +276,65 @@ tab_auto, tab_review, tab_refs, tab_history = st.tabs(
 # Tab 1 · 🤖 生成母版（run_pipeline.py 在本容器后台跑）
 # ============================================================
 with tab_auto:
-    st.subheader(tt("生成英文母版：输 JAN → 勾选合并成 SPU → 流水线出文案 · 7 国价 · 图 → 进「待确认」"))
+    st.subheader(tt("生成英文母版：一行一个 SPU 地粘 JAN → 流水线出文案 · 7 国价 · 图 → 进「待确认」"))
     if not PIPE_OK:
         st.error(tt("流水线代码不可用：") + PIPE_ERR + f"（SHOPEE_LISTING_DIR={_SL_DIR}）")
     keys_on = [k for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY") if os.environ.get(k, "").strip()]
     st.caption(tt("LLM key：") + (" → ".join(k.replace("_API_KEY", "") for k in keys_on) if keys_on else tt("未配置任何 LLM key，只能出 <MOCK> 占位文案")))
 
-    # ── JAN 直接在 CMS 输入；勾几个合并成一个 SPU（Boss 2026-09-10「改成直接在CMS中输入JAN，可选与其他JAN是否组成一个SPU」）──
-    jan_text = st.text_area(tt("JAN（一行一个，或空格/逗号分隔）"), height=120, key="gen_jans",
-                            placeholder="4513163978 4513163985\n4901234567890")
-    jans, bad = _parse_jans(jan_text)
+    # ── 一行一个 SPU：行内多个 JAN = 该 SPU 的多个 SKU（Boss 2026-09-10）──
+    jan_text = st.text_area(tt("JAN（一行一个 SPU；同一行多个 JAN = 一个 SPU 的多个 SKU）"), height=140, key="gen_jans",
+                            placeholder="4901234567890\n4513163978 4513163985 4513163992\n4902806221497 4902806221503")
+    groups, bad = _parse_jan_lines(jan_text)
+    jans = [j for g in groups for j in g]
     if bad:
         st.warning(tt("忽略了 {n} 个不是 8/13 位数字的：").format(n=len(bad)) + " ".join(bad[:10]))
+    spus: dict[str, list[str]] = {}
     if jans and PIPE_OK:
         try:
             recs = load_skus(conn, jans)
         except Exception as e:  # noqa: BLE001
             recs = {}
             st.error(tt("查主档失败：") + str(e))
-        # SPU 分组存在 session：默认每个 JAN 自成一个 SPU（key = JAN）
-        groups: dict = st.session_state.setdefault("gen_groups", {})
-        for j in jans:
-            groups.setdefault(j, j)
-        for j in list(groups):
-            if j not in jans:
-                groups.pop(j)
+        # 每个 JAN 的 SPU 名记在 session：这样运营在表里把某个 JAN 改到别的 SPU 名下，重跑也不会弹回去
+        names: dict = st.session_state.setdefault("gen_names", {})
         rows = []
-        for j in jans:
-            r = recs.get(j)
-            rows.append({
-                "select": False, "jan": j, "spu_key": groups[j],
-                "name_jp": (r.name_jp or "")[:50] if r else "",
-                "maker": (r.maker or "") if r else "",
-                "cost_jpy": r.cost_jpy if r else None,
-                "sellable": ("✅" if r.sellable else "⛔ " + (r.handling or "")) if r else tt("主档无此 JAN"),
-            })
-        gdf = pd.DataFrame(rows)
+        for g in groups:
+            line_key = _default_spu_key(g, recs)
+            for j in g:
+                key = (names.get(j) or "").strip() or line_key
+                r = recs.get(j)
+                rows.append({
+                    "spu_key": key, "jan": j,
+                    "name_jp": (r.name_jp or "")[:50] if r else "",
+                    "maker": (r.maker or "") if r else "",
+                    "cost_jpy": r.cost_jpy if r else None,
+                    "sellable": ("✅" if r.sellable else "⛔ " + (r.handling or "")) if r else tt("主档无此 JAN"),
+                })
         edited = st.data_editor(
-            gdf, hide_index=True, use_container_width=True, num_rows="fixed", key=f"gen_editor_{len(jans)}",
+            pd.DataFrame(rows), hide_index=True, use_container_width=True, num_rows="fixed",
+            key=f"gen_editor_{len(jans)}_{len(groups)}",
             column_config={
-                "select": st.column_config.CheckboxColumn(label("select"), default=False),
+                "spu_key": st.column_config.TextColumn(label("spu_key"), help=tt("同名 = 同一个 SPU；改名即改分组")),
                 "jan": st.column_config.TextColumn("JAN", disabled=True),
-                "spu_key": st.column_config.TextColumn(label("spu_key"), help=tt("同名 = 同一个 SPU；可直接改")),
                 "name_jp": st.column_config.TextColumn(label("name_jp"), disabled=True),
                 "maker": st.column_config.TextColumn(label("maker"), disabled=True),
                 "cost_jpy": st.column_config.NumberColumn(label("cost_jpy"), disabled=True),
                 "sellable": st.column_config.TextColumn(label("sellable"), disabled=True),
             })
         for r in edited.itertuples():
-            groups[r.jan] = (r.spu_key or r.jan).strip() or r.jan
-        picked = edited[edited["select"] == True]["jan"].tolist()  # noqa: E712
-        g1, g2, g3 = st.columns([2, 1, 1])
-        first = recs.get(picked[0]) if picked else None
-        default_name = ("-".join(x for x in [(first.maker or "").split()[0] if first and first.maker else "", picked[0]] if x)
-                        if picked else "")
-        merge_name = g1.text_input(tt("合并后的 SPU 名"), value=default_name, key=f"gen_merge_name_{'-'.join(picked)}")
-        if g2.button(tt("🔗 勾选的合并成一个 SPU"), disabled=len(picked) < 2 or not merge_name.strip(), key="gen_merge", use_container_width=True):
-            for j in picked:
-                groups[j] = merge_name.strip()
-            st.rerun()
-        if g3.button(tt("↩ 全部拆开"), key="gen_split", use_container_width=True):
-            for j in jans:
-                groups[j] = j
-            st.rerun()
-        spus = {}
-        for j in jans:
-            spus.setdefault(groups[j], []).append(j)
-        st.caption(tt("{s} 个 SPU · {j} 个 JAN").format(s=len(spus), j=len(jans)) + " · " +
-                   " · ".join(f"{k}({len(v)})" for k, v in spus.items() if len(v) > 1))
+            k = (r.spu_key or "").strip() or r.jan
+            spus.setdefault(k, []).append(r.jan)
+            names[r.jan] = k
+        multi = {k: v for k, v in spus.items() if len(v) > 1}
+        st.caption(tt("{s} 个 SPU · {j} 个 JAN").format(s=len(spus), j=len(jans)) +
+                   (" · " + tt("多 SKU：") + " ".join(f"{k}({len(v)})" for k, v in multi.items()) if multi else ""))
         unsellable = [j for j in jans if j in recs and not recs[j].sellable]
         missing = [j for j in jans if j not in recs]
         if unsellable:
             st.warning(tt("取扱中止/廃盤，流水线会自动剔除：") + " ".join(unsellable))
         if missing:
             st.warning(tt("主档没有，流水线会报 fail：") + " ".join(missing))
-    else:
-        spus = {}
 
     c1, c2 = st.columns([1, 1])
     img_mode = c1.radio(tt("主图"), [tt("自动出图"), tt("先不出图（之后在详情页手传）")], key="gen_img_mode", horizontal=True)
@@ -366,7 +371,7 @@ with tab_auto:
                 lf.write(f"# {_now()} {' '.join(c if 'postgresql://' not in c else 'postgresql://***' for c in cmd)}\n".encode())
                 subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=os.environ.copy(), cwd=str(_SL_DIR))
             st.session_state["gen_last_batch"] = safe_batch
-            st.session_state.pop("gen_groups", None)
+            st.session_state.pop("gen_names", None)
             st.success(tt("已启动，批次 {b}。生成需要几分钟，下面看日志；完成后到「待确认」按批次筛。").format(b=safe_batch))
         except Exception as e:  # noqa: BLE001
             st.error(tt("启动失败：") + str(e))
@@ -520,9 +525,11 @@ with tab_review:
                         st.caption(tt("无 SPU 拼图"))
 
                 st.markdown(tt("**SKU 与 7 国价格**（原価率 38% · 汇率取生成当时 NST 值）"))
+                multi_sku = len(d["skus"]) > 1
                 rows = []
                 for s_ in d["skus"]:
-                    row = {"jan": s_["jan"], "name_jp": (s_.get("name_jp") or "")[:40], "maker": s_.get("maker"),
+                    row = {"jan": s_["jan"], "option_name": s_.get("option_name") or "",
+                           "name_jp": (s_.get("name_jp") or "")[:40], "maker": s_.get("maker"),
                            "cost_jpy": s_.get("cost_jpy"), "weight_g": s_.get("weight_g")}
                     for mk in _MARKETS_ORDER:
                         p = (s_.get("prices") or {}).get(mk) or {}
@@ -530,7 +537,32 @@ with tab_review:
                     row["image"] = "✅" if s_.get("image_path") and not s_.get("image_error") else (s_.get("image_error") or "-")[:30]
                     row["image_source"] = s_.get("image_source") or ""
                     rows.append(row)
-                st.dataframe(localize_df(pd.DataFrame(rows)), use_container_width=True, hide_index=True)
+                if multi_sku:
+                    # 多 SKU は Shopee の規格オプション名が必須。ここで直せる（空欄のままだと承認不可）
+                    sku_edit = st.data_editor(
+                        localize_df(pd.DataFrame(rows)), use_container_width=True, hide_index=True,
+                        num_rows="fixed", key=f"rv_sku_{sel}",
+                        column_config={label("option_name"): st.column_config.TextColumn(
+                            label("option_name"), help=tt("买家在 Shopee 看到的规格名（英文 · ≤20 字符）"), required=True)},
+                        disabled=[c for c in localize_df(pd.DataFrame(rows)).columns if c != label("option_name")])
+                    new_opts = dict(zip([r["jan"] for r in rows], sku_edit[label("option_name")].tolist()))
+                    changed_opts = {j: v.strip() for j, v in new_opts.items()
+                                    if v and v.strip() != (next(r["option_name"] for r in rows if r["jan"] == j) or "")}
+                    if st.button(tt("💾 保存规格名"), disabled=not changed_opts, key=f"rv_optsave_{sel}"):
+                        wc = get_connection()
+                        n = 0
+                        for j, v in changed_opts.items():
+                            try:
+                                n += 1 if set_sku_option(wc, sel, j, v) else 0
+                            except Exception as e:  # noqa: BLE001
+                                st.error(f"{j}: {e}")
+                        st.success(tt("已保存 {n} 个规格名").format(n=n))
+                        st.rerun()
+                    lack = missing_options(conn, sel)
+                    if lack:
+                        st.warning(tt("这些 JAN 还没有规格名，批准会被挡下：") + " ".join(lack))
+                else:
+                    st.dataframe(localize_df(pd.DataFrame(rows)), use_container_width=True, hide_index=True)
 
                 # 换主图：成品 / 原图☑套模板（Boss 2026-09-10）
                 with st.expander(tt("🖼 换主图（按 JAN）"), expanded=False):
@@ -569,7 +601,8 @@ with tab_review:
                     except Exception as e:  # noqa: BLE001
                         st.error(tt("保存失败：") + str(e))
                 if c2.button(tt("✅ 批准（含全部店铺版）"), type="primary", key=f"rv_ok_{sel}",
-                             disabled=is_mock or new_title.startswith("<MOCK>") or d.get("status") == "published", use_container_width=True):
+                             disabled=is_mock or new_title.startswith("<MOCK>") or d.get("status") == "published"
+                             or bool(missing_options(conn, sel)), use_container_width=True):
                     try:
                         wc = get_connection()
                         n = set_status(wc, sel, "approved", by=user_email, note=note or None)

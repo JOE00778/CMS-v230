@@ -42,20 +42,30 @@ def test_four_tabs_and_n8n_trigger_gone():
 def test_pipeline_code_imported_not_copied():
     """ロジックは workflow-automation 側。page は import するだけ（二重実装禁止）。"""
     assert "SHOPEE_LISTING_DIR" in SRC and "/opt/shopee-listing" in SRC
-    for fn in ("bulk_set_status", "set_sku_image", "set_spu_image", "list_shops", "list_shop_drafts",
+    for fn in ("bulk_set_status", "set_sku_image", "set_spu_image", "set_sku_option", "missing_options",
+               "list_shops", "list_shop_drafts",
                "set_shop_status", "update_shop_text", "lang_for_shop", "build_shop_images", "ImageProcessorClient"):
         assert re.search(rf"\b{fn}\b", SRC), fn
     assert "SHOPEE_LISTING_DIR" in COMPOSE and "/opt/shopee-listing:ro" in COMPOSE
     assert "GROQ_API_KEY" in COMPOSE
 
 
-def test_tab1_jan_input_and_spu_merge_no_csv_upload():
-    """Boss 2026-09-10：CSV 上传改成直接输 JAN，勾选合并成 SPU。"""
+def test_tab1_one_line_one_spu_input():
+    """Boss 2026-09-10：一行 = 一个 SPU，行内多个 JAN = 该 SPU 的多个 SKU；SPU 列可改即改分组。"""
     assert "st.file_uploader" not in SRC.split("with tab_review:")[0].split("with tab_auto:")[1]
-    assert "_parse_jans(" in SRC and "load_skus(conn, jans)" in SRC
-    assert "🔗 勾选的合并成一个 SPU" in SRC and "↩ 全部拆开" in SRC and '"gen_groups"' in SRC
+    assert "_parse_jan_lines(" in SRC and "load_skus(conn, jans)" in SRC
+    assert '"gen_names"' in SRC and "_default_spu_key(" in SRC
+    assert "🔗" not in SRC and "gen_groups" not in SRC        # 勾选合并の 2 手順は廃止
     # 仍然走 run_pipeline --csv：把分组写成 SPU/SKU 两列临时 CSV，不另写一套入口
     assert '[{"SPU": k, "SKU": j} for k, js in spus.items() for j in js]' in SRC
+
+
+def test_sku_option_name_editable_and_gates_approval():
+    """Boss 2026-09-10「SKU的怎么做？」：多 SKU は規格名必須。空欄なら承認ボタンを塞ぐ。"""
+    assert "set_sku_option(" in SRC and "missing_options(conn, sel)" in SRC
+    assert 'label("option_name")' in SRC and '"option_name":' in COLS
+    assert "or bool(missing_options(conn, sel))" in SRC      # 承認ボタンの disabled 条件
+    assert "这些 JAN 还没有规格名，批准会被挡下：" in SRC
 
 
 def test_tab1_runs_pipeline_in_background_and_supports_no_images():
@@ -122,7 +132,9 @@ def test_new_strings_have_japanese_and_english():
     page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
     for zh in ("🤖 生成母版", "🎨 主图模板", "✅ 批准勾选", "💾 保存标题修改", "🌏 店铺版", "店铺（默认全部）",
                "✅ 批准（含全部店铺版）", "❌ 剔掉勾选的店", "🗑 删除勾选", "确认删除", "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
-               "批次", "自动出图", "先不出图（之后在详情页手传）", "JAN（一行一个，或空格/逗号分隔）", "🔗 勾选的合并成一个 SPU", "合并后的 SPU 名"):
+               "批次", "自动出图", "先不出图（之后在详情页手传）",
+               "JAN（一行一个 SPU；同一行多个 JAN = 一个 SPU 的多个 SKU）", "💾 保存规格名", "多 SKU：",
+               "这些 JAN 还没有规格名，批准会被挡下："):
         assert f'"{zh}":' in I18N, f"JA 缺 {zh}"
         assert f'"{zh}":' in page_en, f"EN 缺 {zh}"
     for zh, ja in [("草稿待确认", "確認待ち"), ("已批准", "承認済み"), ("已发布", "公開済み"), ("✅ 待确认", "✅ 確認待ち")]:
@@ -132,7 +144,7 @@ def test_new_strings_have_japanese_and_english():
 def test_editor_columns_registered_in_i18n_columns():
     for col in ("select", "thumb", "title_len", "batch_id", "shops_done", "shop_key", "shop_name", "lang", "template",
                 "template_updated", "image_source", "ph_price", "spu_key", "status", "title", "sku_count", "image", "country_code",
-                "sellable", "maker", "cost_jpy"):
+                "sellable", "maker", "cost_jpy", "option_name"):
         assert f'"{col}":' in COLS, f"i18n_columns 缺列键 {col}"
     # 列表层/店铺层的 column_config 都用 label()，不写死中文
     assert SRC.count('label("') >= 20
