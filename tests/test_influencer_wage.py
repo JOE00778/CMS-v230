@@ -101,3 +101,21 @@ def test_compute_wage_zero_rate_safe():
     p = WageParams(php_usd=0.0)
     r = iw.compute_wage(total_hours=5.0, sales_peso=100000.0, hourly_wage=2.0, params=p)
     assert r["incentive_usd"] == 0.0  # 除零保护
+
+
+def test_canon_column_shopee_header_drift():
+    """Shopee 2026-09 エクスポートの表頭ゆれ（実ファイル由来）。"""
+    assert iw.canon_column("时长：") == "时长"
+    assert iw.canon_column("销售(已确认订单数)") == "销售金额(已确认订单)"
+    assert iw.canon_column("销售金额(已确认订单)") == "销售金额(已确认订单)"  # 旧表頭
+    assert iw.canon_column("订单(已确认订单数)") == "订单数(已确认订单)"
+    assert iw.canon_column("开始时间") == "直播开始时间"
+    assert iw.canon_column("数据时段") == "数据期间"
+    assert iw.canon_column("销售(已下订单)") == "销售(已下订单)"  # 別名外は原名のまま
+
+
+def test_parse_period_month():
+    assert iw.parse_period_month("01-08-2026 - 31-08-2026") == "8月"
+    assert iw.parse_period_month("8/1-8/31") == "8月"
+    assert iw.parse_period_month("") == ""
+

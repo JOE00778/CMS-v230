@@ -114,7 +114,17 @@ _NEED = ["直播名称", "时长", "销售金额(已确认订单)"]
 
 
 def _norm_cols(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.rename(columns=lambda c: str(c).strip())
+    # 表頭ゆれを標準列名へ寄せる（別名表は shared/influencer_wage.COLUMN_ALIASES）
+    _seen: set[str] = set()
+    _cols = []
+    for _c in df.columns:
+        _std = iw.canon_column(_c)
+        if _std in _seen:  # 別名が同じ標準名に衝突 → 先勝ち、後発は原名のまま
+            _std = str(_c).strip()
+        _seen.add(_std)
+        _cols.append(_std)
+    df = df.copy()
+    df.columns = _cols
     _miss = [c for c in _NEED if c not in df.columns]
     if _miss:
         raise ValueError(t("缺少必要列：") + "、".join(_miss)
@@ -225,7 +235,7 @@ if _n_unassigned:
 # ---- 業績報告（直接表示·复制可）----
 _month_lbl = ""
 try:
-    _month_lbl = f"{int(str(raw['数据期间'].dropna().iloc[0]).split('/')[0].strip())}月"
+    _month_lbl = iw.parse_period_month(raw["数据期间"].dropna().iloc[0])
 except Exception:
     _month_lbl = ""
 _lines = [f"{_month_lbl}直播业绩", "", "ライブ実績："]
