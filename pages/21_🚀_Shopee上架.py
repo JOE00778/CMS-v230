@@ -100,6 +100,7 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "{s} 个 SPU · {j} 个 JAN": "{s} SPUs · {j} JANs", "取扱中止/廃盤，流水线会自动剔除：": "Discontinued — pipeline will drop: ",
     "主档没有，流水线会报 fail：": "Not in item master — pipeline will fail: ", "先输入 JAN": "Enter JANs first",
     "主图": "Main images", "自动出图": "Auto images", "先不出图（之后在详情页手传）": "Skip images (upload later in detail view)",
+    "店铺版语言": "Shop version language", "本地语言（按国家）": "Local language (per country)", "全部英语": "English for all",
     "批次号": "Batch ID", "🚀 生成母版": "🚀 Generate master", 
     "已启动，批次 {b}。下面「运行状态」会自动刷新，跑完变「已完成」。": "Started batch {b}. The run status below refreshes itself and turns to Done when finished.",
     "启动失败：": "Failed to start: ", "运行状态": "Run status", "还没有运行记录": "No runs yet",
@@ -408,10 +409,12 @@ with tab_auto:
         if missing:
             st.warning(tt("主档没有，流水线会报 fail：") + " ".join(missing))
 
-    c1, c2 = st.columns([1, 1])
+    c1, c2, c3 = st.columns([1, 1, 1])
     img_mode = c1.radio(tt("主图"), [tt("自动出图"), tt("先不出图（之后在详情页手传）")], key="gen_img_mode", horizontal=True)
+    # Boss 2026-09-11「可以选择是英语还是本地语言」：TW=繁中 VN=越南语 TH=泰语 BR=葡语 / 或全部英语
+    lang_mode = c2.radio(tt("店铺版语言"), [tt("本地语言（按国家）"), tt("全部英语")], key="gen_lang_mode", horizontal=True)
     default_batch = _next_batch_id(conn)
-    batch_id = c2.text_input(tt("批次号"), value=default_batch, key="gen_batch")
+    batch_id = c3.text_input(tt("批次号"), value=default_batch, key="gen_batch")
     # 店铺一次选好：母版 + 各店语言版 + 各店模板图一口气出（Boss 2026-09-10「太繁琐」）
     try:
         gen_shops = list_shops(conn) if PIPE_OK else []
@@ -434,6 +437,7 @@ with tab_auto:
                 args += ["--mock-llm"]
             if gen_pick:
                 args += ["--shops", ",".join(gen_pick)]
+                args += ["--lang", "en" if lang_mode == tt("全部英语") else "local"]
             _spawn("run_pipeline.py", args, safe_batch)
             st.session_state["gen_last_batch"] = safe_batch
             st.session_state.pop("gen_names", None)
@@ -719,10 +723,13 @@ with tab_review:
                     g1.info(tt("这个 SPU 还没有店铺版（生成被打断或生成时没勾店铺）。"))
                 if miss_shops:
                     g2.caption(tt("缺 {n} 家店的版本").format(n=len(miss_shops)))
+                    fill_lang = g2.radio(tt("店铺版语言"), [tt("本地语言（按国家）"), tt("全部英语")],
+                                         key=f"rv_fill_lang_{sel}", horizontal=True)
                     if g2.button(tt("▶ 补齐店铺版（{n} 家）").format(n=len(miss_shops)), key=f"rv_fill_{sel}",
                                  disabled=not keys_on, use_container_width=True):
                         try:
-                            lp = _spawn("localize.py", ["--spu", sel, "--shops", ",".join(miss_shops)] +
+                            lp = _spawn("localize.py", ["--spu", sel, "--shops", ",".join(miss_shops),
+                                                        "--lang", "en" if fill_lang == tt("全部英语") else "local"] +
                                         (["--image-processor-url", IMAGE_PROCESSOR_URL] if IMAGE_PROCESSOR_URL else ["--no-images"]),
                                         f"fill-{sel}")
                             st.success(tt("已在后台补齐，几分钟后刷新看；日志 {p}").format(p=lp.name))

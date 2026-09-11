@@ -182,7 +182,7 @@ def test_new_strings_have_japanese_and_english():
     page_en = re.search(r"_PAGE_STRINGS_EN: Dict\[str, str\] = \{(.*?)\n\}\n", SRC, re.S).group(1)
     for zh in ("🤖 生成母版", "🎨 主图模板", "上架后台（草稿）",
                "📤 上架后台（草稿）· 含勾选店铺", "出到哪些店铺（按国家分列）", "母版（英文）",
-               "🧹 清空（不可撤销）",
+               "🧹 清空（不可撤销）", "店铺版语言", "本地语言（按国家）", "全部英语",
                "看哪个版本（国家 · 店铺）", "勾上 {n} 家", "🗑 删除", "确认删除",
                "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
                "批次", "自动出图", "先不出图（之后在详情页手传）", "运行状态", "运行中", "已完成",
@@ -202,3 +202,11 @@ def test_editor_columns_registered_in_i18n_columns():
         assert f'"{col}":' in COLS, f"i18n_columns 缺列键 {col}"
     # 列表层/店铺层的 column_config 都用 label()，不写死中文
     assert SRC.count('label("') >= 20
+
+
+def test_shop_version_language_switch_reaches_the_pipeline():
+    """Boss 2026-09-11「生成店铺版的时候可以选择是英语还是本地语言」。
+    UI に radio があるだけでは足りない——子プロセスの --lang まで届いているかを釘で留める。"""
+    assert 'key="gen_lang_mode"' in SRC and 'key=f"rv_fill_lang_{sel}"' in SRC
+    assert SRC.count('"--lang", "en" if') == 2, "生成母版と補齐店铺版の両方で --lang を渡すこと"
+    assert 'lang_mode == tt("全部英语")' in SRC and 'fill_lang == tt("全部英语")' in SRC
