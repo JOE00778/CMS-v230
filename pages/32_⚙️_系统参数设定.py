@@ -1,7 +1,6 @@
 """模块 #32 系统参数设定 · 多模块阈值/白名单集中管理（系统设置·二级密码保护）。
 
 每个业务模块独立 tab：
-  - tab1 运营调整建议    → modules.operation_advice.settings
   - tab2 発注 AI v2       → shared.order_settings
   - tab3 NST vs JDL 对账   → shared.jdl_recon_settings（差异档位阈值）
   - tab4 货架用途指定     → nst.bin_category (PG · 弁天棚号用途人工分类)
@@ -43,50 +42,13 @@ def _df(sql: str, params=None) -> pd.DataFrame:
 st.title(t("⚙️ 系统参数设定"))
 st.caption(t("仅授权人员可改 · 各业务模块阈值/白名单独立 tab 管理"))
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    t("💡 运营调整建议"),
+tab2, tab3, tab4, tab5, tab6 = st.tabs([
     t("📦 発注 AI v2"),
     t("📊 NST vs JDL 账实对账"),
     t("🏷️ 货架用途指定"),
     t("🏢 输出供应商名单"),
     t("🛡️ 合规数据源"),
 ])
-
-# ============================================================
-# tab1 · 运营调整建议（毛利 × 周转 双轴阈值）
-# ============================================================
-with tab1:
-    from modules.operation_advice.settings import load_thresholds, save_thresholds
-
-    st.subheader(t("双轴阈值"))
-    st.caption(t("毛利率(%) × 月周转率 → 5 档建议的分界线"))
-
-    _th = load_thresholds()
-    c1, c2, c3, c4 = st.columns(4)
-    _ml = c1.number_input(t("毛利 低界 (%)"), value=float(_th["margin_low"]),
-                          step=1.0, min_value=0.0, key="op_margin_low")
-    _mh = c2.number_input(t("毛利 高界 (%)"), value=float(_th["margin_high"]),
-                          step=1.0, min_value=0.0, key="op_margin_high")
-    _tl = c3.number_input(t("周转 低界"), value=float(_th["turn_low"]),
-                          step=0.1, min_value=0.0, format="%.2f", key="op_turn_low")
-    _thh = c4.number_input(t("周转 高界"), value=float(_th["turn_high"]),
-                           step=0.1, min_value=0.0, format="%.2f", key="op_turn_high")
-
-    if st.button(t("💾 保存阈值"), type="primary", key="save_op"):
-        if _ml >= _mh:
-            st.error(t("毛利低界必须 < 高界"))
-        elif _tl >= _thh:
-            st.error(t("周转低界必须 < 高界"))
-        else:
-            save_thresholds({"margin_low": _ml, "margin_high": _mh,
-                             "turn_low": _tl, "turn_high": _thh})
-            st.success(t("✅ 已保存。到「💡 运营调整建议」点【🔄 重新计算】生效。"))
-
-    st.divider()
-    st.caption(
-        t("当前生效阈值") + f"：毛利 {_th['margin_low']:.0f}/{_th['margin_high']:.0f}% · "
-        f"周转 {_th['turn_low']}/{_th['turn_high']}"
-    )
 
 # ============================================================
 # tab2 · 発注 AI v2（月完売率发注策略）
