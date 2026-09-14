@@ -129,6 +129,23 @@ _LBL = {
     "cm_est":        ("CM(日估)", "CM(日次推定)"),
     "fee_match":     ("费用匹配率", "突合率"),
     "payout_rate":   ("回款率", "入金率"),
+    # 業績タブ（2026-09-14 JO · 財務の statement 表と同じ費目名）
+    "commission":    ("佣金", "販売手数料"),
+    "service":       ("服务费", "サービス費"),
+    "transaction":   ("交易费", "取引手数料"),
+    "ams":           ("AMS佣金", "AMS 手数料"),
+    "voucher":       ("卖家优惠券", "セラークーポン"),
+    "ship3pl":       ("第三方物流费", "第三者物流費"),
+    "buyer_ship":    ("买家支付运费(−)", "買い手支払運費(−)"),
+    "rebate":        ("Shopee运费回扣(−)", "Shopee 運費回扣(−)"),
+    "other_ded":     ("其他(税费·退货运费)", "その他(税・返品運賃)"),
+    "ded_total":     ("扣减合计", "控除合計"),
+    "shop_gp":       ("店铺毛利", "店舗粗利"),
+    "jd":            ("京东费用", "JD 費用"),
+    "perf":          ("运营绩效金额", "運営業績額"),
+    "perf_rate":     ("绩效率", "業績率"),
+    "refund":        ("退款金额(单列)", "返金額(別掲)"),
+    "offline":       ("线下调整(单列)", "線下調整(別掲)"),
 }
 
 # ============================================================
@@ -159,8 +176,11 @@ def _classify_platform(shop) -> str:
 
 
 _MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm",
-          "cancel_est", "revenue_adj", "cm_est"}
-_PCT = {"gross_margin", "cm_rate"}
+          "cancel_est", "revenue_adj", "cm_est",
+          "commission", "service", "transaction", "ams", "voucher", "ship3pl",
+          "buyer_ship", "rebate", "other_ded", "ded_total", "shop_gp", "jd",
+          "perf", "refund", "offline"}
+_PCT = {"gross_margin", "cm_rate", "perf_rate"}
 _INT = {"qty", "n_shop", "n_sku"}
 # 环比対象（相対%）。gross_margin は _PCT で百分点(pp)环比、n_shop/n_sku は構造カウントで环比なし。
 _MOM_VALUE_COLS = {"qty", "revenue", "defined_cost", "gross_profit"}
@@ -714,11 +734,12 @@ st.divider()
 
 _owner_tab = "👤 担当者別" if get_lang() == "ja" else "👤 店铺负责人"
 _ad_tab_lbl = "📝 広告費" if get_lang() == "ja" else "📝 广告费"
+_perf_tab_lbl = "📋 運営業績" if get_lang() == "ja" else "📋 运营绩效"
 (tab_day, tab_owner, tab_shop, tab_market, tab_sku, tab_alert, tab_deduct,
- tab_payout, tab_loss, tab_ff3, tab_ads) = st.tabs(
+ tab_payout, tab_loss, tab_ff3, tab_ads, tab_perf) = st.tabs(
     [t("📈 月内日次推移"), _owner_tab, t("🏪 店舗別"), t("🌐 市場別"),
      t("🏆 TOP SKU"), t("⚠️ 价格预警"), t("🧾 店铺扣减"), t("💵 拨款明细"),
-     t("🩸 未结算/损失"), t("💸 退款明细"), _ad_tab_lbl]
+     t("🩸 未结算/损失"), t("💸 退款明细"), _ad_tab_lbl, _perf_tab_lbl]
 )
 
 # ============================================================
@@ -2512,3 +2533,154 @@ with tab_ads:
                         pass
                     st.error(("保存失敗: " if get_lang() == "ja" else "保存失败: ")
                              + str(_e))
+
+
+# ============================================================
+# Tab 11：運営業績（JO 2026-09-14 · 財務 statement 表と同じ費目で店舗別に並べる）
+#   運営業績額 = 粗利 − 控除合計 − JD 費用 − 広告費
+#   控除合計   = 販売手数料 + サービス費 + 取引手数料 + AMS + セラークーポン
+#                + 第三者物流費 + その他(税・返品運賃) − 買い手支払運費 − Shopee 運費回扣
+#                （v_shipped_settlement の恒等式「売上 − 控除 + 物流純額 = 実収」と同じ括り）
+#   別掲（引かない）: 返金額（Shopee seller_return_refund · 紅票が GMV を既に剥がすため
+#                二重控除になる）、線下調整（NST 品目 31109「入金調整分」= 補償金等 ·
+#                原価 0 で粗利を吊り上げるので売上/粗利から外して単列）。
+#   軸: 売上/粗利=NST 出荷日 · 控除/返金=注文番号で出荷月へ · JD=請求月(≈出荷月)を
+#       注文番号で店舗へ · 広告費=消耗月 · 線下調整=NST 計上月。
+# ============================================================
+_OFFLINE_ITEM = "31109"   # NST 非在庫品目「入金調整分」（補償金 / 入金調整）
+
+with tab_perf:
+    _ja_pf = get_lang() == "ja"
+    st.caption(("運営業績額 = 粗利 − 控除合計 − JD 費用 − 広告費 · "
+                "控除は statement と同じ費目で明細表示（買い手支払運費・Shopee 運費回扣は控除を減らす側）· "
+                "返金額と線下調整（NST「入金調整分」）は引かずに別掲 · "
+                "線下調整は売上/粗利からも外してある")
+               if _ja_pf else
+               "运营绩效金额 = 粗利 − 扣减合计 − 京东费用 − 广告费 · "
+               "扣减按 statement 同名费目逐项列出（买家支付运费、Shopee 运费回扣是减少扣减的项）· "
+               "退款金额与线下调整（NST「入金調整分」）不扣、单列对照 · "
+               "线下调整已从销售额/粗利中剔出")
+
+    # --- 控除明細（月×店舗 · 円）---
+    _pf_raw, _pf_err = _query(
+        "SELECT trim(shop) AS shop, deduction_jpy, shipping_jpy, commission_jpy, "
+        "service_jpy, transaction_jpy, ams_jpy, voucher_jpy, "
+        "buyer_ship_jpy, rebate_jpy, refund_jpy "
+        "FROM nst.v_shipped_settlement WHERE ym = ?", (ym,))
+    if _pf_raw is None or _pf_raw.empty:
+        if _pf_err:
+            st.warning(("控除明細を取得できません（ビュー 033 未適用の可能性）: "
+                        if _ja_pf else "无法取得扣减明细（视图 033 可能未应用）: ") + _pf_err)
+        _pf_raw = pd.DataFrame(columns=["shop"])
+    _pf_fee = pd.DataFrame({"shop": _pf_raw.get("shop", pd.Series(dtype=str))})
+    for _src, _dst in (("commission_jpy", "commission"), ("service_jpy", "service"),
+                       ("transaction_jpy", "transaction"), ("ams_jpy", "ams"),
+                       ("voucher_jpy", "voucher"), ("shipping_jpy", "ship3pl"),
+                       ("buyer_ship_jpy", "buyer_ship"), ("rebate_jpy", "rebate"),
+                       ("refund_jpy", "refund"), ("deduction_jpy", "_ded")):
+        _pf_fee[_dst] = pd.to_numeric(_pf_raw.get(_src), errors="coerce").fillna(0.0)
+    # その他 = 控除合計(deduction) − 明細に出した 5 項（= 税・返品運賃 ± 丸め）
+    _pf_fee["other_ded"] = (_pf_fee["_ded"] - _pf_fee["commission"] - _pf_fee["service"]
+                            - _pf_fee["transaction"] - _pf_fee["ams"] - _pf_fee["voucher"])
+    _pf_fee = _pf_fee.drop(columns=["_ded"])
+
+    # --- JD 費用（請求月 = 対象月 · 注文番号 → NST 店舗 · 税抜）---
+    #     logistics.cost_monthly は斑马店名なので使わず、明細行を注文番号で NST 店舗へ寄せる
+    #     （2026-07 実測: Shopee PH ¥835,268 vs 斑马店名口径 ¥839,713 · 差 0.5% は NST 未突合）
+    _jd_raw, _jd_err = _query(
+        "SELECT trim(io.shop) AS shop, sum(r.amount_ex_tax) AS jd "
+        "FROM logistics.cost_invoice_raw r "
+        "LEFT JOIN logistics.order_shop_map mp ON mp.parcel_no = r.join_key "
+        "JOIN LATERAL (SELECT si.shop FROM nst.invoice_order io "
+        "  JOIN nst.sales_invoice si ON si.invoice_id = io.invoice_id "
+        "  WHERE io.order_no = coalesce(mp.order_id, r.join_key) LIMIT 1) io ON TRUE "
+        "WHERE r.year_month = ? GROUP BY 1", (ym,))
+    if _jd_raw is None or _jd_raw.empty:
+        if _jd_err:
+            st.warning(("JD 費用を取得できません: " if _ja_pf else "无法取得京东费用: ") + _jd_err)
+        _jd_raw = pd.DataFrame(columns=["shop", "jd"])
+    _jd_raw["jd"] = pd.to_numeric(_jd_raw["jd"], errors="coerce").fillna(0.0)
+
+    _pf_shop = (_pf_fee.merge(_jd_raw, on="shop", how="outer")
+                .merge(_ad_df, on="shop", how="outer"))
+    _PF_NUM = ("commission", "service", "transaction", "ams", "voucher", "ship3pl",
+               "buyer_ship", "rebate", "other_ded", "refund", "jd", "ad")
+    for _c in _PF_NUM:
+        _pf_shop[_c] = pd.to_numeric(_pf_shop.get(_c), errors="coerce").fillna(0.0)
+
+    # --- NST 売上/粗利: 線下調整（品目 31109）を外して別掲 ---
+    _dfp = df.copy()
+    _is_off = _dfp["item_internal_id"].astype(str).str.strip() == _OFFLINE_ITEM
+    _dfp["offline"] = _dfp["revenue"].where(_is_off, 0.0)
+    for _c in ("revenue", "defined_cost", "gross_profit", "qty_sold"):
+        _dfp[_c] = _dfp[_c].where(~_is_off, 0.0)
+
+    _dim_lbl = {"shop": _col("shop"), "owner": _col("owner"), "market": _col("market")}
+    _pf_dim = st.radio(("集計軸" if _ja_pf else "汇总维度"),
+                       ["shop", "owner", "market"], horizontal=True,
+                       format_func=lambda k: _dim_lbl[k], key="perf_dim")
+
+    def _perf_table(dim: str) -> pd.DataFrame:
+        keys = ["shop", "owner"] if dim == "shop" else [dim]
+        g = _dfp.groupby(keys, as_index=False).agg(
+            qty=("qty_sold", "sum"), revenue=("revenue", "sum"),
+            defined_cost=("defined_cost", "sum"), gross_profit=("gross_profit", "sum"),
+            offline=("offline", "sum"))
+        g = _ns_round_money(g)
+        g["offline"] = g["offline"].map(_rhu)
+        if dim == "shop":
+            m = g.merge(_pf_shop, on="shop", how="left")
+        else:
+            _map = _dfp[["shop", dim]].drop_duplicates()
+            _fa = (_map.merge(_pf_shop, on="shop", how="inner")
+                   .groupby(dim, as_index=False).agg(**{c: (c, "sum") for c in _PF_NUM}))
+            m = g.merge(_fa, on=dim, how="left")
+        for _c in _PF_NUM:
+            m[_c] = pd.to_numeric(m.get(_c), errors="coerce").fillna(0.0).map(_rhu)
+        m["ded_total"] = (m["commission"] + m["service"] + m["transaction"] + m["ams"]
+                          + m["voucher"] + m["ship3pl"] + m["other_ded"]
+                          - m["buyer_ship"] - m["rebate"])
+        m["shop_gp"] = m["gross_profit"] - m["ded_total"]
+        m["perf"] = m["shop_gp"] - m["jd"] - m["ad"]
+        m["gross_margin"] = (m["gross_profit"] / m["revenue"].where(m["revenue"] != 0)).fillna(0) * 100
+        m["perf_rate"] = (m["perf"] / m["revenue"].where(m["revenue"] != 0)).fillna(0) * 100
+        return m.sort_values("perf", ascending=False)
+
+    _pt = _perf_table(_pf_dim)
+
+    # KPI（対象店舗の合計 · 率は合算後）
+    _tot = {c: float(_pt[c].sum()) for c in
+            ("revenue", "gross_profit", "ded_total", "shop_gp", "jd", "ad", "perf", "refund", "offline")}
+    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
+    k1.metric(("売上(NST·調整除く)" if _ja_pf else "销售额(NST·剔调整)"), f"¥{_tot['revenue']:,.0f}")
+    k2.metric(_col("gross_profit"), f"¥{_tot['gross_profit']:,.0f}",
+              (f"{_tot['gross_profit'] / _tot['revenue'] * 100:.2f}%" if _tot["revenue"] else "—"),
+              delta_color="off")
+    k3.metric(_col("ded_total"), f"¥{_tot['ded_total']:,.0f}")
+    k4.metric(_col("shop_gp"), f"¥{_tot['shop_gp']:,.0f}")
+    k5.metric(_col("jd"), f"¥{_tot['jd']:,.0f}")
+    k6.metric(_col("ad"), f"¥{_tot['ad']:,.0f}")
+    k7.metric(_col("perf"), f"¥{_tot['perf']:,.0f}",
+              (f"{_tot['perf'] / _tot['revenue'] * 100:.2f}%" if _tot["revenue"] else "—"),
+              delta_color="off")
+    st.caption((f"別掲: 返金額 ¥{_tot['refund']:,.0f} · 線下調整 ¥{_tot['offline']:,.0f}（いずれも業績から引いていない）"
+                if _ja_pf else
+                f"单列: 退款金额 ¥{_tot['refund']:,.0f} · 线下调整 ¥{_tot['offline']:,.0f}（均未从绩效中扣除）"))
+
+    _head = ("shop", "owner") if _pf_dim == "shop" else (_pf_dim,)
+    _perf_cols = _head + (
+        "qty", "revenue", "defined_cost", "gross_profit", "gross_margin",
+        "commission", "service", "transaction", "ams", "voucher", "ship3pl",
+        "buyer_ship", "rebate", "other_ded", "ded_total",
+        "shop_gp", "jd", "ad", "perf", "perf_rate",
+        "refund", "offline")
+    _pf_disp = _disp(_pt, _perf_cols)
+    html_table(_pf_disp)
+    st.download_button(
+        "⬇️ CSV ダウンロード" if _ja_pf else "⬇️ 下载 CSV",
+        _pf_disp.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"運営業績_{_pf_dim}_{ym}.csv", mime="text/csv", key="dl_perf_tab")
+    if _cov_pct is not None and _cov_pct < 100:
+        st.caption((f"⚠️ 手数料明細カバレッジ {_cov_pct:.1f}%（未突合注文の控除は 0 扱い → 業績が高く出る）"
+                    if _ja_pf else
+                    f"⚠️ 手续费明细覆盖率 {_cov_pct:.1f}%（未匹配订单扣减按 0 → 绩效偏高）"))
