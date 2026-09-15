@@ -101,6 +101,18 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "主档没有，流水线会报 fail：": "Not in item master — pipeline will fail: ", "先输入 JAN": "Enter JANs first",
     "主图": "Main images", "自动出图": "Auto images", "先不出图（之后在详情页手传）": "Skip images (upload later in detail view)",
     "店铺版语言": "Shop version language", "本地语言（按国家）": "Local language (per country)", "全部英语": "English for all",
+    "📦 导出店小秘（Excel + 图片包）": "📦 Export for Dianxiaomi (Excel + images)",
+    "范围 = 现在筛出的 {n} 个 SPU。分类留空 → 导入后进「未分类」。": "Scope = the {n} SPUs currently filtered. Category left empty → lands in Uncategorized.",
+    "库存（每个 SKU 统一填）": "Stock (same for every SKU)",
+    "📦 生成导出包": "📦 Build package",
+    "已生成：{s}": "Built: {s}",
+    "导出失败：": "Export failed: ",
+    "⬇ 下载导出包（含图片）": "⬇ Download package (with images)",
+    "传完图后，在店小秘「图片管理」按序号全选 → 批量复制图片地址 → 粘到下面": "After uploading, in Dianxiaomi Image Manager select in sequence order → bulk-copy image URLs → paste below",
+    "回填图片链接（一行一条，顺序 = 图片清单.csv 的序号）": "Paste image URLs (one per line, in the order of 图片清单.csv)",
+    "✅ 回填并生成最终 xlsx": "✅ Fill URLs and build final xlsx",
+    "已回填 {n} 条链接，{r} 行": "Filled {n} URLs across {r} rows",
+    "⬇ 下载最终 xlsx（导入店小秘用）": "⬇ Download final xlsx (for Dianxiaomi import)",
     "批次号": "Batch ID", "🚀 生成母版": "🚀 Generate master", 
     "已启动，批次 {b}。下面「运行状态」会自动刷新，跑完变「已完成」。": "Started batch {b}. The run status below refreshes itself and turns to Done when finished.",
     "启动失败：": "Failed to start: ", "运行状态": "Run status", "还没有运行记录": "No runs yet",
@@ -556,15 +568,58 @@ with tab_review:
                 _thumb.clear()
                 st.rerun()
 
+            # ---- 店小秘导出（Boss 2026-09-15）：店小秘没有写商品的 API，只能 Excel 导入。
+            # 图片走店小秘自己的「图片空间」：先下包 → 传图 → 批量复制地址 → 粘回来回填。
+            try:
+                shops_all = list_shops(conn)
+            except Exception:  # noqa: BLE001 — 店铺表没就位时导出区自己降级
+                shops_all = []
+            with st.expander(tt("📦 导出店小秘（Excel + 图片包）")):
+                st.caption(tt("范围 = 现在筛出的 {n} 个 SPU。分类留空 → 导入后进「未分类」。").format(n=len(drafts)))
+                dx_pick = _shop_grid(shops_all, "dx_shop") if shops_all else []
+                dq1, dq2 = st.columns([1, 3])
+                dx_stock = dq1.number_input(tt("库存（每个 SKU 统一填）"), min_value=1, value=100, step=10, key="dx_stock")
+                if dq2.button(tt("📦 生成导出包"), disabled=not (dx_pick and keys), key="dx_go",
+                              use_container_width=True):
+                    try:
+                        from dianxiaomi_zip import export_zip
+                        JOB_DIR.mkdir(parents=True, exist_ok=True)
+                        label = batch_pick if batch_pick != _BATCH_ALL else time.strftime("%Y%m%d-%H%M")
+                        zp = JOB_DIR / f"dx_{label}.zip"
+                        rep = export_zip(conn, keys, dx_pick, zp, stock=int(dx_stock), batch_label=str(label))
+                        st.session_state["dx_zip"] = str(zp)
+                        st.success(tt("已生成：{s}").format(s=rep.summary()))
+                        for m in rep.missing_images[:10]:
+                            st.warning(m)
+                    except Exception as e:  # noqa: BLE001
+                        st.error(tt("导出失败：") + str(e))
+                dx_zip = Path(st.session_state.get("dx_zip", ""))
+                if dx_zip.name and dx_zip.exists():
+                    st.download_button(tt("⬇ 下载导出包（含图片）"), dx_zip.read_bytes(), file_name=dx_zip.name,
+                                       key="dx_dl", use_container_width=True)
+                    st.caption(tt("传完图后，在店小秘「图片管理」按序号全选 → 批量复制图片地址 → 粘到下面"))
+                    dx_urls = st.text_area(tt("回填图片链接（一行一条，顺序 = 图片清单.csv 的序号）"), key="dx_urls", height=120)
+                    if st.button(tt("✅ 回填并生成最终 xlsx"), disabled=not dx_urls.strip(), key="dx_fill",
+                                 use_container_width=True):
+                        try:
+                            from dianxiaomi_zip import fill_urls
+                            urls = [u.strip() for u in dx_urls.replace(",", "\n").splitlines() if u.strip()]
+                            outp = dx_zip.with_name(dx_zip.stem + "_final.zip")
+                            rep2 = fill_urls(dx_zip, urls, outp)
+                            st.session_state["dx_final"] = str(outp)
+                            st.success(tt("已回填 {n} 条链接，{r} 行").format(n=len(urls), r=rep2.row_count))
+                        except Exception as e:  # noqa: BLE001
+                            st.error(str(e))
+                    dx_final = Path(st.session_state.get("dx_final", ""))
+                    if dx_final.name and dx_final.exists():
+                        st.download_button(tt("⬇ 下载最终 xlsx（导入店小秘用）"), dx_final.read_bytes(),
+                                           file_name=dx_final.name, key="dx_dl2", use_container_width=True)
+
             # ---------------- 详情层（1 SPU · 可切到某店铺版本看） ----------------
             st.divider()
             h1, h2 = st.columns([3, 2])
             sel = h1.selectbox(tt("打开一个 SPU"), keys, key="rv_sel")
-            try:
-                shops = list_shops(conn)
-            except Exception as e:  # noqa: BLE001
-                shops = []
-                st.error(str(e))
+            shops = shops_all
             shop_by_key = {sh["shop_key"]: sh for sh in shops}
             try:
                 versions = {r["shop_key"]: r for r in list_shop_drafts(conn, spu_key=sel)} if sel else {}

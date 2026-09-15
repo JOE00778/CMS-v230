@@ -183,6 +183,7 @@ def test_new_strings_have_japanese_and_english():
     for zh in ("🤖 生成母版", "🎨 主图模板", "上架后台（草稿）",
                "📤 上架后台（草稿）· 含勾选店铺", "出到哪些店铺（按国家分列）", "母版（英文）",
                "🧹 清空（不可撤销）", "店铺版语言", "本地语言（按国家）", "全部英语",
+               "📦 导出店小秘（Excel + 图片包）", "📦 生成导出包", "✅ 回填并生成最终 xlsx",
                "看哪个版本（国家 · 店铺）", "勾上 {n} 家", "🗑 删除", "确认删除",
                "原图 → 也走抠图套模板", "⬆️ 上传 / 替换模板", "⚠ 默认",
                "批次", "自动出图", "先不出图（之后在详情页手传）", "运行状态", "运行中", "已完成",
@@ -210,3 +211,12 @@ def test_shop_version_language_switch_reaches_the_pipeline():
     assert 'key="gen_lang_mode"' in SRC and 'key=f"rv_fill_lang_{sel}"' in SRC
     assert SRC.count('"--lang", "en" if') == 2, "生成母版と補齐店铺版の両方で --lang を渡すこと"
     assert 'lang_mode == tt("全部英语")' in SRC and 'fill_lang == tt("全部英语")' in SRC
+
+
+def test_dianxiaomi_export_is_wired_to_the_two_stage_flow():
+    """Boss 2026-09-15「用Excel的形式，放到店小秘未分类中」＋画像は图片空间経由。
+    店小秘に書き込む API は無いので、包を出す→URL を埋める、の二段が両方繋がっていること。"""
+    assert "from dianxiaomi_zip import export_zip" in SRC and "from dianxiaomi_zip import fill_urls" in SRC
+    assert "export_zip(conn, keys, dx_pick, zp" in SRC, "対象は筛选中の SPU × 勾选した店"
+    assert 'key="dx_dl"' in SRC and 'key="dx_dl2"' in SRC, "包と最終 xlsx の両方をダウンロードできること"
+    assert "rep.missing_images[:10]" in SRC, "画像欠けは黙って出さない"
