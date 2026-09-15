@@ -937,6 +937,41 @@ with tab_sku:
         st.download_button(t("📥 CSV"), _shows.to_csv(index=False).encode("utf-8-sig"),
                            file_name="sku_sourcing_detail.csv", mime="text/csv",
                            key="sku_csv")
+        # ── 批量下载：供应商 × JAN × 起订量 × 价格（隋艶偉 · CMS 诉求表 2026-09-15）──
+        #    毎 仕入先×JAN の最新見積 1 本。表示や口径には触らない（生データの持ち出し専用）。
+        #    起订量の出どころ（2026-09-15 実査: 見積 DB の moq は 12,253 行すべて空）:
+        #      moq          = 見積 DB に入力があれば（報価維護タブ/アップロードで「起订量」列を読む）
+        #      nst_order_lot = NST 商品主档の発注ロット（商品単位・仕入先を問わない）
+        #      supplier_min_amount = 仕入先主档の注文最低金額（仕入先単位）
+        _bulk_q = _read(
+            "WITH q AS (SELECT DISTINCT ON (supplier_name, jan) "
+            "  jan, item_name, supplier_name, price, moq, order_lot, lead_days, quote_date "
+            "  FROM sourcing.supplier_quote "
+            "  ORDER BY supplier_name, jan, quote_date DESC, id DESC) "
+            "SELECT q.jan, coalesce(im.display_name, q.item_name) AS item_name, q.supplier_name, "
+            "q.price, q.moq, q.order_lot, im.order_lot AS nst_order_lot, im.carton_qty, "
+            "s.min_order_amount AS supplier_min_amount, q.lead_days, q.quote_date "
+            "FROM q LEFT JOIN (SELECT DISTINCT ON (jan) jan, display_name, order_lot, carton_qty "
+            "  FROM nst.item_master_raw WHERE jan IS NOT NULL ORDER BY jan, internal_id DESC) im "
+            "  ON im.jan = q.jan "
+            "LEFT JOIN sourcing.supplier s ON s.supplier_name = q.supplier_name "
+            "ORDER BY q.jan, q.price NULLS LAST")
+        if not _bulk_q.empty:
+            _bulk_show = _bulk_q.rename(columns={
+                "jan": "JAN", "item_name": _dl("商品名", "商品名"),
+                "supplier_name": _dl("供应商", "仕入先"), "price": _dl("价格", "価格"),
+                "moq": _dl("起订量(报价)", "最低発注数(見積)"),
+                "order_lot": _dl("发注ロット(报价)", "発注ロット(見積)"),
+                "nst_order_lot": _dl("发注ロット(NST主档)", "発注ロット(NST主档)"),
+                "carton_qty": _dl("箱规(NST)", "ケース入数(NST)"),
+                "supplier_min_amount": _dl("供应商起订金额(¥)", "仕入先注文最低金額(¥)"),
+                "lead_days": _dl("交期(日)", "リード日数"), "quote_date": _dl("报价日期", "見積日")})
+            st.download_button(
+                _dl("📥 供应商·起订量·价格 CSV（全部 JAN）", "📥 仕入先・最低発注数・価格 CSV（全 JAN）"),
+                _bulk_show.to_csv(index=False).encode("utf-8-sig"),
+                file_name="supplier_moq_price.csv", mime="text/csv", key="sku_bulk_quote_csv",
+                help=_dl(f"{len(_bulk_show):,} 行 = 供应商×JAN 组合数（每组取最新一条报价）",
+                         f"{len(_bulk_show):,} 行 = 仕入先×JAN の組合せ数（各組の最新見積）"))
         st.caption(_dl(
             "现进货价=NST 最终购入原价（0/空则用最近 PO 单价）· 供货商报价=启用供应商里最低的"
             "有效/有效性未确认报价 · 价差=现进货价−供货商报价，>0 表示有更便宜的报价"
