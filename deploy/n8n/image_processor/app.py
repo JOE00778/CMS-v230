@@ -373,7 +373,13 @@ def list_templates():
 
 @app.put("/template/{key}", response_model=TemplateResp)
 def put_template(key: str, req: TemplateReq):
-    """上传/替换一张店铺模板。硬校验：PNG · 1500×1500 · 带透明通道（产品要透出来）。"""
+    """上传/替换一张店铺模板。硬校验：PNG or JPEG · 1500×1500。
+
+    2026-09-15 Boss「模板用 JPG，产品用抠图的方法」：テンプレは**背景**、抜いた商品を
+    その上に載せる（_apply_template は元からこの順序）。よって透明チャンネルは不要。
+    透明付き PNG が来たら白地に焼き込んでから保存する——透明のまま残すと、商品が
+    覆わなかった部分が RGB 変換で黒く出る。保存形式は常に不透明 PNG（<key>.png）。
+    """
     _ensure_dirs()
     key = _safe_key(key, "template key")
     try:
@@ -381,14 +387,15 @@ def put_template(key: str, req: TemplateReq):
         im.load()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"不是可读图片: {e}")
-    if im.format != "PNG":
-        raise HTTPException(422, f"模板必须是 PNG（收到 {im.format}）")
+    if im.format not in ("PNG", "JPEG"):
+        raise HTTPException(422, f"模板要 PNG 或 JPG（收到 {im.format}）")
     if im.size != (CANVAS, CANVAS):
         raise HTTPException(422, f"模板必须是 {CANVAS}×{CANVAS}（收到 {im.width}×{im.height}）")
-    if not (im.mode in ("RGBA", "LA") or "transparency" in im.info):
-        raise HTTPException(422, "模板必须带透明通道（中间要透出产品）")
+    rgba = im.convert("RGBA")
+    flat = Image.new("RGB", rgba.size, (255, 255, 255))
+    flat.paste(rgba, (0, 0), rgba)          # 透明があれば白地に焼く
     dst = DIRS["templates"] / f"{key}.png"
-    im.convert("RGBA").save(dst, "PNG", optimize=True)
+    flat.save(dst, "PNG", optimize=True)
     return _template_resp(dst)
 
 

@@ -149,14 +149,12 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "已送上架后台（草稿）：{k} · 店铺 {ok}/{all}": "Sent to listing backend as draft: {k} · shops {ok}/{all}",
     "送上架后台失败：": "Send failed: ", "🔁 按当前模板重出该店图": "🔁 Re-render this shop's images with current template", "已重出 {k} 的图（{n} 张）": "Re-rendered {k} images ({n})",
     "每店一张主图模板：1500×1500 PNG，中间透明，四周方框 + 店铺 logo。上传即替换，之后出图自动用新模板；已出的图不自动重出（详情页有「重出」按钮）。": "One template per shop: 1500×1500 PNG, transparent middle, frame + shop logo. Uploading replaces it; new renders use it immediately; existing images are not re-rendered automatically (use the button in detail view).",
-    "选店铺": "Shop", "模板 PNG（1500×1500 · 透明通道）": "Template PNG (1500×1500 · alpha)", "⬆️ 上传 / 替换模板": "⬆️ Upload / replace template", "已上传 {k} 模板": "Template {k} uploaded", "上传失败：": "Upload failed: ",
+    "选店铺": "Shop", "模板图（1500×1500 · PNG 或 JPG）": "Template image (1500×1500 · PNG or JPG)", "⬆️ 上传 / 替换模板": "⬆️ Upload / replace template", "已上传 {k} 模板": "Template {k} uploaded", "上传失败：": "Upload failed: ",
     "🗑 删除该店模板（回落默认红模板）": "🗑 Delete this shop's template (fall back to default)", "当前模板": "Current template", "默认红模板（未上传）": "Default red template (none uploaded)",
     "⚠ 默认": "⚠ default",
     "这个文件读不出来（{e}）": "Cannot read this file ({e})",
-    "要 PNG，这张是 {f}。JPG 存不了透明，要用 PNG 重新导出。": "PNG required, this is {f}. JPG cannot store transparency — re-export as PNG.",
+    "模板要 PNG 或 JPG，这张是 {f}。": "Template must be PNG or JPG, this is {f}.",
     "要 1500×1500，这张是 {w}×{h}。": "1500×1500 required, this is {w}×{h}.",
-    "这张没有透明通道（色彩模式 {m}），中间的产品会被完全盖住。导出时要勾「保留透明背景 / Transparency」，把中间该露产品的地方做成全透明。": "No alpha channel (mode {m}) — the product would be fully covered. Re-export with transparency on, and erase the centre area to fully transparent.",
-    "这张有透明通道但整层都是不透明的，套上去会把产品盖住。中间该露产品的地方要擦成全透明（alpha=0）再导出。": "Has an alpha channel but nothing is transparent — the product would be covered. Erase the centre area to alpha=0 and re-export.",
 }
 
 
@@ -221,8 +219,8 @@ class _Skip(Exception):
 def _template_problem(upload) -> Optional[str]:
     """模板图先在本地判一次，给人话——sidecar 的 422 JSON 运营看不懂。
 
-    硬条件是 sidecar 那边的：PNG · 1500×1500 · 真的有透明像素（产品要从洞里透出来）。
-    「有 alpha 通道」还不够——整层不透明的 alpha 会把产品整个盖住，那是最常见的误传。
+    2026-09-15 Boss「模板用 JPG，产品用抠图的方法」：模板是**背景**，抠好的产品叠在上面。
+    所以只要 PNG/JPG + 1500×1500 就行，不再要求透明通道。
     """
     if upload is None:
         return None
@@ -232,18 +230,10 @@ def _template_problem(upload) -> Optional[str]:
         im.load()
     except Exception as e:  # noqa: BLE001
         return tt("这个文件读不出来（{e}）").format(e=e)
-    if im.format != "PNG":
-        return tt("要 PNG，这张是 {f}。JPG 存不了透明，要用 PNG 重新导出。").format(f=im.format or "?")
+    if im.format not in ("PNG", "JPEG"):
+        return tt("模板要 PNG 或 JPG，这张是 {f}。").format(f=im.format or "?")
     if im.size != (1500, 1500):
         return tt("要 1500×1500，这张是 {w}×{h}。").format(w=im.width, h=im.height)
-    if im.mode not in ("RGBA", "LA") and "transparency" not in im.info:
-        return tt("这张没有透明通道（色彩模式 {m}），中间的产品会被完全盖住。"
-                  "导出时要勾「保留透明背景 / Transparency」，把中间该露产品的地方做成全透明。").format(m=im.mode)
-    alpha = im.convert("RGBA").getchannel("A")
-    lo, hi = alpha.getextrema()
-    if lo >= 250:
-        return tt("这张有透明通道但整层都是不透明的，套上去会把产品盖住。"
-                  "中间该露产品的地方要擦成全透明（alpha=0）再导出。")
     return None
 
 
@@ -908,7 +898,7 @@ with tab_refs:
             u1, u2 = st.columns([1, 2])
             tshop = u1.selectbox(tt("选店铺"), [s["shop_key"] for s in shops],
                                  format_func=lambda k: f"{k} · {next(s['shop_name'] for s in shops if s['shop_key'] == k)}", key="tpl_shop")
-            tfile = u2.file_uploader(tt("模板 PNG（1500×1500 · 透明通道）"), type=["png"], key=f"tpl_file_{tshop}")
+            tfile = u2.file_uploader(tt("模板图（1500×1500 · PNG 或 JPG）"), type=["png", "jpg", "jpeg"], key=f"tpl_file_{tshop}")
             p1, p2 = st.columns(2)
             with p1:
                 if tshop in tpls and Path(tpls[tshop]["saved_path"]).exists():
