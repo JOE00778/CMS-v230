@@ -336,7 +336,6 @@ with tab3:
 **補則**: 現行ランクが取扱中止の商品は {"A/B/C へ戻さない（吸収態）" if _p["stop_absorbing"] else "再判定で A/B/C に戻り得る（吸収態オフ）"}。主档にランクの無い商品は NEW と表示。
 粗利率 = 粗利 ÷ 売上（定義原価ベース · page04/05 と同じ口径）。
 
-**発注目安（参考値）**: 再発注点 = 月販 × 進貨周期(月) × 安全係数 · 安全係数 A {_p["safety_a"]} / B {_p["safety_b"]} / C {_p["safety_c"]} / 停 {_p["safety_stop"]} · 進貨周期既定 {int(_p["lead_days"])} 日
 """)
     else:
         st.markdown(f"""
@@ -353,7 +352,6 @@ with tab3:
 **补则**：现等级已是取扱中止的商品{"不回升到 A/B/C（吸收态）" if _p["stop_absorbing"] else "可在重算时回到 A/B/C（吸收态关闭）"}。主档没有等级的显示 NEW。
 毛利率 = 毛利 ÷ 销售额（定义原价口径，与 page04/05 一致）。
 
-**订货参考**：再订货点 = 月销 × 进货周期(月) × 安全系数 · 安全系数 A {_p["safety_a"]} / B {_p["safety_b"]} / C {_p["safety_c"]} / 停 {_p["safety_stop"]} · 进货周期默认 {int(_p["lead_days"])} 天
 """)
 
     st.divider()
@@ -371,23 +369,14 @@ with tab3:
     _abs_in = st.checkbox(("現行取扱中止は A/B/C へ戻さない（吸収態）" if _ja7
                            else "现等级为取扱中止的不回升到 A/B/C（吸收态）"),
                           value=bool(_p["stop_absorbing"]), key="rp_abs")
-    st.caption("発注目安の係数" if _ja7 else "订货参考系数")
-    d1, d2, d3, d4, d5 = st.columns(5)
-    _sa = d1.number_input("A", min_value=0.0, max_value=5.0, step=0.1, value=float(_p["safety_a"]), key="rp_sa")
-    _sb = d2.number_input("B", min_value=0.0, max_value=5.0, step=0.1, value=float(_p["safety_b"]), key="rp_sb")
-    _sc = d3.number_input("C", min_value=0.0, max_value=5.0, step=0.1, value=float(_p["safety_c"]), key="rp_sc")
-    _ss = d4.number_input(("停" if not _ja7 else "取扱中止"), min_value=0.0, max_value=5.0, step=0.1,
-                          value=float(_p["safety_stop"]), key="rp_ss")
-    _ld = d5.number_input(("進貨周期 既定(日)" if _ja7 else "进货周期默认(天)"), min_value=1, max_value=365,
-                          step=1, value=int(_p["lead_days"]), key="rp_ld")
     b1, b2 = st.columns([1, 1])
     if b1.button(("💾 保存" if _ja7 else "💾 保存参数"), type="primary", key="rp_save"):
         try:
             _saved = save_rank_params({
                 "top_pct": _top_in / 100.0, "a_margin": _mg_in / 100.0,
                 "no_sales_months": _n_in, "stop_absorbing": _abs_in,
-                "safety_a": _sa, "safety_b": _sb, "safety_c": _sc, "safety_stop": _ss,
-                "lead_days": _ld,
+                # 安全係数/進貨周期は等級判定と無関係（Boss 2026-09-15）→ この tab では触らない
+                **{k: _p[k] for k in ("safety_a", "safety_b", "safety_c", "safety_stop", "lead_days")},
             })
             st.success(("保存しました。次回「生成等级建议」から適用されます。" if _ja7
                         else "已保存。下次点「生成等级建议」即按新参数判定。")
@@ -402,7 +391,8 @@ with tab3:
             st.rerun()
         except Exception as _e:  # noqa: BLE001
             st.error(("失敗: " if _ja7 else "失败: ") + str(_e))
-    _diff = {k: (v, _p[k]) for k, v in DEFAULT_RANK_PARAMS.items() if _p[k] != v}
+    _RANK_KEYS = ("top_pct", "a_margin", "no_sales_months", "stop_absorbing")
+    _diff = {k: (DEFAULT_RANK_PARAMS[k], _p[k]) for k in _RANK_KEYS if _p[k] != DEFAULT_RANK_PARAMS[k]}
     st.caption((("既定値と異なる項目: " if _ja7 else "与默认值不同的项：")
                 + (", ".join(f"{k} {d}→{c}" for k, (d, c) in _diff.items()) if _diff
                    else ("なし（すべて既定値）" if _ja7 else "无（全部为默认值）"))))
