@@ -24,9 +24,9 @@ lang_selector()
 st.title(t("🏷️ 商品等级判定"))
 _RP = load_rank_params()
 st.caption(t(
-    "基于销售前 {top:.0f}% × 利润率 ≥{mg:.0f}% 的 4 档判定 (Aランク/Bランク/Cランク/取扱中止) · "
+    "基于 28 原则头部（销售额累计 80%）× 利润率 ≥{mg:.0f}% 的 4 档判定 (Aランク/Bランク/Cランク/取扱中止) · "
     "财年 3 月开始 (Q1=3-5月 / Q2=6-8月 / Q3=9-11月 / Q4=12-2月) · 阈值可在「⚙️ 判定原理与参数」tab 修改"
-).format(top=_RP["top_pct"] * 100, mg=_RP["a_margin"] * 100))
+).format(mg=_RP["a_margin"] * 100))
 
 DB = Path(__file__).parent.parent / "data_warehouse" / "warehouse.db"
 
@@ -318,7 +318,6 @@ with tab3:
     _p = load_rank_params()
     _ja7 = get_lang() == "ja"
     st.markdown("##### " + ("📖 判定ロジック（現在の設定値で表示）" if _ja7 else "📖 判定原理（按当前参数显示）"))
-    _top = _p["top_pct"] * 100
     _mg = _p["a_margin"] * 100
     _n = int(_p["no_sales_months"])
     if _ja7:
@@ -329,7 +328,7 @@ with tab3:
 
 1. NST 取扱区分 が「取扱中止 / メーカー取扱中止」 → **取扱中止**
 2. 直近 **{_n} ヶ月** の販売数 = 0 → **取扱中止**
-3. 売上額の降順累計占比 ≤ **{_top:.0f}%**（頭部品）**かつ** 粗利率 ≥ **{_mg:.0f}%** → **Aランク**
+3. **28 の法則（固定）**: 売上額降順で累計 80% を占める頭部 SKU（≈ 上位 2 割）**かつ** 粗利率 ≥ **{_mg:.0f}%** → **Aランク**
 4. 頭部品だが粗利率 < {_mg:.0f}% → **Bランク**
 5. それ以外 → **Cランク**
 
@@ -345,7 +344,7 @@ with tab3:
 
 1. NST 取扱区分 =「取扱中止 / メーカー取扱中止」 → **取扱中止**
 2. 最近 **{_n} 个月** 销量 = 0 → **取扱中止**
-3. 销售额降序累计占比 ≤ **{_top:.0f}%**（头部品）**且** 毛利率 ≥ **{_mg:.0f}%** → **Aランク**
+3. **28 原则（固定）**：按销售额降序，累计占到 80% 销售额的头部 SKU（≈ 前 20% 的 SKU）**且** 毛利率 ≥ **{_mg:.0f}%** → **Aランク**
 4. 头部品但毛利率 < {_mg:.0f}% → **Bランク**
 5. 其余 → **Cランク**
 
@@ -356,10 +355,11 @@ with tab3:
 
     st.divider()
     st.markdown("##### " + ("🛠️ パラメータ編集" if _ja7 else "🛠️ 参数设置"))
-    c1, c2, c3 = st.columns(3)
-    _top_in = c1.number_input(("頭部累計占比 ライン (%)" if _ja7 else "头部累计占比线 (%)"),
-                              min_value=1.0, max_value=100.0, step=1.0,
-                              value=float(_p["top_pct"] * 100), key="rp_top")
+    # 頭部ライン（top_pct）は 28 の法則で **固定 80%**（Boss 2026-09-15）→ 編集不可
+    st.caption("頭部 = 28 の法則で固定（売上累計 80%）· 編集不可" if _ja7
+               else "头部 = 28 原则固定（销售额累计 80%）· 不可修改")
+    c2, c3 = st.columns(2)
+    _top_in = 80.0
     _mg_in = c2.number_input(("A ランク粗利率 ライン (%)" if _ja7 else "A 档毛利率线 (%)"),
                              min_value=0.0, max_value=100.0, step=1.0,
                              value=float(_p["a_margin"] * 100), key="rp_mg")
@@ -391,7 +391,7 @@ with tab3:
             st.rerun()
         except Exception as _e:  # noqa: BLE001
             st.error(("失敗: " if _ja7 else "失败: ") + str(_e))
-    _RANK_KEYS = ("top_pct", "a_margin", "no_sales_months", "stop_absorbing")
+    _RANK_KEYS = ("a_margin", "no_sales_months", "stop_absorbing")
     _diff = {k: (DEFAULT_RANK_PARAMS[k], _p[k]) for k in _RANK_KEYS if _p[k] != DEFAULT_RANK_PARAMS[k]}
     st.caption((("既定値と異なる項目: " if _ja7 else "与默认值不同的项：")
                 + (", ".join(f"{k} {d}→{c}" for k, (d, c) in _diff.items()) if _diff
