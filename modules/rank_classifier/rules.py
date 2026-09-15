@@ -5,10 +5,12 @@
 """
 from typing import Literal, Dict
 
+from shared.rank_settings import load_rank_params
+
 Rank = Literal['Aランク', 'Bランク', 'Cランク', '取扱中止']
 
 
-def classify_rank(sku_data: dict) -> Rank:
+def classify_rank(sku_data: dict, params: dict | None = None) -> Rank:
     """
     4 档判定规则 (Boss 重构 v3)
 
@@ -28,6 +30,9 @@ def classify_rank(sku_data: dict) -> Rank:
 
     Returns: 'Aランク' / 'Bランク' / 'Cランク' / '取扱中止' (NST item_rank 合法値)
 
+    params: shared.rank_settings の辞書（top_pct / a_margin）。None なら保存値を読む
+            （2026-09-15 · 閾値を page07「⚙️ 判定原理与参数」で可変化）。
+
     注: acknowledged_action (改廃确认路径) 已删除 (Boss 决定: 不需要重复路径,
         NetSuite 取扱中止 单一权威源即可)
     """
@@ -39,9 +44,10 @@ def classify_rank(sku_data: dict) -> Rank:
     if sku_data.get('no_sales_3m'):
         return '取扱中止'
 
-    # 3. top 80% + 高利 → Aランク
-    is_top_80 = sku_data.get('sales_amount_rank_pct', 1.0) <= 0.80
-    is_high_margin = sku_data.get('gross_margin_rate', 0) >= 0.59
+    # 3. top N% + 高利 → Aランク（閾値は設定値 · 既定 80% / 59%）
+    p = params or load_rank_params()
+    is_top_80 = sku_data.get('sales_amount_rank_pct', 1.0) <= p['top_pct']
+    is_high_margin = sku_data.get('gross_margin_rate', 0) >= p['a_margin']
 
     if is_top_80 and is_high_margin:
         return 'Aランク'

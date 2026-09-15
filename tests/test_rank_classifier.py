@@ -277,3 +277,45 @@ class TestGenerateProposal:
             assert len(lines) == 13  # 头 + 12 条数据
             assert 'item_code' in lines[0]
             assert 'new_rank' in lines[0]
+
+
+# ============================================================
+# 2026-09-15 · 閾値の可変化（shared.rank_settings）
+# ============================================================
+class TestRankParams:
+    def test_defaults_match_legacy_hardcode(self):
+        from shared.rank_settings import DEFAULT_RANK_PARAMS as D
+        assert D["top_pct"] == 0.80 and D["a_margin"] == 0.59
+        assert D["no_sales_months"] == 3 and D["stop_absorbing"] is True
+        assert (D["safety_a"], D["safety_b"], D["safety_c"], D["safety_stop"]) == (1.5, 1.0, 0.5, 0.0)
+        assert D["lead_days"] == 30
+
+    def test_explicit_params_override_thresholds(self):
+        from modules.rank_classifier.rules import classify_rank
+        sku = {'netsuite_status': '取扱中', 'sales_amount_rank_pct': 0.85,
+               'gross_margin_rate': 0.50, 'no_sales_3m': False}
+        assert classify_rank(sku) == 'Cランク'                       # 既定: 頭部外
+        loose = {"top_pct": 0.90, "a_margin": 0.45}
+        assert classify_rank(sku, {**loose}) == 'Aランク'             # 緩めると A
+        assert classify_rank(sku, {"top_pct": 0.90, "a_margin": 0.60}) == 'Bランク'
+
+    def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
+        import importlib
+        import shared.rank_settings as rs
+        monkeypatch.setattr(rs, "_PATH", tmp_path / "rank_params.json")
+        saved = rs.save_rank_params({"top_pct": 0.75, "a_margin": "0.6", "no_sales_months": 4.0,
+                                     "stop_absorbing": 0, "bogus": 1})
+        assert saved["top_pct"] == 0.75 and saved["a_margin"] == 0.6
+        assert saved["no_sales_months"] == 4 and saved["stop_absorbing"] is False
+        assert "bogus" not in saved
+        assert rs.load_rank_params() == saved
+        # 壊れたファイルは既定へ
+        (tmp_path / "rank_params.json").write_text("{not json", encoding="utf-8")
+        assert rs.load_rank_params() == rs.DEFAULT_RANK_PARAMS
+
+    def test_calc_reorder_uses_params(self):
+        from modules.rank_classifier.proposal import calc_reorder
+        r = calc_reorder(100, None, 'Aランク', {"safety_a": 2.0, "safety_b": 1, "safety_c": 1,
+                                                "safety_stop": 0, "lead_days": 60})
+        assert r["lead_time_days"] == 60 and r["safety_factor"] == 2.0
+        assert r["reorder_point"] == 400.0   # 100 × 2ヶ月 × 2.0

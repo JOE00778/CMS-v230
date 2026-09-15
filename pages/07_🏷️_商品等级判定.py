@@ -1,5 +1,5 @@
 import streamlit as st
-from shared.i18n import t, lang_selector
+from shared.i18n import t, lang_selector, get_lang
 from shared.i18n_columns import localize_df
 import pandas as pd
 import sqlite3
@@ -13,6 +13,7 @@ from data_warehouse.templates.nst_item_master import (
     dated_filename,
 )
 from shared.db import get_connection
+from shared.rank_settings import DEFAULT_RANK_PARAMS, load_rank_params, save_rank_params
 
 st.set_page_config(page_title=t("商品等级判定"), page_icon="🏷️", layout="wide")
 from shared.auth import require_password
@@ -21,10 +22,11 @@ require_password()
 inject_theme()
 lang_selector()
 st.title(t("🏷️ 商品等级判定"))
+_RP = load_rank_params()
 st.caption(t(
-    "基于销售前 80% × 利润率 ≥59% 的 4 档判定 (Aランク/Bランク/Cランク/取扱中止) · "
-    "财年 3 月开始 (Q1=3-5月 / Q2=6-8月 / Q3=9-11月 / Q4=12-2月)"
-))
+    "基于销售前 {top:.0f}% × 利润率 ≥{mg:.0f}% 的 4 档判定 (Aランク/Bランク/Cランク/取扱中止) · "
+    "财年 3 月开始 (Q1=3-5月 / Q2=6-8月 / Q3=9-11月 / Q4=12-2月) · 阈值可在「⚙️ 判定原理与参数」tab 修改"
+).format(top=_RP["top_pct"] * 100, mg=_RP["a_margin"] * 100))
 
 DB = Path(__file__).parent.parent / "data_warehouse" / "warehouse.db"
 
@@ -68,7 +70,7 @@ def _gen_months(n=12):
 MONTH_OPTIONS = _gen_months(12)
 
 # Tab 1: 生成新建议  Tab 2: 历史回看
-tab1, tab2 = st.tabs([t('🆕 新建议'), t('📜 历史回看')])
+tab1, tab2, tab3 = st.tabs([t('🆕 新建议'), t('📜 历史回看'), t('⚙️ 判定原理与参数')])
 
 with tab1:
     if 'proposal_data' not in st.session_state:
@@ -305,3 +307,102 @@ with tab2:
         sel_q = st.multiselect(t("季度筛选"), options=quarters, default=quarters)
         view2 = history[history['quarter'].isin(sel_q)] if sel_q else history
         st.dataframe(localize_df(view2), use_container_width=True, height=500)
+
+
+# ============================================================
+# Tab 3: 判定原理与参数（Boss 2026-09-15「把原理拉出来，做成可设置的」）
+#   上: 現在の保存値で原理を動的表示 · 下: 編集 + 保存（data/files/rank_params.json）
+#   保存後の「生成等级建议」から新パラメータで判定される（既存の履歴は書き換えない）
+# ============================================================
+with tab3:
+    _p = load_rank_params()
+    _ja7 = get_lang() == "ja"
+    st.markdown("##### " + ("📖 判定ロジック（現在の設定値で表示）" if _ja7 else "📖 判定原理（按当前参数显示）"))
+    _top = _p["top_pct"] * 100
+    _mg = _p["a_margin"] * 100
+    _n = int(_p["no_sales_months"])
+    if _ja7:
+        st.markdown(f"""
+**データ**: NST 月次売上（売上額・数量・粗利）× 商品主档（取扱区分・現行ランク）。対象期間は「新建议」tab で選ぶ月 or 財年四半期（3 月起算）。
+
+**判定順（上から順に見て、当たったところで確定）**
+
+1. NST 取扱区分 が「取扱中止 / メーカー取扱中止」 → **取扱中止**
+2. 直近 **{_n} ヶ月** の販売数 = 0 → **取扱中止**
+3. 売上額の降順累計占比 ≤ **{_top:.0f}%**（頭部品）**かつ** 粗利率 ≥ **{_mg:.0f}%** → **Aランク**
+4. 頭部品だが粗利率 < {_mg:.0f}% → **Bランク**
+5. それ以外 → **Cランク**
+
+**補則**: 現行ランクが取扱中止の商品は {"A/B/C へ戻さない（吸収態）" if _p["stop_absorbing"] else "再判定で A/B/C に戻り得る（吸収態オフ）"}。主档にランクの無い商品は NEW と表示。
+粗利率 = 粗利 ÷ 売上（定義原価ベース · page04/05 と同じ口径）。
+
+**発注目安（参考値）**: 再発注点 = 月販 × 進貨周期(月) × 安全係数 · 安全係数 A {_p["safety_a"]} / B {_p["safety_b"]} / C {_p["safety_c"]} / 停 {_p["safety_stop"]} · 進貨周期既定 {int(_p["lead_days"])} 日
+""")
+    else:
+        st.markdown(f"""
+**数据**：NST 月度销售（销售额、数量、毛利）× 商品主档（取扱区分、现等级）。期间在「新建议」tab 里选月度或财年季度（3 月起）。
+
+**判定顺序（从上往下，命中即定）**
+
+1. NST 取扱区分 =「取扱中止 / メーカー取扱中止」 → **取扱中止**
+2. 最近 **{_n} 个月** 销量 = 0 → **取扱中止**
+3. 销售额降序累计占比 ≤ **{_top:.0f}%**（头部品）**且** 毛利率 ≥ **{_mg:.0f}%** → **Aランク**
+4. 头部品但毛利率 < {_mg:.0f}% → **Bランク**
+5. 其余 → **Cランク**
+
+**补则**：现等级已是取扱中止的商品{"不回升到 A/B/C（吸收态）" if _p["stop_absorbing"] else "可在重算时回到 A/B/C（吸收态关闭）"}。主档没有等级的显示 NEW。
+毛利率 = 毛利 ÷ 销售额（定义原价口径，与 page04/05 一致）。
+
+**订货参考**：再订货点 = 月销 × 进货周期(月) × 安全系数 · 安全系数 A {_p["safety_a"]} / B {_p["safety_b"]} / C {_p["safety_c"]} / 停 {_p["safety_stop"]} · 进货周期默认 {int(_p["lead_days"])} 天
+""")
+
+    st.divider()
+    st.markdown("##### " + ("🛠️ パラメータ編集" if _ja7 else "🛠️ 参数设置"))
+    c1, c2, c3 = st.columns(3)
+    _top_in = c1.number_input(("頭部累計占比 ライン (%)" if _ja7 else "头部累计占比线 (%)"),
+                              min_value=1.0, max_value=100.0, step=1.0,
+                              value=float(_p["top_pct"] * 100), key="rp_top")
+    _mg_in = c2.number_input(("A ランク粗利率 ライン (%)" if _ja7 else "A 档毛利率线 (%)"),
+                             min_value=0.0, max_value=100.0, step=1.0,
+                             value=float(_p["a_margin"] * 100), key="rp_mg")
+    _n_in = c3.number_input(("無動销 → 取扱中止 の月数" if _ja7 else "无动销判停月数"),
+                            min_value=1, max_value=24, step=1,
+                            value=int(_p["no_sales_months"]), key="rp_n")
+    _abs_in = st.checkbox(("現行取扱中止は A/B/C へ戻さない（吸収態）" if _ja7
+                           else "现等级为取扱中止的不回升到 A/B/C（吸收态）"),
+                          value=bool(_p["stop_absorbing"]), key="rp_abs")
+    st.caption("発注目安の係数" if _ja7 else "订货参考系数")
+    d1, d2, d3, d4, d5 = st.columns(5)
+    _sa = d1.number_input("A", min_value=0.0, max_value=5.0, step=0.1, value=float(_p["safety_a"]), key="rp_sa")
+    _sb = d2.number_input("B", min_value=0.0, max_value=5.0, step=0.1, value=float(_p["safety_b"]), key="rp_sb")
+    _sc = d3.number_input("C", min_value=0.0, max_value=5.0, step=0.1, value=float(_p["safety_c"]), key="rp_sc")
+    _ss = d4.number_input(("停" if not _ja7 else "取扱中止"), min_value=0.0, max_value=5.0, step=0.1,
+                          value=float(_p["safety_stop"]), key="rp_ss")
+    _ld = d5.number_input(("進貨周期 既定(日)" if _ja7 else "进货周期默认(天)"), min_value=1, max_value=365,
+                          step=1, value=int(_p["lead_days"]), key="rp_ld")
+    b1, b2 = st.columns([1, 1])
+    if b1.button(("💾 保存" if _ja7 else "💾 保存参数"), type="primary", key="rp_save"):
+        try:
+            _saved = save_rank_params({
+                "top_pct": _top_in / 100.0, "a_margin": _mg_in / 100.0,
+                "no_sales_months": _n_in, "stop_absorbing": _abs_in,
+                "safety_a": _sa, "safety_b": _sb, "safety_c": _sc, "safety_stop": _ss,
+                "lead_days": _ld,
+            })
+            st.success(("保存しました。次回「生成等级建议」から適用されます。" if _ja7
+                        else "已保存。下次点「生成等级建议」即按新参数判定。")
+                       + f" top={_saved['top_pct']:.2f} margin={_saved['a_margin']:.2f} n={_saved['no_sales_months']}")
+            st.rerun()
+        except Exception as _e:  # noqa: BLE001
+            st.error(("保存失敗: " if _ja7 else "保存失败: ") + str(_e))
+    if b2.button(("↩️ 既定値に戻す" if _ja7 else "↩️ 恢复默认值"), key="rp_reset"):
+        try:
+            save_rank_params(DEFAULT_RANK_PARAMS)
+            st.success("既定値に戻しました" if _ja7 else "已恢复默认值")
+            st.rerun()
+        except Exception as _e:  # noqa: BLE001
+            st.error(("失敗: " if _ja7 else "失败: ") + str(_e))
+    _diff = {k: (v, _p[k]) for k, v in DEFAULT_RANK_PARAMS.items() if _p[k] != v}
+    st.caption((("既定値と異なる項目: " if _ja7 else "与默认值不同的项：")
+                + (", ".join(f"{k} {d}→{c}" for k, (d, c) in _diff.items()) if _diff
+                   else ("なし（すべて既定値）" if _ja7 else "无（全部为默认值）"))))

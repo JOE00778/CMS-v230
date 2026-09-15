@@ -13,23 +13,26 @@ from typing import List
 from datetime import datetime, timezone
 
 from .rules import classify_rank, calc_sales_rank, Rank
+from shared.rank_settings import load_rank_params, safety_factor
 
 
 # 仓库硬过滤（v2 决策 · 跟 modules/inventory_health/metrics.py 保持一致）
 WAREHOUSE_FILTER = "JD-物流-千葉"
 
-# 安全系数（按等级差异化订货 · NST item_rank 合法値ベース）
+# 安全系数の既定（互換用 · 実際は shared.rank_settings の保存値を使う）
 SAFETY_FACTOR = {'Aランク': 1.5, 'Bランク': 1.0, 'Cランク': 0.5, '取扱中止': 0.0}
 
 
-def calc_reorder(monthly_sales: float, lead_time_days: int, rank: str) -> dict:
+def calc_reorder(monthly_sales: float, lead_time_days: int, rank: str,
+                 params: dict | None = None) -> dict:
     """订货决策（基于月销量 + 进货周期 + 等级安全系数）
 
     再订货点（库存低于此就要补货）
     建议下单量
     """
-    safety = SAFETY_FACTOR.get(rank, 0.5)
-    lead_time_months = (lead_time_days or 30) / 30.0
+    p = params or load_rank_params()
+    safety = safety_factor(rank, p)
+    lead_time_months = (lead_time_days or p['lead_days']) / 30.0
 
     reorder_point = monthly_sales * lead_time_months * safety
     suggested_order_qty = monthly_sales * min(lead_time_months, 3) * safety
@@ -37,7 +40,7 @@ def calc_reorder(monthly_sales: float, lead_time_days: int, rank: str) -> dict:
         "reorder_point": round(reorder_point, 1),
         "suggested_order_qty": round(suggested_order_qty, 1),
         "safety_factor": safety,
-        "lead_time_days": lead_time_days or 30,
+        "lead_time_days": lead_time_days or p['lead_days'],
     }
 
 
@@ -66,6 +69,7 @@ def generate_proposal(
     """
     from shared.db import get_connection
     conn = get_connection()
+    rp = load_rank_params()   # 閾値は page07 で可変（2026-09-15）· ⚠️ params は SQL 引数タプルで既に使用
 
     try:
         # ========================================================
@@ -148,7 +152,7 @@ def generate_proposal(
                 _ref_ym = _r['m'] if _r else None
             if _ref_ym:
                 _y, _m = int(_ref_ym[:4]), int(_ref_ym[5:7])
-                _sm, _sy = _m - 2, _y
+                _sm, _sy = _m - (int(rp['no_sales_months']) - 1), _y
                 while _sm <= 0:
                     _sm += 12
                     _sy -= 1
@@ -188,12 +192,12 @@ def generate_proposal(
                 'sales_amount_rank_pct': rank_pct,
                 'gross_margin_rate': margin,
                 'no_sales_3m': no_sales_3m,
-            })
+            }, rp)
             old_rank = old_rank_map.get(item_code) or 'NEW'
 
             # Boss 規則（2026-05-21）: 取扱中止は吸収状態 — 現行が取扱中止なら
             # 等级判定の対象外（降级で取扱中止に入るのは可、取扱中止から A/B/C へ戻すのは不可）
-            if str(old_rank) in ('取扱中止', 'メーカー取扱中止', '停售'):
+            if rp['stop_absorbing'] and str(old_rank) in ('取扱中止', 'メーカー取扱中止', '停售'):
                 new_rank = '取扱中止'
 
             # 等级波动标记（升 / 降 / 维持）· '停售'/'A' 等は旧データ互換のため残す
@@ -211,7 +215,7 @@ def generate_proposal(
 
             # 订货建议（基于月销量 × 进货周期 × 等级安全系数）
             lead_time_days = lead_time_map.get(item_code)
-            reorder = calc_reorder(monthly_qty_sold, lead_time_days, new_rank)
+            reorder = calc_reorder(monthly_qty_sold, lead_time_days, new_rank, rp)
 
             proposals.append({
                 'sku': item_code,
