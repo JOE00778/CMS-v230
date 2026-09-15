@@ -152,6 +152,11 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "选店铺": "Shop", "模板 PNG（1500×1500 · 透明通道）": "Template PNG (1500×1500 · alpha)", "⬆️ 上传 / 替换模板": "⬆️ Upload / replace template", "已上传 {k} 模板": "Template {k} uploaded", "上传失败：": "Upload failed: ",
     "🗑 删除该店模板（回落默认红模板）": "🗑 Delete this shop's template (fall back to default)", "当前模板": "Current template", "默认红模板（未上传）": "Default red template (none uploaded)",
     "⚠ 默认": "⚠ default",
+    "这个文件读不出来（{e}）": "Cannot read this file ({e})",
+    "要 PNG，这张是 {f}。JPG 存不了透明，要用 PNG 重新导出。": "PNG required, this is {f}. JPG cannot store transparency — re-export as PNG.",
+    "要 1500×1500，这张是 {w}×{h}。": "1500×1500 required, this is {w}×{h}.",
+    "这张没有透明通道（色彩模式 {m}），中间的产品会被完全盖住。导出时要勾「保留透明背景 / Transparency」，把中间该露产品的地方做成全透明。": "No alpha channel (mode {m}) — the product would be fully covered. Re-export with transparency on, and erase the centre area to fully transparent.",
+    "这张有透明通道但整层都是不透明的，套上去会把产品盖住。中间该露产品的地方要擦成全透明（alpha=0）再导出。": "Has an alpha channel but nothing is transparent — the product would be covered. Erase the centre area to alpha=0 and re-export.",
 }
 
 
@@ -207,6 +212,39 @@ def _thumb_of(path: Optional[str]) -> Optional[str]:
         return _thumb(path, Path(path).stat().st_mtime) if path and Path(path).exists() else None
     except Exception:  # noqa: BLE001
         return None
+
+
+class _Skip(Exception):
+    """本地校验已经报过错，别再往 sidecar 打一次。"""
+
+
+def _template_problem(upload) -> Optional[str]:
+    """模板图先在本地判一次，给人话——sidecar 的 422 JSON 运营看不懂。
+
+    硬条件是 sidecar 那边的：PNG · 1500×1500 · 真的有透明像素（产品要从洞里透出来）。
+    「有 alpha 通道」还不够——整层不透明的 alpha 会把产品整个盖住，那是最常见的误传。
+    """
+    if upload is None:
+        return None
+    from PIL import Image
+    try:
+        im = Image.open(io.BytesIO(upload.getvalue()))
+        im.load()
+    except Exception as e:  # noqa: BLE001
+        return tt("这个文件读不出来（{e}）").format(e=e)
+    if im.format != "PNG":
+        return tt("要 PNG，这张是 {f}。JPG 存不了透明，要用 PNG 重新导出。").format(f=im.format or "?")
+    if im.size != (1500, 1500):
+        return tt("要 1500×1500，这张是 {w}×{h}。").format(w=im.width, h=im.height)
+    if im.mode not in ("RGBA", "LA") and "transparency" not in im.info:
+        return tt("这张没有透明通道（色彩模式 {m}），中间的产品会被完全盖住。"
+                  "导出时要勾「保留透明背景 / Transparency」，把中间该露产品的地方做成全透明。").format(m=im.mode)
+    alpha = im.convert("RGBA").getchannel("A")
+    lo, hi = alpha.getextrema()
+    if lo >= 250:
+        return tt("这张有透明通道但整层都是不透明的，套上去会把产品盖住。"
+                  "中间该露产品的地方要擦成全透明（alpha=0）再导出。")
+    return None
 
 
 def _b64_of_upload(f) -> str:
@@ -879,11 +917,18 @@ with tab_refs:
                     st.caption(tt("默认红模板（未上传）"))
             with p2:
                 if st.button(tt("⬆️ 上传 / 替换模板"), type="primary", disabled=tfile is None, key=f"tpl_go_{tshop}"):
+                    bad = _template_problem(tfile)
+                    if bad:
+                        st.error(bad)
                     try:
+                        if bad:
+                            raise _Skip()
                         ipc.put_template(tshop, _b64_of_upload(tfile))
                         _thumb.clear()
                         st.success(tt("已上传 {k} 模板").format(k=tshop))
                         st.rerun()
+                    except _Skip:
+                        pass
                     except Exception as e:  # noqa: BLE001
                         st.error(tt("上传失败：") + str(e))
                 if tshop in tpls and st.button(tt("🗑 删除该店模板（回落默认红模板）"), key=f"tpl_del_{tshop}"):
