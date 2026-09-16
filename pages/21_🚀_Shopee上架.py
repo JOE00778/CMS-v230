@@ -167,9 +167,18 @@ _PH_URL_FILE = JOB_DIR / "dx_placeholder_url.txt"
 
 
 def _ph_url_read() -> str:
+    """既定は流水線側の固定 URL（Boss が 2026-09-16 に画像スペースへ上げたもの）。
+    上書きしたければ画面で貼る。"""
     try:
-        return _PH_URL_FILE.read_text(encoding="utf-8").strip()
+        saved = _PH_URL_FILE.read_text(encoding="utf-8").strip()
     except OSError:
+        saved = ""
+    if saved:
+        return saved
+    try:
+        from dianxiaomi_zip import PLACEHOLDER_IMAGE_URL
+        return PLACEHOLDER_IMAGE_URL
+    except Exception:  # noqa: BLE001 — 流水線コードが無い環境でも画面は出す
         return ""
 
 
