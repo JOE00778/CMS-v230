@@ -104,6 +104,9 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "📦 导出店小秘（Excel + 图片包）": "📦 Export for Dianxiaomi (Excel + images)",
     "默认 = 现在筛出的 {n} 个 SPU，可在下面自由挑。分类留空 → 导入后进「未分类」。": "Defaults to the {n} SPUs currently filtered; pick freely below. Category left empty → lands in Uncategorized.",
     "导出哪些 SPU（留空 = 全部 {n} 个）": "Which SPUs to export (empty = all {n})",
+    "⬇ 待上图.jpg": "⬇ placeholder.jpg",
+    "「待上图」在图片空间的 URL（没图的行统一用它）": "URL of the placeholder image in Dianxiaomi Image Manager (used for rows with no image)",
+    "{n} 行没有主图，也没填「待上图」URL —— 店小秘会拒收这些行。": "{n} rows have no main image and no placeholder URL — Dianxiaomi will reject them.",
     "📦 生成导出包（{n} 个 SPU）": "📦 Build package ({n} SPUs)",
     "库存（每个 SKU 统一填）": "Stock (same for every SKU)",
     "📦 生成导出包": "📦 Build package",
@@ -158,6 +161,28 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "模板要 PNG 或 JPG，这张是 {f}。": "Template must be PNG or JPG, this is {f}.",
     "要 1500×1500，这张是 {w}×{h}。": "1500×1500 required, this is {w}×{h}.",
 }
+
+
+_PH_URL_FILE = JOB_DIR / "dx_placeholder_url.txt"
+
+
+def _ph_url_read() -> str:
+    try:
+        return _PH_URL_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _ph_url_write(url: str) -> None:
+    """次回も同じ URL を使うので覚えておく。書けなくても画面は動く。"""
+    url = (url or "").strip()
+    if url == _ph_url_read():
+        return
+    try:
+        _PH_URL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _PH_URL_FILE.write_text(url, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def tt(text: str) -> str:
@@ -613,6 +638,15 @@ with tab_review:
                     format_func=lambda k: f"{k} · {_dx_title.get(k, '')}", key="dx_spu")
                 dx_keys = dx_sel or keys
                 dx_pick = _shop_grid(shops_all, "dx_shop") if shops_all else []
+                # 画像が無い行用の「待上图」。1 回だけ画像空间へ上げて、その URL をここに貼る。
+                ph_img = _SL_DIR / "assets" / "待上图.jpg"
+                pp1, pp2 = st.columns([1, 3])
+                if ph_img.exists():
+                    pp1.download_button(tt("⬇ 待上图.jpg"), ph_img.read_bytes(), file_name="待上图.jpg",
+                                        key="dx_ph_dl", use_container_width=True)
+                dx_ph = pp2.text_input(tt("「待上图」在图片空间的 URL（没图的行统一用它）"),
+                                       value=_ph_url_read(), key="dx_ph_url")
+                _ph_url_write(dx_ph)
                 dq1, dq2 = st.columns([1, 3])
                 dx_stock = dq1.number_input(tt("库存（每个 SKU 统一填）"), min_value=1, value=100, step=10, key="dx_stock")
                 if dq2.button(tt("📦 生成导出包（{n} 个 SPU）").format(n=len(dx_keys)),
@@ -642,9 +676,12 @@ with tab_review:
                             from dianxiaomi_zip import fill_urls
                             urls = [u.strip() for u in dx_urls.replace(",", "\n").splitlines() if u.strip()]
                             outp = dx_zip.with_name(dx_zip.stem + "_final.zip")
-                            rep2 = fill_urls(dx_zip, urls, outp)
+                            rep2 = fill_urls(dx_zip, urls, outp, placeholder_url=dx_ph)
                             st.session_state["dx_final"] = str(outp)
                             st.success(tt("已回填 {n} 条链接，{r} 行").format(n=len(urls), r=rep2.row_count))
+                            if rep2.no_image_rows:
+                                st.warning(tt("{n} 行没有主图，也没填「待上图」URL —— 店小秘会拒收这些行。")
+                                           .format(n=rep2.no_image_rows))
                         except Exception as e:  # noqa: BLE001
                             st.error(str(e))
                     dx_final = Path(st.session_state.get("dx_final", ""))

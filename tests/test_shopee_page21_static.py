@@ -228,3 +228,12 @@ def test_dianxiaomi_export_lets_you_pick_spus():
     assert 'key="dx_spu"' in SRC, "SPU を選ぶ multiselect があること"
     assert "dx_keys = dx_sel or keys" in SRC, "選ばなければ筛选中の全部にフォールバック"
     assert "disabled=not (dx_pick and dx_keys)" in SRC, "選んだ SPU が 0 件なら押せない"
+
+
+def test_placeholder_image_url_is_offered_and_passed_to_fill():
+    """Boss 2026-09-16「当没有图片的时候，就统一用这个URL」。
+    配布（DL）→ URL 記憶 → fill_urls へ、の 3 点が繋がっていること。"""
+    assert '"待上图.jpg"' in SRC and 'key="dx_ph_dl"' in SRC, "テンプレ画像を配れること"
+    assert "placeholder_url=dx_ph" in SRC, "回填時に渡していること"
+    assert "_ph_url_write(dx_ph)" in SRC and "_ph_url_read()" in SRC, "URL は次回も使うので覚える"
+    assert "rep2.no_image_rows" in SRC, "画像も URL も無い行は黙って出さない"
