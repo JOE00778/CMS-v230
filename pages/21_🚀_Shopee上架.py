@@ -102,7 +102,9 @@ _PAGE_STRINGS_EN: Dict[str, str] = {
     "主图": "Main images", "自动出图": "Auto images", "先不出图（之后在详情页手传）": "Skip images (upload later in detail view)",
     "店铺版语言": "Shop version language", "本地语言（按国家）": "Local language (per country)", "全部英语": "English for all",
     "📦 导出店小秘（Excel + 图片包）": "📦 Export for Dianxiaomi (Excel + images)",
-    "范围 = 现在筛出的 {n} 个 SPU。分类留空 → 导入后进「未分类」。": "Scope = the {n} SPUs currently filtered. Category left empty → lands in Uncategorized.",
+    "默认 = 现在筛出的 {n} 个 SPU，可在下面自由挑。分类留空 → 导入后进「未分类」。": "Defaults to the {n} SPUs currently filtered; pick freely below. Category left empty → lands in Uncategorized.",
+    "导出哪些 SPU（留空 = 全部 {n} 个）": "Which SPUs to export (empty = all {n})",
+    "📦 生成导出包（{n} 个 SPU）": "📦 Build package ({n} SPUs)",
     "库存（每个 SKU 统一填）": "Stock (same for every SKU)",
     "📦 生成导出包": "📦 Build package",
     "已生成：{s}": "Built: {s}",
@@ -603,18 +605,25 @@ with tab_review:
             except Exception:  # noqa: BLE001 — 店铺表没就位时导出区自己降级
                 shops_all = []
             with st.expander(tt("📦 导出店小秘（Excel + 图片包）")):
-                st.caption(tt("范围 = 现在筛出的 {n} 个 SPU。分类留空 → 导入后进「未分类」。").format(n=len(drafts)))
+                st.caption(tt("默认 = 现在筛出的 {n} 个 SPU，可在下面自由挑。分类留空 → 导入后进「未分类」。").format(n=len(drafts)))
+                # 选哪些 SPU（Boss 2026-09-16）。留空 = 筛出的全部，不用先全选一遍。
+                _dx_title = {d["spu_key"]: (d.get("title") or "")[:40] for d in drafts}
+                dx_sel = st.multiselect(
+                    tt("导出哪些 SPU（留空 = 全部 {n} 个）").format(n=len(keys)), keys, default=[],
+                    format_func=lambda k: f"{k} · {_dx_title.get(k, '')}", key="dx_spu")
+                dx_keys = dx_sel or keys
                 dx_pick = _shop_grid(shops_all, "dx_shop") if shops_all else []
                 dq1, dq2 = st.columns([1, 3])
                 dx_stock = dq1.number_input(tt("库存（每个 SKU 统一填）"), min_value=1, value=100, step=10, key="dx_stock")
-                if dq2.button(tt("📦 生成导出包"), disabled=not (dx_pick and keys), key="dx_go",
+                if dq2.button(tt("📦 生成导出包（{n} 个 SPU）").format(n=len(dx_keys)),
+                              disabled=not (dx_pick and dx_keys), key="dx_go",
                               use_container_width=True):
                     try:
                         from dianxiaomi_zip import export_zip
                         JOB_DIR.mkdir(parents=True, exist_ok=True)
                         label = batch_pick if batch_pick != _BATCH_ALL else time.strftime("%Y%m%d-%H%M")
                         zp = JOB_DIR / f"dx_{label}.zip"
-                        rep = export_zip(conn, keys, dx_pick, zp, stock=int(dx_stock), batch_label=str(label))
+                        rep = export_zip(conn, dx_keys, dx_pick, zp, stock=int(dx_stock), batch_label=str(label))
                         st.session_state["dx_zip"] = str(zp)
                         st.success(tt("已生成：{s}").format(s=rep.summary()))
                         for m in rep.missing_images[:10]:

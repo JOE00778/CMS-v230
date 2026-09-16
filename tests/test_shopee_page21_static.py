@@ -143,7 +143,8 @@ def test_shop_selection_is_a_country_column_checkbox_grid():
     assert "def _shop_grid(" in SRC and "st.checkbox(k" in SRC
     assert '_shop_grid(gen_shops, "gen_shop")' in SRC          # 生成タブ
     assert '_shop_grid(shops, f"rv_pub_{sel}"' in SRC          # 待确认タブ
-    assert "st.multiselect(" not in SRC                        # 旧 multiselect は廃止
+    # 店舗選択の旧 multiselect は廃止。残る 1 つは店小秘導出の SPU 選択（Boss 2026-09-16）。
+    assert SRC.count("st.multiselect(") == 1 and 'key="dx_spu"' in SRC
     assert '"--shops"' in SRC and "localize_spu" not in SRC
     # 勾上 = approved（上架）／未勾 = rejected（剔掉）を 1 回で書く
     assert 'set_shop_status(wc, sel, k, "approved" if want else "rejected"' in SRC
@@ -217,6 +218,13 @@ def test_dianxiaomi_export_is_wired_to_the_two_stage_flow():
     """Boss 2026-09-15「用Excel的形式，放到店小秘未分类中」＋画像は图片空间経由。
     店小秘に書き込む API は無いので、包を出す→URL を埋める、の二段が両方繋がっていること。"""
     assert "from dianxiaomi_zip import export_zip" in SRC and "from dianxiaomi_zip import fill_urls" in SRC
-    assert "export_zip(conn, keys, dx_pick, zp" in SRC, "対象は筛选中の SPU × 勾选した店"
+    assert "export_zip(conn, dx_keys, dx_pick, zp" in SRC, "対象は選んだ SPU × 勾选した店"
     assert 'key="dx_dl"' in SRC and 'key="dx_dl2"' in SRC, "包と最終 xlsx の両方をダウンロードできること"
     assert "rep.missing_images[:10]" in SRC, "画像欠けは黙って出さない"
+
+
+def test_dianxiaomi_export_lets_you_pick_spus():
+    """Boss 2026-09-16「可自由选择导出SPU」。空欄は筛选中の全部＝今までの挙動。"""
+    assert 'key="dx_spu"' in SRC, "SPU を選ぶ multiselect があること"
+    assert "dx_keys = dx_sel or keys" in SRC, "選ばなければ筛选中の全部にフォールバック"
+    assert "disabled=not (dx_pick and dx_keys)" in SRC, "選んだ SPU が 0 件なら押せない"
