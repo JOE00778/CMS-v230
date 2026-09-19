@@ -324,6 +324,38 @@ services:
           memory: 256M
 
   # ------------------------------------------------------------
+  # marketing_scheduler · US Ads/GA4/GSC/Shopify 日次収集
+  #   2026-09-19: US运营巡检的 Ads×SEO 对照表需要 GSC 日次事实，恢复采集器。
+  #   已删除的 CMS page38 与改廃 workflow 不在本服务范围内，不恢复。
+  #   database/.env は MARKETING_INGEST_DATABASE_URL と各只读凭据のみ使用。
+  #   DATABASE_URL は空に上書きし、超級ユーザー接続串を採集器へ渡さない。
+  # ------------------------------------------------------------
+  marketing_scheduler:
+    build:
+      context: ../../../database
+      dockerfile: deploy/marketing-scheduler.Dockerfile
+    container_name: cms_marketing_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../../../database/.env
+    environment:
+      DATABASE_URL: ""
+      TZ: Asia/Tokyo
+    volumes:
+      - ../../../database:/app:ro
+      - C:/Users/smiki/secrets/marketing:/secrets:ro
+    networks:
+      - cms_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
+  # ------------------------------------------------------------
   # compliance_scheduler · 合规官方源月次盯梢 + Shopify 成分周次同步(page39)
   #   毎分 compliance.pull_schedule を見て source_watch / shopify_item_sync を起動
   #   （source_watch=毎月1日 07:00 JST · shopify_sync=毎週月曜 06:45 JST · run_now 手動可)
