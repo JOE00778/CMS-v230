@@ -5,7 +5,6 @@
     🤖 生成母版     →  一行一个 SPU 地粘 JAN（行内多个 = 多 SKU）→ 容器内跑 run_pipeline.py（AI 文案 · 38% 原価率 7 国价 · 模板图）→ 进待确认
     ✅ 待确认       →  列表只看 · 打开一个 SPU（可切某国某店的版本看）· 勾选要上架的店铺 → 送上架后台（草稿）
     🎨 主图模板     →  每店一张 1500×1500 透明 PNG（方框 + 店铺 logo），CMS 上传即生效，不进镜像
-    📜 历史运行     →  automation_runs（旧 N8N 线的记录，只读）
 
 流水线代码不在本仓：workflow-automation/shopee-listing（compose 只读 mount 到 /opt/shopee-listing，
 SHOPEE_LISTING_DIR 可改；本机开发回落 ../workflow-automation/shopee-listing）。本页只 import + 调用，不复制逻辑。
@@ -36,7 +35,6 @@ from shared.auth import require_admin
 from shared.db import get_readonly_connection, get_connection, DATA_DIR
 from shared.i18n import get_lang, lang_selector, t
 from shared.i18n_columns import localize_df, label
-from shared.n8n_client import list_recent_runs
 
 # --------------------------------------------------------------------------- #
 # 流水线代码（workflow-automation/shopee-listing）· 只 import，不复制
@@ -76,7 +74,7 @@ with st.sidebar:
         st.session_state["lang"] = "en"
 
 st.title(t("🚀 Shopee 上架"))
-st.caption(t("生成母版 / 待确认 / 主图模板 / 历史运行 一站式"))
+st.caption(t("生成母版 / 待确认 / 主图模板 一站式"))
 
 conn = get_readonly_connection()
 
@@ -84,10 +82,10 @@ conn = get_readonly_connection()
 # 三语 i18n 兜底（中文 key；JA 在 shared/i18n.py；EN 在这里）
 # --------------------------------------------------------------------------- #
 _PAGE_STRINGS_EN: Dict[str, str] = {
-    "🤖 生成母版": "🤖 Generate master", "✅ 待确认": "✅ Review queue", "🎨 主图模板": "🎨 Image templates", "📜 历史运行": "📜 Run history",
+    "🤖 生成母版": "🤖 Generate master", "✅ 待确认": "✅ Review queue", "🎨 主图模板": "🎨 Image templates",
     "草稿待确认": "Pending review", "已发布": "Published", "状态": "Status", "全部": "All",
     "Shopee 上架": "Shopee Listing",
-    "生成母版 / 待确认 / 主图模板 / 历史运行 一站式": "Generate / Review / Templates / History — all in one",
+    "生成母版 / 待确认 / 主图模板 一站式": "Generate / Review / Templates — all in one",
     "生成英文母版：一行一个 SPU 地粘 JAN → 流水线出文案 · 7 国价 · 图 → 进「待确认」": "Generate the English master: enter JANs → merge into SPUs → pipeline writes copy · 7-country prices · images → Review queue",
     "流水线代码不可用：": "Pipeline code unavailable: ",
     "JAN（一行一个 SPU；同一行多个 JAN = 一个 SPU 的多个 SKU）": "JANs — one line per SPU; several JANs on one line = one SPU with several SKUs",
@@ -409,8 +407,8 @@ def _next_batch_id(c) -> str:
 # --------------------------------------------------------------------------- #
 # 4 Tab
 # --------------------------------------------------------------------------- #
-tab_auto, tab_review, tab_refs, tab_history = st.tabs(
-    [tt("🤖 生成母版"), tt("✅ 待确认"), tt("🎨 主图模板"), tt("📜 历史运行")]
+tab_auto, tab_review, tab_refs = st.tabs(
+    [tt("🤖 生成母版"), tt("✅ 待确认"), tt("🎨 主图模板")]
 )
 
 
@@ -983,61 +981,3 @@ with tab_refs:
                         st.rerun()
                     except Exception as e:  # noqa: BLE001
                         st.error(str(e))
-
-
-# ============================================================
-# Tab 4 · 📜 历史运行（旧 N8N 线 automation_runs · 只读）
-# ============================================================
-with tab_history:
-    st.subheader(t("最近 50 次自动化运行（含 Shopee 上架 + 出图 + 改廃监控等）"))
-
-    module_filter = st.selectbox(
-        "按模块过滤",
-        ["全部", "shopee_mass_upload", "image_gen", "discontinue_confirm", "nst_order"],
-        key="history_module",
-    )
-
-    runs = list_recent_runs(
-        conn,
-        module=None if module_filter == "全部" else module_filter,
-        limit=50,
-    )
-    if not runs:
-        st.info("还没有任何运行记录")
-    else:
-        rows = []
-        for r in runs:
-            rows.append({
-                "run_id": r["run_id"][:8] + "...",
-                "module": r["module"],
-                "status": r["status"],
-                "triggered_by": r["triggered_by"],
-                "triggered_at": (r.get("triggered_at") or "")[:19],
-                "completed_at": (r.get("completed_at") or "")[:19],
-            })
-        st.dataframe(localize_df(pd.DataFrame(rows)), use_container_width=True, hide_index=True)
-
-        ids = [r["run_id"] for r in runs]
-        sel = st.selectbox(
-            "查看 payload + summary",
-            ids,
-            format_func=lambda x: f"{x[:8]}... · "
-            + next(r['module'] for r in runs if r['run_id'] == x)
-            + " · "
-            + next(r['status'] for r in runs if r['run_id'] == x),
-            key="history_sel",
-        )
-        if sel:
-            row = next(r for r in runs if r["run_id"] == sel)
-            with st.expander("payload", expanded=False):
-                p = row.get("payload")
-                try:
-                    st.json(json.loads(p) if isinstance(p, str) else p)
-                except Exception:
-                    st.code(p or "(empty)")
-            with st.expander("summary", expanded=True):
-                s = row.get("summary")
-                try:
-                    st.json(json.loads(s) if isinstance(s, str) else s)
-                except Exception:
-                    st.code(s or "(empty)")

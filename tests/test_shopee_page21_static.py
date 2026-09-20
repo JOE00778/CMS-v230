@@ -31,10 +31,12 @@ def test_market_order_matches_actual_7_countries():
     assert re.findall(r'"([A-Z]{2})"', m.group(1)) == ["PH", "MY", "SG", "TH", "VN", "TW", "BR"]
 
 
-def test_four_tabs_and_n8n_trigger_gone():
-    assert 'tab_auto, tab_review, tab_refs, tab_history = st.tabs(' in SRC
-    for name in ('"🤖 生成母版"', '"✅ 待确认"', '"🎨 主图模板"', '"📜 历史运行"'):
+def test_three_tabs_and_n8n_line_gone():
+    """2026-09-21：旧 N8N 線の「📜 历史运行」tab（automation_runs 只読）を撤去。3 tab に。"""
+    assert 'tab_auto, tab_review, tab_refs = st.tabs(' in SRC
+    for name in ('"🤖 生成母版"', '"✅ 待确认"', '"🎨 主图模板"'):
         assert name in SRC, name
+    assert "tab_history" not in SRC and "list_recent_runs" not in SRC and "n8n_client" not in SRC
     # 旧 N8N 触发（B1 の /api/sku/master は 2026-08-21 削除・リンク切れ）は page から消す
     assert "trigger_workflow" not in SRC and "shopee-mass-upload" not in SRC
 

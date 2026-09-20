@@ -1,6 +1,6 @@
 """cms_api — CMS 只读/事件 API sidecar（给 N8N workflow 调）
 
-补 README v2.0 缺口 ①② + automation_runs 回调（T-309 设计但未实装的 endpoint）。
+2026-09-21：旧 N8N 线（automation_runs 回调 / xlsx-upload / 改廃確認）已全部撤除，只剩健康检查与 Shopee OAuth·token 持久化。
 
 挂在 docker external network smikie_shared，N8N 通过 http://cms-api:8789/ 访问。
 不暴露公网。
@@ -11,8 +11,8 @@
 
 端点：
   GET  /health
-  POST /api/automation/callback
-  POST /api/automation/xlsx-upload
+  GET/PUT /api/automation/shopee/tokens
+  GET  /api/automation/shopee/debug-sign · oauth-url/{market} · oauth-callback
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -152,68 +152,6 @@ def health():
 #   n8n 9 workflow のいずれにも無し(実測)。item_v2 の廃止に伴い削除。
 #   再び必要になれば nst.item_master_raw + nst.inventory_snapshot で作り直す。
 # ────────────────────────────────────────────────────────────────
-
-# ────────────────────────────────────────────────────────────────
-# POST /api/automation/callback
-# ────────────────────────────────────────────────────────────────
-class CallbackReq(BaseModel):
-    run_id: str
-    module: str
-    status: str
-    summary: dict[str, Any] | None = None
-    message: str | None = None
-
-
-@app.post("/api/automation/callback")
-def automation_callback(req: CallbackReq):
-    now = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    summary_json = json.dumps(req.summary, ensure_ascii=False) if req.summary else None
-    completed_at = now if req.status in ("completed", "failed") else None
-
-    with _conn() as c:
-        cur = c.cursor() if IS_PG else c
-        update_sql = _qmark(
-            "UPDATE automation_runs SET status=?, summary=COALESCE(?, summary), "
-            "completed_at=COALESCE(?, completed_at) WHERE run_id=?"
-        )
-        cur.execute(update_sql, (req.status, summary_json, completed_at, req.run_id))
-        # SQLite cursor.rowcount 与 psycopg2 cursor.rowcount 行为一致
-        if cur.rowcount == 0:
-            insert_sql = _qmark(
-                "INSERT INTO automation_runs "
-                "(run_id, module, status, summary, triggered_by, triggered_at, completed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)"
-            )
-            cur.execute(
-                insert_sql,
-                (req.run_id, req.module, req.status, summary_json, "n8n-callback", now, completed_at),
-            )
-        c.commit()
-    return {"run_id": req.run_id, "status": req.status, "updated_at": now}
-
-
-# ────────────────────────────────────────────────────────────────
-# POST /api/automation/xlsx-upload
-# ────────────────────────────────────────────────────────────────
-@app.post("/api/automation/xlsx-upload")
-async def xlsx_upload(
-    file: UploadFile = File(...),
-    x_run_id: str = Header(..., alias="X-Run-Id"),
-):
-    if not re.fullmatch(r"[\w\-]+", x_run_id):
-        raise HTTPException(400, "invalid X-Run-Id")
-    safe_name = re.sub(r"[^\w\.\-]", "_", file.filename or "upload.xlsx")
-    dst = OUTPUTS_DIR / f"{x_run_id}_{safe_name}"
-    body = await file.read()
-    dst.write_bytes(body)
-    log.info("xlsx saved: %s (%d bytes)", dst, len(body))
-    return {
-        "run_id": x_run_id,
-        "saved_path": str(dst),
-        "bytes": len(body),
-        "filename": dst.name,
-    }
-
 
 # ────────────────────────────────────────────────────────────────
 # Shopee tokens persistence （v2.3 给 shopee-mass-upload n02b 节点用）
