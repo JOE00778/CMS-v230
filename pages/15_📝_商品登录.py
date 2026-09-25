@@ -259,7 +259,11 @@ with tab_native:
                 for col in nst_field_cols:
                     v = r.get(col)
                     if pd.notna(v) and str(v).strip() != "":
-                        row[col] = v
+                        # 前後空白を落として渡す（川崎さん #42 · 2026-09-25）。
+                        # アイテム名の末尾に空白が残ったまま NST へ入っていた。
+                        # ここは NST CSV / JD xlsx / BM xlsx 三者の共通入口なので
+                        # 一箇所で全部の出力がきれいになる（全角空白も str.strip() が落とす）。
+                        row[col] = v.strip() if isinstance(v, str) else v
                 _en = r.get(_EN_TITLE_COL)        # 英文标题（编辑后）→ JD/BM
                 if pd.notna(_en) and str(_en).strip():
                     row["英文标题"] = str(_en).strip()

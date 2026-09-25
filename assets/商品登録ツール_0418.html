@@ -689,7 +689,13 @@ class ProductTool {
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
     const filtered = rows.filter((_, idx) => idx !== 0 && idx !== 2 && idx !== 3);
     const headerRow = filtered[0];
-    const dataRows = filtered.slice(1).filter(row => row[0] && String(row[0]).trim() !== '');
+    // データ行のセルは前後空白を落とす（川崎さん #42 · 2026-09-25）。
+    // アイテム名の末尾に空白が残ったまま NST に入っていた。
+    // ⚠️ headerRow は触らない：テンプレ列名に `'サポート提供 '`（末尾空白）等が
+    //    実在し、trim すると NST 側の列照合が外れる。
+    const dataRows = filtered.slice(1)
+      .filter(row => row[0] && String(row[0]).trim() !== '')
+      .map(row => row.map(v => (typeof v === 'string' ? v.trim() : v)));
     const finalRows = headerRow ? [headerRow, ...dataRows] : dataRows;
     // 暴露 dataRows 供 Supabase 提交使用
     window.lastParsedRows = dataRows;
