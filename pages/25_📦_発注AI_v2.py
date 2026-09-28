@@ -22,7 +22,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.db import get_readonly_connection
-from shared.i18n import lang_selector, t
+from shared.i18n import get_lang, lang_selector, t
 from shared.purchase_engine import compute_recommendations, DEFAULT_TREND_FACTORS
 
 st.set_page_config(page_title=t("発注AI"), page_icon="📦", layout="wide")
@@ -353,7 +353,9 @@ def render_legacy_jd_baseline() -> None:
 # ============================================================
 # 顶层 tabs（合并入口）
 # ============================================================
-top_legacy, top_v2 = st.tabs([t("📦 旧版（JD基线）"), t("🆕 v2（多仕入先決定版）")])
+top_legacy, top_v2, top_v3 = st.tabs([
+    t("📦 旧版（JD基线）"), t("🆕 v2（多仕入先決定版）"), t("🆕 v3（可售天数基準）"),
+])
 
 with top_legacy:
     render_legacy_jd_baseline()
@@ -735,3 +737,204 @@ with top_v2:
                     cov = df_m.groupby(["zone", "supplier_name"])["jan"].nunique().reset_index().rename(columns={"jan": "SKU数"})
                     cov["zone"] = cov["zone"].map(lambda z: ZONE_LABEL.get(z, z))
                     st.dataframe(cov.sort_values("SKU数", ascending=False), use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# v3（可售天数基準 · Boss 2026-09-28）
+#   原典: デスクトップ「订货助手」の『订货规则与数据说明』2026-09-15
+#   SKU 側は全部 PG から引く（毎日 CSV を落とす運用を畳む）。
+#   固定仕入規則だけ CSV アップロード（Boss 拍板: 飞书同期はしない）。
+#   計算は shared/purchase_v3.py（純関数 · tests/test_purchase_v3.py）。
+# ============================================================
+from shared import purchase_v3 as PV3
+
+_V3_RULE_COLS = ["vendor_name", "jan", "display_name", "起订量", "价格"]
+
+
+def _v3l(zh: str, ja: str) -> str:
+    """このタブ専用の二言語ラベル（i18n テーブルを汚さない）。"""
+    return ja if get_lang() == "ja" else zh
+
+
+def _v3_fetch_skus():
+    """PG から SKU 一覧（在庫 / 在途 / 前30日販売）。戻り: (rows, 基準日, 在庫日)。
+
+    · 在庫 / 在途 = nst.inventory_snapshot の最新スナップショット日
+      （この表は JD-物流-千葉 のみ · 弁天倉庫は元から入っていない）
+    · 前30日販売 = nst.sales_daily の最終日を起点に 30 日窓（暦の直近30日ではなく
+      「データのある直近30日」。取得が遅れている日に窓が痩せるのを防ぐ）
+    """
+    row = conn.execute(
+        "SELECT (SELECT max(snapshot_date) FROM nst.inventory_snapshot) AS inv_d, "
+        "       (SELECT max(sale_date)     FROM nst.sales_daily)        AS sale_d"
+    ).fetchone()
+    inv_d, sale_d = (row["inv_d"], row["sale_d"]) if row else (None, None)
+    if inv_d is None or sale_d is None:
+        return [], None, None
+
+    cur = conn.execute(
+        "WITH inv AS ("
+        "  SELECT item_internal_id, SUM(qty_on_hand) AS stock, "
+        "         SUM(COALESCE(qty_on_order, 0)) AS transit "
+        "  FROM nst.inventory_snapshot WHERE snapshot_date = ? GROUP BY 1), "
+        "s30 AS ("
+        "  SELECT item_internal_id, SUM(qty_sold) AS sold_30d "
+        "  FROM nst.sales_daily "
+        "  WHERE sale_date > (? ::date - INTERVAL '30 days') AND sale_date <= ? "
+        "  GROUP BY 1) "
+        "SELECT im.jan, im.display_name, im.maker, im.item_rank, im.handling_cd, "
+        "       COALESCE(inv.stock, 0) AS stock, COALESCE(inv.transit, 0) AS transit, "
+        "       COALESCE(s30.sold_30d, 0) AS sold_30d "
+        "FROM nst.item_master_raw im "
+        "LEFT JOIN inv ON inv.item_internal_id = im.internal_id "
+        "LEFT JOIN s30 ON s30.item_internal_id = im.internal_id "
+        "WHERE im.jan IS NOT NULL AND btrim(im.jan) <> '' AND im.is_inactive = FALSE",
+        (inv_d, sale_d, sale_d))
+    return [dict(r) for r in cur.fetchall()], sale_d, inv_d
+
+
+def _v3_download(df: pd.DataFrame, label: str, fname: str, key: str) -> None:
+    st.download_button(label, df.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=fname, mime="text/csv", key=key)
+
+
+def render_purchase_v3() -> None:
+    st.caption(_v3l(
+        "可售天数基准：普通等级目标 70 天 / C 等级 35 天 · 单次补货上限 50 天销量 · "
+        "订货量按起订量整箱向上取整。取扱中止品完全排除（商品等级 + 取扱区分 两列都看）。",
+        "可售日数ベース：通常ランク 70 日 / C ランク 35 日 · 1 回の補充は最大 50 日分 · "
+        "発注量は起訂量の整数倍に切り上げ。取扱中止は完全除外（等級 + 取扱区分の 2 列判定）。"))
+
+    # ── ① 固定仕入規則 CSV ─────────────────────────────
+    st.subheader(_v3l("① 固定进货规则 CSV", "① 固定仕入規則 CSV"))
+    _tpl = pd.DataFrame(columns=_V3_RULE_COLS)
+    _v3_download(_tpl, _v3l("📝 规则 CSV 模板下载", "📝 規則 CSV テンプレ"),
+                 "fixed_vendor_rule_template.csv", "v3_tpl")
+    up = st.file_uploader(
+        _v3l("📤 上传固定进货规则（列：vendor_name / jan / display_name / 起订量 / 价格）",
+             "📤 固定仕入規則をアップロード（列: vendor_name / jan / display_name / 起订量 / 价格）"),
+        type=["csv"], key="v3_rules_up")
+    if up is not None:
+        try:
+            _raw = pd.read_csv(up, dtype=str, keep_default_na=False)
+        except UnicodeDecodeError:
+            up.seek(0)
+            _raw = pd.read_csv(up, dtype=str, keep_default_na=False, encoding="cp932")
+        _missing = [c for c in _V3_RULE_COLS if c not in _raw.columns]
+        if _missing:
+            st.error(_v3l(f"❌ 缺少必要列: {', '.join(_missing)}",
+                          f"❌ 必要な列がありません: {', '.join(_missing)}"))
+        else:
+            st.session_state["v3_rules"], st.session_state["v3_rule_issues"] = \
+                PV3.load_rules(_raw.to_dict("records"))
+            st.session_state["v3_result"] = None
+
+    rules = st.session_state.get("v3_rules")
+    if not rules:
+        st.info(_v3l("请先上传固定进货规则 CSV。", "先に固定仕入規則 CSV をアップロードしてください。"))
+        return
+
+    _issues = st.session_state.get("v3_rule_issues") or []
+    c1, c2, c3 = st.columns(3)
+    c1.metric(_v3l("规则条数", "規則件数"), f"{len(rules):,}")
+    c2.metric(_v3l("固定进货商", "固定仕入先"),
+              f"{len({r['vendor_name'] for r in rules.values()})}")
+    c3.metric(_v3l("规则异常行", "規則の不備"), f"{len(_issues)}",
+              delta_color="inverse")
+    if _issues:
+        with st.expander(_v3l(f"⚠️ 规则异常 {len(_issues)} 行（这些 JAN 不会出现在订货建议里）",
+                              f"⚠️ 規則の不備 {len(_issues)} 行（この JAN は発注建议に出ません）"),
+                         expanded=False):
+            st.dataframe(pd.DataFrame(_issues), use_container_width=True, hide_index=True)
+
+    # ── ② 計算 ────────────────────────────────────────
+    st.divider()
+    st.subheader(_v3l("② 生成订货建议", "② 発注建议を生成"))
+    if st.button(_v3l("🚀 生成订货建议", "🚀 発注建议を生成"), type="primary", key="v3_run"):
+        with st.spinner(_v3l("从 PG 取数中…", "PG から取得中…")):
+            skus, sale_d, inv_d = _v3_fetch_skus()
+        if not skus:
+            st.error(_v3l("❌ PG 从 nst.inventory_snapshot / nst.sales_daily 取不到数据",
+                          "❌ nst.inventory_snapshot / nst.sales_daily からデータを取得できません"))
+        else:
+            st.session_state["v3_result"] = PV3.build_recommendations(skus, rules)
+            st.session_state["v3_asof"] = (sale_d, inv_d, len(skus))
+
+    res = st.session_state.get("v3_result")
+    if not res:
+        return
+    sale_d, inv_d, n_sku = st.session_state.get("v3_asof", (None, None, 0))
+    st.caption(_v3l(
+        f"SKU {n_sku:,} 件 · 库存/在途基准日 {inv_d} · 销量窗口 {sale_d} 往前 30 天",
+        f"SKU {n_sku:,} 件 · 在庫/在途の基準日 {inv_d} · 販売ウィンドウ {sale_d} から 30 日"))
+
+    orders = pd.DataFrame(res["orders"])
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric(_v3l("建议订货 SKU", "発注建议 SKU"), f"{len(orders):,}")
+    k2.metric(_v3l("预计金额", "予定金額"),
+              f"¥{orders['amount'].fillna(0).sum():,.0f}" if not orders.empty else "¥0")
+    k3.metric(_v3l("未匹配供应商", "未照合 仕入先"), f"{len(res['unmatched']):,}",
+              delta_color="inverse")
+    k4.metric(_v3l("规则不全", "規則不備"), f"{len(res['rule_incomplete']):,}",
+              delta_color="inverse")
+    k5.metric(_v3l("取扱中止 排除", "取扱中止 除外"), f"{res['skipped_discontinued']:,}")
+    st.caption(_v3l(
+        f"不需要订货（在途込みで目标已满足）: {res['no_need']:,} 件",
+        f"発注不要（在途込みで目標達成）: {res['no_need']:,} 件"))
+
+    p1, p2, p3 = st.tabs([
+        _v3l("📋 第1页 订货建议", "📋 第1頁 発注建议"),
+        _v3l("❓ 第2页 未匹配供应商", "❓ 第2頁 未照合 仕入先"),
+        _v3l("⚠️ 规则不全", "⚠️ 規則不備"),
+    ])
+
+    _ORDER_COLS = {
+        "vendor_name": _v3l("固定进货商", "固定仕入先"), "jan": "JAN",
+        "display_name": _v3l("商品名", "商品名"), "maker": _v3l("厂家", "メーカー"),
+        "item_rank": _v3l("商品等级", "商品ランク"),
+        "stock": _v3l("当前库存", "現在庫"),
+        "current_days": _v3l("现有可售天数", "現可售日数"),
+        "sold_30d": _v3l("前30天销量", "前30日販売"),
+        "transit": _v3l("在途", "在途"), "pack": _v3l("起订量", "起訂量"),
+        "boxes": _v3l("订货箱数", "発注箱数"), "order_units": _v3l("订货数量", "発注数量"),
+        "price": _v3l("采购单价", "仕入単価"), "amount": _v3l("预计金额", "予定金額"),
+        "order_days": _v3l("订货后可售天数", "発注後可售日数"),
+        "status": _v3l("状态", "状態"),
+    }
+    with p1:
+        if orders.empty:
+            st.info(_v3l("没有需要订货的商品。", "発注が必要な商品はありません。"))
+        else:
+            d = orders[list(_ORDER_COLS)].copy()
+            for c in ("current_days", "order_days"):
+                d[c] = d[c].round(1)
+            d = d.rename(columns=_ORDER_COLS)
+            st.dataframe(d, use_container_width=True, hide_index=True, height=520)
+            _v3_download(d, _v3l("⬇️ 订货建议 CSV", "⬇️ 発注建议 CSV"),
+                         f"v3_订货建议_{date.today():%Y%m%d}.csv", "v3_dl_1")
+    with p2:
+        _u = pd.DataFrame(res["unmatched"])
+        if _u.empty:
+            st.success(_v3l("全部 SKU 都能匹配到固定进货商。", "全 SKU が固定仕入先に照合できました。"))
+        else:
+            st.caption(_v3l(
+                "这些 JAN 在规则表里找不到进货商。补进规则 CSV 后重跑即可。",
+                "これらの JAN は規則表に仕入先がありません。規則 CSV に追加して再実行してください。"))
+            st.dataframe(_u, use_container_width=True, hide_index=True, height=420)
+            _v3_download(_u, _v3l("⬇️ 未匹配商品 CSV", "⬇️ 未照合商品 CSV"),
+                         f"v3_未匹配供应商_{date.today():%Y%m%d}.csv", "v3_dl_2")
+    with p3:
+        _ri = pd.DataFrame(res["rule_incomplete"])
+        if _ri.empty:
+            st.success(_v3l("规则表没有缺起订量的行。", "起訂量が欠けている規則行はありません。"))
+        else:
+            st.warning(_v3l(
+                "规则里有进货商但缺起订量 → 算不出整箱数，既不在第1页也不在第2页。补起订量后重跑。",
+                "仕入先はあるが起訂量が無い → 整箱数が出せず、第1頁にも第2頁にも出ません。"))
+            st.dataframe(_ri, use_container_width=True, hide_index=True, height=300)
+            _v3_download(_ri, _v3l("⬇️ 规则不全 CSV", "⬇️ 規則不備 CSV"),
+                         f"v3_规则不全_{date.today():%Y%m%d}.csv", "v3_dl_3")
+
+
+with top_v3:
+    render_purchase_v3()
