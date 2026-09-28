@@ -24,6 +24,7 @@ from shared.inventory_risk import (
     RANK_TARGET_KEYS, enrich, load_risk_thresholds, save_risk_thresholds,
     is_stockout, stockout_rate_by_rank, releasable_value, target_days_for_rank,
 )
+from shared.sku360 import fetch_sku360
 
 
 def render(conn) -> None:
@@ -85,31 +86,12 @@ def render(conn) -> None:
 
     # ============================================================
     # 数据加载（current-snapshot·只取有等级）
-    #   qty_sold = 前N天销量（sales_daily）· current_stock = JDL库存（recon view）
+    #   口径は shared/sku360.py に集約（発注AI v3 と同じ数字を見るため）:
+    #   qty_sold=前N天销量(sales_daily) · current_stock=JDL实物在库(jdl 对账视图)
+    #   · in_transit_qty=未关闭PO的入荷残(purchase_order_line)
     # ============================================================
     try:
-        df_all = _df(
-            f"""
-            WITH s30 AS (
-                SELECT item_internal_id, SUM(qty_sold) AS qty_sold,
-                       SUM(revenue) AS revenue_30d, SUM(gross_profit) AS gp_30d
-                FROM nst.sales_daily
-                WHERE sale_date >= CURRENT_DATE - INTERVAL '{window_days} days'
-                GROUP BY item_internal_id
-            )
-            SELECT im.internal_id AS internal_id, im.item_code AS item_code, im.jan AS jan,
-                   COALESCE(im.display_name, '') AS display_name,
-                   im.item_rank AS rank, im.maker AS maker, im.date_created AS date_created,
-                   im.cost_estimate AS cost_estimate, im.last_purchase_cost AS last_purchase_cost,
-                   COALESCE(im.average_cost, im.cost_estimate) AS avg_unit_price,
-                   COALESCE(s30.qty_sold, 0) AS qty_sold,
-                   COALESCE(s30.revenue_30d, 0) AS revenue_30d,
-                   COALESCE(s30.gp_30d, 0) AS gp_30d
-            FROM nst.item_master_raw im
-            LEFT JOIN s30 ON s30.item_internal_id = im.internal_id
-            WHERE im.item_rank IS NOT NULL AND btrim(im.item_rank) <> ''
-            """
-        )
+        df_all = fetch_sku360(conn, window_days=window_days)
     except Exception as e:
         st.error(t("⚠️ 读取 nst.sales_daily / item_master_raw 失败（需 Postgres/NST 数据源）。"))
         st.caption(str(e))
@@ -118,34 +100,6 @@ def render(conn) -> None:
     if df_all.empty:
         st.warning(t("⚠️ 暂无有等级商品数据。"))
         st.stop()
-
-    # 当前库存 = JDL 实物在仓（jdl.v_inventory_reconciliation·按 jan）
-    try:
-        _jdl = _df("SELECT jan, jdl_qty_in_stock AS current_stock FROM jdl.v_inventory_reconciliation")
-    except Exception:
-        _jdl = pd.DataFrame(columns=["jan", "current_stock"])
-    if not _jdl.empty:
-        df_all = df_all.merge(_jdl, how="left", on="jan")
-    if "current_stock" not in df_all.columns:
-        df_all["current_stock"] = 0
-    df_all["current_stock"] = pd.to_numeric(df_all["current_stock"], errors="coerce").fillna(0)
-
-    # 在途残（未关闭 PO 的入荷残·按 item_internal_id）
-    try:
-        _itx = _df(
-            "SELECT item_internal_id, SUM(quantity - COALESCE(quantity_received,0)) AS in_transit_qty "
-            "FROM nst.purchase_order_line "
-            "WHERE closed = FALSE AND (quantity - COALESCE(quantity_received,0)) > 0 "
-            "GROUP BY item_internal_id")
-    except Exception:
-        _itx = pd.DataFrame(columns=["item_internal_id", "in_transit_qty"])
-    if not _itx.empty:
-        df_all = df_all.merge(_itx, how="left", left_on="internal_id", right_on="item_internal_id")
-        if "item_internal_id" in df_all.columns:
-            df_all = df_all.drop(columns=["item_internal_id"])
-    if "in_transit_qty" not in df_all.columns:
-        df_all["in_transit_qty"] = 0
-    df_all["in_transit_qty"] = pd.to_numeric(df_all["in_transit_qty"], errors="coerce").fillna(0)
 
     # 派生列（可售天数 / risk_label）· 销量窗口 = window_days
     df_all = enrich(df_all, _th, days_in_period=window_days)

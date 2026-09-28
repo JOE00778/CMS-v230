@@ -747,6 +747,7 @@ with top_v2:
 #   計算は shared/purchase_v3.py（純関数 · tests/test_purchase_v3.py）。
 # ============================================================
 from shared import purchase_v3 as PV3
+from shared.sku360 import fetch_sku360
 
 _V3_RULE_COLS = ["vendor_name", "jan", "display_name", "起订量", "价格"]
 
@@ -757,40 +758,26 @@ def _v3l(zh: str, ja: str) -> str:
 
 
 def _v3_fetch_skus():
-    """PG から SKU 一覧（在庫 / 在途 / 前30日販売）。戻り: (rows, 基準日, 在庫日)。
+    """SKU 一覧（在庫 / 在途 / 前30日販売）。戻り: (rows, window_days, 件数)。
 
-    · 在庫 / 在途 = nst.inventory_snapshot の最新スナップショット日
-      （この表は JD-物流-千葉 のみ · 弁天倉庫は元から入っていない）
-    · 前30日販売 = nst.sales_daily の最終日を起点に 30 日窓（暦の直近30日ではなく
-      「データのある直近30日」。取得が遅れている日に窓が痩せるのを防ぐ）
+    ⚠️ 口径は page06「库存风控」の SKU 360 宽表と**完全に同じ**にしてある
+    （Boss 2026-09-28「全部匹配桌面版的」）。デスクトップ订货助手が毎日取り込む
+    CSV はこの宽表のダウンロードなので、同じ取得層 `shared/sku360.fetch_sku360`
+    を呼ぶ。ここで独自クエリを書くと数字が割れる（実際に一度割れた）。
+      · JDL库存 = jdl.v_inventory_reconciliation（JD 実物在庫）
+      · 在途残  = nst.purchase_order_line の未入荷残
+      · 母集団  = item_rank が入っている商品のみ
     """
-    row = conn.execute(
-        "SELECT (SELECT max(snapshot_date) FROM nst.inventory_snapshot) AS inv_d, "
-        "       (SELECT max(sale_date)     FROM nst.sales_daily)        AS sale_d"
-    ).fetchone()
-    inv_d, sale_d = (row["inv_d"], row["sale_d"]) if row else (None, None)
-    if inv_d is None or sale_d is None:
-        return [], None, None
-
-    cur = conn.execute(
-        "WITH inv AS ("
-        "  SELECT item_internal_id, SUM(qty_on_hand) AS stock, "
-        "         SUM(COALESCE(qty_on_order, 0)) AS transit "
-        "  FROM nst.inventory_snapshot WHERE snapshot_date = ? GROUP BY 1), "
-        "s30 AS ("
-        "  SELECT item_internal_id, SUM(qty_sold) AS sold_30d "
-        "  FROM nst.sales_daily "
-        "  WHERE sale_date > (? ::date - INTERVAL '30 days') AND sale_date <= ? "
-        "  GROUP BY 1) "
-        "SELECT im.jan, im.display_name, im.maker, im.item_rank, im.handling_cd, "
-        "       COALESCE(inv.stock, 0) AS stock, COALESCE(inv.transit, 0) AS transit, "
-        "       COALESCE(s30.sold_30d, 0) AS sold_30d "
-        "FROM nst.item_master_raw im "
-        "LEFT JOIN inv ON inv.item_internal_id = im.internal_id "
-        "LEFT JOIN s30 ON s30.item_internal_id = im.internal_id "
-        "WHERE im.jan IS NOT NULL AND btrim(im.jan) <> '' AND im.is_inactive = FALSE",
-        (inv_d, sale_d, sale_d))
-    return [dict(r) for r in cur.fetchall()], sale_d, inv_d
+    df = fetch_sku360(conn, window_days=PV3.SALES_WINDOW_DAYS)
+    if df.empty:
+        return [], PV3.SALES_WINDOW_DAYS, 0
+    rows = [{
+        "jan": r["jan"], "display_name": r["display_name"], "maker": r["maker"],
+        "item_rank": r["rank"], "handling_cd": r["handling_cd"],
+        "sold_30d": r["qty_sold"], "stock": r["current_stock"],
+        "transit": r["in_transit_qty"],
+    } for r in df.to_dict("records")]
+    return rows, PV3.SALES_WINDOW_DAYS, len(rows)
 
 
 def _v3_download(df: pd.DataFrame, label: str, fname: str, key: str) -> None:
@@ -852,21 +839,23 @@ def render_purchase_v3() -> None:
     st.subheader(_v3l("② 生成订货建议", "② 発注建议を生成"))
     if st.button(_v3l("🚀 生成订货建议", "🚀 発注建议を生成"), type="primary", key="v3_run"):
         with st.spinner(_v3l("从 PG 取数中…", "PG から取得中…")):
-            skus, sale_d, inv_d = _v3_fetch_skus()
+            skus, win_d, n_sku = _v3_fetch_skus()
         if not skus:
-            st.error(_v3l("❌ PG 从 nst.inventory_snapshot / nst.sales_daily 取不到数据",
-                          "❌ nst.inventory_snapshot / nst.sales_daily からデータを取得できません"))
+            st.error(_v3l("❌ 取不到 SKU 数据（需要 PG / NST 数据源）",
+                          "❌ SKU データを取得できません（PG / NST データソースが必要）"))
         else:
             st.session_state["v3_result"] = PV3.build_recommendations(skus, rules)
-            st.session_state["v3_asof"] = (sale_d, inv_d, len(skus))
+            st.session_state["v3_asof"] = (win_d, n_sku)
 
     res = st.session_state.get("v3_result")
     if not res:
         return
-    sale_d, inv_d, n_sku = st.session_state.get("v3_asof", (None, None, 0))
+    win_d, n_sku = st.session_state.get("v3_asof", (PV3.SALES_WINDOW_DAYS, 0))
     st.caption(_v3l(
-        f"SKU {n_sku:,} 件 · 库存/在途基准日 {inv_d} · 销量窗口 {sale_d} 往前 30 天",
-        f"SKU {n_sku:,} 件 · 在庫/在途の基準日 {inv_d} · 販売ウィンドウ {sale_d} から 30 日"))
+        f"SKU {n_sku:,} 件（有等级商品）· 口径与「库存监控 → 库存风控 → SKU 360」完全一致 · "
+        f"销量窗口 = 今天往前 {win_d} 天 · 库存 = JDL 实物在库 · 在途 = 未关闭 PO 的入荷残",
+        f"SKU {n_sku:,} 件（等級あり）· 口径は「库存监控 → 库存风控 → SKU 360」と完全一致 · "
+        f"販売ウィンドウ = 本日から {win_d} 日 · 在庫 = JDL 実在庫 · 在途 = 未クローズ PO の入荷残"))
 
     orders = pd.DataFrame(res["orders"])
     k1, k2, k3, k4, k5 = st.columns(5)
