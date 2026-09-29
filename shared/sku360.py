@@ -61,6 +61,8 @@ def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS) -> pd.DataFrame:
     )
     if df.empty:
         return df
+    # 取扱区分は未設定が普通にあるので空文字に寄せる（表示でも判定でも None を回さない）
+    df["handling_cd"] = df["handling_cd"].fillna("").astype(str)
 
     # 当前库存 = JDL 実物在庫（jdl.v_inventory_reconciliation · jan 突合）
     try:

@@ -227,7 +227,7 @@ def render(conn) -> None:
     except Exception:
         sup = pd.DataFrame(columns=["item_internal_id", "in_transit_suppliers", "latest_po"])
     wide = df[["internal_id", "item_code", "jan", "display_name", "maker", "rank",
-               "date_created",
+               "handling_cd", "date_created",
                "risk_label", "is_stockout", "qty_sold", "gross_margin", "current_stock",
                "days_of_supply", "in_transit_qty", "last_purchase_cost", "avg_unit_price",
                "capital_exposure", "releasable"]].drop_duplicates("internal_id").copy()
@@ -242,7 +242,11 @@ def render(conn) -> None:
 
     COLS360 = [
         ("item_code", t("item_code")), ("jan", t("JAN")), ("display_name", t("商品名")),
-        ("maker", t("厂家")), ("rank", t("商品等级")), ("date_created", t("建立日期")),
+        ("maker", t("厂家")), ("rank", t("商品等级")),
+        # 取扱区分（隋艶偉さん #3「取り扱い区分追加」· Boss 2026-09-29「直接从 PG 拉」）。
+        # item_rank（A/B/C 等級）と handling_cd（経営状態）は NST 上で独立した列。
+        # 発注AI v3 の取扱中止判定もこの 2 列を見るので、宽表にも出して突合できるようにする。
+        ("handling_cd", t("取扱区分")), ("date_created", t("建立日期")),
         ("risk_label", t("风险")),
         ("is_stockout", t("断货")), ("qty_sold", t("前{d}天销量").format(d=window_days)),
         ("gross_margin", t("毛利率")),
