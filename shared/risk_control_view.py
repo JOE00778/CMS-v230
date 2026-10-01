@@ -90,8 +90,9 @@ def render(conn) -> None:
     #   qty_sold=前N天销量(sales_daily) · current_stock=JDL实物在库(jdl 对账视图)
     #   · in_transit_qty=未关闭PO的入荷残(purchase_order_line)
     # ============================================================
+    _fetch_errs: list[str] = []
     try:
-        df_all = fetch_sku360(conn, window_days=window_days)
+        df_all = fetch_sku360(conn, window_days=window_days, errors=_fetch_errs)
     except Exception as e:
         st.error(t("⚠️ 读取 nst.sales_daily / item_master_raw 失败（需 Postgres/NST 数据源）。"))
         st.caption(str(e))
@@ -100,6 +101,11 @@ def render(conn) -> None:
     if df_all.empty:
         st.warning(t("⚠️ 暂无有等级商品数据。"))
         st.stop()
+
+    # 在庫 / 在途の取得失敗を**必ず画面に出す**（AGENTS.md §0.5）。
+    # 握り潰すと「在庫 0・可售天数 判定不能」が正常値に見えてしまう（2026-10-01 の事故）。
+    for _err in _fetch_errs:
+        st.error("⚠️ " + _err)
 
     # 派生列（可售天数 / risk_label）· 销量窗口 = window_days
     df_all = enrich(df_all, _th, days_in_period=window_days)

@@ -19,7 +19,8 @@ import pandas as pd
 DEFAULT_WINDOW_DAYS = 30
 
 
-def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS) -> pd.DataFrame:
+def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS,
+                 *, errors: list | None = None) -> pd.DataFrame:
     """商品マスタ（等級あり）× 前N日販売 × JDL 実在庫 × 未入荷残。
 
     戻り列: internal_id / item_code / jan / display_name / rank / handling_cd /
@@ -29,6 +30,13 @@ def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS) -> pd.DataFrame:
 
     在庫・在途が引けない場合も 0 で埋めて返す（列は必ず存在する）。
     販売 / マスタ側の失敗は例外のまま呼び出し側へ投げる（黙って空にしない）。
+
+    ⚠️ `errors` に list を渡すと、在庫 / 在途の取得失敗を**メッセージとして受け取れる**。
+    渡さないと従来どおり 0 で埋めて黙って続行する。2026-10-01 にこれで事故った:
+    `jdl.v_inventory_reconciliation` が 73.7 秒まで遅くなり cms_reader の
+    statement_timeout=30s に掛かって QueryCanceled → ここが握り潰して current_stock
+    全件 0 → 可售天数が算出不能 → 库存风控が「何も出ない」ように見えた。
+    画面に出す側は必ず errors を渡して表示すること（AGENTS.md §0.5 失敗は明示）。
     """
     from shared.cache import cached_df, data_version
 
@@ -68,7 +76,11 @@ def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS) -> pd.DataFrame:
     try:
         _jdl = _df("SELECT jan, jdl_qty_in_stock AS current_stock "
                    "FROM jdl.v_inventory_reconciliation")
-    except Exception:
+    except Exception as e:
+        if errors is not None:
+            errors.append(
+                "JDL 在庫（jdl.v_inventory_reconciliation）が取得できません → "
+                f"在庫・可售天数・リスク分档はすべて 0 / 判定不能として表示されます: {e}")
         _jdl = pd.DataFrame(columns=["jan", "current_stock"])
     if not _jdl.empty:
         df = df.merge(_jdl, how="left", on="jan")
@@ -83,7 +95,11 @@ def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS) -> pd.DataFrame:
             "FROM nst.purchase_order_line "
             "WHERE closed = FALSE AND (quantity - COALESCE(quantity_received,0)) > 0 "
             "GROUP BY item_internal_id")
-    except Exception:
+    except Exception as e:
+        if errors is not None:
+            errors.append(
+                "在途残（nst.purchase_order_line）が取得できません → "
+                f"在途はすべて 0 として表示されます: {e}")
         _itx = pd.DataFrame(columns=["item_internal_id", "in_transit_qty"])
     if not _itx.empty:
         df = df.merge(_itx, how="left", left_on="internal_id",

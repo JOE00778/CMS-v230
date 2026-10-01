@@ -768,7 +768,11 @@ def _v3_fetch_skus():
       · 在途残  = nst.purchase_order_line の未入荷残
       · 母集団  = item_rank が入っている商品のみ
     """
-    df = fetch_sku360(conn, window_days=PV3.SALES_WINDOW_DAYS)
+    _errs: list[str] = []
+    df = fetch_sku360(conn, window_days=PV3.SALES_WINDOW_DAYS, errors=_errs)
+    # 在庫が引けないまま発注量を出すと「在庫 0 → 全品大量発注」になる。必ず出す。
+    for _e in _errs:
+        st.error("⚠️ " + _e)
     if df.empty:
         return [], PV3.SALES_WINDOW_DAYS, 0
     rows = [{
