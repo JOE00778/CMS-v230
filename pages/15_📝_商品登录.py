@@ -150,34 +150,45 @@ with tab_native:
             st.session_state.pop("page15_upload", None)
             st.rerun()
 
-    if uploaded:
+    def _ingest_upload(_file) -> None:
+        """アップロードを解析して session_state へ。失敗時は **return** で抜ける。
+
+        ⚠️ ここで st.stop() を使ってはいけない。Streamlit の st.stop() は
+        **スクリプト全体**を止めるので、下にある「📦 セット品登録」(:357 付近) と
+        「📜 旧 HTML 版」(:504 付近) のタブが丸ごと描画されなくなる。
+        sheet 名を間違えた xlsx を 1 つ上げただけで、他のタブが使えなくなっていた。
+        page06 が docstring で「各 body は関数化し st.stop()→return」と書いているのと同じ方針。
+        """
         # 修「第二次没法操作」：每次上传都重置旧 df 残留（uploaded 内容变了就以新为准）
         for k in _ITEM_RESULT_KEYS:
             st.session_state.pop(k, None)
         try:
-            df, warns = _parse_nst_xlsx(uploaded)
+            _df, _warns = _parse_nst_xlsx(_file)
         except ValueError as e:
             st.error(t(f"❌ 解析失败：{e}（确认 sheet 名是 `{NST_SHEET_NAME}`）"))
-            st.stop()
-        except Exception as e:
+            return
+        except Exception as e:  # noqa: BLE001
             st.error(t(f"❌ 解析失败：{type(e).__name__}: {e}"))
-            st.stop()
+            return
 
-        if df.empty:
+        if _df.empty:
             st.warning(t("⚠️ 解析后无有效行（A 列全空？检查上传文件）"))
-            st.stop()
+            return
 
-        with get_connection() as conn:
-            df = _augment_image_url(conn, df)
+        with get_connection() as _conn:
+            _df = _augment_image_url(_conn, _df)
         # 英文标题草稿（离线机械转写·可在表里改）→ JD「平台商品标题」/ BM「英文名称」
-        if _NAME_COL in df.columns:
-            df[_EN_TITLE_COL] = df[_NAME_COL].map(
+        if _NAME_COL in _df.columns:
+            _df[_EN_TITLE_COL] = _df[_NAME_COL].map(
                 lambda v: to_english_title(str(v)) if pd.notna(v) else "")
         else:
-            df[_EN_TITLE_COL] = ""
+            _df[_EN_TITLE_COL] = ""
 
-        st.session_state["page15_df"] = df
-        st.session_state["page15_warns"] = warns
+        st.session_state["page15_df"] = _df
+        st.session_state["page15_warns"] = _warns
+
+    if uploaded:
+        _ingest_upload(uploaded)
 
     df: pd.DataFrame | None = st.session_state.get("page15_df")
     warns: list[str] = st.session_state.get("page15_warns") or []
