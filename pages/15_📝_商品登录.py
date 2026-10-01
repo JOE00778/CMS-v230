@@ -391,6 +391,9 @@ with tab_bundle:
     _BUNDLE_RESULT_KEYS = [
         "page15_bundle_items", "page15_bundle_parse_errors", "page15_bundle_pg_map",
         "page15_bundle_zip", "page15_bundle_zip_n",
+        # 結果を作った元テキスト。結果を消すときは必ず一緒に消す
+        # （残すと「入力を変えた」判定が次回も誤爆する）
+        "page15_bundle_src",
     ]
 
     col_b1, col_b2 = st.columns([1, 1])
@@ -414,6 +417,8 @@ with tab_bundle:
         items, parse_errors = _parse_bundle_lines(bundle_text)
         st.session_state["page15_bundle_items"] = items
         st.session_state["page15_bundle_parse_errors"] = parse_errors
+        # 「この結果はどのテキストから作ったか」を一緒に残す（下の突合に使う）
+        st.session_state["page15_bundle_src"] = bundle_text
 
         if items:
             with get_connection() as conn:
@@ -423,6 +428,15 @@ with tab_bundle:
     items: list[dict] = st.session_state.get("page15_bundle_items") or []
     parse_errors: list[str] = st.session_state.get("page15_bundle_parse_errors") or []
     pg_map: dict = st.session_state.get("page15_bundle_pg_map") or {}
+
+    # 入力を書き換えたのに「🔍 查询」を押し直さず「⬇️ 生成 ZIP」を押すと、
+    # 下の処理は session_state の items（＝前回のバッチ）から CSV を作ってしまう。
+    # 画面には新しいテキストが見えているので、古い組合せの CSV が出たことに気付けない。
+    # 結果とテキストが食い違っていたら結果を伏せ、再クエリを促す。
+    if items and st.session_state.get("page15_bundle_src") != bundle_text:
+        st.warning(t("⚠️ 输入已修改，请重新点「🔍 查询 PG 并预览」后再生成"
+                     "（当前显示的是上一次查询的结果，已隐藏以免生成错误的 CSV）"))
+        items, parse_errors, pg_map = [], [], {}
 
     if parse_errors:
         with st.expander(t(f"⚠️ 解析错误 {len(parse_errors)} 条（这些行不进 CSV）"),
