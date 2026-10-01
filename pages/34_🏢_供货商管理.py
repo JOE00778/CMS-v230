@@ -480,10 +480,10 @@ def _supplier_rules() -> pd.DataFrame:
 
 _RANK_OPTS = ["Aランク", "Bランク", "Cランク", "NEW"]
 
-tab_cp, tab_bs, tab_wr, tab_sku, tab_opp, tab_up, tab_rule = st.tabs([
+tab_cp, tab_bs, tab_wr, tab_sku, tab_opp, tab_up, tab_qs, tab_rule = st.tabs([
     t("📊 供货商数据大盘"), t("🏷️ 品牌×供应商"), t("📉 折扣率总览"),
     t("📋 SKU采购明细"), t("🔍 优化机会"), t("📤 报价维护"),
-    t("🏢 供应商与品牌规则")])
+    t("🔎 报价库检索"), t("🏢 供应商与品牌规则")])
 
 _CHART_LABEL_FS, _CHART_TITLE_FS = 10, 11
 
@@ -1432,6 +1432,138 @@ with tab_up:
 # ============================================================
 # Tab 7：🏢 供应商与品牌规则
 # ============================================================
+
+# ============================================================
+# Tab 7：🔎 报价库检索（川崎さん诉求 recvrB3j6vedbT · 2026-10-02）
+#   原文「NSTのデータは商品情報でも検索可能なので、この『仕入先管理』では
+#         見積DBの中身の検索にしたい」
+#
+#   ⚠️ 他のタブは **NST item_master が母集団**（_sku_frame → _items_all）で、
+#   見積は how="left" で後から付くだけ。だから NST に無い JAN は
+#   どうフィルタしても 1 行も出てこない（SKU采购明细 の空振り警告がそれ）。
+#   実測 2026-10-02: 見積 12,253 行 / 8,578 JAN のうち **217 JAN が NST 未登録**。
+#   さらに nst.item_master_raw 自体が `department IN (4,9)` で絞った鏡像
+#   （database/data_warehouse/nst_api/pull_items.py:66）なので、
+#   「NST に無い」＝「NetSuite に無い」ではない点にも注意。
+#
+#   このタブだけは sourcing.supplier_quote 自体を母集団にする。
+# ============================================================
+with tab_qs:
+    st.caption(_dl(
+        "**报价库本身**就是母集团（其他 tab 以 NST 商品主档为底，NST 没有的 JAN 搜不到）。"
+        "可按 JAN / 商品名 / 供应商检索，「NST」列标明该 JAN 在不在商品主档。",
+        "**見積DB そのもの**が母集団です（他タブは NST 商品マスタが母集団なので、"
+        "NST に無い JAN は出てきません）。JAN / 商品名 / 仕入先 で検索でき、"
+        "「NST」列でその JAN が商品マスタに在るかが分かります。"))
+
+    # _read は例外を握り潰して空 DataFrame を返す（:136-151）。
+    # ここで黙って 0 件になると「見積が無い」と誤読するので自前で捕まえる。
+    _qs_err = None
+    try:
+        _qcur = conn.execute(
+            "SELECT q.supplier_name, q.jan, q.item_name, q.price, q.moq, "
+            "       q.order_lot, q.lead_days, q.quote_date, q.valid_from, q.valid_to, "
+            "       q.source, q.note, "
+            "       (im.jan IS NOT NULL) AS in_nst, im.item_rank, "
+            "       im.display_name AS nst_name "
+            "FROM sourcing.supplier_quote q "
+            "LEFT JOIN LATERAL ("
+            "    SELECT jan, item_rank, display_name FROM nst.item_master_raw "
+            "    WHERE jan = q.jan LIMIT 1) im ON TRUE")
+        _qrows = _qcur.fetchall()
+        _qcols = [d[0] for d in _qcur.description] if _qcur.description else []
+        _qdf = pd.DataFrame([tuple(r) for r in _qrows], columns=_qcols)
+    except Exception as _e:  # noqa: BLE001
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _qs_err = str(_e)
+        _qdf = pd.DataFrame()
+
+    if _qs_err:
+        st.error(_dl(f"❌ 报价库读取失败：{_qs_err}",
+                     f"❌ 見積DB の読み取りに失敗：{_qs_err}"))
+    elif _qdf.empty:
+        st.info(_dl("报价库为空。请先到「📤 报价维护」上传报价。",
+                    "見積DB が空です。「📤 見積メンテ」からアップロードしてください。"))
+    else:
+        _qdf["in_nst"] = _qdf["in_nst"].fillna(False).astype(bool)
+        for _c in ("price", "moq", "order_lot", "lead_days"):
+            _qdf[_c] = pd.to_numeric(_qdf[_c], errors="coerce")
+        _qdf["quote_date"] = pd.to_datetime(_qdf["quote_date"], errors="coerce")
+
+        _f1, _f2, _f3 = st.columns([2, 2, 2])
+        _q_kw = _f1.text_input(_dl("🔍 JAN / 商品名", "🔍 JAN / 商品名"), key="qs_kw")
+        _q_sup = _f2.multiselect(
+            _dl("供应商", "仕入先"),
+            sorted(_qdf["supplier_name"].dropna().astype(str).unique().tolist()),
+            default=[], key="qs_sup")
+        _q_mode = _f3.radio(
+            _dl("显示", "表示"),
+            [_dl("每家最新报价", "仕入先ごと最新"), _dl("全部历史", "全履歴")],
+            horizontal=True, key="qs_mode")
+
+        _g1, _g2 = st.columns(2)
+        _q_only_missing = _g1.checkbox(
+            _dl("只看 NST 未登录的 JAN", "NST 未登録の JAN のみ"), value=False, key="qs_miss")
+        _q_only_valid = _g2.checkbox(
+            _dl("只看有效期内（valid_to 未过期或为空）", "有効期限内のみ（valid_to 未来 or 空）"),
+            value=False, key="qs_valid")
+
+        _q = _qdf
+        if _q_kw.strip():
+            _k = _q_kw.strip()
+            _q = _q[_q["jan"].astype(str).str.contains(_k, na=False, regex=False)
+                    | _q["item_name"].astype(str).str.contains(_k, case=False, na=False, regex=False)
+                    | _q["nst_name"].astype(str).str.contains(_k, case=False, na=False, regex=False)]
+        if _q_sup:
+            _q = _q[_q["supplier_name"].isin(_q_sup)]
+        if _q_only_missing:
+            _q = _q[~_q["in_nst"]]
+        if _q_only_valid:
+            _today = pd.Timestamp(dt.date.today())
+            _vt = pd.to_datetime(_q["valid_to"], errors="coerce")
+            _q = _q[_vt.isna() | (_vt >= _today)]
+        if _q_mode == _dl("每家最新报价", "仕入先ごと最新") and not _q.empty:
+            # (仕入先, JAN) ごとに quote_date 最新の 1 行。append 運用なので履歴が積まれている。
+            _q = (_q.sort_values("quote_date", ascending=False)
+                    .drop_duplicates(subset=["supplier_name", "jan"], keep="first"))
+
+        _m1, _m2, _m3, _m4 = st.columns(4)
+        _m1.metric(_dl("报价行数", "見積行数"), f"{len(_q):,}")
+        _m2.metric("JAN", f"{_q['jan'].nunique():,}")
+        _m3.metric(_dl("供应商", "仕入先"), f"{_q['supplier_name'].nunique():,}")
+        _m4.metric(_dl("NST 未登录 JAN", "NST 未登録 JAN"),
+                   f"{_q.loc[~_q['in_nst'], 'jan'].nunique():,}", delta_color="inverse")
+
+        if _q.empty:
+            st.info(_dl("没有匹配的报价。", "該当する見積がありません。"))
+        else:
+            _disp = _q.copy()
+            _disp["in_nst"] = _disp["in_nst"].map(lambda b: "✅" if b else "—")
+            _disp["quote_date"] = _disp["quote_date"].dt.strftime("%Y-%m-%d")
+            _QCOLS = {
+                "supplier_name": _dl("供应商", "仕入先"), "jan": "JAN",
+                "item_name": _dl("报价商品名", "見積商品名"),
+                "nst_name": _dl("NST 商品名", "NST 商品名"),
+                "in_nst": "NST", "item_rank": _dl("等级", "ランク"),
+                "price": _dl("报价", "見積価格"), "moq": _dl("最小起订", "最小ロット"),
+                "order_lot": _dl("发注批量", "発注ロット"),
+                "lead_days": _dl("交期(天)", "リードタイム(日)"),
+                "quote_date": _dl("报价日", "見積日"),
+                "valid_from": _dl("有效起", "有効開始"), "valid_to": _dl("有效至", "有効終了"),
+                "source": _dl("来源", "出所"), "note": _dl("备注", "備考"),
+            }
+            _disp = _disp[list(_QCOLS)].rename(columns=_QCOLS)
+            st.dataframe(_disp, use_container_width=True, hide_index=True, height=520)
+            st.download_button(
+                _dl("⬇️ 下载检索结果 CSV", "⬇️ 検索結果 CSV"),
+                _disp.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"见积检索_{dt.date.today():%Y%m%d}.csv",
+                mime="text/csv", key="qs_dl")
+
+
 with tab_rule:
     st.markdown("##### " + t("🏢 供货商主档（起订金额 / 纳期 / 预付 / 启用）"))
     # 把报价里出现但主档没有的供货商补进来
