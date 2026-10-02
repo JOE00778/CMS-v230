@@ -1800,12 +1800,32 @@ with tab_loss:
             lambda r: r["nst_amount_jpy"] if r["settle_status"] == "unmatched"
             else (r["gmv_jpy"] if r["settle_status"] in _LOSS_ST else 0.0), axis=1)
 
-        _loss = L[L["settle_status"] == "loss"]
-        _pre = L[L["settle_status"] == "preship_void"]
+        # ⚠️ v_shipped_order は 1 行 = (請求書 × 注文)。ヘッダのコメントが言う
+        # 「注文 1 件 = 1 行」は実装と合っていない。同じ注文が 正票 + 貸方票 で
+        # 複数行になるため、**注文単位の値**（gmv_jpy）を行のまま集計すると二重計上になる。
+        # 既知の罠で、026_create_ff3_reconcile_view.sql:53-55 と
+        # 032_dedupe_shipped_settlement_orders.sql:5-10 に実測記録がある
+        # （7月は 18,752 注文に対し 41,752 行）。FF-3 タブ(:2074 付近)は
+        # drop_duplicates で回避済みだが、この損失タブだけ素の行で sum していた。
+        #
+        # 2026-09 実測: 損失 277 行 / 219 注文、金額 ¥1,117,313 → 注文単位 ¥887,839
+        # （**+26% 過大**）。同じ agg の中で件数だけ nunique・金額だけ sum という
+        # 内部矛盾も起きていた（:1865-1866）。
+        #
+        # gmv_jpy は請求書ごとに僅差があるので（実測差 22 円）、完全な注文額に近い
+        # 最大値を採って注文単位へ畳む。
+        _loss = (L[L["settle_status"] == "loss"]
+                 .sort_values("gmv_jpy", ascending=False)
+                 .drop_duplicates(subset=["shop", "order_no"]))
+        _pre = L[L["settle_status"] == "preship_void"].drop_duplicates(
+            subset=["shop", "order_no"])
+        # ⚠️ _unm だけは **行のまま**。loss_jpy = nst_amount_jpy は請求書按分の値で、
+        # 正票と貸方票が行レベルで相殺して初めて正味になる。畳むと逆に狂う。
         _unm = L[L["settle_status"] == "unmatched"]
-        _noamt = L[L["settle_status"] == "no_amount"]
+        _noamt = L[L["settle_status"] == "no_amount"].drop_duplicates(
+            subset=["shop", "order_no"])
         _risk = L[L["settle_status"].isin(_LOSS_ST + ("unmatched",))]
-        _n_all = len(L)
+        _n_all = L["order_no"].nunique()
 
         k1, k2, k3, k4 = st.columns(4)
         k1.metric(_ll("🩸 损失（出货后）", "🩸 損失（出荷後）"),
