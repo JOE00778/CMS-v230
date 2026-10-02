@@ -193,3 +193,47 @@ def test_normalize_detail_covers_all_db_columns():
     out, _ = ei.normalize_detail(_detail_df())
     missing = [k for k in ec.detail_row_keys() if k not in out.columns]
     assert missing == [], f"normalize_detail に無いキー: {missing}"
+
+
+# ── 分納の接尾辞（Boss 2026-10-02）──────────────────────────
+# 節税のため 1 注文を 2 回に分けて出すと、ECMS 側の注文番号が '…-1' '…-2' になる。
+# 時間差が要るので -1 と -2 は別々の月の請求書に現れる。
+# NST 側は接尾辞なしの注文番号しか持たないので、照合前に剥がす必要がある。
+import re as _re
+
+
+def _strip_suffix(order_no: str) -> str:
+    """配賦 SQL の regexp_replace(order_no, '-[0-9]+$', '') と同じ規則。"""
+    return _re.sub(r"-[0-9]+$", "", order_no)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("31103127154811-1", "31103127154811"),
+    ("31103127154811-2", "31103127154811"),
+    ("31103127154811-10", "31103127154811"),
+    ("31103127154811", "31103127154811"),      # 接尾辞なしはそのまま
+    ("9102513392212", "9102513392212"),
+    ("46689861730519", "46689861730519"),
+])
+def test_split_shipment_suffix_is_stripped(raw, expected):
+    assert _strip_suffix(raw) == expected
+
+
+def test_suffix_strip_only_at_end_and_only_digits():
+    """剥がすのは **末尾の `-数字`** だけ。途中の区切りや数字以外は残す。"""
+    assert _strip_suffix("ABC-123-XY") == "ABC-123-XY"   # 末尾が数字でない
+    assert _strip_suffix("123-45-678A") == "123-45-678A"
+
+
+def test_suffix_strip_known_limitation():
+    """既知の限界: 末尾が `-数字` なら中身を問わず剥がす。
+
+    注文番号そのものが `-数字` で終わる体系が将来入ってくると誤って削る。
+    現状は問題にならない:
+      · Coupang / 自社サイトの注文番号はいずれも**ハイフンを含まない純数字**
+        （実測 Coupang 10100173210749 / Shopify US 6808851906775）
+      · 2026-09 の請求書 1,071 行で接尾辞付きは 1 行のみ、
+        剥いだ形が同月の他行と衝突した件数は 0
+    ハイフンを含む注文番号の体系が増えたら、この規則を見直すこと。
+    """
+    assert _strip_suffix("2026-09") == "2026"      # ← 注文番号ではないが規則上は剥げる

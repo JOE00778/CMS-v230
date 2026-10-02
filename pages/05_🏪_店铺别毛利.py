@@ -2628,6 +2628,8 @@ with tab_perf:
     #     logistics.cost_monthly ではなく明細から引くのは JD と同じ理由
     #     （店舗名の揺れを避け、NST の店舗帰属に揃えるため）。
     #     航空運賃は課税対象外なので、この金額はそのまま税抜として JD と足せる。
+    #     ⚠️ 注文番号の末尾 '-1' '-2' は分納の通し番号（節税のため 1 注文を 2 回に
+    #        分けて出す · Boss 2026-10-02）。NST は接尾辞なししか持たないので剥いで照合する。
     #     ⚠️ 請求書にしか無い費目（賠償など）は注文に紐づかないのでここには入らない。
     #        月次の全体像は page28「物流費用分析」で見ること。
     _ecms_raw, _ecms_err = _query(
@@ -2637,7 +2639,7 @@ with tab_perf:
         "FROM logistics.ecms_invoice_detail d "
         "JOIN LATERAL (SELECT si.shop FROM nst.invoice_order io "
         "  JOIN nst.sales_invoice si ON si.invoice_id = io.invoice_id "
-        "  WHERE io.order_no = d.order_no LIMIT 1) io ON TRUE "
+        "  WHERE io.order_no = regexp_replace(d.order_no, '-[0-9]+$', '') LIMIT 1) io ON TRUE "
         "WHERE d.year_month = ? GROUP BY 1", (ym,))
     if _ecms_raw is None or _ecms_raw.empty:
         if _ecms_err:

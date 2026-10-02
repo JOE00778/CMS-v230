@@ -749,6 +749,34 @@ with tab_ecms:
         "其中「賠償」这类没有明细的费目单列不摊。请求对象月取自**文件名**"
         "（Ship Date 会跨月，按它分会和请求总额对不上）。"))
 
+    # --- 既取込分の再配賦 ---------------------------------------------
+    # 「NST で発票が立たず店舗に寄せられない」注文が毎月いくらか出る
+    # （Boss 2026-10-02: 在庫差異で発票が生成できないのが主因）。
+    # 発票が後から立てば同じデータで配賦し直せるので、再アップ不要の再計算を置く。
+    _done = _ec.months(conn)
+    if _done:
+        _rc1, _rc2 = st.columns([2, 1])
+        _re_ym = _rc1.selectbox(t("已取込月份（重新配赋用）"), _done, key="ecms_re_ym")
+        if _rc2.button(t("🔄 重新配赋"), key="ecms_re_run",
+                       help=t("不用重传文件。NST 补开发票后，用这个把之前归不到店铺的单子重新归位")):
+            try:
+                _r = _ec.recompute(conn, _re_ym)
+                _rc = _ec.reconcile(conn, _re_ym)
+                st.success(t("✅ 重新配赋完成（{ym}）").format(ym=_re_ym))
+                st.dataframe(pd.DataFrame(
+                    [{t("店铺"): x[0], "cost_type": x[1],
+                      t("金额"): f"¥{float(x[2]):,.0f}", t("件数"): int(x[3])} for x in _r]),
+                    use_container_width=True, hide_index=True)
+                st.caption(t("配賦合計 ¥{a:,.0f} ／ 请求总额 ¥{t:,.0f}").format(
+                    a=_rc["allocated"], t=_rc["invoice_total"]))
+            except Exception as _e:  # noqa: BLE001
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                st.error(t("❌ 重新配赋失败：") + f"{type(_e).__name__}: {_e}")
+        st.divider()
+
     _up = st.file_uploader(
         t("📤 上传 ECMS 文件（xlsx + pdf 可一起选）"),
         type=["xlsx", "pdf"], accept_multiple_files=True, key="ecms_up")

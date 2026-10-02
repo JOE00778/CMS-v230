@@ -125,10 +125,15 @@ FROM (
         ('ecms_other',        t.ecms_other)
     ) AS u(cost_type, amount)
     LEFT JOIN LATERAL (
+        -- 注文番号の末尾 '-1' '-2' は **分納の通し番号**（Boss 2026-10-02:
+        -- 節税のため 1 注文を 2 回に分けて出す。時間差が要るので -1 と -2 は
+        -- 別々の月の請求書に現れる）。NST 側は接尾辞なしの注文番号しか持たないので
+        -- 剥いでから照合する。剥いだ形が同月内の他行とぶつからないことは確認済
+        -- （2026-09: 接尾辞付き 1 行・衝突 0 件）。
         SELECT min(trim(si.shop)) AS shop, count(DISTINCT trim(si.shop)) AS n
         FROM nst.invoice_order io
         JOIN nst.sales_invoice si ON si.invoice_id = io.invoice_id
-        WHERE io.order_no = t.order_no
+        WHERE io.order_no = regexp_replace(t.order_no, '-[0-9]+$', '')
           AND si.shop IS NOT NULL AND btrim(si.shop) <> ''
     ) s ON TRUE
     WHERE t.year_month = %s
@@ -197,3 +202,12 @@ def reconcile(conn, year_month: str) -> dict:
         "invoice_freight": float(freight or 0),
         "allocated": float(allocated or 0),
     }
+
+
+def months(conn) -> list[str]:
+    """取込済みの請求対象月（新しい順）。page29 の再配賦セレクタ用。"""
+    cur = conn.execute(
+        "SELECT DISTINCT year_month FROM logistics.ecms_invoice_detail "
+        "UNION SELECT DISTINCT year_month FROM logistics.ecms_invoice_header "
+        "ORDER BY 1 DESC")
+    return [r[0] for r in cur.fetchall() if r[0]]
