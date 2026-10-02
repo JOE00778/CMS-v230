@@ -1,8 +1,9 @@
-"""商品登録 ZIP（NST csv / JD xlsx）のテンプレ生成の回帰テスト。
+"""商品登録 ZIP（NST csv / 斑马 xlsx）のテンプレ生成の回帰テスト。
 
 現場から同じ不具合が二人ずつ挙がっていた（2026-08-18 修正）:
   #27 隋艶偉さん / #30 川崎さん … NST CSV から「サポート提供」列が消えて取込エラー
   #28 隋艶偉さん / #31 川崎さん … JD シート 1 列目（貨主ID）に値が入って取込エラー
+  （JD 出力は v2 で廃止 · 2026-10-03。#28/#31 のテストも削除）
 
 どちらも「テンプレ原文の列名に前後空白がある」「既定値へフォールバックする」という
 静かな挙動が原因で、動かしてみるまで気付けなかった。ここで固定する。
@@ -75,16 +76,66 @@ def test_unknown_column_still_rejected():
         raise AssertionError("非テンプレ列が素通りした")
 
 
-# ───────────────────── #28 / #31 JD 貨主ID ─────────────────────
+# ───────────────────── 斑马 报关列（v2 · 2026-10-03） ─────────────────────
 
-def test_jd_owner_id_defaults_to_blank():
-    """既定は空欄。単一貨主で 1 列目に値が入ると JD 取込がエラーになる（#31）。"""
-    row = JBM.nst_to_jd_row({"JANコード": "4901234567890", "アイテム名": "テスト品"})
-    assert row[0] == ""
+def _bm(row: dict) -> dict:
+    return dict(zip(JBM.BM_HEADER, JBM.nst_to_bm_row(row)))
 
 
-def test_jd_owner_id_written_when_explicitly_given():
-    """複数貨主になった時のために、明示指定は従来どおり 1 列目へ入る。"""
-    row = JBM.nst_to_jd_row({"JANコード": "4901234567890", "アイテム名": "テスト品"},
-                            jd_customer_code="KH20000009340")
-    assert row[0] == "KH20000009340"
+_PKG_ROW = {
+    "JANコード": "4901234567890", "アイテム名": "テスト化粧水 200ml", "商品原価": "500",
+    "パッケージ重量(g)": "230", "パッケージ奥行(cm)": "5", "パッケージ幅(cm)": "6",
+    "パッケージ高さ(cm)": "18",
+    "商品重量(g)": "999", "商品奥行(cm)": "99", "商品幅(cm)": "98", "商品高さ(cm)": "97",
+    "_hs": "3304990000", "_name_en": "Test Lotion 200ml",
+}
+
+
+def test_bm_customs_columns_follow_spec():
+    """中文名称=アイテム名 / 英文名称=_name_en / 报关重量=パッケージ重量 / 海关编码=_hs。"""
+    b = _bm(_PKG_ROW)
+    assert b["中文名称"] == "テスト化粧水 200ml"
+    assert b["英文名称"] == "Test Lotion 200ml"
+    assert b["报关重量(g)"] == "230"
+    assert b["海关编码"] == "3304990000"
+
+
+def test_bm_dimensions_use_package_only():
+    """重量・长宽高はパッケージ。商品本体の値があっても使わない。"""
+    b = _bm(_PKG_ROW)
+    assert (b["重量(g)"], b["长(cm)"], b["宽(cm)"], b["高(cm)"]) == ("230", "5", "6", "18")
+
+
+def test_bm_no_package_values_means_blank_not_product_fallback():
+    """パッケージが空なら空。商品寸法へフォールバックしない。"""
+    row = {k: v for k, v in _PKG_ROW.items() if not k.startswith("パッケージ")}
+    b = _bm(row)
+    assert (b["重量(g)"], b["报关重量(g)"], b["长(cm)"], b["宽(cm)"], b["高(cm)"]) == ("",) * 5
+
+
+def test_bm_missing_name_en_and_hs_are_blank():
+    """_name_en / _hs が無ければ空（日文名からの転写で埋めない）。"""
+    b = _bm({"JANコード": "4901234567890", "アイテム名": "テスト品"})
+    assert b["英文名称"] == ""
+    assert b["海关编码"] == ""
+
+
+def test_bm_name_en_capped_at_76():
+    b = _bm({**_PKG_ROW, "_name_en": "A" * 100})
+    assert len(b["英文名称"]) == 76
+
+
+def test_bm_xlsx_layout_unchanged():
+    """46 列ヘッダ・row1 結合セル・シート名は変えない。データは row3 から。"""
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(JBM.build_bm_xlsx([_PKG_ROW])))
+    assert wb.sheetnames == ["数据"]
+    ws = wb["数据"]
+    assert [c.value for c in ws[2]] == JBM.BM_HEADER and len(JBM.BM_HEADER) == 46
+    assert sorted(str(r) for r in ws.merged_cells.ranges) == sorted(JBM.BM_MERGES)
+    data = dict(zip(JBM.BM_HEADER, [c.value for c in ws[3]]))
+    assert data["海关编码"] == "3304990000" and data["英文名称"] == "Test Lotion 200ml"
+
+
+def test_jd_output_removed():
+    assert not hasattr(JBM, "build_jd_xlsx") and not hasattr(JBM, "nst_to_jd_row")

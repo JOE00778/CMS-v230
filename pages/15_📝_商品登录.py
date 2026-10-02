@@ -1,20 +1,23 @@
-"""模块 #15 商品登录 · 新品首次推送 NetSuite/JD/BM
+"""模块 #15 商品登录 · 新品首次登録（NST 取込 CSV + 斑马導入 xlsx）
 
-定位：商品首次登录（NST/JD/BM 还都没有这个 SKU），不是已登录商品的修改。
+定位：商品首次登录（NST/BM 还都没有这个 SKU），不是已登录商品的修改。
 修改场景请走 page 03（定義原価編集）/ page 07（商品等级判定）等。
 
-两个 tab 并存：
-  🆕 原生版 (MVP · 2026-05-29 v2)：上传 NSTマスタ xlsx → 预览编辑 → NetSuite CSV
-  📜 旧 HTML 版：商品登録ツール iframe（JD/BM xlsx 输出仍走此处）
+三个 tab：
+  🆕 商品登録 v2（Boss 2026-10-03 拍板 · JD 出力廃止）
+  📦 セット品登録：JAN_数量 → NST 父/子组合货品 CSV
+  📜 旧 HTML 版：商品登録ツール iframe
 
-原生版流程：
-  Step 1 上传 NSTマスタ.xlsx（sheet: NetSuiteマスタ登録，与旧 HTML 工具同格式）
-  Step 2 自动解析：删 row1/3/4，row2=header，row5+ 数据；A 列空行剔除
-  Step 3 预览编辑（st.data_editor），自动用 nst.item_image_cache 补画像URL（仅参考）
-  Step 4 ⬇️ 生成 NetSuite【アイテム】マスタ登録-V260326EX CSV
+v2 流程（オーケストレーションは shared/item_register.py）：
+  ① テンプレ DL（仕入先=nst.vendor_master 完全名称 / 大分類・中分類=NST 実在組合せ / 担当者 4 人）
+  ② 記入済み xlsx を UL → ③「重量・寸法をネットで調べる」（既定 OFF）→ ④「▶ 処理する」
+     read_upload → NST 既登録 JAN を error → enrich（jancode 商品名・メーカー・固定値・HS・網調べ）
+  ⑤ ok/ng/warn 件数・issues 表・data_editor で修正
+  ⑥「📦 生成」NST CSV（有データ列のみ・原本の登録手順どおり）+ 斑马 xlsx → ZIP、同時に台帳 nst.item_register_log
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import zipfile
@@ -25,13 +28,16 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from data_warehouse.templates import item_entry_form as FORM
 from data_warehouse.templates import nst_item_master as TPL
 from data_warehouse.templates import jd_bm_item_master as JBM
+from shared import hs_classify, jan_web
+from shared import item_register as REG
+from shared import nst_choices as NC
 from shared.auth import require_password
 from shared.db import get_connection
 from shared.i18n import t, lang_selector
 from shared.theme import inject_theme
-from shared.jp_translit import to_english_title
 
 st.set_page_config(page_title=t("商品登录"), page_icon="📝", layout="wide")
 require_password()
@@ -45,48 +51,9 @@ tab_item, tab_bundle, tab_legacy = st.tabs([
     t("📦 セット品登録 (原生)"),
     t("📜 旧 HTML 版"),
 ])
-tab_native = tab_item  # 保留旧变量名兼容下文
 
-# ───────────────────────── NSTマスタ xlsx 解析 ─────────────────────────
-
-NST_SHEET_NAME = "NetSuiteマスタ登録"
 JAN_COL_NAME = "JANコード"
-_NAME_COL = "アイテム名"
-_EN_TITLE_COL = "🔤 英文标题（可改）"  # 离线转写草稿 → JD 平台标题 / BM 英文名称
-
-
-def _parse_nst_xlsx(file) -> tuple[pd.DataFrame, list[str]]:
-    """解析 NSTマスタ xlsx，删 row1/3/4，row2=header，A 列空行剔除。
-
-    返回 (DataFrame, warnings)
-    """
-    warnings: list[str] = []
-    raw = pd.read_excel(file, sheet_name=NST_SHEET_NAME, header=None, dtype=str)
-    if len(raw) < 5:
-        return pd.DataFrame(), [f"sheet 行数不足 5（{len(raw)} 行）· 期待 row2=header / row5+=data"]
-
-    # 删除 row1(idx0)、row3(idx2)、row4(idx3)
-    filtered = raw.drop([0, 2, 3]).reset_index(drop=True)
-    header = filtered.iloc[0].fillna("").astype(str).str.strip().tolist()
-    body = filtered.iloc[1:].copy()
-    body.columns = header
-
-    # A 列（第一列：通常是 型番）空行剔除
-    first_col = body.iloc[:, 0]
-    valid_mask = first_col.notna() & (first_col.astype(str).str.strip() != "")
-    dropped = (~valid_mask).sum()
-    if dropped:
-        warnings.append(f"A 列空行剔除 {int(dropped)} 行")
-    body = body[valid_mask].reset_index(drop=True)
-
-    # 列名按模板白名单过滤（不在模板的列丢弃 + 警告）
-    valid_cols = [c for c in body.columns if c in TPL.VALID_COLUMNS]
-    unknown_cols = [c for c in body.columns if c and c not in TPL.VALID_COLUMNS]
-    if unknown_cols:
-        warnings.append(f"非模板列被忽略 ({len(unknown_cols)} 个): {', '.join(unknown_cols[:5])}{'...' if len(unknown_cols) > 5 else ''}")
-
-    body = body[valid_cols].copy()
-    return body, warnings
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _augment_image_url(conn, df: pd.DataFrame) -> pd.DataFrame:
@@ -109,224 +76,256 @@ def _augment_image_url(conn, df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ───────────────────────── tab 🆕 原生版 ─────────────────────────
+# ───────────────────────── tab 🆕 商品登録 v2 ─────────────────────────
 
-with tab_native:
-    st.caption(t(
-        "新品首次推送 · 上传 NSTマスタ xlsx → 预览编辑 → 生成 NetSuite【アイテム】マスタ登録-V260326EX CSV"
-    ))
+# SuiteQL は 1 回最大 60 秒×4 リトライ。テンプレ DL を毎回待たせないようキャッシュ（仕様 §3）
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_choices() -> NC.Choices:
+    with get_connection() as conn:
+        return NC.load_choices(conn)
 
-    with st.expander(t("📌 使用说明"), expanded=False):
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_template() -> bytes:
+    return FORM.build_template(_cached_choices())
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_prefix_makers() -> dict[str, str]:
+    with get_connection() as conn:
+        return NC.load_prefix_makers(conn)
+
+
+_ITEM_KEYS = ["page15_result", "page15_zip_bytes", "page15_zip_n", "page15_log_msg",
+              "page15_gen_issues", "page15_editor", "page15_zip_src"]
+
+
+def _content_hash(records) -> str:
+    """表・行の内容ハッシュ（ZIP が今の表から作られたか / 台帳に同じ内容を記録済みか の判定）。"""
+    import json
+    return hashlib.sha256(json.dumps(records, ensure_ascii=False, sort_keys=True,
+                                     default=str).encode()).hexdigest()
+
+
+def _issues_df(issues) -> pd.DataFrame:
+    return pd.DataFrame([{t("行"): i.row or "", "JAN": i.jan,
+                          t("区分"): "❌ error" if i.level == "error" else "⚠️ warn",
+                          t("内容"): i.message} for i in issues])
+
+
+def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
+    """read_upload → NST 既登録チェック → enrich。結果は dict で session_state へ。"""
+    rows, issues = FORM.read_upload(data, choices)
+    notes: list[str] = []
+    ng = len({i.row for i in issues if i.level == "error" and i.row})
+    if any(i.level == "error" and not i.row for i in issues):
+        notes.append(t("ファイル全体のエラーがあります（下の表を確認）"))
+    nst_rows, extra, stats = [], {}, {}
+    if rows:
+        with get_connection() as conn:
+            exist, warns = NC.existing_jans([r[JAN_COL_NAME] for r in rows], conn=conn)
+        notes += warns
+        for r in rows:
+            if r[JAN_COL_NAME] in exist:
+                issues.append(FORM.Issue(0, r[JAN_COL_NAME], "error",
+                                         "NST に登録済みの JAN です（新規登録の対象外）"))
+        ng += len(exist)
+        rows = [r for r in rows if r[JAN_COL_NAME] not in exist]
+    if rows:
+        try:
+            prefix_makers = _cached_prefix_makers()
+        except Exception as e:  # noqa: BLE001 — メーカーは jancode 会社名で続行
+            prefix_makers = {}
+            notes.append(f"NST メーカー（JAN プレフィックス）の読込に失敗・jancode 会社名だけで判定: {e}")
+        bar = st.progress(0.0, text=t("処理中…"))
+        nst_rows, extra, more, stats = REG.enrich(
+            rows, choices=choices, prefix_makers=prefix_makers,
+            fetch_meta=jan_web.fetch_meta, fetch_weight=jan_web.fetch_weight,
+            classify_customs=hs_classify.classify_customs, want_weight=want_weight,
+            on_progress=lambda d, n, msg: bar.progress(min(d / n, 1.0) if n else 1.0,
+                                                       text=f"{d}/{n} {msg}"))
+        bar.empty()
+        issues += more
+        ng += stats["ng"]
+    ok_jans = {r[JAN_COL_NAME] for r in nst_rows}
+    warn = len({i.jan for i in issues if i.level == "warn"} & ok_jans)
+    return {"nst": nst_rows, "extra": extra, "issues": issues, "stats": stats,
+            "notes": notes, "ok": len(nst_rows), "ng": ng, "warn": warn}
+
+
+def _generate(edited: pd.DataFrame, res: dict) -> None:
+    """data_editor の内容 → NST CSV + 斑马 xlsx → ZIP。同時に台帳へ記録（失敗しても ZIP は出す）。"""
+    out_nst, out_bm, sources, gen_issues = REG.from_frame(
+        edited.to_dict("records"), res["nst"], res["extra"])
+    st.session_state["page15_gen_issues"] = gen_issues
+    if not out_nst:
+        st.error(t("❌ 生成できる行がありません"))
+        return
+    nst_csv = TPL.build_nst_master_csv(out_nst, REG.csv_field_columns(out_nst),
+                                       id_label=TPL.COL_ITEM_CODE)
+    image_url_map: dict[str, str] = {}
+    try:
+        with get_connection() as conn:
+            _df = _augment_image_url(conn, pd.DataFrame(out_nst))
+        image_url_map = {j: u for j, u in zip(_df[JAN_COL_NAME],
+                                              _df["_画像URL（参考·来自 image cache）"]) if u}
+    except Exception:  # noqa: BLE001 — 画像は参考。取れなくても生成は続ける
+        pass
+    bm_xlsx = JBM.build_bm_xlsx(out_bm, image_url_map=image_url_map)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(TPL.dated_filename(), nst_csv)
+        zf.writestr(JBM.dated_filename_bm(), bm_xlsx)
+    st.session_state["page15_zip_bytes"] = buf.getvalue()
+    st.session_state["page15_zip_n"] = len(out_nst)
+    st.session_state["page15_zip_src"] = _content_hash(edited.to_dict("records"))
+
+    # 台帳は append-only。同じ内容の押し直しで同じ行を重ねない（このセッション内）
+    log_key = _content_hash(out_nst)
+    if st.session_state.get("page15_logged") == log_key:
+        st.session_state["page15_log_msg"] = ("ok", t("台帳は記録済み（同じ内容のため再記録しません）"))
+        return
+    bm_lists = [JBM.nst_to_bm_row(r, image_url=image_url_map.get(r[JAN_COL_NAME], ""))
+                for r in out_bm]
+    try:
+        with get_connection() as conn:
+            n_log, err = REG.write_register_log(conn, out_nst, bm_lists, sources)
+    except Exception as e:  # noqa: BLE001 — 接続自体の失敗
+        n_log, err = 0, f"{type(e).__name__}: {e}"
+    st.session_state["page15_log_msg"] = (
+        ("error", t(f"台帳への記録に失敗: {err}（ZIP は生成済み）")) if err
+        else ("ok", t(f"台帳 nst.item_register_log に {n_log} 件記録")))
+    if not err:
+        st.session_state["page15_logged"] = log_key
+
+
+def _render_result(res: dict) -> None:
+    c1, c2, c3 = st.columns(3)
+    c1.metric("OK", res["ok"])
+    c2.metric("NG", res["ng"], delta_color="inverse")
+    c3.metric(t("警告あり"), res["warn"])
+    s = res["stats"]
+    if s:
+        st.caption(
+            f"jancode ok={s['jancode_ok']} not_found={s['jancode_not_found']} "
+            f"error={s['jancode_error']} · メーカー NST={s['maker_nst']} "
+            f"jancode={s['maker_jancode']} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} · "
+            f"HS ok={s['hs_ok']} 判定不可={s['hs_ng']} · 重量 取得={s['weight_hit']} "
+            f"なし={s['weight_miss']} 失敗={s['weight_error']} 調べず={s['weight_skipped']}")
+    for n in res["notes"]:
+        st.warning(n)
+    if res["issues"]:
+        n_err = sum(i.level == "error" for i in res["issues"])
+        with st.expander(t(f"⚠️ 問題 {len(res['issues'])} 件（error {n_err} 件の行は出力しません）"),
+                         expanded=True):
+            st.dataframe(_issues_df(res["issues"]), use_container_width=True, hide_index=True)
+    if not res["nst"]:
+        st.error(t("❌ 出力できる行がありません"))
+        return
+
+    st.subheader(t("📋 確認・修正（🤖 = 自動で埋めた値。白い列だけ直せます）"))
+    df = pd.DataFrame(REG.to_frame(res["nst"], res["extra"]))
+    auto_label = {"アイテム名": "アイテム名 🤖", "メーカー名": "メーカー名 🤖",
+                  "通関英文名": "通関英文名 🤖", "HS": "HS 🤖"}
+    col_config = {c: st.column_config.TextColumn(lbl) for c, lbl in auto_label.items()}
+    col_config["通関英文名"] = st.column_config.TextColumn(
+        "通関英文名 🤖", max_chars=hs_classify.MAX_NAME_EN, help=t("斑马 英文名称（最大 76 字）"))
+    col_config["アイテム名"] = st.column_config.TextColumn(
+        "アイテム名 🤖", max_chars=REG.NAME_MAX, help=t("NST アイテム名 = 斑马 中文名称（最大 60 字）"))
+    col_config[REG.COL_URL] = st.column_config.LinkColumn(REG.COL_URL)
+    edited = st.data_editor(
+        df, use_container_width=True, hide_index=True, num_rows="fixed",
+        disabled=[c for c in df.columns if c not in REG.EDITABLE],
+        column_config=col_config, key="page15_editor")
+
+    st.divider()
+    if st.button(t("📦 生成（NST.csv + 斑马.xlsx）"), type="primary", key="page15_gen"):
+        _generate(edited, res)
+    gen_issues = st.session_state.get("page15_gen_issues") or []
+    if gen_issues:
+        st.dataframe(_issues_df(gen_issues), use_container_width=True, hide_index=True)
+    zip_bytes = st.session_state.get("page15_zip_bytes")
+    if zip_bytes and st.session_state.get("page15_zip_src") != _content_hash(edited.to_dict("records")):
+        # 画面は編集後の値なのに ZIP は編集前 → 気づけないので伏せる（セット品タブと同じ対策）
+        st.warning(t("⚠️ 表を編集しました。もう一度「📦 生成」を押してください（前回の ZIP は隠しています）"))
+        zip_bytes = None
+    if zip_bytes:
+        n = st.session_state.get("page15_zip_n", 0)
+        st.download_button(
+            t(f"⬇️ ZIP をダウンロード（{n} 件 · NST.csv + 斑马.xlsx）"), data=zip_bytes,
+            file_name=f"商品登録_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            mime="application/zip", type="primary", key="page15_zip_dl")
+        level, msg = st.session_state.get("page15_log_msg") or ("ok", "")
+        (st.error if level == "error" else st.success)(msg)
+
+
+def _render_item_tab() -> None:
+    """⚠️ st.stop() 禁止（スクリプト全体が止まり他タブが消える）。抜けるときは return。"""
+    st.caption(t("新品登録 · テンプレ DL → 記入 → UL → NST 取込 CSV + 斑马導入 xlsx（どちらも手でアップロード）"))
+    with st.expander(t("📌 使い方"), expanded=False):
         st.markdown(t(
-            "- **场景**：新品首次推送到 NST/JD/BM（已登录商品的修改请走 page 03/07 等）\n"
-            f"- **上传**：只上传 **NSTマスタ 一张 sheet**（`{NST_SHEET_NAME}`） · 自动删 row1/3/4, row2=header, A 列空行剔除\n"
-            "- **非模板列**：被自动忽略并提示（防止脏列污染 CSV）\n"
-            "- **画像 URL**：自动从 nst.item_image_cache 按 JAN 取，参考列展示 + 自动填进 BM 图片URL\n"
-            "- **一键打包 ZIP**：NetSuite CSV + JD.xlsx + BM.xlsx 三件一起出\n"
-            "- **JD 新模板**：单页「商品信息」(75 列·Import-BasicGoods-SinglePage)。自动填 客户SKU=JAN / 商品名称=日文名 / 件型=1 / 自带原包=1 / 商品条码=JAN / 销售渠道 / 平台编码；**平台商品标题(英文)留空待填**\n"
-            f"- **JD 默认值**：销售渠道=`{JBM.DEFAULT_JD_SALES_CHANNEL}` · 平台编码=`{JBM.DEFAULT_JD_PLATFORM_CODE}` · 货主ID 默认空（单货主不必填）\n"
-            "- **BM 新模板（斑马）**：Product导入模板·sheet「数据」(46 列·含合并单元格)。SPU=JAN · ERP 类目留空 · 英文名称留空（用户后填）\n"
-            "- **下载模板严格按格式**：JD/BM 的 row1 分区(合并单元格) / row2 列头 与官方模板逐格一致"
+            "- **人が書くのは 12 列だけ**：JAN / 商品原価 / 仕入先（完全名称）/ 商品担当者 / 大分類・中分類 / "
+            "カートン入数 / 発注ロット / パッケージ 3 辺・重量\n"
+            "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "
+            "型番=JAN / 取扱中・NEW・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
+            "- **網調べ**は空欄だけ埋める（手入力は上書きしない）。出典 URL を表で確認\n"
+            "- **NST に登録済みの JAN** はエラーで外す\n"
+            "- **出力**：NST CSV（有データ列のみ・先頭=型番）+ 斑马 xlsx（中文名称 = アイテム名）"
         ))
+    try:
+        choices = _cached_choices()
+        template = _cached_template()
+    except Exception as e:  # noqa: BLE001
+        st.error(t(f"❌ 選択肢（仕入先・分類）の読込に失敗: {type(e).__name__}: {e}"))
+        return
+    for w in choices.warnings:
+        st.warning(w)
+    st.download_button(t("📥 テンプレートをダウンロード"), data=template,
+                       file_name=FORM.template_filename(), mime=_XLSX_MIME,
+                       key="page15_tpl_dl")
 
-    _ITEM_RESULT_KEYS = [
-        "page15_df", "page15_warns", "page15_zip_bytes", "page15_zip_rows",
-    ]
+    uploaded = st.file_uploader(t("📤 記入済みテンプレ（xlsx）をアップロード"), type=["xlsx"],
+                                key="page15_upload")
+    want_weight = st.checkbox(t("☑ 重量・寸法をネットで調べる（NETSEA → スーパーデリバリー）"),
+                              value=False, key="page15_want_weight")
+    if want_weight:
+        st.caption(t("目安：約 1.5〜2 秒/件（パッケージ欄に空欄がある行だけ調べます）"))
+    col_r, col_c = st.columns([1, 1])
+    run = col_r.button(t("▶ 処理する"), type="primary", disabled=uploaded is None,
+                       key="page15_run", use_container_width=True)
+    if col_c.button(t("🗑️ 清除结果"), key="page15_item_clear", use_container_width=True):
+        for k in _ITEM_KEYS:
+            st.session_state.pop(k, None)
+        st.session_state.pop("page15_upload", None)
+        st.rerun()
 
-    col_u1, col_u2 = st.columns([4, 1])
-    with col_u1:
-        uploaded = st.file_uploader(
-            t(f"📤 上传 NSTマスタ xlsx（sheet 名 = {NST_SHEET_NAME}）"),
-            type=["xlsx"],
-            key="page15_upload",
-        )
-    with col_u2:
-        st.markdown("&nbsp;", unsafe_allow_html=True)
-        if st.button(t("🗑️ 清除结果"), key="page15_item_clear",
-                     use_container_width=True,
-                     help=t("清除上次解析结果，准备下一份")):
-            for k in _ITEM_RESULT_KEYS:
-                st.session_state.pop(k, None)
-            st.session_state.pop("page15_upload", None)
-            st.rerun()
-
-    def _ingest_upload(_file) -> None:
-        """アップロードを解析して session_state へ。失敗時は **return** で抜ける。
-
-        ⚠️ ここで st.stop() を使ってはいけない。Streamlit の st.stop() は
-        **スクリプト全体**を止めるので、下にある「📦 セット品登録」(:357 付近) と
-        「📜 旧 HTML 版」(:504 付近) のタブが丸ごと描画されなくなる。
-        sheet 名を間違えた xlsx を 1 つ上げただけで、他のタブが使えなくなっていた。
-        page06 が docstring で「各 body は関数化し st.stop()→return」と書いているのと同じ方針。
-        """
-        # 修「第二次没法操作」：每次上传都重置旧 df 残留（uploaded 内容变了就以新为准）
-        for k in _ITEM_RESULT_KEYS:
+    if uploaded is None:
+        st.info(t("📤 記入済みテンプレをアップロードして「▶ 処理する」"))
+        return
+    data = uploaded.getvalue()
+    h = hashlib.sha256(data).hexdigest()
+    res = st.session_state.get("page15_result")
+    # run が True なのはボタンを押した回の rerun だけ → 押されたら毎回処理（jancode 403 後の再試行のため）
+    if run:
+        for k in _ITEM_KEYS:
             st.session_state.pop(k, None)
         try:
-            _df, _warns = _parse_nst_xlsx(_file)
-        except ValueError as e:
-            st.error(t(f"❌ 解析失败：{e}（确认 sheet 名是 `{NST_SHEET_NAME}`）"))
+            res = _process(data, choices, want_weight)
+        except Exception as e:  # noqa: BLE001 — 壊れた xlsx・PG 接続失敗でも他タブを描画する
+            st.error(t(f"❌ 処理に失敗: {type(e).__name__}: {e}"))
             return
-        except Exception as e:  # noqa: BLE001
-            st.error(t(f"❌ 解析失败：{type(e).__name__}: {e}"))
-            return
+        res["key"] = (h, want_weight)
+        st.session_state["page15_result"] = res
+    if not res:
+        return
+    if res["key"][0] != h:
+        st.warning(t("ファイルが変わりました。「▶ 処理する」を押してください（前回の結果は隠しています）"))
+        return
+    _render_result(res)
 
-        if _df.empty:
-            st.warning(t("⚠️ 解析后无有效行（A 列全空？检查上传文件）"))
-            return
 
-        with get_connection() as _conn:
-            _df = _augment_image_url(_conn, _df)
-        # 英文标题草稿（离线机械转写·可在表里改）→ JD「平台商品标题」/ BM「英文名称」
-        if _NAME_COL in _df.columns:
-            _df[_EN_TITLE_COL] = _df[_NAME_COL].map(
-                lambda v: to_english_title(str(v)) if pd.notna(v) else "")
-        else:
-            _df[_EN_TITLE_COL] = ""
-
-        st.session_state["page15_df"] = _df
-        st.session_state["page15_warns"] = _warns
-
-    if uploaded:
-        _ingest_upload(uploaded)
-
-    df: pd.DataFrame | None = st.session_state.get("page15_df")
-    warns: list[str] = st.session_state.get("page15_warns") or []
-
-    if df is not None and not df.empty:
-        c1, c2, c3 = st.columns(3)
-        c1.metric(t("解析行数"), len(df))
-        c2.metric(t("有效模板列"), sum(1 for c in df.columns if c in TPL.VALID_COLUMNS))
-        n_with_img = (df["_画像URL（参考·来自 image cache）"] != "").sum() if "_画像URL（参考·来自 image cache）" in df.columns else 0
-        c3.metric(t("画像已缓存"), int(n_with_img))
-
-        if warns:
-            with st.expander(t(f"⚠️ 解析警告 {len(warns)} 条"), expanded=False):
-                for w in warns:
-                    st.text(f"• {w}")
-
-        st.subheader(t("📋 预览（可直接在表里补缺/修改）"))
-
-        # 移到首列：型番、アイテム名、英文标题、JANコード（如果存在），其余按原序
-        priority = ["型番", "アイテム名", _EN_TITLE_COL, "JANコード"]
-        cols_in_priority = [c for c in priority if c in df.columns]
-        rest = [c for c in df.columns if c not in cols_in_priority]
-        df_show = df[cols_in_priority + rest].copy()
-
-        col_config = {
-            "_画像URL（参考·来自 image cache）": st.column_config.ImageColumn(
-                t("画像（参考）"), width="small"
-            ),
-            _EN_TITLE_COL: st.column_config.TextColumn(
-                t("🔤 英文标题（可改）"), width="medium",
-                help=t("离线转写草稿·可直接改·写入 JD平台商品标题 / BM英文名称"),
-            ),
-            "JANコード": st.column_config.TextColumn("JANコード", width="small"),
-        }
-
-        edited = st.data_editor(
-            df_show,
-            use_container_width=True,
-            height=480,
-            num_rows="dynamic",
-            disabled=["_画像URL（参考·来自 image cache）"],
-            column_config=col_config,
-            key="page15_editor",
-        )
-
-        st.divider()
-        st.subheader(t("📦 一键生成 NST + JD + BM"))
-
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            jd_customer_code = st.text_input(
-                t("JD 货主ID（可空·单货主不必填）"),
-                value="",
-                help=t("写入「商品信息」col1 货主ID；单货主留空即可（与新模板样本一致）"),
-            )
-        with col_b:
-            sales_channel = st.text_input(
-                t("JD *销售渠道编码"),
-                value=JBM.DEFAULT_JD_SALES_CHANNEL,
-            )
-        with col_c:
-            platform_code = st.text_input(
-                t("JD 平台商品编码"),
-                value=JBM.DEFAULT_JD_PLATFORM_CODE,
-            )
-
-        btn_gen = st.button(t("⬇️ 生成 ZIP（NST.csv + JD.xlsx + BM.xlsx）"), type="primary")
-        if btn_gen:
-            # 整理可见行（剔除整行空白），收集 nst_rows 同时构造 image_url_map
-            nst_field_cols = [c for c in edited.columns if c in TPL.VALID_COLUMNS]
-            nst_rows: list[dict] = []
-            ref_col = "_画像URL（参考·来自 image cache）"
-            image_url_map: dict[str, str] = {}
-            for _, r in edited.iterrows():
-                first_val = r.iloc[0] if len(r) else None
-                if pd.isna(first_val) or str(first_val).strip() == "":
-                    continue
-                row: dict = {TPL.ID_LABEL: ""}
-                for col in nst_field_cols:
-                    v = r.get(col)
-                    if pd.notna(v) and str(v).strip() != "":
-                        # 前後空白を落として渡す（川崎さん #42 · 2026-09-25）。
-                        # アイテム名の末尾に空白が残ったまま NST へ入っていた。
-                        # ここは NST CSV / JD xlsx / BM xlsx 三者の共通入口なので
-                        # 一箇所で全部の出力がきれいになる（全角空白も str.strip() が落とす）。
-                        row[col] = v.strip() if isinstance(v, str) else v
-                _en = r.get(_EN_TITLE_COL)        # 英文标题（编辑后）→ JD/BM
-                if pd.notna(_en) and str(_en).strip():
-                    row["英文标题"] = str(_en).strip()
-                nst_rows.append(row)
-                jan = str(row.get(JAN_COL_NAME, "")).strip()
-                if jan and ref_col in edited.columns:
-                    img = r.get(ref_col)
-                    if pd.notna(img) and str(img).strip():
-                        image_url_map[jan] = str(img).strip()
-
-            if not nst_rows:
-                st.error(t("❌ 无有效行可生成"))
-            else:
-                nst_csv = TPL.build_nst_master_csv(nst_rows, nst_field_cols)
-                jd_xlsx = JBM.build_jd_xlsx(
-                    nst_rows,
-                    image_url_map=image_url_map,
-                    # 空欄は空欄のまま出す（隋艶偉さん #28 / 川崎さん #31 · 2026-08-18）。
-                    # 既定値へフォールバックしていたため A 列（貨主ID）に必ず値が入り、
-                    # 単一貨主の JD 取込がエラーになっていた。UI も既定=空・注記も「空欄可」。
-                    jd_customer_code=jd_customer_code.strip(),
-                    sales_channel=sales_channel.strip() or JBM.DEFAULT_JD_SALES_CHANNEL,
-                    platform_code=platform_code.strip() or JBM.DEFAULT_JD_PLATFORM_CODE,
-                )
-                bm_xlsx = JBM.build_bm_xlsx(nst_rows, image_url_map=image_url_map)
-
-                buf = io.BytesIO()
-                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                    zf.writestr(TPL.dated_filename(), nst_csv)
-                    zf.writestr(JBM.dated_filename_jd(), jd_xlsx)
-                    zf.writestr(JBM.dated_filename_bm(), bm_xlsx)
-                buf.seek(0)
-                st.session_state["page15_zip_bytes"] = buf.getvalue()
-                st.session_state["page15_zip_rows"] = len(nst_rows)
-
-        zip_bytes = st.session_state.get("page15_zip_bytes")
-        if zip_bytes:
-            n = st.session_state.get("page15_zip_rows", 0)
-            zip_name = f"商品登録_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-            st.download_button(
-                t(f"⬇️ 下载 ZIP（{n} 件商品 · NST + JD + BM 三件套）"),
-                data=zip_bytes,
-                file_name=zip_name,
-                mime="application/zip",
-                type="primary",
-            )
-            st.success(t(
-                f"✅ ZIP 已生成 · 解压含 3 份文件：NST.csv 直传 NetSuite · "
-                f"JD.xlsx 直传 JD（{n} 行）· BM.xlsx 直传 BM（{n} 行）"
-            ))
-    elif uploaded is None:
-        st.info(t("📤 上传 NSTマスタ xlsx 开始（拖入或点击上方上传区）"))
+with tab_item:
+    _render_item_tab()
 
 
 # ───────────────────────── tab 📦 セット品登録 (原生) ─────────────────────────
@@ -378,7 +377,7 @@ with tab_bundle:
             "- **输出**：NST 父组合货品 CSV + 子组合货品 CSV（ZIP 打包）\n"
             "  - 父表：外部ID / 名称（`<JAN>_<qty>`）\n"
             "  - 子表：外部ID / 父记录 / 内部ID / UPC Code / 价格\n"
-            "- **JD/BM 组合品 xlsx**：本 tab 暂不出（需中英文品名），仍走「📜 旧 HTML 版」tab"
+            "- **斑马(BM) 组合品 xlsx**：本 tab 暂不出（需中英文品名），仍走「📜 旧 HTML 版」tab（JD 出力は廃止）"
         ))
 
     bundle_text = st.text_area(
@@ -527,10 +526,10 @@ with tab_bundle:
 # ───────────────────────── tab 📜 旧 HTML 版 ─────────────────────────
 
 with tab_legacy:
-    st.caption(t("现有商品登録ツール（HTML 版）· 输出 NetSuite/JD/BM CSV · 新品时使用原生版"))
+    st.caption(t("旧商品登録ツール（HTML 版）· 参考用 · JD 出力は廃止（2026-10-03）"))
     st.info(t(
-        "📌 这是旧版商品登録ツール iframe 嵌入。仅 JD/BM CSV 输出时使用；"
-        "NST CSV 推荐走「🆕 原生版 (MVP)」tab，可直接从数据库拉数据，不需要上传 NST マスタ Excel。"
+        "📌 旧版商品登録ツール iframe 嵌入（参考用）。JD 出力は廃止済み；"
+        "新品登録（NST CSV + 斑马 xlsx）は「🆕 商品登録 (原生)」tab を使ってください。"
     ))
 
     html_path = Path(__file__).resolve().parent.parent / "assets" / "商品登録ツール_0418.html"

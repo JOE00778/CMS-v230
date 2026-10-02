@@ -20,6 +20,7 @@ import streamlit as st
 from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t
 from shared.i18n_columns import localize_df
+from shared.nst_choices import load_suppliers
 
 st.set_page_config(page_title=t("発注書作成"), page_icon="📦", layout="wide")
 from shared.auth import require_password
@@ -92,29 +93,8 @@ def _parse_uploaded(file) -> pd.DataFrame | None:
 
 
 # 订货单 meta（dropdown）— SUPPLIERS 定义提前供文件名预选用
-def _load_suppliers() -> list[str]:
-    """仕入先ドロップダウン = NetSuite Vendor マスタ（`nst.vendor_master`）が唯一の源。
-
-    以前は 38 件をソースにベタ書きしていた（2026 年のある時点のスナップショット）。
-    NetSuite 側で改名・新規追加があってもコードを直さない限り反映されず、古い名前の
-    まま出した CSV が取込エラーになっていた（隋艶偉さん 2026-07-21 指摘）。
-    `nst.vendor_master` は vendor_daily ジョブが毎日 06:50 JST に全件 UPSERT する
-    ので、ここを見れば改名も追加も自動で追従する。表記は `vendor_code + 空白 +
-    company_name`＝NetSuite の表示名そのもの（旧ベタ書きと同一書式なので
-    `_guess_supplier()` の 4 桁プレフィックス照合はそのまま動く）。
-    company_name 空欄（経理用ダミー等 17 件）は CSV に出しても無意味なので除外。
-    """
-    rows = conn.execute(
-        "SELECT vendor_code, company_name FROM nst.vendor_master "
-        "WHERE company_name IS NOT NULL AND company_name <> '' "
-        "  AND vendor_code IS NOT NULL AND vendor_code <> '' "
-        "ORDER BY vendor_code"
-    ).fetchall()
-    return [f"{r['vendor_code']} {r['company_name']}" for r in rows]
-
-
 try:
-    SUPPLIERS = _load_suppliers()
+    SUPPLIERS = load_suppliers(conn)
 except Exception as _e_sup:  # noqa: BLE001
     SUPPLIERS = []
     st.error(t("仕入先マスタ取得失敗: ") + str(_e_sup))
