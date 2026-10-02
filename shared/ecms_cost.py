@@ -211,3 +211,27 @@ def months(conn) -> list[str]:
         "UNION SELECT DISTINCT year_month FROM logistics.ecms_invoice_header "
         "ORDER BY 1 DESC")
     return [r[0] for r in cur.fetchall() if r[0]]
+
+
+def unmatched(conn, year_month: str) -> list[dict]:
+    """店舗に寄せられなかった明細（週次チェック用 · Boss 2026-10-02「週 1 回照合する」）。
+
+    主因は NST 側で発票が生成できていないこと（在庫差異）。発票が立てば
+    recompute() で自動的に寄るので、ここに残っている間だけ人が見ればよい。
+    """
+    cur = conn.execute(
+        "SELECT d.order_no, d.tracking_no, d.ship_date, "
+        "       (d.ecms_freight + d.ecms_fuel + d.ecms_permit + d.ecms_ese_care "
+        "        + d.ecms_au_surcharge + d.ecms_other) AS amount, "
+        "       d.destination, d.gross_kg, "
+        "       EXISTS (SELECT 1 FROM coupang.order_sheet c "
+        "               WHERE c.order_id::text = regexp_replace(d.order_no, '-[0-9]+$', '')) AS in_coupang "
+        "FROM logistics.ecms_invoice_detail d "
+        "WHERE d.year_month = ? "
+        "  AND NOT EXISTS (SELECT 1 FROM nst.invoice_order io "
+        "                  JOIN nst.sales_invoice si ON si.invoice_id = io.invoice_id "
+        "                  WHERE io.order_no = regexp_replace(d.order_no, '-[0-9]+$', '') "
+        "                    AND si.shop IS NOT NULL AND btrim(si.shop) <> '') "
+        "ORDER BY d.ship_date, d.order_no", (year_month,))
+    cols = [c[0] for c in cur.description]
+    return [dict(zip(cols, tuple(r))) for r in cur.fetchall()]

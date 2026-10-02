@@ -775,6 +775,42 @@ with tab_ecms:
                 except Exception:
                     pass
                 st.error(t("❌ 重新配赋失败：") + f"{type(_e).__name__}: {_e}")
+
+        # --- 未突合リスト（Boss 2026-10-02「週 1 回照合する」）------------
+        # 店舗に寄らない主因は NST 側で発票が生成できていないこと（在庫差異）。
+        # 発票が立てば上の「🔄 重新配赋」で自動的に寄るので、ここを週次で見る。
+        try:
+            _um = _ec.unmatched(conn, _re_ym)
+        except Exception as _e:  # noqa: BLE001
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            _um = []
+            st.warning(t("未突合リストを取得できません：") + f"{type(_e).__name__}: {_e}")
+        if _um:
+            _um_amt = sum(float(r["amount"] or 0) for r in _um)
+            with st.expander(
+                    t("🔍 未归到店铺 {n} 件 / ¥{a:,.0f}（每周核对一次）").format(
+                        n=len(_um), a=_um_amt), expanded=False):
+                st.caption(t(
+                    "这些单子 NST 里查不到发票，所以归不到店铺。主因是库存有偏差导致 "
+                    "NST 生成不了发票。发票补上之后点上面的「🔄 重新配赋」就会自动归位。"
+                    "「Coupang」列=该订单号在 Coupang 后台存在（即订单本身没问题，只是缺发票）。"))
+                _umdf = pd.DataFrame([{
+                    t("订单号"): r["order_no"], t("运单号"): r["tracking_no"],
+                    t("发货日"): r["ship_date"], t("金额"): float(r["amount"] or 0),
+                    t("目的地"): r["destination"], t("实重kg"): r["gross_kg"],
+                    "Coupang": "✅" if r["in_coupang"] else "—",
+                } for r in _um])
+                st.dataframe(_umdf, use_container_width=True, hide_index=True,
+                             column_config={t("金额"): st.column_config.NumberColumn(
+                                 format="¥%,.0f")})
+                st.download_button(
+                    t("⬇️ 未归店铺清单 CSV"),
+                    _umdf.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"ecms_未归店铺_{_re_ym}.csv", mime="text/csv",
+                    key="ecms_um_dl")
         st.divider()
 
     _up = st.file_uploader(
