@@ -192,7 +192,11 @@ class _AutoFinishCursor:
         finish = (self._conn_raw.get_transaction_status() == _TXN_IDLE
                   and _PostgresAdapter._is_readonly_sql(sql))
         try:
-            self._cur.execute(sql, params or ())
+            # ⚠️ `params or ()` にしてはいけない。psycopg2 は vars が None 以外なら
+            # （空タプルでも）クエリ文字列の % を書式指定子として走査するため、
+            # `LIKE 'JD%'` のような素の % を含む SQL が必ず IndexError になる。
+            # None を渡したときだけ psycopg2 は書式化を完全に飛ばす。
+            self._cur.execute(sql, params if params else None)
         except Exception:
             if finish:
                 self._conn_raw.rollback()
@@ -375,13 +379,31 @@ class _PostgresAdapter:
         sql = cls._RE_NAMED_PARAM.sub(r"%(\1)s", sql)
         return sql.replace("?", "%s")
 
+    @staticmethod
+    def _cur_execute_guard(cur, sql, params):
+        """psycopg2 に渡す vars は「本当に値があるときだけ」。
+
+        空タプルを渡すと % の書式化が走り、素の % を含む SQL が壊れる。
+        ここを一箇所に閉じ込めておく（executemany 側は空列なら実行自体が走らない）。
+        """
+        cur.execute(sql, params if params else None)
+
     def execute(self, sql, params=None):
         # 実行**前**の状態で判定：既に事務中（＝直前に書き込みがある）なら触らない。
         finish = (self._raw.get_transaction_status() == _TXN_IDLE
                   and self._is_readonly_sql(sql))
         cur = self._raw.cursor()
         try:
-            cur.execute(self._adapt_sql(sql), params or ())
+            # ⚠️ `params or ()` にしてはいけない（2026-10-02 · 本番で実害あり）。
+            # psycopg2 は vars が None 以外なら空タプルでも % を書式指定子として
+            # 走査するので、`LIKE 'JD%'` を含む SQL が必ず
+            # `IndexError: tuple index out of range` になる。
+            # 実害: shared/purchase_engine.py:137 と
+            # pages/34_🏢_供货商管理.py:362 の在庫取得がこれで毎回失敗し、
+            # 例外は呼び出し側で握り潰されて **在庫・在途が全 SKU 0** のまま
+            # 発注量が計算されていた（＝現在庫を差し引かない過剰発注）。
+            # 元川の本番で _load_inventory が 0 行を返すことを実測確認。
+            self._cur_execute_guard(cur, self._adapt_sql(sql), params)
         except Exception:
             if finish:
                 self._raw.rollback()
