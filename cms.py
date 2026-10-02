@@ -16,7 +16,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.db import get_connection
-from shared.i18n import lang_selector, t
+from shared.i18n import get_lang, lang_selector, t
 from shared.kpi_history import get_delta, get_history, take_snapshot
 from shared.supabase_client import is_configured
 
@@ -78,7 +78,28 @@ else:
 
 # ============================================================
 # SQL helpers · 全部 try/except 兜底, 不挂 page
+#
+# ⚠️ ただし **失敗を黙って 0 にしない**（2026-10-01 の事故と同じ形）。
+#   在庫の対账 view が cms_reader の statement_timeout=30s に掛かったとき、
+#   shared/sku360.py が例外を握り潰して在庫 0 のまま描画を続け、エラーも出ず
+#   「库存风控が何も出ない」とだけ報告された。ここも構造は同じで、KPI の
+#   クエリが 1 本でも落ちると 毛利率 0.0% / SKU 0 / 在庫金額 ¥0 が
+#   **正常な画面として**並ぶ。さらに sku_total==0 は「NST 同期が未実行」という
+#   別の案内（:295 付近）を出すので、読み手は読み取り失敗ではなく同期漏れだと
+#   誤読し、不要な同期を走らせる方向へ誘導される。
+#   → 失敗は _KPI_ERRORS に積み、KPI の直前で必ず st.error に出す。
 # ============================================================
+_KPI_ERRORS: list[str] = []
+
+
+def _note_fail(sql: str, e: Exception) -> None:
+    """失敗を記録。どのクエリかは SQL の先頭で見分ける（同一内容は 1 回だけ）。"""
+    head = " ".join(str(sql).split())[:70]
+    msg = f"{type(e).__name__}: {e} ｜ {head}…"
+    if msg not in _KPI_ERRORS:
+        _KPI_ERRORS.append(msg)
+
+
 def _safe_scalar(sql: str, default=0):
     try:
         row = conn.execute(sql).fetchone()
@@ -92,7 +113,8 @@ def _safe_scalar(sql: str, default=0):
             except Exception:
                 return default
         return v if v is not None else default
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        _note_fail(sql, e)
         return default
 
 
@@ -100,8 +122,21 @@ def _safe_df(sql: str) -> pd.DataFrame:
     try:
         rs = conn.execute(sql).fetchall()
         return pd.DataFrame([dict(r) for r in rs])
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        _note_fail(sql, e)
         return pd.DataFrame()
+
+
+def _kpi_failed() -> bool:
+    """取得に失敗したクエリがあれば画面に出す。True = 下の数字は信用できない。"""
+    if not _KPI_ERRORS:
+        return False
+    st.error("⚠️ " + ("一部のデータを取得できませんでした。下の数字は実際の値ではありません"
+                      if get_lang() == "ja" else
+                      "部分数据读取失败，下面的数字不是真实值"))
+    for _m in _KPI_ERRORS:
+        st.caption("・" + _m)
+    return True
 
 
 # ============================================================
@@ -224,6 +259,10 @@ def _spark(field: str, n: int = 6):
 # PPVI P2 · 不对称分栏（主 KPI 占 2 列，3 个次 KPI 各 1 列）
 # 结构主义：打破完美等分，用栏宽传达主次信息层级
 # 主 KPI 选「毛利率」——经营核心指标
+# ⚠️ KPI を出す前に取得失敗を必ず見せる。0 が「本当に 0 件」なのか
+#    「読めなかった」のかは、ここを見ないと区別できない。
+_kpi_broken = _kpi_failed()
+
 k1, k2, k3, k4 = st.columns([2, 1, 1, 1])
 with k1:
     st.metric(t("毛利率"), f"{gp_rate * 100:.1f}%", delta=_margin_delta_str)
@@ -292,7 +331,9 @@ st.divider()
 # ============================================================
 # 当 v2 表为空 → 友好 empty state
 # ============================================================
-if int(sku_total) == 0:
+# ⚠️ 取得に失敗して 0 になっている場合、この案内は**誤り**（同期は関係ない）。
+#    失敗時に出すと「NST 同期を回せば直る」と誤解させるので出さない。
+if int(sku_total) == 0 and not _kpi_broken:
     st.info(
         f"📭 {t('商品主档暂无数据。请到')} **📥 数据获取** "
         f"{t('执行 NST 商品主档同步（nst.item_master_raw）。')}"
