@@ -30,13 +30,28 @@ st.caption(t(
 ))
 
 # 費用種：内部キー → 表示名 / 配色
+# JD（倉庫作業・国内配送）と ECMS（国際輸送）は性質が違うので配列を分ける。
+# 既存の集計・グラフ・平均単価は **JD の 3 種だけ**を母数にする（混ぜると
+# 「出荷件数 = Pick&Pack 件数」を分母にした平均単価が壊れる）。
 COST_TYPES = [
     ("pickpack", t("包装费用")),
     ("lastmile", t("国内运送费用")),
     ("packing", t("包材")),
 ]
+# ECMS 輸送費（Boss 2026-10-02）。賠償はマイナス（ECMS からの弁済）。
+ECMS_COST_TYPES = [
+    ("ecms_freight", t("ECMS 航空运费")),
+    ("ecms_fuel", t("ECMS 燃油附加费")),
+    ("ecms_compensation", t("ECMS 赔偿")),
+    ("ecms_permit", t("ECMS 许可费")),
+    ("ecms_ese_care", t("ECMS ESE care")),
+    ("ecms_au_surcharge", t("ECMS AU 附加费")),
+    ("ecms_other", t("ECMS 其他")),
+]
 CT_KEYS = [k for k, _ in COST_TYPES]
 CT_LABEL = dict(COST_TYPES)
+ECMS_KEYS = [k for k, _ in ECMS_COST_TYPES]
+ECMS_LABEL = dict(ECMS_COST_TYPES)
 
 # 梱包材编码 → 名称（配賦表「算式保存用」より）
 MATERIAL_NAMES = {
@@ -155,6 +170,30 @@ for col, (key, label) in zip((k2, k3, k4), COST_TYPES):
     pct = (amt / total_cur * 100) if total_cur else 0
     col.metric(label, f"¥{amt:,.0f}", delta=f"{pct:.1f}%", delta_color="off")
 k5.metric(t("出货件数 (Pick&Pack)"), f"{parcels:,}")
+
+# --- ECMS 輸送費（JD とは別立て）----------------------------------
+# 上の KPI は JD の 3 種だけ。ECMS は国際輸送で件数の意味も単価も違うので
+# 合算せず、同じ月の値をこの行に並べる。
+# ⚠️ dept 絞り込み（輸出/EC）は **かけない**。dept は JD 倉庫側の部署分類で、
+#    国際輸送の ECMS には意味がない。実際 shop_dept_map に Coupang 店舗が無いため
+#    dept='不明' になり、既定の「輸出」表示では丸ごと消えてしまう。
+#    月だけ合わせて df から直接引く。
+_ecms_cur = df[(df["year_month"] == sel_month) & (df["cost_type"].isin(ECMS_KEYS))]
+if not _ecms_cur.empty:
+    _e_total = float(_ecms_cur["amount"].sum())
+    _e_by = _ecms_cur.groupby("cost_type")["amount"].sum().to_dict()
+    _e_rows = int(_ecms_cur[_ecms_cur["cost_type"] == "ecms_freight"]["qty"].sum())
+    st.markdown("###### ✈️ " + t("ECMS 輸送費（国際輸送・上の合计には含みません）"))
+    _ec_cols = st.columns(5)
+    _ec_cols[0].metric(t("ECMS 合计 (¥)"), f"¥{_e_total:,.0f}")
+    for _col, _k in zip(_ec_cols[1:4], ("ecms_freight", "ecms_fuel", "ecms_compensation")):
+        _amt = float(_e_by.get(_k, 0))
+        _col.metric(ECMS_LABEL[_k], f"¥{_amt:,.0f}")
+    _ec_cols[4].metric(t("ECMS 出货件数"), f"{_e_rows:,}")
+    _e_unalloc = float(_ecms_cur[_ecms_cur["shop"].str.startswith("(")]["amount"].sum())
+    if _e_unalloc:
+        st.caption("⚠️ " + t("其中未归到店铺 ¥{v:,.0f}（订单号在 NST 查不到 / 请求书无明细）")
+                   .format(v=_e_unalloc))
 
 st.divider()
 
@@ -335,12 +374,16 @@ pk = _df(
     {"ym": sel_month},
 )
 with st.expander(t("🧊 店铺别 包材使用（{ym}）").format(ym=sel_month), expanded=False):
-    if sel_dept_label == t("輸出"):
-        pk = pk[pk["dept"] == "輸出"]
-    elif sel_dept_label == t("EC"):
-        pk = pk[pk["dept"] == "EC"]
-    else:
-        pk = pk[pk["dept"] != "不明"]
+    # ⚠️ 該当月に packing が 1 行も無いと pk は **列を持たない空 DataFrame** になり、
+    #    pk["dept"] が KeyError でページごと落ちる。先に空判定する。
+    #    （2026-09 は JD 請求書が未取込で ECMS だけがある月。そこで実際に踏んだ）
+    if not pk.empty:
+        if sel_dept_label == t("輸出"):
+            pk = pk[pk["dept"] == "輸出"]
+        elif sel_dept_label == t("EC"):
+            pk = pk[pk["dept"] == "EC"]
+        else:
+            pk = pk[pk["dept"] != "不明"]
     if pk.empty:
         st.info(t("当月无包材数据。"))
     else:

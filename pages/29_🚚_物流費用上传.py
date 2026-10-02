@@ -277,10 +277,11 @@ def detect_kind(data: bytes, name: str):
     return ("bm", None) if is_bm else ("unknown", None)
 
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab_ecms = st.tabs([
     t("📤 批量上传（请求书 + BM）"),
     t("店铺→部署 分类"),
     t("🇰🇷 Coupang 费用"),
+    t("✈️ ECMS 輸送費"),
 ])
 
 # ============================================================
@@ -725,3 +726,124 @@ with tab3:
             t("其他请求"): _cdf["other_amount"].map(_y),
             t("合计"): _cdf["total"].map(_y),
         }), hide_index=True, use_container_width=True)
+
+
+# ============================================================
+# tab_ecms · ECMS 輸送費（Boss 2026-10-02）
+#   ECMS からは毎月 2 ファイル届く。**両方要る**:
+#     · YYYYMM LBF様輸送費.xlsx  … 1 行 = 1 発送（注文番号つき → 店舗に配賦できる）
+#     · ご請求書_YYYYMM38LBF.pdf … 請求書本体（費目合計・消費税・請求総額）
+#   2026-09 実測で xlsx 明細合計 = PDF「航空運賃」は一致するが、PDF にはさらに
+#   「賠償 -5,031」があり、xlsx だけだと ¥5,031 多く費用計上してしまう。
+#
+#   店舗への寄せ方は page05 の「京东费用」と同じ経路（order_no → NST → 店舗）。
+#   斑马は使わない（2026-08-29 に取得停止、同じ 1,071 行で 12.4% しか当たらない）。
+# ============================================================
+with tab_ecms:
+    from shared import ecms_invoice as _ei
+    from shared import ecms_cost as _ec
+
+    st.markdown(t("##### ECMS 輸送費（xlsx 明細 + PDF 請求書）"))
+    st.caption(t(
+        "两个文件一起上传。xlsx 的明细按订单号归到店铺；PDF 的请求总额用来对账，"
+        "其中「賠償」这类没有明细的费目单列不摊。请求对象月取自**文件名**"
+        "（Ship Date 会跨月，按它分会和请求总额对不上）。"))
+
+    _up = st.file_uploader(
+        t("📤 上传 ECMS 文件（xlsx + pdf 可一起选）"),
+        type=["xlsx", "pdf"], accept_multiple_files=True, key="ecms_up")
+
+    if _up:
+        _xlsx = [f for f in _up if f.name.lower().endswith(".xlsx")]
+        _pdf = [f for f in _up if f.name.lower().endswith(".pdf")]
+        _yms = {_ei.year_month_from_name(f.name) for f in _up} - {""}
+
+        if not _yms:
+            st.error(t("❌ 文件名里看不出年月（期待 202609 这样的 6 位数字）"))
+        elif len(_yms) > 1:
+            st.error(t("❌ 文件的年月不一致：") + " / ".join(sorted(_yms))
+                     + t("　请按月分开上传"))
+        else:
+            _ym = _yms.pop()
+            st.info(t("请求对象月：") + f"**{_ym}**")
+
+            _det_df, _det_warns, _hdr = None, [], None
+            if _xlsx:
+                try:
+                    _raw = pd.read_excel(_xlsx[0], sheet_name=_ei.XLSX_SHEET)
+                    _det_df, _det_warns = _ei.normalize_detail(_raw)
+                except Exception as _e:  # noqa: BLE001
+                    st.error(t("❌ xlsx 解析失败：") + f"{type(_e).__name__}: {_e}")
+            if _pdf:
+                try:
+                    _hdr = _ei.parse_invoice_pdf(_pdf[0].getvalue())
+                except Exception as _e:  # noqa: BLE001
+                    st.error(t("❌ PDF 解析失败：") + f"{type(_e).__name__}: {_e}")
+
+            # ---- プレビュー（取り込む前に必ず数字を見せる）----
+            if _det_df is not None:
+                _sum = float(_det_df[list(_ei.XLSX_AMOUNT_COLS.values())].sum().sum())
+                c1, c2, c3 = st.columns(3)
+                c1.metric(t("明细行数"), f"{len(_det_df):,}")
+                c2.metric(t("明细合计"), f"¥{_sum:,.0f}")
+                c3.metric(t("订单号 空"), f"{int(_det_df['order_no'].eq('').sum()):,}",
+                          delta_color="inverse")
+                for _w in _det_warns:
+                    st.warning("⚠️ " + _w)
+                with st.expander(t("明细预览（前 20 行）"), expanded=False):
+                    st.dataframe(_det_df.head(20), use_container_width=True, hide_index=True)
+
+            if _hdr is not None:
+                st.markdown(t("**請求書**") + f"　{_hdr.invoice_no}　{_hdr.issue_date}")
+                st.dataframe(pd.DataFrame([{
+                    t("项"): l.seq, t("费目"): l.item_name,
+                    t("金额"): f"¥{l.amount:,.0f}", t("税区分"): l.tax_class,
+                    "cost_type": l.cost_type,
+                } for l in _hdr.lines]), use_container_width=True, hide_index=True)
+                h1, h2, h3 = st.columns(3)
+                h1.metric(t("费目合计"), f"¥{_hdr.lines_total:,.0f}")
+                h2.metric(t("消费税"), f"¥{_hdr.tax:,.0f}")
+                h3.metric(t("请求总额"), f"¥{_hdr.total:,.0f}")
+                for _w in _hdr.warnings:
+                    st.warning("⚠️ " + _w)
+
+            # ---- 突合（取り込み前に出す。ここが合わなければ上げない）----
+            if _det_df is not None and _hdr is not None:
+                _sum = float(_det_df[list(_ei.XLSX_AMOUNT_COLS.values())].sum().sum())
+                _air = sum(l.amount for l in _hdr.lines if l.cost_type == "ecms_freight")
+                if abs(_sum - _air) < 1:
+                    st.success(t("✅ 对账一致：xlsx 明细合计 = 请求书「航空運賃」")
+                               + f"　¥{_sum:,.0f}")
+                else:
+                    st.error(t("❌ 对账不一致：xlsx 明细 ¥{a:,.0f} ≠ 请求书 航空運賃 ¥{b:,.0f}"
+                               "（差 ¥{d:,.0f}）").format(a=_sum, b=_air, d=_sum - _air))
+
+            if st.button(t("💾 取り込む（该月洗替）"), type="primary", key="ecms_save",
+                         disabled=(_det_df is None and _hdr is None)):
+                try:
+                    _n = 0
+                    if _det_df is not None:
+                        _n = _ec.replace_detail(conn, _ym, _det_df.to_dict("records"),
+                                                _xlsx[0].name)
+                    if _hdr is not None:
+                        _dt = float(_det_df[list(_ei.XLSX_AMOUNT_COLS.values())].sum().sum()) \
+                            if _det_df is not None else None
+                        _ec.replace_header(conn, _ym, _hdr, _dt, _pdf[0].name)
+                    _res = _ec.recompute(conn, _ym)
+                    st.success(t("✅ 取り込み完了　明细 {n:,} 行").format(n=_n))
+                    if _res:
+                        st.markdown(t("**配賦結果**"))
+                        st.dataframe(pd.DataFrame(
+                            [{t("店铺"): r[0], "cost_type": r[1],
+                              t("金额"): f"¥{float(r[2]):,.0f}", t("件数"): int(r[3])}
+                             for r in _res]), use_container_width=True, hide_index=True)
+                        _rc = _ec.reconcile(conn, _ym)
+                        st.caption(t(
+                            "配賦合計 ¥{a:,.0f} ／ 请求总额 ¥{t:,.0f}"
+                        ).format(a=_rc["allocated"], t=_rc["invoice_total"]))
+                except Exception as _e:  # noqa: BLE001
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    st.error(t("❌ 取り込み失败：") + f"{type(_e).__name__}: {_e}")

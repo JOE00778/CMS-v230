@@ -142,6 +142,7 @@ _LBL = {
     "ded_total":     ("扣减合计", "控除合計"),
     "shop_gp":       ("店铺毛利", "店舗粗利"),
     "jd":            ("京东费用", "JD 費用"),
+    "ecms":          ("ECMS运费", "ECMS 輸送費"),
     "perf":          ("运营绩效金额", "運営業績額"),
     "perf_rate":     ("绩效率", "業績率"),
     "refund":        ("退款金额(单列)", "返金額(別掲)"),
@@ -178,7 +179,7 @@ def _classify_platform(shop) -> str:
 _MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm",
           "cancel_est", "revenue_adj", "cm_est",
           "commission", "service", "transaction", "ams", "voucher", "ship3pl",
-          "buyer_ship", "rebate", "other_ded", "ded_total", "shop_gp", "jd",
+          "buyer_ship", "rebate", "other_ded", "ded_total", "shop_gp", "jd", "ecms",
           "perf", "refund", "offline"}
 _PCT = {"gross_margin", "cm_rate", "perf_rate"}
 _INT = {"qty", "n_shop", "n_sku"}
@@ -2571,12 +2572,12 @@ _OFFLINE_ITEM = "31109"   # NST 非在庫品目「入金調整分」（補償金
 
 with tab_perf:
     _ja_pf = get_lang() == "ja"
-    st.caption(("運営業績額 = 粗利 − 控除合計 − JD 費用 − 広告費 · "
+    st.caption(("運営業績額 = 粗利 − 控除合計 − JD 費用 − ECMS 輸送費 − 広告費 · "
                 "控除は statement と同じ費目で明細表示（買い手支払運費・Shopee 運費回扣は控除を減らす側）· "
                 "返金額と線下調整（NST「入金調整分」）は引かずに別掲 · "
                 "線下調整は売上/粗利からも外してある")
                if _ja_pf else
-               "运营绩效金额 = 粗利 − 扣减合计 − 京东费用 − 广告费 · "
+               "运营绩效金额 = 粗利 − 扣减合计 − 京东费用 − ECMS运费 − 广告费 · "
                "扣减按 statement 同名费目逐项列出（买家支付运费、Shopee 运费回扣是减少扣减的项）· "
                "退款金额与线下调整（NST「入金調整分」）不扣、单列对照 · "
                "线下调整已从销售额/粗利中剔出")
@@ -2621,10 +2622,35 @@ with tab_perf:
         _jd_raw = pd.DataFrame(columns=["shop", "jd"])
     _jd_raw["jd"] = pd.to_numeric(_jd_raw["jd"], errors="coerce").fillna(0.0)
 
+    # --- ECMS 輸送費（請求月 = 対象月 · 注文番号 → NST 店舗 · 税抜）---
+    #     ECMS の請求明細は注文番号を直接持っているので、JD のような
+    #     「包裹番号 → 注文番号」の中間マッピングは要らない。
+    #     logistics.cost_monthly ではなく明細から引くのは JD と同じ理由
+    #     （店舗名の揺れを避け、NST の店舗帰属に揃えるため）。
+    #     航空運賃は課税対象外なので、この金額はそのまま税抜として JD と足せる。
+    #     ⚠️ 請求書にしか無い費目（賠償など）は注文に紐づかないのでここには入らない。
+    #        月次の全体像は page28「物流費用分析」で見ること。
+    _ecms_raw, _ecms_err = _query(
+        "SELECT trim(io.shop) AS shop, "
+        "       sum(d.ecms_freight + d.ecms_fuel + d.ecms_permit + d.ecms_ese_care "
+        "           + d.ecms_au_surcharge + d.ecms_other) AS ecms "
+        "FROM logistics.ecms_invoice_detail d "
+        "JOIN LATERAL (SELECT si.shop FROM nst.invoice_order io "
+        "  JOIN nst.sales_invoice si ON si.invoice_id = io.invoice_id "
+        "  WHERE io.order_no = d.order_no LIMIT 1) io ON TRUE "
+        "WHERE d.year_month = ? GROUP BY 1", (ym,))
+    if _ecms_raw is None or _ecms_raw.empty:
+        if _ecms_err:
+            st.warning(("ECMS 輸送費を取得できません: " if _ja_pf else "无法取得 ECMS 运费: ")
+                       + _ecms_err)
+        _ecms_raw = pd.DataFrame(columns=["shop", "ecms"])
+    _ecms_raw["ecms"] = pd.to_numeric(_ecms_raw["ecms"], errors="coerce").fillna(0.0)
+
     _pf_shop = (_pf_fee.merge(_jd_raw, on="shop", how="outer")
+                .merge(_ecms_raw, on="shop", how="outer")
                 .merge(_ad_df, on="shop", how="outer"))
     _PF_NUM = ("commission", "service", "transaction", "ams", "voucher", "ship3pl",
-               "buyer_ship", "rebate", "other_ded", "refund", "jd", "ad")
+               "buyer_ship", "rebate", "other_ded", "refund", "jd", "ecms", "ad")
     for _c in _PF_NUM:
         _pf_shop[_c] = pd.to_numeric(_pf_shop.get(_c), errors="coerce").fillna(0.0)
 
@@ -2661,7 +2687,8 @@ with tab_perf:
                           + m["voucher"] + m["ship3pl"] + m["other_ded"]
                           - m["buyer_ship"] - m["rebate"])
         m["shop_gp"] = m["gross_profit"] - m["ded_total"]
-        m["perf"] = m["shop_gp"] - m["jd"] - m["ad"]
+        # Boss 2026-10-02: ECMS 輸送費も業績から引く（韓国向けは ECMS で出している）
+        m["perf"] = m["shop_gp"] - m["jd"] - m["ecms"] - m["ad"]
         m["gross_margin"] = (m["gross_profit"] / m["revenue"].where(m["revenue"] != 0)).fillna(0) * 100
         m["perf_rate"] = (m["perf"] / m["revenue"].where(m["revenue"] != 0)).fillna(0) * 100
         return m.sort_values("perf", ascending=False)
@@ -2670,8 +2697,8 @@ with tab_perf:
 
     # KPI（対象店舗の合計 · 率は合算後）
     _tot = {c: float(_pt[c].sum()) for c in
-            ("revenue", "gross_profit", "ded_total", "shop_gp", "jd", "ad", "perf", "refund", "offline")}
-    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
+            ("revenue", "gross_profit", "ded_total", "shop_gp", "jd", "ecms", "ad", "perf", "refund", "offline")}
+    k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
     k1.metric(("売上(NST·調整除く)" if _ja_pf else "销售额(NST·剔调整)"), f"¥{_tot['revenue']:,.0f}")
     k2.metric(_col("gross_profit"), f"¥{_tot['gross_profit']:,.0f}",
               (f"{_tot['gross_profit'] / _tot['revenue'] * 100:.2f}%" if _tot["revenue"] else "—"),
@@ -2679,8 +2706,9 @@ with tab_perf:
     k3.metric(_col("ded_total"), f"¥{_tot['ded_total']:,.0f}")
     k4.metric(_col("shop_gp"), f"¥{_tot['shop_gp']:,.0f}")
     k5.metric(_col("jd"), f"¥{_tot['jd']:,.0f}")
-    k6.metric(_col("ad"), f"¥{_tot['ad']:,.0f}")
-    k7.metric(_col("perf"), f"¥{_tot['perf']:,.0f}",
+    k6.metric(_col("ecms"), f"¥{_tot['ecms']:,.0f}")
+    k7.metric(_col("ad"), f"¥{_tot['ad']:,.0f}")
+    k8.metric(_col("perf"), f"¥{_tot['perf']:,.0f}",
               (f"{_tot['perf'] / _tot['revenue'] * 100:.2f}%" if _tot["revenue"] else "—"),
               delta_color="off")
     st.caption((f"別掲: 返金額 ¥{_tot['refund']:,.0f} · 線下調整 ¥{_tot['offline']:,.0f}（いずれも業績から引いていない）"
@@ -2692,7 +2720,7 @@ with tab_perf:
         "qty", "revenue", "defined_cost", "gross_profit", "gross_margin",
         "commission", "service", "transaction", "ams", "voucher", "ship3pl",
         "buyer_ship", "rebate", "other_ded", "ded_total",
-        "shop_gp", "jd", "ad", "perf", "perf_rate",
+        "shop_gp", "jd", "ecms", "ad", "perf", "perf_rate",
         "refund", "offline")
     _pf_disp = _disp(_pt, _perf_cols)
     html_table(_pf_disp)
