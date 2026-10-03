@@ -25,7 +25,7 @@ DB_CASES = [
     ("DHC エクストラモイスチュアリップクリーム", "dhc", "リップ"),
     ("熊野油脂 ファーマアクト 薬用石けん 100g ×3個パック", "", "固形石けん"),
     ("THERMOS JDG-352C 真空断熱ケータイマグ", "thermos", "魔法瓶・真空容器"),
-    ("ROSYROSA マルチファンデブラシ", "rosyrosa", "化粧小物・ブラシ"),
+    ("ROSYROSA マルチファンデブラシ", "rosyrosa", "化粧ブラシ"),   # 化粧用ブラシ 9603.30（2026-10-03）
     ("SUNSTAR オーラツーミーマウスウォッシュ", "sunstar", "オーラルケア"),
     ("CANMAKE クリームチーク 25", "canmake", "フェイスパウダー・チーク"),
     ("mandom Bifesta セラムクレンジングオイル 160ml", "mandom", "洗顔・クレンジング"),
@@ -150,12 +150,30 @@ def test_extract_spec():
 
 
 def test_name_en_max_76_keeps_spec():
-    # 最長の品類句（65 字）+ 規格で 76 を超える → 品類句を単語境界で切り、規格は残す
-    c = classify_customs("ROSYROSA マルチファンデブラシ 12345.678ml", "", "")
-    assert c.category == "化粧小物・ブラシ"
-    assert len(c.name_en) <= MAX_NAME_EN
-    assert "cosmetics" not in c.name_en  # 実際に切れている
-    assert c.name_en.endswith(", 12345.678ml")
-    head = c.name_en[: -len(", 12345.678ml")]
-    assert "Powder puff / make-up brush / beauty tool, for applying cosmetics".startswith(head)
-    assert not head.endswith((" ", ",", "/"))
+    # 品類句 + 規格で 76 を超える → 品類句を単語境界で切り、規格は残す（classify_customs と同じ組み方）
+    from shared.hs_classify import _cut_words
+    base, tail = "Baby bottle nipple / pacifier, vulcanised rubber or silicone", ", 123456789.123ml"
+    out = _cut_words(base, MAX_NAME_EN - len(tail)) + tail
+    assert len(out) <= MAX_NAME_EN and out.endswith(tail)
+    assert "silicone" not in out                        # 実際に切れている
+    assert base.startswith(out[: -len(tail)])            # 単語境界で前から切っている
+    assert not out[: -len(tail)].endswith((" ", ",", "/"))   # 区切りで終わらない
+
+
+# 2026-10-03: 公的根拠で確定した帰類（輸出統計品目表 2026・関税率表解説・米韓欧英の裁定）
+@pytest.mark.parametrize("name,maker,want", [
+    ("小林製薬 薬用液体ハミガキ ゼローラ モーニングウォッシュ 450mL", "小林製薬", "330690"),  # ウォッシュ⊃液体ハミガキ
+    ("ROSYROSA 熊野筆 アイシャドウ用 / M", "ROSYROSA", "960330"),                        # 化粧用ブラシ（9616.20 はパフ）
+    ("ROSYROSA バリュースポンジ ハウス型 6P", "ROSYROSA", "961620"),                    # パフ・スポンジは 9616.20 のまま
+    ("キュキュット 食器用洗剤 本体", "花王", "340250"),                                   # 3402.20 は HS2022 で廃止
+])
+def test_official_basis_cases(name, maker, want):
+    assert classify_customs(name, maker, "4900000000000").hs == want
+
+
+def test_no_hs2017_only_codes_in_table():
+    """2026 年版の輸出統計品目表に無い 6 桁を出さない（340220 が残っていた）。"""
+    import csv
+    from pathlib import Path
+    rows = list(csv.DictReader(open(Path(__file__).resolve().parents[1] / "shared" / "data" / "cat_to_hs.csv", encoding="utf-8")))
+    assert not [r for r in rows if r["hs"] == "340220"]
