@@ -1,4 +1,7 @@
-"""JAN → 商品名/会社名/ジャンル(jancode.xyz)と 個装重量・個装サイズ(NETSEA → スーパーデリバリー)。
+"""JAN → 商品名/会社名/ジャンル(jancode.xyz)と 個装重量・個装サイズ(スーパーデリバリー)。
+
+2026-10-03 Boss: NETSEA は使わない(robots.txt が AI クローラ不可・規約 第7条2項三)。
+下の NETSEA の書式メモは parse_kosou が読める書式の記録として残す(取得はしない)。
 
 商品登録 v2 用。shared/jan_lookup.py(楽天/Yahoo・成分)とは別物:あちらは会社名も重量も取れない。
 
@@ -29,11 +32,10 @@ from dataclasses import dataclass
 from shared.jan_lookup import UA, decode
 
 TIMEOUT = 15
-MAX_SHOPS = 4          # 1 サイトあたり詳細を見る店の上限(1 件 ≒ 検索 1 + 詳細 ≤4 リクエスト)
+MAX_SHOPS = 4          # 詳細を見る店の上限(1 件 ≒ 検索 1 + 詳細 ≤4 リクエスト)
 INTERVAL = 0.8         # 同一サイトへの連続リクエスト間隔(秒)。規約の「過度な負荷」対策
 
 JANCODE_URL = "https://www.jancode.xyz/{jan}/"
-NETSEA_SEARCH = "https://www.netsea.jp/search/?keyword={jan}"
 SD_SEARCH = "https://www.superdelivery.com/p/do/psl/?word={jan}"
 SD_BASE = "https://www.superdelivery.com"
 
@@ -55,7 +57,7 @@ class WeightHit:
     height_cm: float | None
     width_cm: float | None
     depth_cm: float | None
-    source: str          # "netsea" | "superdelivery"
+    source: str          # "superdelivery"
     url: str
     note: str = ""       # 軸の対応が推定のとき等
 
@@ -177,11 +179,6 @@ def parse_kosou(page: str) -> tuple[float | None, dict, str]:
     return weight, dims, " ".join(notes)
 
 
-def parse_netsea_links(page: str) -> list[str]:
-    urls = re.findall(r'href="(https://www\.netsea\.jp/shop/\d+/[^"?/#]+)"', page)
-    return list(dict.fromkeys(urls))
-
-
 def parse_sd_links(page: str) -> list[str]:
     paths = re.findall(r'href="(/p/r/pd_p/\d+/)"', page)
     return [SD_BASE + p for p in dict.fromkeys(paths)]
@@ -222,31 +219,20 @@ def _agreeing(hits: list[WeightHit]) -> list[WeightHit]:
 
 
 def fetch_weight(jan: str, *, opener=None) -> WeightHit | None:
-    """NETSEA → スーパーデリバリー の個装重量を **店舗横断で照合**して 1 つ返す。
+    """スーパーデリバリーの個装重量を **店舗横断で照合**して 1 つ返す。
 
-    1 店だけを信じない。実例: 4971671192232(JD 実測 196g)は NETSEA 先頭店が「個装 19g」と
+    1 店だけを信じない。実例: 4971671192232(JD 実測 196g)は先頭店が「個装 19g」と
     桁を落として書いていて、先頭店採用だと 90% 外れた(2026-10-03)。
       · 重量を書いた店が 2 店以上あり中央値 ±30% で 2 店以上一致 → 一致した店のうち中央値に最も近い店
-      · NETSEA だけで一致が取れなければ SD も集めて照合し直す
       · 1 店しか無い → その値(note に「1店舗のみ」)
       · 2 店以上あるのに一致しない → 重量は空(寸法は残す · note に各店の値)。推測で選ばない
     None は「調べ切って個装の記載なし」だけ。何も取れずに通信失敗が 1 つでもあれば FetchError
     (「取れなかった」を「無かった」にしない · fetch_many が error として残す)。
     """
     jan = str(jan).strip()
-    hits: list[WeightHit] = []
     errors: list[str] = []
-    for search, parse, source in ((NETSEA_SEARCH, parse_netsea_links, "netsea"),
-                                  (SD_SEARCH, parse_sd_links, "superdelivery")):
-        try:
-            links = parse(_get(search.format(jan=urllib.parse.quote(jan)), opener))
-        except FetchError as e:
-            errors.append(str(e))
-            continue
-        hits += _kosou_hits(jan, links, source, opener, errors)
-        weighed = [h for h in hits if h.weight_g is not None]
-        if _agreeing(weighed):
-            break                     # NETSEA だけで一致が取れたら SD は叩かない
+    links = parse_sd_links(_get(SD_SEARCH.format(jan=urllib.parse.quote(jan)), opener))
+    hits = _kosou_hits(jan, links, "superdelivery", opener, errors)
     weighed = [h for h in hits if h.weight_g is not None]
     if len(weighed) >= 2:
         ok = _agreeing(weighed)
@@ -257,13 +243,13 @@ def fetch_weight(jan: str, *, opener=None) -> WeightHit | None:
             dropped = [h for h in weighed if h not in ok]
             if dropped:
                 best.note = (best.note + " " if best.note else "") + "外れ値を除外: " + \
-                    ", ".join(f"{h.weight_g:g}g({h.source})" for h in dropped)
+                    ", ".join(f"{h.weight_g:g}g" for h in dropped)
             return best
         base = next((h for h in hits if any((h.height_cm, h.width_cm, h.depth_cm))), hits[0])
         return WeightHit(jan, None, base.height_cm, base.width_cm, base.depth_cm,
                          base.source, base.url,
                          "店舗間で重量が一致せず空にした: " +
-                         ", ".join(f"{h.weight_g:g}g({h.source})" for h in weighed))
+                         ", ".join(f"{h.weight_g:g}g" for h in weighed))
     if weighed:
         h = weighed[0]
         h.note = (h.note + " " if h.note else "") + "1店舗のみ(未照合)"

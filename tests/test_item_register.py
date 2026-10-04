@@ -40,7 +40,7 @@ def _meta(jan):
 
 
 def _weight(jan):
-    return WeightHit(jan, 195.0, 13.5, 7.6, 4.5, "netsea", f"https://netsea/{jan}")
+    return WeightHit(jan, 195.0, 13.5, 7.6, 4.5, "superdelivery", f"https://superdelivery/{jan}")
 
 
 def _cus(name, maker, jan, *, prefix_map=None):
@@ -71,7 +71,7 @@ def test_enrich_fills_fixed_maker_name_hs_and_counts():
     # 人が書いた高さは上書きしない・空欄だけ埋める
     assert a["パッケージ高さ(cm)"] == "20" and a["パッケージ幅(cm)"] == "7.6"
     assert a["パッケージ重量(g)"] == "195"
-    assert extra[a["JANコード"]]["weight_source"] == "netsea"
+    assert extra[a["JANコード"]]["weight_source"] == "superdelivery"
     assert extra[a["JANコード"]]["weight_url"].endswith("4901234567894")
     assert extra[a["JANコード"]]["_hs"] == "330510"
     assert extra[b["JANコード"]]["_hs"] == ""
@@ -130,7 +130,7 @@ def test_frame_roundtrip_edits_and_outputs():
     assert [r["JANコード"] for r in out_nst] == ["4901234567894"]
     assert "パッケージ重量(g)" not in out_nst[0]
     assert out_bm[0]["_name_en"] == "Shampoo" and out_bm[0]["_hs"] == "330510"
-    assert src == {"4901234567894": "netsea"}
+    assert src == {"4901234567894": "superdelivery"}
     assert {i.level for i in issues} == {"warn", "error"}
 
     # NST CSV: 有データ列のみ・先頭は 型番（原本の登録手順どおり Internal ID 列は無い）
@@ -164,12 +164,12 @@ def test_write_register_log_ok_and_failure():
     nst = [{"JANコード": "4901234567894", "商品担当者": "043 徐越", "アイテム名": "x"}]
     bm = [JBM.nst_to_bm_row(nst[0])]
     c = _Conn()
-    n, err = R.write_register_log(c, nst, bm, {"4901234567894": "netsea"})
+    n, err = R.write_register_log(c, nst, bm, {"4901234567894": "superdelivery"})
     assert (n, err, c.committed) == (1, "", True)
     sql, params = c.calls[0]
     assert "nst.item_register_log" in sql
     jan, payload, bm_payload, src, who = params[0]
-    assert jan == "4901234567894" and src == "netsea" and who == "043 徐越"
+    assert jan == "4901234567894" and src == "superdelivery" and who == "043 徐越"
     assert json.loads(payload)["アイテム名"] == "x"
     assert json.loads(bm_payload)["SPU"] == "4901234567894"
 
@@ -245,3 +245,22 @@ def test_enrich_real_fetch_weight_network_failure_counts_as_error(monkeypatch):
                                fw=lambda j: jan_web.fetch_weight(j, opener=opener))
     assert st["weight_error"] == 1 and st["weight_miss"] == 0
     assert any("網調べ失敗" in i.message for i in issues)
+
+
+def test_manual_name_rescues_jancode_not_found_and_wins_over_jancode():
+    rows = [_row("4900000000003", **{"アイテム名（任意）": "手入力 シャンプー 300ml"}),   # jancode に名前なし
+            _row("4911111111113", **{"アイテム名（任意）": "手入力B"}),                   # jancode 取得失敗
+            _row("4901234567894", **{"アイテム名（任意）": "人が直した名前"}),            # jancode あり → 手入力優先
+            _row("4900000000003")]                                                        # 手入力なし → 従来どおり error
+    nst, extra, issues, st = _enrich(rows)
+    by = {r["JANコード"]: r for r in nst}
+    assert by["4900000000003"]["アイテム名"] == "手入力 シャンプー 300ml"
+    assert by["4911111111113"]["アイテム名"] == "手入力B"
+    assert by["4901234567894"]["アイテム名"] == "人が直した名前"
+    assert "アイテム名（任意）" not in by["4901234567894"]                 # NST 行には入れない
+    assert "アイテム名(jancode)" not in extra["4901234567894"]["auto"]
+    assert extra["4900000000003"]["_hs"] == "330510"                       # 手入力名で HS 判定
+    assert st["name_manual"] == 3
+    warn = {i.jan: i.message for i in issues if i.level == "warn" and "手入力" in i.message}
+    assert set(warn) == {"4900000000003", "4911111111113"}
+    assert [i.jan for i in issues if i.level == "error"] == ["4900000000003"]

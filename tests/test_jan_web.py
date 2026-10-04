@@ -104,134 +104,87 @@ def test_parse_kosou_unlabeled_axes_and_kg():
 
 
 def test_search_link_parsers_keep_order_and_dedupe():
-    assert jw.parse_netsea_links(fx("netsea_search_4971671192232.html")) == [
-        "https://www.netsea.jp/shop/84918/85706994",
-        "https://www.netsea.jp/shop/3018/N00422903",
-        "https://www.netsea.jp/shop/833120/s6s0345068"]
     assert jw.parse_sd_links(fx("sd_search_4971671192232.html")) == [
         "https://www.superdelivery.com/p/r/pd_p/11889369/",
         "https://www.superdelivery.com/p/r/pd_p/12285405/"]
 
 
-# ---------- fetch_weight 優先順位 ----------
+# ---------- fetch_weight（スーパーデリバリーのみ · 2026-10-03 NETSEA 廃止）----------
 
 JAN = "4971671192232"
+SEARCH = fx("sd_search_4971671192232.html")          # pd_p/11889369 → pd_p/12285405 の順
+W200 = fx("sd_detail_kosou_weight.html")              # 個装重量：200g · JAN 入り
 
 
-def test_fetch_weight_single_netsea_shop_is_corroborated_by_sd_then_kept(no_sleep):
-    """NETSEA で重量を書いた店が 1 店だけ → SD にも照合に行く。SD に無ければその 1 店を「1店舗のみ」で返す。"""
-    op = make_opener({"netsea.jp/search": fx("netsea_search_4971671192232.html"),
-                      "netsea.jp/shop/84918/": fx("netsea_detail_case_only.html").replace("4901525010283", JAN),
-                      "netsea.jp/shop/3018/": fx("netsea_detail_tate_cm.html")})
-    hit = jw.fetch_weight(JAN, opener=op)
-    assert (hit.source, hit.url, hit.weight_g) == ("netsea", "https://www.netsea.jp/shop/3018/N00422903", 195.0)
-    assert (hit.height_cm, hit.width_cm, hit.depth_cm) == (13.5, 7.6, 4.5)
-    assert any("superdelivery" in u for u in op.calls)
-    assert "1店舗のみ" in hit.note
+def _w(g):
+    return W200.replace("個装重量：200g", f"個装重量：{g}g")
+
+
+def test_fetch_weight_never_calls_netsea(no_sleep):
+    op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": W200, "pd_p/12285405": _w(198)})
+    jw.fetch_weight(JAN, opener=op)
+    assert op.calls and not any("netsea" in u for u in op.calls)
+    assert not hasattr(jw, "NETSEA_SEARCH") and not hasattr(jw, "parse_netsea_links")
     assert no_sleep and all(s >= 0.8 for s in no_sleep)
 
 
-# 実例(2026-10-03): 4971671192232 は NETSEA 先頭店が「個装 19g」と桁落ち、JD 実測 196g。
-_TYPO_19G = fx("netsea_detail_tate_cm.html").replace("重量195", "重量19")
-
-
-def test_fetch_weight_typo_shop_is_outvoted():
-    op = make_opener({"netsea.jp/search": fx("netsea_search_4971671192232.html"),
-                      "netsea.jp/shop/84918/": _TYPO_19G,
-                      "netsea.jp/shop/3018/": fx("netsea_detail_tate_cm.html"),
-                      "superdelivery.com/p/do/psl": fx("sd_search_4971671192232.html"),
-                      "pd_p/11889369": fx("sd_detail_kosou_weight.html")})
+def test_fetch_weight_two_agreeing_shops():
+    op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": W200, "pd_p/12285405": _w(198)})
     hit = jw.fetch_weight(JAN, opener=op)
-    assert hit.weight_g in (195.0, 200.0)
+    assert hit.source == "superdelivery" and hit.weight_g in (198.0, 200.0) and "1店舗のみ" not in hit.note
+
+
+# 実例(2026-10-03): 4971671192232 は先頭店が「個装 19g」と桁落ち、JD 実測 196g。
+def test_fetch_weight_typo_shop_is_outvoted():
+    links = SEARCH + '<a href="/p/r/pd_p/3/">x</a>'
+    op = make_opener({"superdelivery.com/p/do/psl": links, "pd_p/11889369": _w(19),
+                      "pd_p/12285405": W200, "pd_p/3/": _w(196)})
+    hit = jw.fetch_weight(JAN, opener=op)
+    assert hit.weight_g in (196.0, 200.0)
     assert "外れ値を除外" in hit.note and "19g" in hit.note
 
 
 def test_fetch_weight_two_disagreeing_shops_leave_weight_blank():
-    """2 店しか無く値が割れる → どちらも選ばず重量は空(寸法は残す)。推測で選ばない。"""
-    op = make_opener({"netsea.jp/search": fx("netsea_search_4971671192232.html"),
-                      "netsea.jp/shop/84918/": _TYPO_19G,
-                      "netsea.jp/shop/3018/": fx("netsea_detail_tate_cm.html")})
+    """2 店しか無く値が割れる → どちらも選ばず重量は空。推測で選ばない。"""
+    op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": _w(19), "pd_p/12285405": W200})
     hit = jw.fetch_weight(JAN, opener=op)
-    assert hit.weight_g is None and hit.height_cm == 13.5
-    assert "一致せず" in hit.note
+    assert hit.weight_g is None and "一致せず" in hit.note
 
 
-def test_fetch_weight_two_agreeing_netsea_shops_skip_sd():
-    op = make_opener({"netsea.jp/search": fx("netsea_search_4971671192232.html"),
-                      "netsea.jp/shop/84918/": fx("netsea_detail_tate_cm.html").replace("重量195", "重量197"),
-                      "netsea.jp/shop/3018/": fx("netsea_detail_tate_cm.html")})
+def test_fetch_weight_single_shop_is_marked_unverified():
+    op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": W200,
+                      "pd_p/12285405": "<html>別商品</html>"})
     hit = jw.fetch_weight(JAN, opener=op)
-    assert hit.weight_g in (195.0, 197.0)
-    assert not any("superdelivery" in u for u in op.calls)
-
-
-def test_fetch_weight_skips_page_without_the_jan():
-    op = make_opener({"netsea.jp/search": fx("netsea_search_4971671192232.html"),
-                      "netsea.jp/shop/84918/": fx("netsea_detail_wdh_mm.html"),     # 別 JAN の頁
-                      "netsea.jp/shop/3018/": fx("netsea_detail_tate_cm.html")})
-    assert jw.fetch_weight(JAN, opener=op).url.endswith("/3018/N00422903")
-
-
-def test_fetch_weight_falls_back_to_superdelivery():
-    op = make_opener({"netsea.jp/search": "<html>0件</html>",
-                      "superdelivery.com/p/do/psl": fx("sd_search_4971671192232.html"),
-                      "pd_p/11889369": fx("sd_detail_kosou_weight.html")})
-    hit = jw.fetch_weight(JAN, opener=op)
-    assert hit.source == "superdelivery" and hit.weight_g == 200.0 and hit.height_cm is None
-    assert hit.url == "https://www.superdelivery.com/p/r/pd_p/11889369/"
-
-
-def test_fetch_weight_netsea_size_only_kept_when_sd_has_no_weight():
-    jan = "4562344403054"
-    op = make_opener({"netsea.jp/search": '<a href="https://www.netsea.jp/shop/812005/1355999">x</a>',
-                      "netsea.jp/shop/812005/": fx("netsea_detail_body_weight.html"),
-                      "superdelivery.com/p/do/psl": '<a href="/p/r/pd_p/1/">x</a>',
-                      "pd_p/1/": fx("sd_detail_case_only.html").replace("4901525010283", jan)})
-    hit = jw.fetch_weight(jan, opener=op)
-    assert hit.source == "netsea" and hit.weight_g is None and hit.depth_cm == 32.0
-
-
-def test_fetch_weight_netsea_size_only_then_sd_weight_wins():
-    op = make_opener({"netsea.jp/search": '<a href="https://www.netsea.jp/shop/812005/1">x</a>',
-                      "netsea.jp/shop/812005/": fx("netsea_detail_body_weight.html").replace("4562344403054", JAN),
-                      "superdelivery.com/p/do/psl": fx("sd_search_4971671192232.html"),
-                      "pd_p/11889369": fx("sd_detail_kosou_weight.html")})
-    assert jw.fetch_weight(JAN, opener=op).source == "superdelivery"
+    assert (hit.weight_g, hit.url) == (200.0, "https://www.superdelivery.com/p/r/pd_p/11889369/")
+    assert "1店舗のみ" in hit.note
 
 
 def test_fetch_weight_none_when_only_case_values():
     jan = "4901525010283"
-    op = make_opener({"netsea.jp/search": '<a href="https://www.netsea.jp/shop/357136/4901525010283">x</a>',
-                      "netsea.jp/shop/357136/": fx("netsea_detail_case_only.html"),
-                      "superdelivery.com/p/do/psl": '<a href="/p/r/pd_p/10186509/">x</a>',
+    op = make_opener({"superdelivery.com/p/do/psl": '<a href="/p/r/pd_p/10186509/">x</a>',
                       "pd_p/10186509": fx("sd_detail_case_only.html")})
     assert jw.fetch_weight(jan, opener=op) is None
 
 
 def test_fetch_weight_http_errors_raise_not_none():
     """通信失敗は「個装の記載なし(None)」と区別して例外(fetch_many が error として残す)。"""
-    op = make_opener({"netsea.jp": 503, "superdelivery.com": urllib.error.URLError("down")})
     with pytest.raises(jw.FetchError, match="http=503"):
-        jw.fetch_weight(JAN, opener=op)
+        jw.fetch_weight(JAN, opener=make_opener({"superdelivery.com": 503}))
 
 
-def test_fetch_weight_detail_error_moves_to_next_shop_and_partial_error_raises():
-    op = make_opener({"netsea.jp/search": fx("netsea_search_4971671192232.html"),
-                      "netsea.jp/shop/84918/": 403,
-                      "netsea.jp/shop/3018/": fx("netsea_detail_tate_cm.html")})
-    assert jw.fetch_weight(JAN, opener=op).url.endswith("/3018/N00422903")
-    # NETSEA は記載なし・SD は 403 → 調べ切れていないので None ではなく例外
-    op = make_opener({"netsea.jp/search": "<html>0件</html>", "superdelivery.com": 403})
+def test_fetch_weight_detail_error_moves_to_next_shop_and_all_failed_raises():
+    op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": 403, "pd_p/12285405": W200})
+    assert jw.fetch_weight(JAN, opener=op).url.endswith("/12285405/")
+    op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/": 403})
     with pytest.raises(jw.FetchError):
         jw.fetch_weight(JAN, opener=op)
 
 
-def test_fetch_weight_caps_shops_per_site():
-    links = "".join(f'<a href="https://www.netsea.jp/shop/{i}/x{i}">' for i in range(10))
-    op = make_opener({"netsea.jp/search": links, "netsea.jp/shop/": f"<p>{JAN}</p>",
-                      "superdelivery.com": "<html></html>"})
+def test_fetch_weight_caps_shops():
+    links = "".join(f'<a href="/p/r/pd_p/{i}/">' for i in range(10))
+    op = make_opener({"superdelivery.com/p/do/psl": links, "pd_p/": f"<p>{JAN}</p>"})
     jw.fetch_weight(JAN, opener=op)
-    assert sum("/shop/" in u for u in op.calls) == jw.MAX_SHOPS
+    assert sum("pd_p/" in u for u in op.calls) == jw.MAX_SHOPS
 
 
 # ---------- fetch_many ----------

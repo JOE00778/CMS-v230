@@ -57,7 +57,8 @@ def test_template_structure():
     assert wb.sheetnames == ["商品登録", "記入例", "_選択肢"]
     assert wb["_選択肢"].sheet_state == "hidden"
     ws = wb["商品登録"]
-    assert [c.value for c in ws[1]] == F.INPUT_COLUMNS
+    assert [c.value for c in ws[1]] == F.TEMPLATE_COLUMNS
+    assert F.TEMPLATE_COLUMNS[1] == "アイテム名（任意）" and F.COL_NAME_MANUAL not in F.INPUT_COLUMNS
     assert ws.freeze_panes == "B2"
     dvs = ws.data_validations.dataValidation
     assert len(dvs) == 4
@@ -66,8 +67,8 @@ def test_template_structure():
         assert len(dv.formula1) < 255
         assert str(dv.sqref).endswith("1001")
     by_col = {str(dv.sqref)[0]: dv.formula1 for dv in dvs}
-    assert by_col["C"] == "'_選択肢'!$A$2:$A$602"      # 仕入先 601 件は範囲参照
-    assert by_col["F"].startswith("INDIRECT(VLOOKUP($E2,")
+    assert by_col["D"] == "'_選択肢'!$A$2:$A$602"      # 仕入先 601 件は範囲参照
+    assert by_col["G"].startswith("INDIRECT(VLOOKUP($F2,")
     # 定義名 MID_xx → 各大分類の中分類列
     ch = wb["_選択肢"]
     names = dict(wb.defined_names.items())
@@ -82,11 +83,14 @@ def test_template_structure():
 
 
 def _upload(rows: list[list], header=None) -> bytes:
+    """既定の見出しは INPUT_COLUMNS（= 任意列の無い旧テンプレの並び）。旧テンプレ互換もこれで検証される"""
     wb = openpyxl.load_workbook(io.BytesIO(F.build_template(CH)))
     ws = wb["商品登録"]
-    if header:
-        for j, h in enumerate(header, start=1):
-            ws.cell(1, j, h)
+    header = header or F.INPUT_COLUMNS
+    for j in range(1, ws.max_column + 1):
+        ws.cell(1, j, None)
+    for j, h in enumerate(header, start=1):
+        ws.cell(1, j, h)
     for i, r in enumerate(rows, start=2):
         for j, v in enumerate(r, start=1):
             ws.cell(i, j, v)
@@ -125,7 +129,8 @@ def test_read_upload_ok_and_errors():
     ]
     rows, issues = F.read_upload(_upload(rows_in), CH)
     assert [r["JANコード"] for r in rows] == [J1, J2, _cd("490000000006")]
-    assert set(rows[0]) == set(F.INPUT_COLUMNS)
+    assert set(rows[0]) == set(F.INPUT_COLUMNS) | {F.COL_NAME_MANUAL}
+    assert rows[0][F.COL_NAME_MANUAL] == ""                 # 旧テンプレ（任意列なし）でも読める
     assert all(isinstance(v, str) for r in rows for v in r.values())
     assert rows[0]["商品原価"] == "1250" and rows[0]["パッケージ高さ(cm)"] == "6"
     assert rows[1]["商品原価"] == "980.5"
@@ -168,3 +173,10 @@ def test_wrong_sheet():
 
 def test_filename():
     assert F.template_filename().endswith(".xlsx")
+
+
+def test_new_template_layout_reads_manual_name():
+    r = [J1, "  手入力の商品名 50ml ", *OK[1:]]
+    rows, issues = F.read_upload(_upload([r], header=F.TEMPLATE_COLUMNS), CH)
+    assert issues == [] and rows[0][F.COL_NAME_MANUAL] == "手入力の商品名 50ml"
+    assert rows[0]["商品原価"] == "1250" and rows[0]["仕入先1：仕入先"] == SUPPLIERS[1]

@@ -105,16 +105,24 @@ def test_jp_name_only_new_item():
     assert c.name_en == "Shampoo, hair washing preparation, 480ml"
 
 
-@pytest.mark.xfail(strict=True, reason="規則の既知誤判定: 「コーム」でヘア小物・機器(961511)に落ちる。"
-                   "実物はコーム一体型容器のスタイリング剤 9mL（クラシエ 2025-08 発表）。直すなら database 側と両方")
 def test_ichikami_keep_comb_is_styling():
+    # 実物はコーム一体型容器のスタイリング剤 9mL（クラシエ 2025-08 発表・jancode ジャンル=スタイリングワックス）
     c = classify_customs("いち髪 流し前髪キープコーム", "クラシエ", "4901417627490")
-    assert c.category == "スタイリング剤"
+    assert (c.category, c.hs) == ("スタイリング剤", "330590")
+    assert classify_customs("いち髪 ヘアコーム", "クラシエ", "x").hs == "961511"   # 本物のくしは 9615
 
 
-def test_ichikami_keep_comb_current_answer_is_hair_related():
-    c = classify_customs("いち髪 流し前髪キープコーム", "クラシエ", "4901417627490")
-    assert c.category == "ヘア小物・機器" and c.basis == "jp-name"
+def test_hair_spray_is_lacquer_other_styling_is_3305_90():
+    # 2026 輸出統計品目表: 3305.30=ヘアラッカー / 3305.90=その他
+    assert classify_customs("ケープ スーパーハード ヘアスプレー 180g", "花王", "x").hs == "330530"
+    assert classify_customs("ギャツビー ムービングラバー スパイキーエッジ", "マンダム", "x").hs == "330590"
+
+
+def test_clip_is_not_lip_and_ballpoint_is_9608():
+    # 「サラサクリップ」が「クリップ」の中の「リップ」で口紅(330410)に化けていた
+    assert classify_customs("ゼブラ サラサクリップ0.5 黒", "ゼブラ", "x").hs == "960810"
+    assert classify_customs("サラサーティ コットン100", "小林製薬", "x").category != "ボールペン"
+    assert classify_customs("DHC 薬用リップクリーム", "DHC", "x").hs == "330410"
 
 
 def test_thermos_lunch_bag_is_not_vacuum_bottle():

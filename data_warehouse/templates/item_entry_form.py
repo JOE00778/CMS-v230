@@ -39,6 +39,10 @@ COL_PKG_WEIGHT = "パッケージ重量(g)"
 
 INPUT_COLUMNS: list[str] = [COL_JAN, COL_COST, COL_SUPPLIER, COL_OWNER, COL_LARGE, COL_MIDDLE,
                             COL_CARTON, COL_LOT, *COL_PKG_DIMS, COL_PKG_WEIGHT]
+# 2026-10-03: jancode.xyz に商品名が無い JAN を登録できるよう任意列を足した。NST の列ではないので
+# INPUT_COLUMNS には入れない（無い旧テンプレもそのまま読める）。rows には常にキーとして入る（空可）
+COL_NAME_MANUAL = "アイテム名（任意）"
+TEMPLATE_COLUMNS: list[str] = [COL_JAN, COL_NAME_MANUAL, *INPUT_COLUMNS[1:]]
 
 SHEET_INPUT = "商品登録"
 SHEET_EXAMPLE = "記入例"
@@ -51,6 +55,8 @@ _REQUIRED = {name for mark, name in NST_MASTER_COLUMNS if mark == "必須"}
 # 見出しコメント（原本 row3 を短くしたもの）
 _HELP = {
     COL_JAN: "JANコード（8 桁 or 13 桁）。型番にも同じ値が入ります",
+    COL_NAME_MANUAL: "通常は空のまま（jancode.xyz の商品名が自動で入ります）。"
+                     "jancode に商品名が無い JAN だけ記入。記入した場合はこちらが優先。最大 60 字",
     COL_COST: "商品の原価（日本円・仕入価格）。「定義原価」ではありません",
     COL_SUPPLIER: "選択肢以外入力禁止。無い場合は「NetSuite【仕入先】マスタ登録依頼書」で登録依頼",
     COL_OWNER: "このアイテムの担当者を選択",
@@ -98,12 +104,12 @@ def _write_header(ws) -> None:
     from openpyxl.styles import Font, PatternFill
     req_fill = PatternFill("solid", fgColor="F4B084")
     opt_fill = PatternFill("solid", fgColor="D9D9D9")
-    for i, name in enumerate(INPUT_COLUMNS, start=1):
+    for i, name in enumerate(TEMPLATE_COLUMNS, start=1):
         c = ws.cell(row=1, column=i, value=name)
         c.font = Font(bold=True)
         c.fill = req_fill if name in _REQUIRED else opt_fill
         c.comment = Comment(("【必須】" if name in _REQUIRED else "") + _HELP[name], "CMS")
-        ws.column_dimensions[c.column_letter].width = 34 if name == COL_SUPPLIER else 16
+        ws.column_dimensions[c.column_letter].width = 34 if name in (COL_SUPPLIER, COL_NAME_MANUAL) else 16
 
 
 def build_template(choices) -> bytes:
@@ -144,7 +150,7 @@ def build_template(choices) -> bytes:
 
     _write_header(ws)
     ws.freeze_panes = "B2"
-    letter_of = {name: get_column_letter(i) for i, name in enumerate(INPUT_COLUMNS, start=1)}
+    letter_of = {name: get_column_letter(i) for i, name in enumerate(TEMPLATE_COLUMNS, start=1)}
     for r in range(FIRST_DATA_ROW, LAST_DATA_ROW + 1):   # JAN は文字列で入れてもらう（指数表記・桁落ち防止）
         ws[f"{letter_of[COL_JAN]}{r}"].number_format = "@"
     large_cell = f"${letter_of[COL_LARGE]}{FIRST_DATA_ROW}"
@@ -160,13 +166,13 @@ def build_template(choices) -> bytes:
     # 記入例
     _write_header(ex)
     lg0 = large[0] if large else ""
-    sample = {COL_JAN: "4901234567894", COL_COST: 1250,
+    sample = {COL_JAN: "4901234567894", COL_NAME_MANUAL: "", COL_COST: 1250,
               COL_SUPPLIER: choices.suppliers[0] if choices.suppliers else "",
               COL_OWNER: choices.owners[0] if choices.owners else "",
               COL_LARGE: lg0, COL_MIDDLE: (choices.middle_by_large.get(lg0) or ("",))[0],
               COL_CARTON: 48, COL_LOT: 12, COL_PKG_DIMS[0]: 6, COL_PKG_DIMS[1]: 23,
               COL_PKG_DIMS[2]: 17, COL_PKG_WEIGHT: 250}
-    for i, name in enumerate(INPUT_COLUMNS, start=1):
+    for i, name in enumerate(TEMPLATE_COLUMNS, start=1):
         ex.cell(row=2, column=i, value=sample[name])
     ex.cell(row=4, column=1, value="※ このシートは読み込まれません。「商品登録」シートに記入してください")
 
@@ -247,6 +253,8 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
 
     for i, raw in enumerate(all_rows[header_idx + 1:], start=header_idx + 2):
         rec = {c: _s(raw[pos[_norm(c)]]) if pos[_norm(c)] < len(raw) else "" for c in INPUT_COLUMNS}
+        p_name = pos.get(_norm(COL_NAME_MANUAL))
+        rec[COL_NAME_MANUAL] = _s(raw[p_name]) if p_name is not None and p_name < len(raw) else ""
         if not any(rec.values()):
             continue
         for c in (COL_JAN, COL_COST, COL_CARTON, COL_LOT, *COL_PKG_DIMS, COL_PKG_WEIGHT):

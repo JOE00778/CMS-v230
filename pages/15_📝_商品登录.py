@@ -209,7 +209,7 @@ def _render_result(res: dict) -> None:
         st.caption(
             f"jancode ok={s['jancode_ok']} not_found={s['jancode_not_found']} "
             f"error={s['jancode_error']} · メーカー NST={s['maker_nst']} "
-            f"jancode={s['maker_jancode']} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} · "
+            f"jancode={s['maker_jancode']} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} 手入力={s['name_manual']} · "
             f"HS ok={s['hs_ok']} 判定不可={s['hs_ng']} · 重量 取得={s['weight_hit']} "
             f"なし={s['weight_miss']} 失敗={s['weight_error']} 調べず={s['weight_skipped']}")
     for n in res["notes"]:
@@ -265,7 +265,7 @@ def _render_item_tab() -> None:
     with st.expander(t("📌 使い方"), expanded=False):
         st.markdown(t(
             "- **人が書くのは 12 列だけ**：JAN / 商品原価 / 仕入先（完全名称）/ 商品担当者 / 大分類・中分類 / "
-            "カートン入数 / 発注ロット / パッケージ 3 辺・重量\n"
+            "カートン入数 / 発注ロット / パッケージ 3 辺・重量（jancode に商品名が無い JAN だけ「アイテム名（任意）」も記入）\n"
             "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "
             "型番=JAN / 取扱中・NEW・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
             "- **網調べ**は空欄だけ埋める（手入力は上書きしない）。出典 URL を表で確認\n"
@@ -286,7 +286,7 @@ def _render_item_tab() -> None:
 
     uploaded = st.file_uploader(t("📤 記入済みテンプレ（xlsx）をアップロード"), type=["xlsx"],
                                 key="page15_upload")
-    want_weight = st.checkbox(t("☑ 重量・寸法をネットで調べる（NETSEA → スーパーデリバリー）"),
+    want_weight = st.checkbox(t("☑ 重量・寸法をネットで調べる（スーパーデリバリー）"),
                               value=False, key="page15_want_weight")
     if want_weight:
         st.caption(t("目安：約 1.5〜2 秒/件（パッケージ欄に空欄がある行だけ調べます）"))

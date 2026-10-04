@@ -11,7 +11,7 @@ enrich が埋めるもの（仕様書 SPEC_item_register_v2 §1・§4・§6）:
   購入価格・仕入先1：優先・優先場所・保管棚を使用・売上原価勘定・サポート提供・NE_連携対象・
     納税スケジュール・原価計算法 = NST 原本 BJ〜BS 列の数式の値（FIXED_DERIVED / _derived）
   _hs・_name_en = classify_customs（判定できなければ空のまま・推測で埋めない）
-  want_weight のときだけ パッケージ寸法・重量を NETSEA → スーパーデリバリーで補う。
+  want_weight のときだけ パッケージ寸法・重量をスーパーデリバリーで補う。
     **人が書いた値は上書きしない（空欄だけ埋める）**。埋めた列と source/url を記録。
 
 fetch_meta / fetch_weight / classify_customs は引数で受ける（テストでモックを差すため）。
@@ -22,7 +22,7 @@ import json
 import re
 
 from data_warehouse.templates.item_entry_form import (
-    COL_JAN, COL_LARGE, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, INPUT_COLUMNS, Issue,
+    COL_JAN, COL_LARGE, COL_NAME_MANUAL, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, INPUT_COLUMNS, Issue,
 )
 from shared.jan_web import INTERVAL, fetch_many
 from shared.nst_choices import FIXED, resolve_maker
@@ -105,7 +105,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
     total = len(jans) * (2 if want_weight else 1)
     stats = {k: 0 for k in (
         "ok", "ng", "warn", "jancode_ok", "jancode_not_found", "jancode_error",
-        "name_cut", "maker_nst", "maker_jancode", "maker_none", "hs_ok", "hs_ng",
+        "name_cut", "name_manual", "maker_nst", "maker_jancode", "maker_none", "hs_ok", "hs_ng",
         "weight_hit", "weight_miss", "weight_error", "weight_skipped")}
 
     def _prog(offset, label):
@@ -133,34 +133,42 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
         errs: list[str] = []
         warns: list[str] = []
         meta = metas.get(jan)
+        manual = (r.get(COL_NAME_MANUAL) or "").strip()
         if isinstance(meta, dict) or meta is None:          # fetch_many が握った例外
             stats["jancode_error"] += 1
-            errs.append(f"jancode.xyz 取得失敗（再処理してください）: {(meta or {}).get('error', '')}")
+            jc_err = f"jancode.xyz 取得失敗（再処理してください）: {(meta or {}).get('error', '')}"
         elif meta.status == "error":
             stats["jancode_error"] += 1
-            errs.append(f"jancode.xyz 取得失敗（再処理してください）: {meta.error}")
+            jc_err = f"jancode.xyz 取得失敗（再処理してください）: {meta.error}"
         elif meta.status != "ok" or not (meta.name or "").strip():
             stats["jancode_not_found"] += 1
-            errs.append("jancode.xyz に商品名がありません（NST はアイテム名必須）")
+            jc_err = "jancode.xyz に商品名がありません（テンプレの「アイテム名（任意）」に記入してください）"
         else:
             stats["jancode_ok"] += 1
-        if errs:
+            jc_err = ""
+        jc_ok = not jc_err
+        if jc_err and not manual:
             stats["ng"] += 1
-            issues.extend(Issue(0, jan, "error", m) for m in errs)
+            issues.append(Issue(0, jan, "error", jc_err))
             continue
+        if jc_err:
+            # 手入力の名前があれば登録できる。メーカー名は NST 同プレフィックスだけで決める
+            warns.append(jc_err.split("（")[0] + " → 手入力のアイテム名で登録")
 
-        name = meta.name.strip()
+        name = manual or meta.name.strip()
+        if manual:
+            stats["name_manual"] += 1
         if len(name) > NAME_MAX:
             stats["name_cut"] += 1
             warns.append(f"アイテム名が {len(name)} 字 → {NAME_MAX} 字で切りました")
             name = name[:NAME_MAX]
-        maker, maker_src = resolve_maker(jan, meta.maker, prefix_makers)
+        maker, maker_src = resolve_maker(jan, meta.maker if jc_ok else "", prefix_makers)
         stats[{"nst-prefix": "maker_nst", "jancode": "maker_jancode"}.get(maker_src, "maker_none")] += 1
         if maker_src == "none":
             warns.append("メーカー名が決まりません（NST 同プレフィックス・jancode 会社名とも無し）")
         elif maker_src == "jancode" and maker not in nst_makers:
             warns.append(f"メーカー名「{maker}」は jancode 会社名で NST 既存メーカーに無い表記です（確認してください）")
-        auto = ["アイテム名(jancode)"] + ([f"メーカー名({maker_src})"] if maker else [])
+        auto = ([] if manual else ["アイテム名(jancode)"]) + ([f"メーカー名({maker_src})"] if maker else [])
 
         row = {COL_ITEM_CODE: jan, COL_NAME: name, **{c: r.get(c, "") for c in INPUT_COLUMNS},
                COL_MAKER: maker, **FIXED,
@@ -176,7 +184,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
                 warns.append(f"重量・寸法の網調べ失敗: {hit.get('error', '')}")
             elif hit is None:
                 stats["weight_miss"] += 1
-                warns.append("重量・寸法: NETSEA・スーパーデリバリーとも個装の記載なし")
+                warns.append("重量・寸法: スーパーデリバリーに個装の記載なし")
             else:
                 filled = [c for c, a in _WEIGHT_FIELDS.items()
                           if not row.get(c) and getattr(hit, a) is not None]
