@@ -122,6 +122,7 @@ def test_clip_is_not_lip_and_ballpoint_is_9608():
     # 「サラサクリップ」が「クリップ」の中の「リップ」で口紅(330410)に化けていた
     assert classify_customs("ゼブラ サラサクリップ0.5 黒", "ゼブラ", "x").hs == "960810"
     assert classify_customs("サラサーティ コットン100", "小林製薬", "x").category != "ボールペン"
+    assert classify_customs("KAO リーゼ サラサラ前髪復活パウダー", "花王", "x").category != "ボールペン"
     assert classify_customs("DHC 薬用リップクリーム", "DHC", "x").hs == "330410"
 
 
