@@ -74,6 +74,7 @@ FRAME_COLUMNS: dict[str, str] = {
 EDITABLE = ["アイテム名", "メーカー名", "通関英文名", "HS", *COL_PKG_DIMS, COL_PKG_WEIGHT]
 COL_AUTO = "🤖 自動入力"
 COL_URL = "網調べ URL"
+COL_HS_CHECK = "HS 判定"
 
 
 def _fmt(v) -> str:
@@ -227,6 +228,42 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
     return nst_rows, bm_extra, issues, stats
 
 
+def cross_check_hs(nst_rows: list[dict], bm_extra: dict[str, dict], stats: dict,
+                   ai_judge) -> list[Issue]:
+    """規則の HS を AI（shared.hs_ai.judge）で突合。bm_extra を更新し、警告 Issue を返す。
+
+    一致 → そのまま（HS 判定=一致）。不一致・規則判定なし → **AI の値を入れて**警告
+    （実測: 不一致 35 件で AI 正解 23・規則正解 2 · hs_ai の docstring）。AI 失敗 → 規則の値のまま警告。
+    """
+    from shared.hs_classify import MAX_NAME_EN, _cut_words, extract_spec
+
+    for k in ("ai_agree", "ai_changed", "ai_error"):
+        stats.setdefault(k, 0)
+    res = ai_judge([(r[COL_JAN], r[COL_NAME], r.get(COL_MAKER, "")) for r in nst_rows])
+    issues: list[Issue] = []
+    for r in nst_rows:
+        jan, ex = r[COL_JAN], bm_extra[r[COL_JAN]]
+        rule, got = ex.get(COL_HS, ""), res.get(jan)
+        if not hasattr(got, "hs"):
+            stats["ai_error"] += 1
+            ex["hs_check"] = "AI 失敗"
+            issues.append(Issue(0, jan, "warn", f"HS: AI 判定に失敗（{got}）· 規則の値のまま（確認してください）"))
+            continue
+        if got.hs == rule:
+            stats["ai_agree"] += 1
+            ex["hs_check"] = "一致"
+            continue
+        stats["ai_changed"] += 1
+        spec = extract_spec(r[COL_NAME])
+        ex.update({COL_HS: got.hs, "hs_rule": rule, "hs_basis": "ai",
+                   "hs_check": f"AI（規則={rule or 'なし'}）",
+                   COL_NAME_EN: _cut_words(f"{got.en}, {spec}" if spec else got.en, MAX_NAME_EN)})
+        issues.append(Issue(0, jan, "warn",
+                            f"HS: 規則={rule or '判定なし'} / AI={got.hs}（{got.why}）→ AI の値を入れました。"
+                            "HS・通関英文名を確認してください"))
+    return issues
+
+
 def to_frame(nst_rows: list[dict], bm_extra: dict[str, dict]) -> list[dict]:
     """data_editor 用のレコード（表示名キー）。自動入力の列と網調べ URL を添える。"""
     out = []
@@ -235,6 +272,7 @@ def to_frame(nst_rows: list[dict], bm_extra: dict[str, dict]) -> list[dict]:
         rec = {disp: str({**r, **ex}.get(key, "") or "") for disp, key in FRAME_COLUMNS.items()}
         rec[COL_AUTO] = " · ".join(ex.get("auto", []))
         rec[COL_URL] = ex.get("weight_url", "")
+        rec[COL_HS_CHECK] = ex.get("hs_check", "")
         out.append(rec)
     return out
 

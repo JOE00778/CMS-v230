@@ -31,7 +31,7 @@ import streamlit.components.v1 as components
 from data_warehouse.templates import item_entry_form as FORM
 from data_warehouse.templates import nst_item_master as TPL
 from data_warehouse.templates import jd_bm_item_master as JBM
-from shared import hs_classify, jan_web
+from shared import hs_ai, hs_classify, jan_web
 from shared import item_register as REG
 from shared import nst_choices as NC
 from shared.auth import require_password
@@ -147,6 +147,11 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
         bar.empty()
         issues += more
         ng += stats["ng"]
+        if nst_rows and hs_ai.is_configured():
+            with st.spinner(t("HS を AI でも判定中…")):
+                issues += REG.cross_check_hs(nst_rows, extra, stats, hs_ai.judge)
+        elif nst_rows:
+            notes.append(t("GEMINI_API_KEY が無いため HS の AI 突合はしていません（規則の判定のみ）"))
     ok_jans = {r[JAN_COL_NAME] for r in nst_rows}
     warn = len({i.jan for i in issues if i.level == "warn"} & ok_jans)
     return {"nst": nst_rows, "extra": extra, "issues": issues, "stats": stats,
@@ -210,7 +215,8 @@ def _render_result(res: dict) -> None:
             f"jancode ok={s['jancode_ok']} not_found={s['jancode_not_found']} "
             f"error={s['jancode_error']} · メーカー NST={s['maker_nst']} "
             f"jancode={s['maker_jancode']} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} 手入力={s['name_manual']} · "
-            f"HS ok={s['hs_ok']} 判定不可={s['hs_ng']} · 重量 取得={s['weight_hit']} "
+            f"HS ok={s['hs_ok']} 判定不可={s['hs_ng']} AI一致={s.get('ai_agree', '-')} "
+            f"AI採用={s.get('ai_changed', '-')} AI失敗={s.get('ai_error', '-')} · 重量 取得={s['weight_hit']} "
             f"なし={s['weight_miss']} 失敗={s['weight_error']} 調べず={s['weight_skipped']}")
     for n in res["notes"]:
         st.warning(n)
