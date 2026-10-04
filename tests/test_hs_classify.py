@@ -186,3 +186,15 @@ def test_no_hs2017_only_codes_in_table():
     from pathlib import Path
     rows = list(csv.DictReader(open(Path(__file__).resolve().parents[1] / "shared" / "data" / "cat_to_hs.csv", encoding="utf-8")))
     assert not [r for r in rows if r["hs"] == "340220"]
+
+
+def test_styling_words_in_non_hair_products():
+    # 2026-10-04 独立復核で判明: 「スタイリング」「ホールド」「ワックス」「フリクション」の誤爆
+    assert classify_customs("CANMAKE スタイリングデュアルアイブロウ[02]", "", "x").hs == "330420"
+    assert classify_customs("KAO ビオレ ＵＶ アクアリッチ ウォータリーホールドクリーム", "", "x").hs == "330499"
+    assert classify_customs("KAO アクアリッチ エアリーホールドクリーム", "", "x").category != "スタイリング剤"
+    assert classify_customs("タイヤブラックワックス", "", "x").category != "スタイリング剤"
+    assert classify_customs("TAMIYA ローフリクション小径ローハイトタイヤ", "", "x").category != "ボールペン"
+    assert classify_customs("パイロット フリクションボール ノック 0.5", "", "x").hs == "960810"
+    assert classify_customs("GATSBY ムービングラバー スパイキーエッジ 80g", "", "x").hs == "330590"
+
