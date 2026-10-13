@@ -289,6 +289,27 @@ def to_frame(nst_rows: list[dict], bm_extra: dict[str, dict]) -> list[dict]:
     return out
 
 
+def manual_input_needs(records: list[dict]) -> list[dict]:
+    """確認表の現在値から JAN のない商品の不足列だけ表示。出力条件は変えない。"""
+    out = []
+    for rec in records:
+        if str(rec.get(COL_JAN) or "").strip():
+            continue
+        missing = [c for c in (COL_ITEM_CODE, COL_NAME, COL_MAKER, *COL_PKG_DIMS,
+                               COL_PKG_WEIGHT, "HS", "通関英文名")
+                   if not str(rec.get(c) or "").strip()]
+        if not missing:
+            continue
+        locations = []
+        if any(c in missing for c in (COL_ITEM_CODE, COL_NAME)):
+            locations.append("型番・商品名はテンプレに手入力し、再アップロード")
+        if any(c not in (COL_ITEM_CODE, COL_NAME) for c in missing):
+            locations.append("上の「確認・修正」表の該当欄に手入力（メーカー・包装欄はテンプレでも入力可）")
+        out.append({"型番": item_key(rec) or "未入力", "待手入力": " / ".join(missing),
+                    "入力場所": " / ".join(locations)})
+    return out
+
+
 def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, dict]):
     """人が直した表 → (nst_rows, bm_rows, weight_sources, issues)。
 

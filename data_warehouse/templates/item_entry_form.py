@@ -44,6 +44,8 @@ INPUT_COLUMNS: list[str] = [COL_JAN, COL_COST, COL_SUPPLIER, COL_OWNER, COL_LARG
 COL_NAME_MANUAL = "アイテム名（任意）"
 COL_ITEM_CODE = "型番"
 COL_MAKER_MANUAL = "メーカー名（任意）"
+# Boss 2026-10-13: この 6 型番だけは JAN 欄への入力を互換受付。実 JAN は空。
+JAN_MODEL_ALIASES = frozenset("ETERNAL-BONSAI-" + c for c in ("REDN", "NV", "GR", "WH", "BK", "LGR"))
 TEMPLATE_COLUMNS: list[str] = [COL_JAN, COL_NAME_MANUAL, *INPUT_COLUMNS[1:], COL_ITEM_CODE, COL_MAKER_MANUAL]
 
 SHEET_INPUT = "商品登録"
@@ -56,9 +58,9 @@ _REQUIRED = {name for mark, name in NST_MASTER_COLUMNS if mark == "必須"} - {C
 
 # 見出しコメント（原本 row3 を短くしたもの）
 _HELP = {
-    COL_JAN: "JANコード（8 桁 or 13 桁）。JAN の無い商品は空欄。型番欄に商品コードを記入",
+    COL_JAN: "JANコード（8 桁 or 13 桁）。JAN の無い商品は空欄、型番欄に商品コードを記入。ETERNAL-BONSAI の既定 6 型番はこの JAN 欄に直接入力可（型番として処理）",
     COL_ITEM_CODE: "商品を一意に識別する型番 / SKU（最大 250 字）。空なら JAN を使用。JAN が無い場合は必須",
-    COL_MAKER_MANUAL: "確認済みメーカー名。記入値を優先。JAN の無い商品も記入できます（最大 60 字）",
+    COL_MAKER_MANUAL: "確認済みメーカー名。記入値を優先。JAN の無い商品は手入力してください。空欄なら確認表にも補完を案内（最大 60 字）",
     COL_NAME_MANUAL: "通常は空のまま（jancode.xyz の商品名が自動で入ります）。"
                      "JAN が無い商品・jancode に商品名が無い商品は必ず記入。記入した場合はこちらが優先。最大 60 字",
     COL_COST: "商品の原価（日本円・仕入価格）。「定義原価」ではありません",
@@ -68,10 +70,10 @@ _HELP = {
     COL_MIDDLE: "大分類を先に選ぶと、その中分類だけが出ます",
     COL_CARTON: "カートン入数（正の整数）",
     COL_LOT: "発注時のロット数（正の整数）",
-    COL_PKG_DIMS[0]: "外装パッケージの高さ（整数または小数）。空なら網調べ or 後で記入",
+    COL_PKG_DIMS[0]: "外装パッケージの高さ（整数または小数）。JAN が無い商品は手入力。JAN がある商品は空なら網調べ or 後で記入",
     COL_PKG_DIMS[1]: "外装パッケージの幅（整数または小数）",
     COL_PKG_DIMS[2]: "外装パッケージの奥行（整数または小数）",
-    COL_PKG_WEIGHT: "外装込みの重量 g（整数または小数）。分からなければ空",
+    COL_PKG_WEIGHT: "外装込みの重量 g（整数または小数）。JAN が無い商品は手入力。不明なら空欄のままでも出力可",
 }
 
 
@@ -271,6 +273,14 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
         errs: list[str] = []
         warns: list[str] = []
 
+        if jan in JAN_MODEL_ALIASES:
+            if rec[COL_ITEM_CODE] and rec[COL_ITEM_CODE] != jan:
+                errs.append("JAN 欄の盆栽型番と型番欄の値が一致しません（同じ型番にしてください）")
+            else:
+                rec[COL_ITEM_CODE] = jan
+                rec[COL_JAN] = ""
+                jan = ""
+
         if jan and not (jan.isdigit() and len(jan) in (8, 13)):
             errs.append(f"JANコードが 8 桁 / 13 桁の数字ではありません（{jan or '空'}）")
         elif jan and not jan_check_ok(jan):
@@ -283,13 +293,14 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
         code = rec[COL_ITEM_CODE] or jan
         rec[COL_ITEM_CODE] = code
         if not code or len(code) > 250 or any(ord(c) < 32 for c in code):
-            errs.append("型番 / SKU は 1〜250 字で記入してください（制御文字不可）")
+            errs.append("型番 / SKU は 1〜250 字で記入してください（制御文字不可）"
+                        + ("。JAN が無い商品はテンプレの型番欄に手入力必須" if not jan else ""))
         elif code in seen_codes:
             errs.append(f"型番 / SKU がファイル内で重複しています（{seen_codes[code]} 行目と同じ）")
         else:
             seen_codes[code] = i
         if not jan and not rec[COL_NAME_MANUAL]:
-            errs.append("JAN が無い商品はアイテム名（任意）に商品名を記入してください")
+            errs.append("JAN が無い商品はテンプレのアイテム名（任意）に商品名を手入力してください（必須）")
 
         cost = _num(rec[COL_COST])
         if cost is None or not cost > 0:

@@ -106,6 +106,10 @@ def test_page15_no_jan_generation_and_existing_code_exclusion():
         at.run(); at.button(key='page15_run').click().run()
         assert not at.exception, [e.value for e in at.exception]
         assert [m.value for m in at.metric][:2] == ['5', '1']
+        checklist = next(d.value for d in at.dataframe if '待手入力' in d.value.columns)
+        assert checklist['型番'].tolist() == SKUS[1:]
+        assert all('メーカー名' not in text for text in checklist['待手入力'])
+        assert all(F.COL_PKG_WEIGHT in text for text in checklist['待手入力'])
         at.button(key='page15_gen').click().run()
         assert not at.exception, [e.value for e in at.exception]
         assert at.session_state['page15_zip_n'] == 5
@@ -117,3 +121,53 @@ def test_page15_no_jan_generation_and_existing_code_exclusion():
             bm_name = next(n for n in z.namelist() if n.endswith('.xlsx'))
             ws = openpyxl.load_workbook(io.BytesIO(z.read(bm_name)))['数据']
             assert [ws.cell(i, 13).value for i in range(3, 8)] == SKUS[1:]
+
+
+def test_manual_input_checklist_reports_only_missing_no_jan_fields():
+    fields = ['メーカー名', *F.COL_PKG_DIMS, F.COL_PKG_WEIGHT, 'HS', '通関英文名']
+    partial = {'型番': SKUS[0], 'JANコード': '', 'アイテム名': '盆栽',
+               'メーカー名': '確認済メーカー', F.COL_PKG_DIMS[0]: '10', 'HS': '999999'}
+    complete = {'型番': SKUS[1], 'JANコード': '', 'アイテム名': '盆栽',
+                **{f: 'filled' for f in fields}}
+    regular = {'型番': JAN, 'JANコード': JAN}
+    needs = R.manual_input_needs([partial, complete, regular])
+    assert len(needs) == 1 and needs[0]['型番'] == SKUS[0]
+    text = needs[0]['待手入力']
+    assert 'メーカー名' not in text and F.COL_PKG_DIMS[0] not in text and 'HS' not in text
+    assert all(f in text for f in [*F.COL_PKG_DIMS[1:], F.COL_PKG_WEIGHT, '通関英文名'])
+    assert '確認・修正' in needs[0]['入力場所']
+    assert R.manual_input_needs([complete, regular]) == []
+
+
+def test_manual_input_checklist_points_identity_and_name_to_template():
+    needs = R.manual_input_needs([{'JANコード': '', '型番': '', 'アイテム名': ''}])
+    assert '型番' in needs[0]['待手入力'] and 'アイテム名' in needs[0]['待手入力']
+    assert 'テンプレ' in needs[0]['入力場所']
+
+
+def test_bonsai_models_in_jan_column_are_converted_and_exported_as_codes():
+    rows, issues = F.read_upload(upload([{'JANコード': s} for s in SKUS]), CH)
+    assert len(rows) == 6 and not any(i.level == 'error' for i in issues)
+    assert [r['型番'] for r in rows] == SKUS
+    assert all(r['JANコード'] == '' for r in rows)
+    meta, weight = MagicMock(), MagicMock()
+    nst, extra, _, _ = R.enrich(rows, choices=CH, prefix_makers={}, fetch_meta=meta,
+        fetch_weight=weight, classify_customs=lambda *a, **k: Customs(None, None, None, 'none'),
+        want_weight=True, interval=0)
+    assert not meta.called and not weight.called
+    out, bm, _, _ = R.from_frame(R.to_frame(nst, extra), nst, extra)
+    csv_rows = list(csv.DictReader(io.StringIO(NST.build_nst_master_csv(out,
+        R.csv_field_columns(out), id_label='型番').decode('utf-8-sig'))))
+    assert [r['型番'] for r in csv_rows] == SKUS
+    assert all(not r.get('JANコード') for r in csv_rows)
+    assert [dict(zip(BM.BM_HEADER, BM.nst_to_bm_row(r)))['SKU'] for r in bm] == SKUS
+
+
+def test_bonsai_jan_alias_rejects_conflicting_codes_and_other_invalid_barcodes():
+    records = [{'JANコード': SKUS[0], '型番': 'OTHER'}, {'JANコード': 'ETERNAL-BONSAI-UNKNOWN'},
+               {'JANコード': 'OTHER-SKU'}, {'JANコード': '4936201110200'},
+               {'JANコード': SKUS[1], '型番': SKUS[1]}, {'JANコード': '', '型番': SKUS[1]}]
+    rows, issues = F.read_upload(upload(records), CH)
+    assert [r['型番'] for r in rows] == [SKUS[1]]
+    assert {i.row for i in issues if i.level == 'error'} == {2, 3, 4, 5, 7}
+    assert any('一致' in i.message for i in issues if i.row == 2)

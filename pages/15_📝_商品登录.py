@@ -226,7 +226,7 @@ def _render_result(res: dict) -> None:
         st.warning(n)
     if res["issues"]:
         n_err = sum(i.level == "error" for i in res["issues"])
-        with st.expander(t(f"⚠️ 問題 {len(res['issues'])} 件（error {n_err} 件の行は出力しません）"),
+        with st.expander(t(f"⚠️ 処理時の問題 {len(res['issues'])} 件（error {n_err} 件の行は出力しません）"),
                          expanded=True):
             st.dataframe(_issues_df(res["issues"]), use_container_width=True, hide_index=True)
     if not res["nst"]:
@@ -247,6 +247,17 @@ def _render_result(res: dict) -> None:
         df, use_container_width=True, hide_index=True, num_rows="fixed",
         disabled=[c for c in df.columns if c not in REG.EDITABLE],
         column_config=col_config, key="page15_editor")
+
+    records = edited.to_dict("records")
+    if any(not str(r.get(JAN_COL_NAME) or "").strip() for r in records):
+        st.subheader(t("✍️ JAN なし商品の待手入力"))
+        needs = REG.manual_input_needs(records)
+        if needs:
+            st.info(t("不足している欄だけを表示しています。確認済みの値を手入力してください。"
+                      "重量は不明なら空欄のままでも出力できます。入力後、この一覧は更新されます。"))
+            st.dataframe(pd.DataFrame(needs), use_container_width=True, hide_index=True)
+        else:
+            st.success(t("JAN なし商品の待手入力項目はありません（入力済みの内容は確認してください）"))
 
     st.divider()
     if st.button(t("📦 生成（NST.csv + 斑马.xlsx）"), type="primary", key="page15_gen"):
@@ -276,7 +287,7 @@ def _render_item_tab() -> None:
         st.markdown(t(
             "- **入力項目**：JAN / 商品原価 / 仕入先（完全名称）/ 商品担当者 / 大分類・中分類 / "
             "カートン入数 / 発注ロット / パッケージ 3 辺・重量（jancode に商品名が無い JAN は「アイテム名（任意）」も記入）\n"
-            "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名を記入。メーカー名（任意）も入力可能\n"
+            "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名は手入力必須（ETERNAL-BONSAI の既定 6 型番は JAN 欄に直接入力可）。メーカー・包装寸法・重量は手入力。HS・通関英文名は判定結果が空なら確認表で手入力\n"
             "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "
             "型番は入力値（空なら JAN）/ 取扱中・NEW・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
             "- **網調べ**は空欄だけ埋める（手入力は上書きしない）。出典 URL を表で確認\n"
