@@ -59,6 +59,8 @@ _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 def _augment_image_url(conn, df: pd.DataFrame) -> pd.DataFrame:
     """从 nst.item_image_cache 按 JAN 取已有 image_url 作辅助参考列（不进 CSV）。"""
     if df.empty or JAN_COL_NAME not in df.columns:
+        if JAN_COL_NAME not in df.columns:
+            df[JAN_COL_NAME] = ""
         df["_画像URL（参考·来自 image cache）"] = ""
         return df
     jans = [str(j).strip() for j in df[JAN_COL_NAME] if pd.notna(j) and str(j).strip()]
@@ -108,7 +110,7 @@ def _content_hash(records) -> str:
 
 
 def _issues_df(issues) -> pd.DataFrame:
-    return pd.DataFrame([{t("行"): i.row or "", "JAN": i.jan,
+    return pd.DataFrame([{t("行"): i.row or "", "型番 / JAN": i.jan,
                           t("区分"): "❌ error" if i.level == "error" else "⚠️ warn",
                           t("内容"): i.message} for i in issues])
 
@@ -123,14 +125,16 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
     nst_rows, extra, stats = [], {}, {}
     if rows:
         with get_connection() as conn:
-            exist, warns = NC.existing_jans([r[JAN_COL_NAME] for r in rows], conn=conn)
+            exist, warns = NC.existing_jans([r[JAN_COL_NAME] for r in rows if r[JAN_COL_NAME]], conn=conn)
+            codes_exist, code_warns = NC.existing_item_codes([REG.item_key(r) for r in rows], conn=conn)
+        notes += code_warns
         notes += warns
         for r in rows:
-            if r[JAN_COL_NAME] in exist:
-                issues.append(FORM.Issue(0, r[JAN_COL_NAME], "error",
-                                         "NST に登録済みの JAN です（新規登録の対象外）"))
-        ng += len(exist)
-        rows = [r for r in rows if r[JAN_COL_NAME] not in exist]
+            if r[JAN_COL_NAME] in exist or REG.item_key(r) in codes_exist:
+                issues.append(FORM.Issue(0, REG.item_key(r), "error",
+                                         "NST に登録済みの JAN / 型番です（新規登録の対象外）"))
+        ng += sum(r[JAN_COL_NAME] in exist or REG.item_key(r) in codes_exist for r in rows)
+        rows = [r for r in rows if r[JAN_COL_NAME] not in exist and REG.item_key(r) not in codes_exist]
     if rows:
         try:
             prefix_makers = _cached_prefix_makers()
@@ -152,7 +156,7 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
                 issues += REG.cross_check_hs(nst_rows, extra, stats, hs_ai.judge)
         elif nst_rows:
             notes.append(t("GEMINI_API_KEY が無いため HS の AI 突合はしていません（規則の判定のみ）"))
-    ok_jans = {r[JAN_COL_NAME] for r in nst_rows}
+    ok_jans = {REG.item_key(r) for r in nst_rows}
     warn = len({i.jan for i in issues if i.level == "warn"} & ok_jans)
     return {"nst": nst_rows, "extra": extra, "issues": issues, "stats": stats,
             "notes": notes, "ok": len(nst_rows), "ng": ng, "warn": warn}
@@ -190,7 +194,7 @@ def _generate(edited: pd.DataFrame, res: dict) -> None:
     if st.session_state.get("page15_logged") == log_key:
         st.session_state["page15_log_msg"] = ("ok", t("台帳は記録済み（同じ内容のため再記録しません）"))
         return
-    bm_lists = [JBM.nst_to_bm_row(r, image_url=image_url_map.get(r[JAN_COL_NAME], ""))
+    bm_lists = [JBM.nst_to_bm_row(r, image_url=image_url_map.get(r.get(JAN_COL_NAME, ""), ""))
                 for r in out_bm]
     try:
         with get_connection() as conn:
@@ -214,7 +218,7 @@ def _render_result(res: dict) -> None:
         st.caption(
             f"jancode ok={s['jancode_ok']} not_found={s['jancode_not_found']} "
             f"error={s['jancode_error']} · メーカー NST={s['maker_nst']} "
-            f"jancode={s['maker_jancode']} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} 手入力={s['name_manual']} · "
+            f"jancode={s['maker_jancode']} 手入力={s.get('maker_manual', 0)} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} 手入力={s['name_manual']} · "
             f"HS ok={s['hs_ok']} 判定不可={s['hs_ng']} AI一致={s.get('ai_agree', '-')} "
             f"AI採用={s.get('ai_changed', '-')} AI失敗={s.get('ai_error', '-')} · 重量 取得={s['weight_hit']} "
             f"なし={s['weight_miss']} 失敗={s['weight_error']} 調べず={s['weight_skipped']}")
@@ -270,12 +274,13 @@ def _render_item_tab() -> None:
     st.caption(t("新品登録 · テンプレ DL → 記入 → UL → NST 取込 CSV + 斑马導入 xlsx（どちらも手でアップロード）"))
     with st.expander(t("📌 使い方"), expanded=False):
         st.markdown(t(
-            "- **人が書くのは 12 列だけ**：JAN / 商品原価 / 仕入先（完全名称）/ 商品担当者 / 大分類・中分類 / "
-            "カートン入数 / 発注ロット / パッケージ 3 辺・重量（jancode に商品名が無い JAN だけ「アイテム名（任意）」も記入）\n"
+            "- **入力項目**：JAN / 商品原価 / 仕入先（完全名称）/ 商品担当者 / 大分類・中分類 / "
+            "カートン入数 / 発注ロット / パッケージ 3 辺・重量（jancode に商品名が無い JAN は「アイテム名（任意）」も記入）\n"
+            "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名を記入。メーカー名（任意）も入力可能\n"
             "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "
-            "型番=JAN / 取扱中・NEW・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
+            "型番は入力値（空なら JAN）/ 取扱中・NEW・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
             "- **網調べ**は空欄だけ埋める（手入力は上書きしない）。出典 URL を表で確認\n"
-            "- **NST に登録済みの JAN** はエラーで外す\n"
+            "- **NST に登録済みの JAN / 型番** はエラーで外す\n"
             "- **出力**：NST CSV（有データ列のみ・先頭=型番）+ 斑马 xlsx（中文名称 = アイテム名）"
         ))
     try:

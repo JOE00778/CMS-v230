@@ -6,7 +6,7 @@ row1=分区标题（合并单元格）/ row2=列头 / row3+=数据。生成与�
 JD（京东）出力は商品登録 v2 で廃止（Boss 2026-10-03）。
 
 映射策略：
-- BM SPU：使用 NST JANコード（13 位纯数字、唯一）（Boss 2026-05-29）
+- BM SPU：使用 NST 型番 / SKU（旧行无型番时兼容 JAN）
 - BM ERP 类目：留空，用户后填（Boss 2026-05-29）
 - 报关列（v2 · Boss 2026-10-03）：中文名称 = NST に上げるアイテム名そのもの /
   英文名称 = 调用方が渡す "_name_en"（通関英文名·≤76 字·無ければ空）/ 海关编码 = "_hs" /
@@ -80,7 +80,7 @@ def nst_to_bm_row(
     image_url: str = "",
 ) -> list:
     """NST 行 → BM 行（list, len=46, 顺序 = BM_HEADER）。"""
-    jan = _g(nst_row, "JANコード")
+    item_code = _g(nst_row, "型番", "JANコード")
     name_ja = _g(nst_row, "アイテム名")
     cost = _g(nst_row, "商品原価")
     weight_g = _g(nst_row, "パッケージ重量(g)")   # v2: パッケージのみ（商品寸法へ落ちない）
@@ -91,13 +91,13 @@ def nst_to_bm_row(
     name_en = str(_g(nst_row, "_name_en")).strip()[:BM_NAME_EN_MAX]
 
     row = [""] * len(BM_HEADER)
-    row[0]  = jan                         # SPU = JAN (Boss 拍板)
+    row[0]  = item_code                   # SPU = 型番 / SKU
     row[1]  = name_ja                     # 产品标题
     row[2]  = ""                          # ERP类目（留空，Boss 拍板）
-    row[12] = jan                         # SKU
+    row[12] = item_code                   # SKU
     row[13] = image_url                   # 图片URL
     row[14] = "1"                         # 规格1名称（sample 模板值）
-    row[15] = jan                         # 规格1值（sample 模板值）
+    row[15] = item_code                   # 规格1值（sample 模板值）
     row[24] = _num_or_blank(cost)         # 成本价(￥)
     row[25] = _num_or_blank(weight_g)     # 重量(g)
     row[26] = _num_or_blank(length)       # 长(cm)

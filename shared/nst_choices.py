@@ -130,9 +130,19 @@ def _quote(s: str) -> str:
 
 
 def existing_jans(jans: list[str], *, conn=None, suiteql=None) -> tuple[set[str], list[str]]:
-    """NST に既にある JAN（SuiteQL item.upccode · NST 全体）。
+    """JAN を NST 全体に照合。失敗時は輸出部門の PG 鏡像へ。"""
+    return _existing_values(jans, field="upccode", pg_field="jan", conn=conn, suiteql=suiteql)
 
-    SuiteQL が 1 チャンクでも失敗したら PG `nst.item_master_raw.jan` で全件照合し直し、
+
+def existing_item_codes(codes: list[str], *, conn=None, suiteql=None) -> tuple[set[str], list[str]]:
+    """型番を NST 全体に照合。JAN の無い商品も重複登録を防ぐ。"""
+    return _existing_values(codes, field="itemid", pg_field="item_code", conn=conn, suiteql=suiteql)
+
+
+def _existing_values(jans: list[str], *, field: str, pg_field: str, conn=None, suiteql=None) -> tuple[set[str], list[str]]:
+    """JAN または型番を NST 全体に照合（field / pg_field は内部の固定値だけ）。
+
+    SuiteQL が 1 チャンクでも失敗したら PG 鏡像で全件照合し直し、
     「輸出部門のみの照合」と警告する。PG も無い/失敗なら空集合＋警告（黙って新規扱いにしない）。
     """
     uniq = sorted({str(j).strip() for j in jans if str(j or "").strip()})
@@ -143,23 +153,23 @@ def existing_jans(jans: list[str], *, conn=None, suiteql=None) -> tuple[set[str]
         found: set[str] = set()
         for i in range(0, len(uniq), _JAN_CHUNK):
             chunk = uniq[i:i + _JAN_CHUNK]
-            rows = q("SELECT upccode FROM item WHERE upccode IN ("
+            rows = q(f"SELECT {field} FROM item WHERE {field} IN ("
                      + ",".join(_quote(j) for j in chunk) + ")", limit=1000)
-            found.update(str(r.get("upccode") or "").strip() for r in rows)
+            found.update(str(r.get(field) or "").strip() for r in rows)
         return found & set(uniq), []
     except Exception as e:  # noqa: BLE001
         sq_err = str(e)
     if conn is None:
-        return set(), [f"NST 既存 JAN 照合に失敗（SuiteQL: {sq_err}）。PG 代替も無いため"
+        return set(), [f"NST 既存識別子 照合に失敗（SuiteQL: {sq_err}）。PG 代替も無いため"
                        f"重複チェック未実施 {len(uniq)} 件"]
     try:
         rows = conn.execute(
-            "SELECT DISTINCT jan FROM nst.item_master_raw WHERE jan IN ("
+            f"SELECT DISTINCT {pg_field} FROM nst.item_master_raw WHERE {pg_field} IN ("
             + ",".join("?" for _ in uniq) + ")", tuple(uniq)).fetchall()
     except Exception as e:  # noqa: BLE001
-        return set(), [f"NST 既存 JAN 照合に失敗（SuiteQL: {sq_err} / PG: {e}）。"
+        return set(), [f"NST 既存識別子 照合に失敗（SuiteQL: {sq_err} / PG: {e}）。"
                        f"重複チェック未実施 {len(uniq)} 件"]
-    found = {str(r["jan"]).strip() for r in rows}
+    found = {str(r[pg_field]).strip() for r in rows}
     return found & set(uniq), [f"SuiteQL 失敗のため PG nst.item_master_raw で照合"
                                f"（NST 全体ではなく輸出部門のみの照合）: {sq_err}"]
 

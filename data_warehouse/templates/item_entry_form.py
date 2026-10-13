@@ -42,7 +42,9 @@ INPUT_COLUMNS: list[str] = [COL_JAN, COL_COST, COL_SUPPLIER, COL_OWNER, COL_LARG
 # 2026-10-03: jancode.xyz に商品名が無い JAN を登録できるよう任意列を足した。NST の列ではないので
 # INPUT_COLUMNS には入れない（無い旧テンプレもそのまま読める）。rows には常にキーとして入る（空可）
 COL_NAME_MANUAL = "アイテム名（任意）"
-TEMPLATE_COLUMNS: list[str] = [COL_JAN, COL_NAME_MANUAL, *INPUT_COLUMNS[1:]]
+COL_ITEM_CODE = "型番"
+COL_MAKER_MANUAL = "メーカー名（任意）"
+TEMPLATE_COLUMNS: list[str] = [COL_JAN, COL_NAME_MANUAL, *INPUT_COLUMNS[1:], COL_ITEM_CODE, COL_MAKER_MANUAL]
 
 SHEET_INPUT = "商品登録"
 SHEET_EXAMPLE = "記入例"
@@ -50,13 +52,15 @@ SHEET_CHOICES = "_選択肢"
 FIRST_DATA_ROW = 2
 LAST_DATA_ROW = 1001
 
-_REQUIRED = {name for mark, name in NST_MASTER_COLUMNS if mark == "必須"}
+_REQUIRED = {name for mark, name in NST_MASTER_COLUMNS if mark == "必須"} - {COL_JAN, COL_ITEM_CODE}
 
 # 見出しコメント（原本 row3 を短くしたもの）
 _HELP = {
-    COL_JAN: "JANコード（8 桁 or 13 桁）。型番にも同じ値が入ります",
+    COL_JAN: "JANコード（8 桁 or 13 桁）。JAN の無い商品は空欄。型番欄に商品コードを記入",
+    COL_ITEM_CODE: "商品を一意に識別する型番 / SKU（最大 250 字）。空なら JAN を使用。JAN が無い場合は必須",
+    COL_MAKER_MANUAL: "確認済みメーカー名。記入値を優先。JAN の無い商品も記入できます（最大 60 字）",
     COL_NAME_MANUAL: "通常は空のまま（jancode.xyz の商品名が自動で入ります）。"
-                     "jancode に商品名が無い JAN だけ記入。記入した場合はこちらが優先。最大 60 字",
+                     "JAN が無い商品・jancode に商品名が無い商品は必ず記入。記入した場合はこちらが優先。最大 60 字",
     COL_COST: "商品の原価（日本円・仕入価格）。「定義原価」ではありません",
     COL_SUPPLIER: "選択肢以外入力禁止。無い場合は「NetSuite【仕入先】マスタ登録依頼書」で登録依頼",
     COL_OWNER: "このアイテムの担当者を選択",
@@ -74,7 +78,7 @@ _HELP = {
 @dataclass
 class Issue:
     row: int        # Excel 上の行番号（見出し不備などファイル全体の問題は 0）
-    jan: str
+    jan: str       # 互換フィールド名。画面では型番 / JAN の識別子を表示
     level: str      # "error" | "warn"
     message: str
 
@@ -173,7 +177,7 @@ def build_template(choices) -> bytes:
               COL_CARTON: 48, COL_LOT: 12, COL_PKG_DIMS[0]: 6, COL_PKG_DIMS[1]: 23,
               COL_PKG_DIMS[2]: 17, COL_PKG_WEIGHT: 250}
     for i, name in enumerate(TEMPLATE_COLUMNS, start=1):
-        ex.cell(row=2, column=i, value=sample[name])
+        ex.cell(row=2, column=i, value=sample.get(name, ""))
     ex.cell(row=4, column=1, value="※ このシートは読み込まれません。「商品登録」シートに記入してください")
 
     buf = io.BytesIO()
@@ -250,11 +254,15 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
     rows: list[dict] = []
     issues: list[Issue] = []
     seen: dict[str, int] = {}
+    seen_codes: dict[str, int] = {}
 
     for i, raw in enumerate(all_rows[header_idx + 1:], start=header_idx + 2):
         rec = {c: _s(raw[pos[_norm(c)]]) if pos[_norm(c)] < len(raw) else "" for c in INPUT_COLUMNS}
         p_name = pos.get(_norm(COL_NAME_MANUAL))
         rec[COL_NAME_MANUAL] = _s(raw[p_name]) if p_name is not None and p_name < len(raw) else ""
+        for col in (COL_ITEM_CODE, COL_MAKER_MANUAL):
+            idx = pos.get(_norm(col))
+            rec[col] = _s(raw[idx]) if idx is not None and idx < len(raw) else ""
         if not any(rec.values()):
             continue
         for c in (COL_JAN, COL_COST, COL_CARTON, COL_LOT, *COL_PKG_DIMS, COL_PKG_WEIGHT):
@@ -263,14 +271,25 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
         errs: list[str] = []
         warns: list[str] = []
 
-        if not (jan.isdigit() and len(jan) in (8, 13)):
+        if jan and not (jan.isdigit() and len(jan) in (8, 13)):
             errs.append(f"JANコードが 8 桁 / 13 桁の数字ではありません（{jan or '空'}）")
-        elif not jan_check_ok(jan):
+        elif jan and not jan_check_ok(jan):
             errs.append("JANコードのチェックディジットが合いません")
-        elif jan in seen:
+        elif jan and jan in seen:
             errs.append(f"JANコードがファイル内で重複しています（{seen[jan]} 行目と同じ）")
-        else:
+        elif jan:
             seen[jan] = i
+
+        code = rec[COL_ITEM_CODE] or jan
+        rec[COL_ITEM_CODE] = code
+        if not code or len(code) > 250 or any(ord(c) < 32 for c in code):
+            errs.append("型番 / SKU は 1〜250 字で記入してください（制御文字不可）")
+        elif code in seen_codes:
+            errs.append(f"型番 / SKU がファイル内で重複しています（{seen_codes[code]} 行目と同じ）")
+        else:
+            seen_codes[code] = i
+        if not jan and not rec[COL_NAME_MANUAL]:
+            errs.append("JAN が無い商品はアイテム名（任意）に商品名を記入してください")
 
         cost = _num(rec[COL_COST])
         if cost is None or not cost > 0:
@@ -297,8 +316,8 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
             warns.append("パッケージ 3 辺のどれかが空です（網調べ or 手入力）")
 
         if errs:
-            issues.extend(Issue(i, jan, "error", m) for m in errs)
+            issues.extend(Issue(i, code or jan, "error", m) for m in errs)
             continue
-        issues.extend(Issue(i, jan, "warn", m) for m in warns)
+        issues.extend(Issue(i, code or jan, "warn", m) for m in warns)
         rows.append(rec)
     return rows, issues

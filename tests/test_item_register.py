@@ -168,7 +168,8 @@ def test_write_register_log_ok_and_failure():
     assert (n, err, c.committed) == (1, "", True)
     sql, params = c.calls[0]
     assert "nst.item_register_log" in sql
-    jan, payload, bm_payload, src, who = params[0]
+    code, jan, payload, bm_payload, src, who = params[0]
+    assert code == jan
     assert jan == "4901234567894" and src == "superdelivery" and who == "043 徐越"
     assert json.loads(payload)["アイテム名"] == "x"
     assert json.loads(bm_payload)["SPU"] == "4901234567894"
@@ -196,7 +197,7 @@ def test_nst_csv_has_template_derived_columns_and_payload_matches():
 
     c = _Conn()
     R.write_register_log(c, out_nst, None, src)
-    payload = json.loads(c.calls[0][1][0][1])
+    payload = json.loads(c.calls[0][1][0][2])
     assert payload["サポート提供 "] == "T" and payload["原価計算法"] == "平均"
 
 

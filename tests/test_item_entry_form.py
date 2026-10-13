@@ -129,7 +129,7 @@ def test_read_upload_ok_and_errors():
     ]
     rows, issues = F.read_upload(_upload(rows_in), CH)
     assert [r["JANコード"] for r in rows] == [J1, J2, _cd("490000000006")]
-    assert set(rows[0]) == set(F.INPUT_COLUMNS) | {F.COL_NAME_MANUAL}
+    assert set(rows[0]) == set(F.INPUT_COLUMNS) | {F.COL_NAME_MANUAL, F.COL_ITEM_CODE, F.COL_MAKER_MANUAL}
     assert rows[0][F.COL_NAME_MANUAL] == ""                 # 旧テンプレ（任意列なし）でも読める
     assert all(isinstance(v, str) for r in rows for v in r.values())
     assert rows[0]["商品原価"] == "1250" and rows[0]["パッケージ高さ(cm)"] == "6"

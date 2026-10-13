@@ -7,7 +7,7 @@
 enrich が埋めるもの（仕様書 SPEC_item_register_v2 §1・§4・§6）:
   アイテム名 = jancode.xyz 商品名（60 字で切る・切ったら warn。取れなければ error＝NST 必須）
   メーカー名 = resolve_maker（NST 同プレフィックス → jancode 会社名 → 空+warn）
-  型番 = JAN / 取扱区分・商品ランク・部門・仕入区分・発注通貨 = FIXED / 税率 = 大分類「食品」なら ★
+  型番 = 入力値（空なら JAN）/ 取扱区分・商品ランク・部門・仕入区分・発注通貨 = FIXED / 税率 = 大分類「食品」なら ★
   購入価格・仕入先1：優先・優先場所・保管棚を使用・売上原価勘定・サポート提供・NE_連携対象・
     納税スケジュール・原価計算法 = NST 原本 BJ〜BS 列の数式の値（FIXED_DERIVED / _derived）
   _hs・_name_en = classify_customs（判定できなければ空のまま・推測で埋めない）
@@ -22,7 +22,7 @@ import json
 import re
 
 from data_warehouse.templates.item_entry_form import (
-    COL_JAN, COL_LARGE, COL_NAME_MANUAL, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, INPUT_COLUMNS, Issue,
+    COL_JAN, COL_LARGE, COL_NAME_MANUAL, COL_MAKER_MANUAL, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, INPUT_COLUMNS, Issue,
 )
 from shared.jan_web import INTERVAL, fetch_many
 from shared.nst_choices import FIXED, resolve_maker
@@ -64,7 +64,7 @@ def _derived(row: dict) -> dict:
 
 # 画面の表（data_editor）: 表示名 → 行 dict のキー
 FRAME_COLUMNS: dict[str, str] = {
-    "JANコード": COL_JAN, "アイテム名": COL_NAME, "メーカー名": COL_MAKER,
+    "型番": COL_ITEM_CODE, "JANコード": COL_JAN, "アイテム名": COL_NAME, "メーカー名": COL_MAKER,
     "通関英文名": COL_NAME_EN, "HS": COL_HS,
     "大分類": "大分類", "中分類": "中分類", "商品原価": "商品原価",
     "仕入先1：仕入先": "仕入先1：仕入先", "商品担当者": COL_OWNER,
@@ -75,6 +75,11 @@ EDITABLE = ["アイテム名", "メーカー名", "通関英文名", "HS", *COL_
 COL_AUTO = "🤖 自動入力"
 COL_URL = "網調べ URL"
 COL_HS_CHECK = "HS 判定"
+
+
+def item_key(row: dict) -> str:
+    """型番を識別子にする。旧行は JAN にフォールバック。"""
+    return str(row.get(COL_ITEM_CODE) or row.get(COL_JAN) or "").strip()
 
 
 def _fmt(v) -> str:
@@ -94,19 +99,19 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
     """read_upload の正常行 → (nst_rows, bm_extra, issues, stats)。
 
     nst_rows : NST 行 dict（キー = NST テンプレ列名原文・空の列は持たない）。error 行は入らない
-    bm_extra : {jan: {"_hs", "_name_en", "hs_category", "hs_basis", "maker_source",
+    bm_extra : {item_code: {"_hs", "_name_en", "hs_category", "hs_basis", "maker_source",
                       "auto": [埋めた列], "weight_source", "weight_url", "weight_note"}}
-    issues   : Issue（row=0・jan で特定。read_upload で JAN はファイル内一意）
+    issues   : Issue（row=0・jan フィールドは型番 / JAN の識別子）
     stats    : ok/ng/warn と jancode/メーカー/重量/HS の取得・失敗件数
     on_progress(done, total, msg)。fetch は fetch_many 経由で interval 秒間隔。
     """
     # choices: 選択肢の検証は read_upload 済み。インタフェース互換のため受けるだけ
     rows = list(rows)
-    jans = [r[COL_JAN] for r in rows]
+    jans = [r[COL_JAN] for r in rows if r.get(COL_JAN)]
     total = len(jans) * (2 if want_weight else 1)
     stats = {k: 0 for k in (
         "ok", "ng", "warn", "jancode_ok", "jancode_not_found", "jancode_error",
-        "name_cut", "name_manual", "maker_nst", "maker_jancode", "maker_none", "hs_ok", "hs_ng",
+        "name_cut", "name_manual", "maker_nst", "maker_jancode", "maker_manual", "maker_none", "hs_ok", "hs_ng",
         "weight_hit", "weight_miss", "weight_error", "weight_skipped")}
 
     def _prog(offset, label):
@@ -118,7 +123,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
 
     # 重量は 4 項目とも人が書いた行は調べない（時間の無駄）
     need_w = [r[COL_JAN] for r in rows
-              if want_weight and any(not r.get(c) for c in _WEIGHT_FIELDS)]
+              if want_weight and r.get(COL_JAN) and any(not r.get(c) for c in _WEIGHT_FIELDS)]
     hits = fetch_many(need_w, fetch_weight, interval=interval,
                       on_progress=_prog(len(jans), "重量")) if need_w else {}
     if want_weight and on_progress:
@@ -130,12 +135,15 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
     # ponytail: NST 既存メーカー = プレフィックスで 1 種類に決まった maker の集合。全 maker 一覧が要るなら loader を足す
     nst_makers = set(prefix_makers.values())
     for r in rows:
-        jan = r[COL_JAN]
+        jan = r.get(COL_JAN, "")
+        code = item_key(r)
         errs: list[str] = []
         warns: list[str] = []
         meta = metas.get(jan)
         manual = (r.get(COL_NAME_MANUAL) or "").strip()
-        if isinstance(meta, dict) or meta is None:          # fetch_many が握った例外
+        if not jan:
+            jc_err = "JAN なし（JAN 検索はしません）"
+        elif isinstance(meta, dict) or meta is None:          # fetch_many が握った例外
             stats["jancode_error"] += 1
             jc_err = f"jancode.xyz 取得失敗（再処理してください）: {(meta or {}).get('error', '')}"
         elif meta.status == "error":
@@ -150,10 +158,10 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
         jc_ok = not jc_err
         if jc_err and not manual:
             stats["ng"] += 1
-            issues.append(Issue(0, jan, "error", jc_err))
+            issues.append(Issue(0, code, "error", jc_err))
             continue
         if jc_err:
-            # 手入力の名前があれば登録できる。メーカー名は NST 同プレフィックスだけで決める
+            # 手入力の名前があれば登録できる。メーカー名は手入力 → NST 同プレフィックスを使用
             warns.append(jc_err.split("（")[0] + " → 手入力のアイテム名で登録")
 
         name = manual or meta.name.strip()
@@ -163,15 +171,19 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             stats["name_cut"] += 1
             warns.append(f"アイテム名が {len(name)} 字 → {NAME_MAX} 字で切りました")
             name = name[:NAME_MAX]
-        maker, maker_src = resolve_maker(jan, meta.maker if jc_ok else "", prefix_makers)
-        stats[{"nst-prefix": "maker_nst", "jancode": "maker_jancode"}.get(maker_src, "maker_none")] += 1
+        manual_maker = (r.get(COL_MAKER_MANUAL) or "").strip()
+        maker, maker_src = ((manual_maker[:NAME_MAX], "manual") if manual_maker else
+                            resolve_maker(jan, meta.maker if jc_ok else "", prefix_makers))
+        stats[{"nst-prefix": "maker_nst", "jancode": "maker_jancode", "manual": "maker_manual"}.get(maker_src, "maker_none")] += 1
+        if manual_maker and len(manual_maker) > NAME_MAX:
+            warns.append(f"メーカー名が {len(manual_maker)} 字 → {NAME_MAX} 字で切りました")
         if maker_src == "none":
             warns.append("メーカー名が決まりません（NST 同プレフィックス・jancode 会社名とも無し）")
         elif maker_src == "jancode" and maker not in nst_makers:
             warns.append(f"メーカー名「{maker}」は jancode 会社名で NST 既存メーカーに無い表記です（確認してください）")
-        auto = ([] if manual else ["アイテム名(jancode)"]) + ([f"メーカー名({maker_src})"] if maker else [])
+        auto = ([] if manual else ["アイテム名(jancode)"]) + ([f"メーカー名({maker_src})"] if maker and maker_src != "manual" else [])
 
-        row = {COL_ITEM_CODE: jan, COL_NAME: name, **{c: r.get(c, "") for c in INPUT_COLUMNS},
+        row = {COL_ITEM_CODE: code, COL_NAME: name, **{c: r.get(c, "") for c in INPUT_COLUMNS},
                COL_MAKER: maker, **FIXED,
                COL_TAX: "★" if r.get(COL_LARGE) == "食品" else ""}
         row.update(_derived(row))
@@ -220,10 +232,10 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
                 warns.append(w)
 
         nst_rows.append({k: v for k, v in row.items() if str(v).strip() != ""})
-        bm_extra[jan] = extra
+        bm_extra[code] = extra
         if warns:
             stats["warn"] += 1
-            issues.extend(Issue(0, jan, "warn", m) for m in warns)
+            issues.extend(Issue(0, code, "warn", m) for m in warns)
         stats["ok"] += 1
     return nst_rows, bm_extra, issues, stats
 
@@ -239,10 +251,10 @@ def cross_check_hs(nst_rows: list[dict], bm_extra: dict[str, dict], stats: dict,
 
     for k in ("ai_agree", "ai_changed", "ai_error"):
         stats.setdefault(k, 0)
-    res = ai_judge([(r[COL_JAN], r[COL_NAME], r.get(COL_MAKER, "")) for r in nst_rows])
+    res = ai_judge([(item_key(r), r[COL_NAME], r.get(COL_MAKER, "")) for r in nst_rows])
     issues: list[Issue] = []
     for r in nst_rows:
-        jan, ex = r[COL_JAN], bm_extra[r[COL_JAN]]
+        jan, ex = item_key(r), bm_extra[item_key(r)]
         rule, got = ex.get(COL_HS, ""), res.get(jan)
         if not hasattr(got, "hs"):
             stats["ai_error"] += 1
@@ -268,7 +280,7 @@ def to_frame(nst_rows: list[dict], bm_extra: dict[str, dict]) -> list[dict]:
     """data_editor 用のレコード（表示名キー）。自動入力の列と網調べ URL を添える。"""
     out = []
     for r in nst_rows:
-        ex = bm_extra.get(r[COL_JAN], {})
+        ex = bm_extra.get(item_key(r), {})
         rec = {disp: str({**r, **ex}.get(key, "") or "") for disp, key in FRAME_COLUMNS.items()}
         rec[COL_AUTO] = " · ".join(ex.get("auto", []))
         rec[COL_URL] = ex.get("weight_url", "")
@@ -283,10 +295,10 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
     bm_rows = NST 行 + "_hs"/"_name_en"（build_bm_xlsx へそのまま渡す形）。
     アイテム名が空になった行は error で外す。60 字超は切って warn。数値でない寸法・重量は空にして warn。
     """
-    base = {r[COL_JAN]: r for r in nst_rows}
+    base = {item_key(r): r for r in nst_rows}
     out_nst, out_bm, sources, issues = [], [], {}, []
     for rec in records:
-        jan = str(rec.get("JANコード") or "").strip()
+        jan = item_key(rec)
         if jan not in base:
             continue
         row = dict(base[jan])
@@ -334,8 +346,8 @@ def csv_field_columns(nst_rows: list[dict]) -> list[str]:
 
 
 _INSERT = ("INSERT INTO nst.item_register_log "
-           "(jan, payload, bm_payload, weight_source, registered_by) "
-           "VALUES (?, ?::jsonb, ?::jsonb, ?, ?)")
+           "(item_code, jan, payload, bm_payload, weight_source, registered_by) "
+           "VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?)")
 
 
 def write_register_log(conn, nst_rows: list[dict], bm_rows: list[list] | None,
@@ -350,9 +362,9 @@ def write_register_log(conn, nst_rows: list[dict], bm_rows: list[list] | None,
     for i, r in enumerate(nst_rows):
         jan = str(r.get(COL_JAN, "")).strip()
         bm = dict(zip(BM_HEADER, bm_rows[i])) if bm_rows else None
-        params.append((jan, json.dumps(r, ensure_ascii=False),
+        params.append((item_key(r), jan, json.dumps(r, ensure_ascii=False),
                        json.dumps(bm, ensure_ascii=False) if bm is not None else None,
-                       weight_sources.get(jan), r.get(COL_OWNER) or None))
+                       weight_sources.get(item_key(r)), r.get(COL_OWNER) or None))
     if not params:
         return 0, ""
     try:

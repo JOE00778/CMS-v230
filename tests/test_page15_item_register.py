@@ -75,6 +75,7 @@ def test_page15_process_and_generate_flow():
             mock.patch.object(NC, "load_choices", return_value=choices), \
             mock.patch.object(NC, "load_prefix_makers", return_value={}), \
             mock.patch.object(NC, "existing_jans", return_value=(set(), [])), \
+            mock.patch.object(NC, "existing_item_codes", return_value=(set(), [])), \
             mock.patch.object(jan_web, "fetch_meta", return_value=meta), \
             mock.patch.object(jan_web, "INTERVAL", 0):
         at = AppTest.from_file(str(PAGE), default_timeout=60)
