@@ -60,7 +60,7 @@ _REQUIRED = {name for mark, name in NST_MASTER_COLUMNS if mark == "必須"} - {C
 _HELP = {
     COL_JAN: "JANコード（8 桁 or 13 桁）。JAN の無い商品は空欄、型番欄に商品コードを記入。ETERNAL-BONSAI の既定 6 型番はこの JAN 欄に直接入力可（型番として処理）",
     COL_ITEM_CODE: "商品を一意に識別する型番 / SKU（最大 250 字）。空なら JAN を使用。JAN が無い場合は必須",
-    COL_MAKER_MANUAL: "確認済みメーカー名。記入値を優先。JAN の無い商品は手入力してください。空欄なら確認表にも補完を案内（最大 60 字）",
+    COL_MAKER_MANUAL: "確認済みメーカー名。記入値を優先。不明なら空欄のまま（任意・最大 60 字）",
     COL_NAME_MANUAL: "通常は空のまま（jancode.xyz の商品名が自動で入ります）。"
                      "JAN が無い商品・jancode に商品名が無い商品は必ず記入。記入した場合はこちらが優先。最大 60 字",
     COL_COST: "商品の原価（日本円・仕入価格）。「定義原価」ではありません",
@@ -70,10 +70,10 @@ _HELP = {
     COL_MIDDLE: "大分類を先に選ぶと、その中分類だけが出ます",
     COL_CARTON: "カートン入数（正の整数）",
     COL_LOT: "発注時のロット数（正の整数）",
-    COL_PKG_DIMS[0]: "外装パッケージの高さ（整数または小数）。JAN が無い商品は手入力。JAN がある商品は空なら網調べ or 後で記入",
-    COL_PKG_DIMS[1]: "外装パッケージの幅（整数または小数）",
-    COL_PKG_DIMS[2]: "外装パッケージの奥行（整数または小数）",
-    COL_PKG_WEIGHT: "外装込みの重量 g（整数または小数）。JAN が無い商品は手入力。不明なら空欄のままでも出力可",
+    COL_PKG_DIMS[0]: "外装パッケージの高さ（整数または小数）。空欄は網調べ後も不明なら 1 cm の仮値（非実測）",
+    COL_PKG_DIMS[1]: "外装パッケージの幅（整数または小数）。不明なら 1 cm の仮値（非実測）",
+    COL_PKG_DIMS[2]: "外装パッケージの奥行（整数または小数）。不明なら 1 cm の仮値（非実測）",
+    COL_PKG_WEIGHT: "外装込みの重量 g（整数または小数）。不明なら 1 g の仮値（非実測）",
 }
 
 
@@ -324,7 +324,7 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
                 warns.append(f"{c} が正の数ではないので空にしました（{rec[c]}）")
                 rec[c] = ""
         if any(rec[c] == "" for c in COL_PKG_DIMS):
-            warns.append("パッケージ 3 辺のどれかが空です（網調べ or 手入力）")
+            warns.append("パッケージ 3 辺のどれかが空です（網調べ後も不明なら 1 cm の仮値・非実測）")
 
         if errs:
             issues.extend(Issue(i, code or jan, "error", m) for m in errs)

@@ -75,6 +75,8 @@ EDITABLE = ["アイテム名", "メーカー名", "通関英文名", "HS", *COL_
 COL_AUTO = "🤖 自動入力"
 COL_URL = "網調べ URL"
 COL_HS_CHECK = "HS 判定"
+COL_WEIGHT_NOTE = "重量・寸法の取得メモ"
+COL_WEIGHT_SOURCES = "重量・寸法の出典"
 
 
 def item_key(row: dict) -> str:
@@ -92,6 +94,18 @@ def _banned_warn(col: str, val: str) -> str | None:
     if bad:
         return f"{col} に NST 原本の禁止文字（全角カッコ・カンマ・ローマ数字）: {' '.join(bad)}"
     return None
+
+
+def _default_package(row: dict) -> list[str]:
+    """Fill missing package fields only; never infer provenance from value 1."""
+    filled = [c for c in _WEIGHT_FIELDS if not str(row.get(c) or "").strip()]
+    for c in filled:
+        row[c] = "1"
+    return filled
+
+
+def _default_note(fields: list[str]) -> str:
+    return " / ".join(fields) + " = 1（寸法 cm・重量 g、既定の仮値・非実測）"
 
 
 def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_customs,
@@ -177,9 +191,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
         stats[{"nst-prefix": "maker_nst", "jancode": "maker_jancode", "manual": "maker_manual"}.get(maker_src, "maker_none")] += 1
         if manual_maker and len(manual_maker) > NAME_MAX:
             warns.append(f"メーカー名が {len(manual_maker)} 字 → {NAME_MAX} 字で切りました")
-        if maker_src == "none":
-            warns.append("メーカー名が決まりません（NST 同プレフィックス・jancode 会社名とも無し）")
-        elif maker_src == "jancode" and maker not in nst_makers:
+        if maker_src == "jancode" and maker not in nst_makers:
             warns.append(f"メーカー名「{maker}」は jancode 会社名で NST 既存メーカーに無い表記です（確認してください）")
         auto = ([] if manual else ["アイテム名(jancode)"]) + ([f"メーカー名({maker_src})"] if maker and maker_src != "manual" else [])
 
@@ -212,6 +224,14 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
                     stats["weight_miss"] += 1
         elif want_weight:
             stats["weight_skipped"] += 1
+
+        defaults = _default_package(row)
+        extra["default_package_fields"] = defaults
+        if defaults:
+            note = _default_note(defaults)
+            extra["weight_note"] = " · ".join(filter(None, [extra["weight_note"], note]))
+            auto.append("包装の既定仮値（非実測）")
+            warns.append(note)
 
         cus = classify_customs(name, maker, jan, prefix_map=prefix_makers)
         hs, name_en, cat, basis = cus.hs, cus.name_en, cus.category, cus.basis
@@ -285,6 +305,9 @@ def to_frame(nst_rows: list[dict], bm_extra: dict[str, dict]) -> list[dict]:
         rec[COL_AUTO] = " · ".join(ex.get("auto", []))
         rec[COL_URL] = ex.get("weight_url", "")
         rec[COL_HS_CHECK] = ex.get("hs_check", "")
+        rec[COL_WEIGHT_NOTE] = ex.get("weight_note", "")
+        urls = ex.get("weight_field_urls", {})
+        rec[COL_WEIGHT_SOURCES] = " · ".join(f"{col}: {urls[attr]}" for col, attr in _WEIGHT_FIELDS.items() if attr in urls)
         out.append(rec)
     return out
 
@@ -295,8 +318,7 @@ def manual_input_needs(records: list[dict]) -> list[dict]:
     for rec in records:
         if str(rec.get(COL_JAN) or "").strip():
             continue
-        missing = [c for c in (COL_ITEM_CODE, COL_NAME, COL_MAKER, *COL_PKG_DIMS,
-                               COL_PKG_WEIGHT, "HS", "通関英文名")
+        missing = [c for c in (COL_ITEM_CODE, COL_NAME, "HS", "通関英文名")
                    if not str(rec.get(c) or "").strip()]
         if not missing:
             continue
@@ -304,7 +326,7 @@ def manual_input_needs(records: list[dict]) -> list[dict]:
         if any(c in missing for c in (COL_ITEM_CODE, COL_NAME)):
             locations.append("型番・商品名はテンプレに手入力し、再アップロード")
         if any(c not in (COL_ITEM_CODE, COL_NAME) for c in missing):
-            locations.append("上の「確認・修正」表の該当欄に手入力（メーカー・包装欄はテンプレでも入力可）")
+            locations.append("上の「確認・修正」表の該当欄に手入力")
         out.append({"型番": item_key(rec) or "未入力", "待手入力": " / ".join(missing),
                     "入力場所": " / ".join(locations)})
     return out
@@ -348,6 +370,11 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
                 row[c] = v
             else:
                 row.pop(c, None)
+        defaults = _default_package(row)
+        defaults = [c for c in _WEIGHT_FIELDS if c in defaults or
+                    (c in ex.get("default_package_fields", []) and row.get(c) == base[jan].get(c))]
+        if defaults:
+            issues.append(Issue(0, jan, "warn", _default_note(defaults)))
         out_nst.append(row)
         out_bm.append({**row, COL_HS: hs, COL_NAME_EN: name_en})
         if ex.get("weight_source"):
@@ -356,6 +383,9 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
             sources[jan] = "manual"
         else:
             sources[jan] = None
+        if defaults:
+            sources[jan] = " · ".join(filter(None, [sources[jan],
+                "default-placeholder:" + "/".join(defaults)]))
     return out_nst, out_bm, sources, issues
 
 

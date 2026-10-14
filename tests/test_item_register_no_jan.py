@@ -109,7 +109,9 @@ def test_page15_no_jan_generation_and_existing_code_exclusion():
         checklist = next(d.value for d in at.dataframe if '待手入力' in d.value.columns)
         assert checklist['型番'].tolist() == SKUS[1:]
         assert all('メーカー名' not in text for text in checklist['待手入力'])
-        assert all(F.COL_PKG_WEIGHT in text for text in checklist['待手入力'])
+        assert all(F.COL_PKG_WEIGHT not in text for text in checklist['待手入力'])
+        editor = next(d.value for d in at.dataframe if R.COL_PKG_WEIGHT in d.value.columns)
+        assert all(editor[c].eq('1').all() for c in R._WEIGHT_FIELDS)
         at.button(key='page15_gen').click().run()
         assert not at.exception, [e.value for e in at.exception]
         assert at.session_state['page15_zip_n'] == 5
@@ -134,7 +136,7 @@ def test_manual_input_checklist_reports_only_missing_no_jan_fields():
     assert len(needs) == 1 and needs[0]['型番'] == SKUS[0]
     text = needs[0]['待手入力']
     assert 'メーカー名' not in text and F.COL_PKG_DIMS[0] not in text and 'HS' not in text
-    assert all(f in text for f in [*F.COL_PKG_DIMS[1:], F.COL_PKG_WEIGHT, '通関英文名'])
+    assert text == '通関英文名'
     assert '確認・修正' in needs[0]['入力場所']
     assert R.manual_input_needs([complete, regular]) == []
 

@@ -128,9 +128,10 @@ def test_frame_roundtrip_edits_and_outputs():
     recs[1]["アイテム名"] = ""
     out_nst, out_bm, src, issues = R.from_frame(recs, nst, extra)
     assert [r["JANコード"] for r in out_nst] == ["4901234567894"]
-    assert "パッケージ重量(g)" not in out_nst[0]
+    assert out_nst[0]["パッケージ重量(g)"] == "1"
     assert out_bm[0]["_name_en"] == "Shampoo" and out_bm[0]["_hs"] == "330510"
-    assert src == {"4901234567894": "superdelivery"}
+    assert src["4901234567894"].startswith("superdelivery")
+    assert "default-placeholder:パッケージ重量(g)" in src["4901234567894"]
     assert {i.level for i in issues} == {"warn", "error"}
 
     # NST CSV: 有データ列のみ・先頭は 型番（原本の登録手順どおり Internal ID 列は無い）
