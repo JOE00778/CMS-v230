@@ -99,7 +99,7 @@ def _cached_prefix_makers() -> dict[str, str]:
 
 
 _ITEM_KEYS = ["page15_result", "page15_zip_bytes", "page15_zip_n", "page15_log_msg",
-              "page15_gen_issues", "page15_editor", "page15_zip_src"]
+              "page15_gen_issues", "page15_editor", "page15_zip_src", "page15_pending_n"]
 
 
 def _content_hash(records) -> str:
@@ -159,19 +159,26 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
     ok_jans = {REG.item_key(r) for r in nst_rows}
     warn = len({i.jan for i in issues if i.level == "warn"} & ok_jans)
     return {"nst": nst_rows, "extra": extra, "issues": issues, "stats": stats,
-            "notes": notes, "ok": len(nst_rows), "ng": ng, "warn": warn}
+            "notes": notes, "choices": choices, "ok": len(nst_rows), "ng": ng, "warn": warn}
 
 
 def _generate(edited: pd.DataFrame, res: dict) -> None:
     """data_editor の内容 → NST CSV + 斑马 xlsx → ZIP。同時に台帳へ記録（失敗しても ZIP は出す）。"""
+    for key in ("page15_zip_bytes", "page15_zip_n", "page15_zip_src"):
+        st.session_state.pop(key, None)
     out_nst, out_bm, sources, gen_issues = REG.from_frame(
-        edited.to_dict("records"), res["nst"], res["extra"])
+        edited.to_dict("records"), res["nst"], res["extra"], choices=res.get("choices"))
+    review = REG.registration_issues(out_nst, choices=res.get("choices"))
+    gen_issues += review
     st.session_state["page15_gen_issues"] = gen_issues
+    st.session_state["page15_pending_n"] = len({i.jan for i in review})
+    if any(i.level == "error" for i in gen_issues):
+        st.error(t("❌ 入力エラーがあります。確認表を修正して再生成してください（部分出力はしません）"))
+        return
     if not out_nst:
         st.error(t("❌ 生成できる行がありません"))
         return
-    nst_csv = TPL.build_nst_master_csv(out_nst, REG.csv_field_columns(out_nst),
-                                       id_label=TPL.COL_ITEM_CODE)
+    nst_csv = REG.build_nst_registration_csv(out_nst)
     image_url_map: dict[str, str] = {}
     try:
         with get_connection() as conn:
@@ -185,6 +192,8 @@ def _generate(edited: pd.DataFrame, res: dict) -> None:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(TPL.dated_filename(), nst_csv)
         zf.writestr(JBM.dated_filename_bm(), bm_xlsx)
+        if gen_issues:
+            zf.writestr("登録前の確認事項.csv", _issues_df(gen_issues).to_csv(index=False).encode("utf-8-sig"))
     st.session_state["page15_zip_bytes"] = buf.getvalue()
     st.session_state["page15_zip_n"] = len(out_nst)
     st.session_state["page15_zip_src"] = _content_hash(edited.to_dict("records"))
@@ -243,6 +252,17 @@ def _render_result(res: dict) -> None:
     col_config["アイテム名"] = st.column_config.TextColumn(
         "アイテム名 🤖", max_chars=REG.NAME_MAX, help=t("NST アイテム名 = 斑马 中文名称（最大 60 字）"))
     col_config[REG.COL_URL] = st.column_config.LinkColumn(REG.COL_URL)
+    for col in FORM.COL_CARTON_DIMS:
+        col_config[col] = st.column_config.TextColumn(col, help=t("必須・整箱の実測値を手入力。包装寸法や既定値 1 から転用しません"))
+    for col, values in FORM.FIELD_CHOICES.items():
+        if col in df.columns:
+            col_config[col] = st.column_config.SelectboxColumn(col, options=["", *values])
+    choices = res.get("choices")
+    if choices:
+        for col, values in (("大分類", choices.large),
+                            ("中分類", tuple(dict.fromkeys(m for ms in choices.middle_by_large.values() for m in ms))),
+                            ("仕入先1：仕入先", choices.suppliers), ("商品担当者", choices.owners)):
+            col_config[col] = st.column_config.SelectboxColumn(col, options=["", *values])
     edited = st.data_editor(
         df, use_container_width=True, hide_index=True, num_rows="fixed",
         disabled=[c for c in df.columns if c not in REG.EDITABLE],
@@ -250,6 +270,16 @@ def _render_result(res: dict) -> None:
 
     st.info(t("ブランド・メーカーは不明なら空欄。包装寸法・重量の不足分は各 1 cm・1 g の既定仮値（非実測）です。取得・手入力済みの値は保持します。"))
     records = edited.to_dict("records")
+    current_nst, _, _, current_issues = REG.from_frame(records, res["nst"], res["extra"], choices=choices)
+    current_issues += REG.registration_issues(current_nst, choices=choices)
+    st.subheader(t("✍️ 全商品の必須・条件項目チェック"))
+    if current_issues:
+        st.warning(t("未入力・要確認項目があります。整箱三辺は実測値を手入力し、SKUID・分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
+        st.dataframe(_issues_df(current_issues), use_container_width=True, hide_index=True)
+    else:
+        st.success(t("NST テンプレ項目チェックで未入力・要確認項目はありません"))
+    with st.expander(t("📑 原本の全 71 項目・入力条件")):
+        st.dataframe(pd.DataFrame(REG.nst_field_rules()), use_container_width=True, hide_index=True)
     if any(not str(r.get(JAN_COL_NAME) or "").strip() for r in records):
         st.subheader(t("✍️ JAN なし商品の待手入力"))
         needs = REG.manual_input_needs(records)
@@ -272,6 +302,8 @@ def _render_result(res: dict) -> None:
         st.warning(t("⚠️ 表を編集しました。もう一度「📦 生成」を押してください（前回の ZIP は隠しています）"))
         zip_bytes = None
     if zip_bytes:
+        if st.session_state.get("page15_pending_n"):
+            st.warning(t(f"⚠️ {st.session_state['page15_pending_n']} 件に登録前の要確認項目があります。ZIP 内の「登録前の確認事項.csv」を確認してください。"))
         n = st.session_state.get("page15_zip_n", 0)
         st.download_button(
             t(f"⬇️ ZIP をダウンロード（{n} 件 · NST.csv + 斑马.xlsx）"), data=zip_bytes,
@@ -290,10 +322,12 @@ def _render_item_tab() -> None:
             "カートン入数 / 発注ロット / パッケージ 3 辺・重量（jancode に商品名が無い JAN は「アイテム名（任意）」も記入）\n"
             "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名は手入力必須（ETERNAL-BONSAI の既定 6 型番は JAN 欄に直接入力可）。ブランド・メーカーは不明なら空欄。包装寸法・重量が空なら各 1 cm・1 g の仮値（非実測）。HS・通関英文名は判定結果が空なら確認表で手入力\n"
             "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "
-            "型番は入力値（空なら JAN）/ 取扱中・NEW・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
+            "型番は入力値（空なら JAN）/ 取扱中・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
+            "- **NST 原本の追加項目**：整箱三辺は実測値を手入力。SKUID・メーカー型番・商品本体値・商品ランク等はテンプレか確認表で入力。商品ランクは該当がなければ空欄。海外仕入・ライセンス項目は適用時だけ確認\n"
+            "- **NST 出力の JAN**：実 JAN が無い商品は原本指定に従い型番を出力（内部の実 JAN・台帳は空のまま）\n"
             "- **網調べ**は空欄だけ埋める（手入力は上書きしない）。出典 URL を表で確認\n"
             "- **NST に登録済みの JAN / 型番** はエラーで外す\n"
-            "- **出力**：NST CSV（有データ列のみ・先頭=型番）+ 斑马 xlsx（中文名称 = アイテム名）"
+            "- **出力**：NST CSV（原本の全 71 列・列名と順序を保持、空列も削除しません）+ 斑马 xlsx（中文名称 = アイテム名）"
         ))
     try:
         choices = _cached_choices()

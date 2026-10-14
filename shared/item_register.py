@@ -6,8 +6,8 @@
 
 enrich が埋めるもの（仕様書 SPEC_item_register_v2 §1・§4・§6）:
   アイテム名 = jancode.xyz 商品名（60 字で切る・切ったら warn。取れなければ error＝NST 必須）
-  メーカー名 = resolve_maker（NST 同プレフィックス → jancode 会社名 → 空+warn）
-  型番 = 入力値（空なら JAN）/ 取扱区分・商品ランク・部門・仕入区分・発注通貨 = FIXED / 税率 = 大分類「食品」なら ★
+  メーカー名 = resolve_maker（NST 同プレフィックス → jancode 会社名 → 空）
+  型番 = 入力値（空なら JAN）/ 取扱区分・部門・仕入区分・発注通貨 = FIXED（商品ランクは任意） / 税率 = 大分類「食品」なら ★
   購入価格・仕入先1：優先・優先場所・保管棚を使用・売上原価勘定・サポート提供・NE_連携対象・
     納税スケジュール・原価計算法 = NST 原本 BJ〜BS 列の数式の値（FIXED_DERIVED / _derived）
   _hs・_name_en = classify_customs（判定できなければ空のまま・推測で埋めない）
@@ -19,10 +19,12 @@ fetch_meta / fetch_weight / classify_customs は引数で受ける（テスト�
 from __future__ import annotations
 
 import json
+import math
 import re
 
 from data_warehouse.templates.item_entry_form import (
-    COL_JAN, COL_LARGE, COL_NAME_MANUAL, COL_MAKER_MANUAL, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, INPUT_COLUMNS, Issue,
+    COL_JAN, COL_LARGE, COL_NAME_MANUAL, COL_MAKER_MANUAL, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, COL_CARTON_DIMS, INPUT_COLUMNS, ADDITIONAL_INPUT_COLUMNS,
+    NUMERIC_COLUMNS, validate_fields, _num, Issue,
 )
 from shared.jan_web import INTERVAL, fetch_many
 from shared.nst_choices import FIXED, resolve_maker
@@ -58,8 +60,11 @@ _FOOD_CATS = {"食品", "菓子", "飲料", "サプリメント"}   # 大分類=
 
 def _derived(row: dict) -> dict:
     """BJ 購入価格 = 商品原価 / BR 納税スケジュール = 税率 ★ なら 仕入8%＆販売免税、他は 仕入10%＆販売免税。"""
-    return {**FIXED_DERIVED, "購入価格": row.get("商品原価", ""),
-            "納税スケジュール": "仕入8%＆販売免税" if row.get(COL_TAX) == "★" else "仕入10%＆販売免税"}
+    kind = row.get("仕入区分", "輸出専用")
+    reduced = row.get(COL_TAX) == "★"
+    tax_schedule = ("仕入8%＆販売免税" if reduced else "仕入10%＆販売免税") if kind == "輸出専用" else (
+        "消費税8%" if reduced else "海外仕入" if kind == "海外仕入" else "消費税10%")
+    return {**FIXED_DERIVED, "購入価格": row.get("商品原価", ""), "納税スケジュール": tax_schedule}
 
 
 # 画面の表（data_editor）: 表示名 → 行 dict のキー
@@ -71,7 +76,9 @@ FRAME_COLUMNS: dict[str, str] = {
     **{c: c for c in (*COL_PKG_DIMS, COL_PKG_WEIGHT)},
     "カートン入数": "カートン入数", "発注ロット": "発注ロット",
 }
-EDITABLE = ["アイテム名", "メーカー名", "通関英文名", "HS", *COL_PKG_DIMS, COL_PKG_WEIGHT]
+FRAME_COLUMNS.update({c: c for c in ADDITIONAL_INPUT_COLUMNS})
+EDITABLE = list(dict.fromkeys(["アイテム名", "メーカー名", "通関英文名", "HS",
+    *INPUT_COLUMNS[1:], *ADDITIONAL_INPUT_COLUMNS]))
 COL_AUTO = "🤖 自動入力"
 COL_URL = "網調べ URL"
 COL_HS_CHECK = "HS 判定"
@@ -196,8 +203,9 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
         auto = ([] if manual else ["アイテム名(jancode)"]) + ([f"メーカー名({maker_src})"] if maker and maker_src != "manual" else [])
 
         row = {COL_ITEM_CODE: code, COL_NAME: name, **{c: r.get(c, "") for c in INPUT_COLUMNS},
-               COL_MAKER: maker, **FIXED,
-               COL_TAX: "★" if r.get(COL_LARGE) == "食品" else ""}
+               **{c: r.get(c, "") for c in ADDITIONAL_INPUT_COLUMNS}, COL_MAKER: maker,
+               **{c: v for c, v in FIXED.items() if c != "商品ランク"},
+               COL_TAX: r.get(COL_TAX) or ("★" if r.get(COL_LARGE) == "食品" else "")}
         row.update(_derived(row))
 
         extra = {"maker_source": maker_src, "auto": auto,
@@ -332,7 +340,7 @@ def manual_input_needs(records: list[dict]) -> list[dict]:
     return out
 
 
-def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, dict]):
+def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, dict], *, choices=None):
     """人が直した表 → (nst_rows, bm_rows, weight_sources, issues)。
 
     bm_rows = NST 行 + "_hs"/"_name_en"（build_bm_xlsx へそのまま渡す形）。
@@ -348,10 +356,14 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
         ex = bm_extra.get(jan, {})
         edited = {FRAME_COLUMNS[c]: str(rec.get(c) if rec.get(c) is not None else "").strip()
                   for c in EDITABLE}
-        for c in (*COL_PKG_DIMS, COL_PKG_WEIGHT):
+        for c in NUMERIC_COLUMNS:
+            if c not in edited:
+                continue
             v = edited[c]
             try:
-                ok = float(v) > 0 if v else True
+                n = float(v) if v else None
+                positive = "(cm)" in c or "(g)" in c or c in ("商品原価", "カートン入数")
+                ok = n is None or (math.isfinite(n) and (n > 0 if positive else n >= 0))
             except ValueError:
                 ok = False
             if not ok:
@@ -370,6 +382,12 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
                 row[c] = v
             else:
                 row.pop(c, None)
+        # 大分類・税率・原価を直したら依存する自動列も再計算する。
+        row.update(_derived(row))
+        validation = validate_fields(row, choices=choices)
+        if validation:
+            issues.extend(Issue(0, jan, "error", message) for message in validation)
+            continue
         defaults = _default_package(row)
         defaults = [c for c in _WEIGHT_FIELDS if c in defaults or
                     (c in ex.get("default_package_fields", []) and row.get(c) == base[jan].get(c))]
@@ -395,6 +413,65 @@ def csv_field_columns(nst_rows: list[dict]) -> list[str]:
     have = {k for r in nst_rows for k, v in r.items() if str(v).strip() != ""}
     return [n for _, n in NST_MASTER_COLUMNS if n in have and n != COL_ITEM_CODE]
 
+
+
+def build_nst_registration_csv(rows: list[dict]) -> bytes:
+    """新規登録専用。JAN なしの型番代入はこのコピー上だけ（照合・BM・台帳は実 JAN）。"""
+    from data_warehouse.templates import nst_item_master as tpl
+    export_rows = [{**row, COL_JAN: row.get(COL_JAN) or item_key(row)} for row in rows]
+    # Boss: 新規登録 CSV は原本 row2 の全71列・原文・順序を厳守。空列も削除しない。
+    columns = [name for _, name in tpl.NST_MASTER_COLUMNS if name != COL_ITEM_CODE]
+    return tpl.build_nst_master_csv(export_rows, columns, id_label=COL_ITEM_CODE)
+
+
+def nst_field_rules() -> list[dict]:
+    """71 列の用途を原本の順で提示。テンプレ側の壊れた参照や見本値は移植しない。"""
+    from data_warehouse.templates.nst_item_master import (
+        NST_MASTER_COLUMNS, NST_FIELD_HELP, NST_AUTOMATIC_COLUMNS, NST_REGISTRATION_FIXED)
+    out = []
+    for mark, col in NST_MASTER_COLUMNS:
+        mode = ("自動計算・固定値" if col in (*NST_AUTOMATIC_COLUMNS, *NST_REGISTRATION_FIXED) else
+                "型番 / 実 JAN（NST 出力時のみ型番代入）" if col in (COL_ITEM_CODE, COL_JAN) else
+                "取得値または手入力" if col in (COL_NAME, COL_MAKER) else "テンプレ / 確認表で入力")
+        condition = mark or "任意"
+        if col == COL_TAX:
+            condition = "軽減税率対象のみ ★、対象外は空欄"
+        elif col == COL_MAKER:
+            condition = "原本: ASEAN 必須 / Boss指定: 不明なら空欄"
+        elif col == "商品ランク":
+            condition = "原本: ASEAN必須 / 該当が無ければ空欄"
+        out.append({"項目": col, "条件": condition, "入力方法": mode,
+                    "説明": NST_FIELD_HELP.get(col, "")})
+    return out
+
+
+def registration_issues(rows: list[dict], *, choices=None) -> list[Issue]:
+    """全商品の必須・条件必須・分類税率を点検。未入力を推測値で埋めない。"""
+    from data_warehouse.templates.nst_item_master import NST_MASTER_COLUMNS
+    out = []
+    for row in rows:
+        code = item_key(row)
+        for mark, col in NST_MASTER_COLUMNS:
+            value = str(row[col]).strip() if row.get(col) is not None else ""
+            required = mark == "必須" and col not in (COL_JAN, COL_TAX)
+            required |= mark == "海外仕入：必須" and row.get("仕入区分") == "海外仕入"
+            required |= mark == "ライセンス時：必須" and any((n := _num(str(row.get(c) or ""))) is not None and n > 0 for c in ("ライセンス率", "ライセンス料(AT)"))
+            if col == COL_JAN:
+                required = not (row.get(COL_JAN) or code)
+            if required and not value:
+                out.append(Issue(0, code, "warn", f"{col}: 必須項目が空です。確認済みの値を手入力してください"))
+        if row.get("仕入区分") == "輸出専用" and not row.get("SKUID"):
+            out.append(Issue(0, code, "warn", "SKUID: 輸出専用の在庫連携フラグID。適用と登録値を担当者に確認してください（型番を自動代入しません）"))
+        if row.get("商品ランク") == "NEW":
+            out.append(Issue(0, code, "warn", "商品ランク=NEW: 原本は該当が無い場合は空欄。適用を確認し、不適用なら確認表で空欄にしてください"))
+        name = str(row.get(COL_NAME) or "")
+        tea = bool(re.search(r"玄米茶|煎茶|ほうじ茶|桜葉茶|抹茶(?:入り|スティック)", name))
+        if tea and (row.get(COL_LARGE) != "食品" or row.get(COL_TAX) != "★"):
+            out.append(Issue(0, code, "warn", "茶商品の分類・税率を確認してください（食品 / 嗜好品（茶・コーヒー） / 軽減税率 ★ の適用を確認して手入力）"))
+        if row.get(COL_LARGE) == "食品" and row.get(COL_TAX) != "★" and not tea:
+            out.append(Issue(0, code, "warn", "食品の税率が空です。軽減税率対象なら ★ を手入力してください"))
+        out.extend(Issue(0, code, "error", message) for message in validate_fields(row, choices=choices))
+    return out
 
 _INSERT = ("INSERT INTO nst.item_register_log "
            "(item_code, jan, payload, bm_payload, weight_source, registered_by) "

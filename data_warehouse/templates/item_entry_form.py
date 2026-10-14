@@ -1,11 +1,11 @@
 """商品登録 v2 の入力テンプレ（Excel）生成とアップロード解析。DB 非依存。
 
-人が埋めるのは INPUT_COLUMNS の 12 列だけ。列名は NST テンプレ原本
+旧 INPUT_COLUMNS の 12 列を維持し、原本の手入力・条件項目を追加。列名は NST テンプレ原本
 （nst_item_master_template.xlsx · NetSuiteマスタ登録 row2）の原文そのまま。
 固定値列・アイテム名・メーカー名・税率などは呼び出し側が NST 行を組むときに足す。
 
 シート構成:
-  商品登録  … row1=見出し（原文列名・説明はセルのコメント）/ row2〜=入力。read_upload はここだけ読む
+  商品登録  … row1=見出し（原文列名・説明はセルのコメント）/ row2〜=入力。原本 NetSuiteマスタ登録 シートの row5〜も読める
   記入例    … 見本 1 行（読まない）
   _選択肢   … hidden。仕入先 / 商品担当者 / 大分類→定義名 対応表 / 大分類ごとの中分類列
 
@@ -21,10 +21,14 @@ from __future__ import annotations
 
 import datetime
 import io
+import math
+import re
 import unicodedata
 from dataclasses import dataclass
 
-from data_warehouse.templates.nst_item_master import NST_MASTER_COLUMNS, _norm
+from data_warehouse.templates.nst_item_master import (
+    NST_MASTER_COLUMNS, NST_FIELD_HELP, NST_AUTOMATIC_COLUMNS, NST_REGISTRATION_FIXED, _norm,
+)
 
 COL_JAN = "JANコード"
 COL_COST = "商品原価"
@@ -36,6 +40,7 @@ COL_CARTON = "カートン入数"
 COL_LOT = "発注ロット"
 COL_PKG_DIMS = ("パッケージ高さ(cm)", "パッケージ幅(cm)", "パッケージ奥行(cm)")
 COL_PKG_WEIGHT = "パッケージ重量(g)"
+COL_CARTON_DIMS = ("カートン高さ(cm)", "カートン幅(cm)", "カートン奥行(cm)")
 
 INPUT_COLUMNS: list[str] = [COL_JAN, COL_COST, COL_SUPPLIER, COL_OWNER, COL_LARGE, COL_MIDDLE,
                             COL_CARTON, COL_LOT, *COL_PKG_DIMS, COL_PKG_WEIGHT]
@@ -47,6 +52,24 @@ COL_MAKER_MANUAL = "メーカー名（任意）"
 # Boss 2026-10-13: この 6 型番だけは JAN 欄への入力を互換受付。実 JAN は空。
 JAN_MODEL_ALIASES = frozenset("ETERNAL-BONSAI-" + c for c in ("REDN", "NV", "GR", "WH", "BK", "LGR"))
 TEMPLATE_COLUMNS: list[str] = [COL_JAN, COL_NAME_MANUAL, *INPUT_COLUMNS[1:], COL_ITEM_CODE, COL_MAKER_MANUAL]
+
+# 旧入力列は必須ヘッダとして保持。新列は末尾に追加、旧テンプレも読める。
+ADDITIONAL_INPUT_COLUMNS = [c for _, c in NST_MASTER_COLUMNS
+                           if c not in (*INPUT_COLUMNS, COL_ITEM_CODE, "アイテム名", "メーカー名",
+                                        *NST_AUTOMATIC_COLUMNS, *NST_REGISTRATION_FIXED)]
+TEMPLATE_COLUMNS += ADDITIONAL_INPUT_COLUMNS
+NUMERIC_COLUMNS = tuple(c for _, c in NST_MASTER_COLUMNS
+                        if "(cm)" in c or "(g)" in c) + (COL_CARTON, COL_COST,
+    "コンテナ運送費", "開発費単価", "不良率自社負担単価", "不良率(PO)", "関税(AT)",
+    "関税率", "ライセンス料(AT)", "ライセンス率", "その他費用", "参考販売価格(税抜)", "直送送料")
+FIELD_CHOICES = {
+    "商品ランク": ("NEW", "Aランク", "Bランク", "Cランク", "取扱中止"),
+    "保証期間": ("保証なし", "3ヶ月", "6ヶ月", "1年", "2年", "3年"),
+    "不良対応方法（社内）": ("返送", "お客様処分（写真・動画必要）", "お客様処分（報告のみ）"),
+    "不良対応方法（仕入先）": ("仕入先返品", "処分（不良箇所写真・動画）", "処分（仕入先指定写真・動画）", "処分（対応なし）", "保管", "パーツ交換"),
+    "税率": ("★",), " 直送アイテム　": ("T",), "特注アイテム": ("T",),
+    "商品サイズ": ("T", "F"), "段ボール梱包": ("T", "F"),
+}
 
 SHEET_INPUT = "商品登録"
 SHEET_EXAMPLE = "記入例"
@@ -68,8 +91,8 @@ _HELP = {
     COL_OWNER: "このアイテムの担当者を選択",
     COL_LARGE: "大分類を選択",
     COL_MIDDLE: "大分類を先に選ぶと、その中分類だけが出ます",
-    COL_CARTON: "カートン入数（正の整数）",
-    COL_LOT: "発注時のロット数（正の整数）",
+    COL_CARTON: "カートン入数（正の数。原本は整数または小数）",
+    COL_LOT: "発注時のロット数・条件（原本例：1色1000、最大 60 字）",
     COL_PKG_DIMS[0]: "外装パッケージの高さ（整数または小数）。空欄は網調べ後も不明なら 1 cm の仮値（非実測）",
     COL_PKG_DIMS[1]: "外装パッケージの幅（整数または小数）。不明なら 1 cm の仮値（非実測）",
     COL_PKG_DIMS[2]: "外装パッケージの奥行（整数または小数）。不明なら 1 cm の仮値（非実測）",
@@ -114,7 +137,8 @@ def _write_header(ws) -> None:
         c = ws.cell(row=1, column=i, value=name)
         c.font = Font(bold=True)
         c.fill = req_fill if name in _REQUIRED else opt_fill
-        c.comment = Comment(("【必須】" if name in _REQUIRED else "") + _HELP[name], "CMS")
+        mark = next((m for m, col in NST_MASTER_COLUMNS if col == name), None)
+        c.comment = Comment((f"【{mark}】" if mark else "") + _HELP.get(name, NST_FIELD_HELP.get(name, "")), "CMS")
         ws.column_dimensions[c.column_letter].width = 34 if name in (COL_SUPPLIER, COL_NAME_MANUAL) else 16
 
 
@@ -169,6 +193,10 @@ def build_template(choices) -> bytes:
     ):
         ws.add_data_validation(dv)
 
+    for col, values in FIELD_CHOICES.items():
+        if col in letter_of:
+            ws.add_data_validation(_list_dv('"' + ",".join(values) + '"', letter_of[col], col))
+
     # 記入例
     _write_header(ex)
     lg0 = large[0] if large else ""
@@ -203,7 +231,8 @@ def _s(v) -> str:
 
 def _num(s: str) -> float | None:
     try:
-        return float(s)
+        n = float(s)
+        return n if math.isfinite(n) else None
     except ValueError:
         return None
 
@@ -234,9 +263,10 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
           / warn 行数 = len({i.row for i in issues if i.level == "warn"})
     """
     wb = _open(file)
-    if SHEET_INPUT not in wb.sheetnames:
+    sheet_name = SHEET_INPUT if SHEET_INPUT in wb.sheetnames else "NetSuiteマスタ登録"
+    if sheet_name not in wb.sheetnames:
         return [], [Issue(0, "", "error", f"シート「{SHEET_INPUT}」がありません")]
-    all_rows = list(wb[SHEET_INPUT].iter_rows(values_only=True))
+    all_rows = list(wb[sheet_name].iter_rows(values_only=True))
     wb.close()
 
     # 見出し行: 先頭 10 行で JANコード を含む最初の行
@@ -258,21 +288,37 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
     seen: dict[str, int] = {}
     seen_codes: dict[str, int] = {}
 
-    for i, raw in enumerate(all_rows[header_idx + 1:], start=header_idx + 2):
+    data_idx = header_idx + (3 if sheet_name == "NetSuiteマスタ登録" else 1)
+    for i, raw in enumerate(all_rows[data_idx:], start=data_idx + 1):
         rec = {c: _s(raw[pos[_norm(c)]]) if pos[_norm(c)] < len(raw) else "" for c in INPUT_COLUMNS}
-        p_name = pos.get(_norm(COL_NAME_MANUAL))
+        p_name = pos.get(_norm(COL_NAME_MANUAL), pos.get("アイテム名"))
         rec[COL_NAME_MANUAL] = _s(raw[p_name]) if p_name is not None and p_name < len(raw) else ""
         for col in (COL_ITEM_CODE, COL_MAKER_MANUAL):
-            idx = pos.get(_norm(col))
+            idx = pos.get(_norm(col), pos.get("メーカー名") if col == COL_MAKER_MANUAL else None)
             rec[col] = _s(raw[idx]) if idx is not None and idx < len(raw) else ""
-        if not any(rec.values()):
+        for col in ADDITIONAL_INPUT_COLUMNS:
+            idx = pos.get(_norm(col))
+            val = raw[idx] if idx is not None and idx < len(raw) else None
+            rec[col] = val.strftime("%Y/%m/%d") if col == "発売日" and isinstance(val, datetime.date) else _s(val)
+            if col in ("商品サイズ", "段ボール梱包") and rec[col] in ("True", "False"):
+                rec[col] = "T" if rec[col] == "True" else "F"
+        if not any(rec.get(c) for c in (COL_JAN, COL_ITEM_CODE, COL_NAME_MANUAL, COL_COST, COL_SUPPLIER)):
             continue
-        for c in (COL_JAN, COL_COST, COL_CARTON, COL_LOT, *COL_PKG_DIMS, COL_PKG_WEIGHT):
+        for c in (COL_JAN, *NUMERIC_COLUMNS):
             rec[c] = _nfkc(rec[c])
         jan = rec[COL_JAN]
         errs: list[str] = []
         warns: list[str] = []
+        from shared.nst_choices import FIXED
+        for col in NST_REGISTRATION_FIXED:
+            idx = pos.get(_norm(col))
+            value = _s(raw[idx]) if idx is not None and idx < len(raw) else ""
+            if value and value != FIXED[col]:
+                errs.append(f"{col}={value} は現在の登録フロー対象外です（{FIXED[col]}専用）。固定値へ勝手に変更せず、別途確認してください")
 
+        # NST 原本では JAN なしのとき型番を JAN 欄に記入。内部は実 JAN を分離する。
+        if rec[COL_ITEM_CODE] and jan == rec[COL_ITEM_CODE] and not (jan.isdigit() and len(jan) in (8, 13)):
+            rec[COL_JAN] = jan = ""
         if jan in JAN_MODEL_ALIASES:
             if rec[COL_ITEM_CODE] and rec[COL_ITEM_CODE] != jan:
                 errs.append("JAN 欄の盆栽型番と型番欄の値が一致しません（同じ型番にしてください）")
@@ -313,11 +359,13 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
             errs.append(f"大分類が選択肢にありません（{rec[COL_LARGE] or '空'}）")
         elif rec[COL_MIDDLE] not in mbl[rec[COL_LARGE]]:
             errs.append(f"大分類「{rec[COL_LARGE]}」に中分類「{rec[COL_MIDDLE] or '空'}」はありません")
-        for c in (COL_CARTON, COL_LOT):
-            if rec[c] == "":
-                warns.append(f"{c} が空です")
-            elif not (rec[c].isdigit() and int(rec[c]) > 0):
-                errs.append(f"{c} が正の整数ではありません（{rec[c]}）")
+        if rec[COL_CARTON] == "":
+            warns.append(f"{COL_CARTON} が空です（必須・手入力）")
+        elif not ((n := _num(rec[COL_CARTON])) is not None and n > 0):
+            errs.append(f"{COL_CARTON} が正の数ではありません（{rec[COL_CARTON]}）")
+        if not rec[COL_LOT]:
+            warns.append(f"{COL_LOT} が空です")
+        errs.extend(validate_fields({c: v for c, v in rec.items() if c not in (*COL_PKG_DIMS, COL_PKG_WEIGHT)}, choices=choices))
 
         for c in (*COL_PKG_DIMS, COL_PKG_WEIGHT):
             if rec[c] and not ((n := _num(rec[c])) is not None and n > 0):
@@ -332,3 +380,50 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
         issues.extend(Issue(i, code or jan, "warn", m) for m in warns)
         rows.append(rec)
     return rows, issues
+
+
+def validate_fields(row: dict, *, choices=None) -> list[str]:
+    """任意入力でも原本の数値・日付・文字数・選択肢条件を守る。必須の空欄は別の待入力表へ。"""
+    errors = []
+    values_by_key = {_norm(k): v for k, v in FIELD_CHOICES.items()}
+    for col, raw in row.items():
+        value = _s(raw)
+        if not value:
+            continue
+        if col in NUMERIC_COLUMNS:
+            n = _num(_nfkc(value))
+            positive = "(cm)" in col or "(g)" in col or col in (COL_CARTON, COL_COST)
+            if n is None or (n <= 0 if positive else n < 0):
+                errors.append(f"{col} が{'正の' if positive else '0 以上の'}有限数ではありません（{value}）")
+        key = _norm(col)
+        if key in values_by_key and value not in values_by_key[key]:
+            errors.append(f"{col} が選択肢にありません（{value}）")
+        hint = NST_FIELD_HELP.get(col, "")
+        if "最大60文字" in hint and len(value) > 60:
+            errors.append(f"{col} は最大 60 字です")
+        if "最大999文字" in hint and len(value) > 999:
+            errors.append(f"{col} は最大 999 字です")
+        if "全角カッコ、カンマ禁止" in hint and any(c in value for c in "（）,，"):
+            errors.append(f"{col} に禁止文字（全角カッコ・カンマ）があります")
+        if "ローマ数字禁止" in hint and re.search(r"[Ⅰ-ⅿ]", value):
+            errors.append(f"{col} に禁止文字（ローマ数字）があります")
+        if col == "生原価" and not re.fullmatch(r"(?:USD|RMB)\s*\d+(?:\.\d+)?", _nfkc(value)):
+            errors.append("生原価は USD または RMB を数字の前につけてください（例 RMB53）")
+        if col == "中国手数料" and not re.fullmatch(r"\d+(?:\.\d+)?%", _nfkc(value)):
+            errors.append("中国手数料は数字の後に % をつけてください（例 5.3%）")
+        if col == "発売日":
+            try:
+                if datetime.datetime.strptime(value, "%Y/%m/%d").strftime("%Y/%m/%d") != value:
+                    raise ValueError(value)
+            except ValueError:
+                errors.append("発売日は YYYY/MM/DD で記入してください")
+    if choices is not None:
+        if row.get(COL_LARGE) not in choices.middle_by_large:
+            errors.append("大分類が選択肢にありません")
+        elif row.get(COL_MIDDLE) not in choices.middle_by_large[row[COL_LARGE]]:
+            errors.append(f"大分類「{row[COL_LARGE]}」に中分類「{row.get(COL_MIDDLE, '')}」はありません")
+        if row.get(COL_SUPPLIER) not in choices.suppliers:
+            errors.append("仕入先が選択肢にありません")
+        if row.get(COL_OWNER) not in choices.owners:
+            errors.append("商品担当者が選択肢にありません")
+    return errors

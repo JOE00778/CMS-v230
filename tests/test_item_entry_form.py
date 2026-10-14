@@ -61,7 +61,7 @@ def test_template_structure():
     assert F.TEMPLATE_COLUMNS[1] == "アイテム名（任意）" and F.COL_NAME_MANUAL not in F.INPUT_COLUMNS
     assert ws.freeze_panes == "B2"
     dvs = ws.data_validations.dataValidation
-    assert len(dvs) == 4
+    assert len(dvs) == 4 + len(F.FIELD_CHOICES)
     for dv in dvs:
         assert dv.type == "list" and dv.showErrorMessage is True and not dv.showDropDown
         assert len(dv.formula1) < 255
@@ -123,13 +123,13 @@ def test_read_upload_ok_and_errors():
         _row(**{"JANコード": _cd("490000000002"), "商品担当者": "007 安部龍也"}),     # 10
         _row(**{"JANコード": _cd("490000000003"), "大分類": "中国"}),          # 11
         _row(**{"JANコード": _cd("490000000004"), "中分類": "加工食品"}),      # 12 組合せ
-        _row(**{"JANコード": _cd("490000000005"), "カートン入数": 1.5}),       # 13
+        _row(**{"JANコード": _cd("490000000005"), "カートン入数": 0}),         # 13
         _row(**{"JANコード": _cd("490000000006"), "発注ロット": None,
                 "カートン入数": "２４"}),                                       # 14 ok + warn
     ]
     rows, issues = F.read_upload(_upload(rows_in), CH)
     assert [r["JANコード"] for r in rows] == [J1, J2, _cd("490000000006")]
-    assert set(rows[0]) == set(F.INPUT_COLUMNS) | {F.COL_NAME_MANUAL, F.COL_ITEM_CODE, F.COL_MAKER_MANUAL}
+    assert set(rows[0]) == set(F.INPUT_COLUMNS) | set(F.ADDITIONAL_INPUT_COLUMNS) | {F.COL_NAME_MANUAL, F.COL_ITEM_CODE, F.COL_MAKER_MANUAL}
     assert rows[0][F.COL_NAME_MANUAL] == ""                 # 旧テンプレ（任意列なし）でも読める
     assert all(isinstance(v, str) for r in rows for v in r.values())
     assert rows[0]["商品原価"] == "1250" and rows[0]["パッケージ高さ(cm)"] == "6"

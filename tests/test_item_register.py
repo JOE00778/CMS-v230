@@ -65,7 +65,8 @@ def test_enrich_fills_fixed_maker_name_hs_and_counts():
     a, b = nst
     assert a["型番"] == "4901234567894" and a["アイテム名"] == "テスト シャンプー 480ml"
     assert a["メーカー名"] == "NSTメーカー" and extra[a["JANコード"]]["maker_source"] == "nst-prefix"
-    assert all(a[k] == v for k, v in FIXED.items())
+    assert all(a[k] == v for k, v in FIXED.items() if k != "商品ランク")
+    assert "商品ランク" not in a
     assert "税率" not in a and b["税率"] == "★"            # 食品だけ ★（空列は持たない）
     assert len(b["アイテム名"]) == 60 and "メーカー名" not in b
     # 人が書いた高さは上書きしない・空欄だけ埋める
