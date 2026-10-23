@@ -98,6 +98,11 @@ services:
       COUPANG_VENDOR_ID: ${COUPANG_VENDOR_ID:-}
       # KRW→USD 換算係数。既定 0.00068 は運営 Excel の固定値（実勢レートではない）
       COUPANG_KRW_USD_RATE: ${COUPANG_KRW_USD_RATE:-}
+      # page44 インボイス作成 · Shopify Admin API（2026-10-23）
+      # 注文番号 → 宛先・明細・JAN を引くだけの読み取り用途。資格情報は
+      # deploy/windows/.env に置く。未設定でも頁は開き、ボタンを押した時だけ「未配置」。
+      SHOPIFY_STORE: ${SHOPIFY_STORE:-0gaf7p-0j}
+      SHOPIFY_TOKEN: ${SHOPIFY_TOKEN:-}
       # Shopee 上架草稿流水线（page21「✅ 待确认」· 2026-09-09）。run_pipeline.py 在本容器内跑：
       #   GEMINI_API_KEY 未設定なら --mock-llm しか動かない（<MOCK> 文案は批准不可）。key は deploy/windows/.env に置く。
       #   IMAGE_PROCESSOR_URL: smikie_image_processor は別 stack（smikie_n8n_net）なので host.docker.internal 経由。
