@@ -63,9 +63,10 @@ if st.button(t("注文を読み込む"), type="primary", disabled=not order_no):
     with get_readonly_connection() as conn:
         customs = so.customs_by_jan(conn, jans)
     lines, warn = so.to_ci_lines(order, customs)
+    titles = [li.get("title") or "" for li in items]
     st.session_state.pop("ci_pdf", None)
     st.session_state["ci"] = {"order": order, "jans": jans, "warn": warn,
-                              "lines": lines, "no": order_no}
+                              "lines": lines, "titles": titles, "no": order_no}
 
 ci = st.session_state.get("ci")
 if not ci:
@@ -75,22 +76,23 @@ warn_by_jan: dict[str, list[str]] = {}
 for w in ci["warn"]:
     warn_by_jan.setdefault(w.split(" ", 1)[0], []).append(w.split(": ", 1)[-1])
 
-st.subheader(t("明細（HS・原産国・重量は直接直せる）"))
+st.subheader(t("明細（清関品名・HS・原産国・重量は直接直せる）"))
 st.caption(t("赤字の「要確認」がある行を確認・補完してから PDF を作る。"
              "「PG にも保存」にチェックすると次回から自動で入る。"))
 base = pd.DataFrame([{
     "JAN": j,
-    t("品名"): l.description,
+    t("商品名"): tt,
+    t("清関品名"): l.description,
     t("数量"): l.units,
     "HS": l.hs_code or "",
     t("原産国"): l.origin or "",
     t("正味 g/個"): round(l.net_weight_kg * 1000, 1) if l.net_weight_kg else None,
     t("単価"): l.unit_value,
     t("要確認"): " / ".join(warn_by_jan.get(j, [])),
-} for j, l in zip(jans, lines)])
+} for j, l, tt in zip(jans, lines, ci["titles"])])
 edited = st.data_editor(
     base, hide_index=True, use_container_width=True, key=f"ed_{ci['no']}",
-    disabled=["JAN", t("品名"), t("数量"), t("単価"), t("要確認")],
+    disabled=["JAN", t("商品名"), t("数量"), t("単価"), t("要確認")],
     column_config={
         "HS": st.column_config.TextColumn(help=t("6〜10 桁の数字")),
         t("原産国"): st.column_config.TextColumn(help=t("ISO 2 文字（JP / CN / KR …）"), max_chars=2),
@@ -101,6 +103,8 @@ edited = st.data_editor(
 bad = []
 for _, r in edited.iterrows():
     hs, cc, wg = str(r["HS"] or "").strip(), str(r[t("原産国")] or "").strip().upper(), r[t("正味 g/個")]
+    if not str(r[t("清関品名")] or "").strip():
+        bad.append(f"{r['JAN']}: 清関品名が空")
     if not re.fullmatch(r"\d{6,10}", hs):
         bad.append(f"{r['JAN']}: HS が 6〜10 桁の数字でない（{hs or '空'}）")
     if not re.fullmatch(r"[A-Z]{2}", cc):
@@ -113,7 +117,7 @@ if bad:
 new_lines = []
 for l, (_, r) in zip(lines, edited.iterrows()):
     w = r[t("正味 g/個")]
-    new_lines.append(type(l)(description=l.description, units=l.units,
+    new_lines.append(type(l)(description=str(r[t("清関品名")] or "").strip(), units=l.units,
                              net_weight_kg=round(float(w) / 1000, 3) if w and not pd.isna(w) else 0.0,
                              hs_code=str(r["HS"] or "").strip(),
                              origin=str(r[t("原産国")] or "").strip().upper(),
@@ -135,6 +139,8 @@ if st.button(t("PDF を作る"), type="primary", disabled=bool(bad)):
         changed = []
         for (_, b), (_, e) in zip(base.iterrows(), edited.iterrows()):
             row = {"jan": e["JAN"]}
+            if str(e[t("清関品名")]).strip() != str(b[t("清関品名")]).strip():
+                row["customs_name_en"] = str(e[t("清関品名")]).strip()
             if str(e["HS"]).strip() != str(b["HS"]).strip():
                 row["hs_code"] = str(e["HS"]).strip()
             if str(e[t("原産国")]).strip().upper() != str(b[t("原産国")]).strip().upper():

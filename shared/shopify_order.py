@@ -118,6 +118,7 @@ def customs_by_jan(conn, jans: list[str]) -> dict[str, dict]:
     rows = conn.execute(
         "select jan, hs_code, name_en, origin_country, origin_src,"
         "       net_weight_g, gross_weight_g, weight_src,"
+        "       customs_name_en,"
         "       extra->'origin_candidates' as origin_candidates,"
         "       extra->>'hs_flag' as hs_flag"
         "  from logistics.item_customs where jan = any(?)", (jans,)).fetchall()
@@ -143,6 +144,9 @@ def to_ci_lines(order: dict, customs: dict[str, dict]) -> tuple[list, list[str]]
         hs = c.get("hs_code") or (v.get("inventoryItem") or {}).get("harmonizedSystemCode") or ""
         w_g = c.get("net_weight_g") or c.get("gross_weight_g")
         title = li.get("title") or ""
+        cname = c.get("customs_name_en") or ""
+        if not cname:
+            warn.append(f"{jan or '(JAN なし)'} {title[:30]}: 清関品名が無い")
         if not hs:
             warn.append(f"{jan or '(JAN なし)'} {title[:30]}: HS コードが無い")
         if c.get("hs_flag"):
@@ -159,7 +163,7 @@ def to_ci_lines(order: dict, customs: dict[str, dict]) -> tuple[list, list[str]]
         if not w_g:
             warn.append(f"{jan or '(JAN なし)'} {title[:30]}: 重量が無い")
         lines.append(CiLine(
-            description=title,
+            description=cname,          # Boss 2026-10-25: 商品名ではなく清関用の英文品名
             units=qty,
             net_weight_kg=round(float(w_g) / 1000, 3) if w_g else 0.0,
             hs_code=hs,
@@ -181,6 +185,7 @@ def to_ci_doc(order: dict, lines: list, awb: str = "",
     addr = [x for x in (a.get("company"), a.get("address1"), a.get("address2")) if x]
     ship = datetime.fromisoformat(order["createdAt"].replace("Z", "+00:00")).date()
     return CiDoc(
+        invoice_no="SJ-" + (order.get("name") or "").lstrip("#"),
         ship_date=ship,
         consignee_name=name or (a.get("company") or ""),
         consignee_addr=addr,
@@ -214,6 +219,10 @@ def save_manual(conn, rows: list[dict]) -> int:
             conn.execute("update logistics.item_customs set origin_country=?,"
                          " origin_src='manual', updated_at=now() where jan=?",
                          (r["origin_country"], jan))
+        if r.get("customs_name_en"):
+            conn.execute("update logistics.item_customs set customs_name_en=?,"
+                         " customs_name_src='manual', updated_at=now() where jan=?",
+                         (r["customs_name_en"], jan))
         if r.get("net_weight_g"):
             conn.execute("update logistics.item_customs set net_weight_g=?,"
                          " weight_src='manual', updated_at=now() where jan=?",
