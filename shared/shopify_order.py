@@ -145,23 +145,22 @@ def to_ci_lines(order: dict, customs: dict[str, dict]) -> tuple[list, list[str]]
         w_g = c.get("net_weight_g") or c.get("gross_weight_g")
         title = li.get("title") or ""
         cname = c.get("customs_name_en") or ""
+        # 警告は「問題コード + 引数」で返す。文言は画面側が言語に合わせて出す（中/日 UI）
         if not cname:
-            warn.append(f"{jan or '(JAN なし)'} {title[:30]}: 清関品名が無い")
+            warn.append({"jan": jan, "code": "no_name"})
         if not hs:
-            warn.append(f"{jan or '(JAN なし)'} {title[:30]}: HS コードが無い")
+            warn.append({"jan": jan, "code": "no_hs"})
         if c.get("hs_flag"):
             # 2026-10-24 HS 審査で「事実どおりにしか書けない」とした品（虫よけ・殺菌剤・医薬品）
-            warn.append(f"{jan} {title[:30]}: HS {hs} 要注意 — {c['hs_flag']}")
+            warn.append({"jan": jan, "code": "hs_flag", "arg": c["hs_flag"]})
         if not c.get("origin_country"):
-            warn.append(f"{jan or '(JAN なし)'} {title[:30]}: 原産国が無い")
+            warn.append({"jan": jan, "code": "no_origin"})
         elif c.get("origin_src") == "default-conflict":
-            # Boss 2026-10-24「全部 JP で、invoice を作る時に警告」。
-            # 楽天の店舗間で原産国が割れていた 272 件。JP で出すが実物の表示を確認する
-            cands = c.get("origin_candidates") or []
-            warn.append(f"{jan} {title[:30]}: 原産国を JP で出力・要確認"
-                        f"（ネット上の表記が割れている: {' / '.join(cands)}）")
+            # Boss 2026-10-24「全部 JP で、invoice を作る時に警告」
+            warn.append({"jan": jan, "code": "origin_conflict",
+                         "arg": " / ".join(c.get("origin_candidates") or [])})
         if not w_g:
-            warn.append(f"{jan or '(JAN なし)'} {title[:30]}: 重量が無い")
+            warn.append({"jan": jan, "code": "no_weight"})
         lines.append(CiLine(
             description=cname,          # Boss 2026-10-25: 商品名ではなく清関用の英文品名
             units=qty,

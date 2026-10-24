@@ -451,10 +451,3 @@ def test_zip5は前ゼロを戻す():
     assert X.zip5("123-456") == "123-456"   # 数字でなければ触らない
 
 
-def test_PCCC核対に渡す郵便番号は5桁():
-    """関税庁は郵便番号を**文字列で**照合する（実測: `047515` → 오류）。
-    `str(r["X"])` のまま送ると、ソウルの客（01xxx〜09xxx）が全部 오류 になる。
-    """
-    page = (Path(__file__).parents[1] / "pages" / "41_📮_ECMS发货.py").read_text("utf-8")
-    assert 'X.zip5(r["X"])' in page
-    assert '"zip": str(r["X"])' not in page

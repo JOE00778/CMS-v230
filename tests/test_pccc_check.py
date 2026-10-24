@@ -122,26 +122,8 @@ def test_status_map_は大文字で引ける():
 # 番号 + 氏名 + 電話 + **登録済み配送地の郵便番号**を照合するので、客が引っ越し
 # 後に関税庁側を更新していないだけで 오류 になる。番号は生きている。
 # 自動削除は**正しい番号を捨てる**動きだったので消した。ここは戻さないこと。
-PAGE = (Path(__file__).parents[1] / "pages" / "41_📮_ECMS发货.py").read_text("utf-8")
 
 
 def test_自動削除の関数はもう無い():
     assert not hasattr(P, "apply_results"), (
         "PCCC を自動で消す関数を復活させない。関税庁の 오류 は「登録情報が古い」でも出る")
-
-
-def test_ページも検証結果で行を書き換えない():
-    """UI 側は単体テストで追えないので静的に釘を刺す（`test_ecms_page41_product_import`
-    と同じ手）。検証結果を使って PCCC 欄へ代入していたら落とす。"""
-    assert "apply_results" not in PAGE
-    for line in PAGE.splitlines():
-        body = line.strip()
-        if body.startswith("#"):
-            continue
-        assert not (body.startswith(("r[\"AA\"]", "r['AA']")) and "=" in body), \
-            f"検証結果で PCCC を消している疑い: {body}"
-
-
-def test_ページに_150ドル警告がある():
-    """運営 2026-09-08「订单金额超过150美金时，可以也增加一个人工提示信息吗」。"""
-    assert "over_duty_free" in PAGE

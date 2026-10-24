@@ -33,7 +33,7 @@ from shared import shopify_order as so  # noqa: E402
 from shared.invoice_ci import build  # noqa: E402
 
 st.title(t("🧾 インボイス作成"))
-st.caption(t("Shopify の注文番号 → FedEx コマーシャル・インボイス PDF（斑马は経由しない）"))
+st.caption(t("Shopify の注文番号 → コマーシャル・インボイス PDF（斑马は経由しない）"))
 
 col_a, col_b, col_c, col_d = st.columns([2, 2, 1, 1])
 order_no = col_a.text_input(t("Shopify 注文番号"), placeholder="1074")
@@ -72,9 +72,18 @@ ci = st.session_state.get("ci")
 if not ci:
     st.stop()
 order, jans, lines = ci["order"], ci["jans"], ci["lines"]
+WARN_TEXT = {
+    "no_name": t("清関品名が無い"),
+    "no_hs": t("HS コードが無い"),
+    "no_origin": t("原産国が無い"),
+    "no_weight": t("重量が無い"),
+    "origin_conflict": t("原産国を JP で出力・要確認（ネット上の表記が割れている）"),
+    "hs_flag": t("HS 要注意"),
+}
 warn_by_jan: dict[str, list[str]] = {}
 for w in ci["warn"]:
-    warn_by_jan.setdefault(w.split(" ", 1)[0], []).append(w.split(": ", 1)[-1])
+    msg = WARN_TEXT[w["code"]] + (f": {t(w['arg'])}" if w.get("arg") else "")
+    warn_by_jan.setdefault(w["jan"], []).append(msg)
 
 st.subheader(t("明細（清関品名・HS・原産国・重量は直接直せる）"))
 st.caption(t("赤字の「要確認」がある行を確認・補完してから PDF を作る。"
@@ -104,13 +113,13 @@ bad = []
 for _, r in edited.iterrows():
     hs, cc, wg = str(r["HS"] or "").strip(), str(r[t("原産国")] or "").strip().upper(), r[t("正味 g/個")]
     if not str(r[t("清関品名")] or "").strip():
-        bad.append(f"{r['JAN']}: 清関品名が空")
+        bad.append(f"{r['JAN']}: " + t("清関品名が空"))
     if not re.fullmatch(r"\d{6,10}", hs):
-        bad.append(f"{r['JAN']}: HS が 6〜10 桁の数字でない（{hs or '空'}）")
+        bad.append(f"{r['JAN']}: " + t("HS が 6〜10 桁の数字でない") + f"（{hs or '-'}）")
     if not re.fullmatch(r"[A-Z]{2}", cc):
-        bad.append(f"{r['JAN']}: 原産国が 2 文字コードでない（{cc or '空'}）")
+        bad.append(f"{r['JAN']}: " + t("原産国が 2 文字コードでない") + f"（{cc or '-'}）")
     if not wg or pd.isna(wg) or wg <= 0:
-        bad.append(f"{r['JAN']}: 重量が空")
+        bad.append(f"{r['JAN']}: " + t("重量が空"))
 if bad:
     st.error(t("このままでは PDF を出せない：") + "\n\n" + "\n\n".join("· " + b for b in bad))
 
