@@ -43,61 +43,118 @@ pkgs = col_c.number_input(t("個口数"), min_value=1, value=1, step=1)
 gross = col_d.number_input(t("総重量 kg（0 なら正味合計）"), min_value=0.0,
                            value=0.0, step=0.01, format="%.2f")
 
-if not st.button(t("インボイスを作る"), type="primary", disabled=not order_no):
+import re  # noqa: E402
+
+if st.button(t("注文を読み込む"), type="primary", disabled=not order_no):
+    try:
+        order = so.fetch_order(order_no)
+    except so.ShopifyNotConfigured as e:
+        st.error(t("Shopify 未配置：") + str(e))
+        st.stop()
+    except Exception as e:  # noqa: BLE001 — 通信・権限・GraphQL すべてここで見せる
+        st.error(f"{t('Shopify 取得に失敗')}: {e}")
+        st.stop()
+    if not order:
+        st.warning(t("その注文番号は見つからなかった：") + so.normalize_order_no(order_no))
+        st.stop()
+    items = (order.get("lineItems") or {}).get("nodes") or []
+    jans = [((li.get("variant") or {}).get("barcode") or li.get("sku") or "").strip()
+            for li in items]
+    with get_readonly_connection() as conn:
+        customs = so.customs_by_jan(conn, jans)
+    lines, warn = so.to_ci_lines(order, customs)
+    st.session_state.pop("ci_pdf", None)
+    st.session_state["ci"] = {"order": order, "jans": jans, "warn": warn,
+                              "lines": lines, "no": order_no}
+
+ci = st.session_state.get("ci")
+if not ci:
     st.stop()
+order, jans, lines = ci["order"], ci["jans"], ci["lines"]
+warn_by_jan: dict[str, list[str]] = {}
+for w in ci["warn"]:
+    warn_by_jan.setdefault(w.split(" ", 1)[0], []).append(w.split(": ", 1)[-1])
 
-try:
-    order = so.fetch_order(order_no)
-except so.ShopifyNotConfigured as e:
-    st.error(t("Shopify 未配置：") + str(e))
-    st.stop()
-except Exception as e:  # noqa: BLE001 — 通信・権限・GraphQL すべてここで見せる
-    st.error(f"{t('Shopify 取得に失敗')}: {e}")
-    st.stop()
-
-if not order:
-    st.warning(t("その注文番号は見つからなかった：") + so.normalize_order_no(order_no))
-    st.stop()
-
-items = (order.get("lineItems") or {}).get("nodes") or []
-jans = [((li.get("variant") or {}).get("barcode") or li.get("sku") or "").strip()
-        for li in items]
-with get_readonly_connection() as conn:
-    customs = so.customs_by_jan(conn, jans)
-
-lines, warn = so.to_ci_lines(order, customs)
-doc = so.to_ci_doc(order, lines, awb=awb.strip(), total_packages=int(pkgs),
-                   total_gross_kg=float(gross) or None)
-
-st.subheader(t("荷受人"))
-st.write(" / ".join(x for x in (
-    doc.consignee_name, *doc.consignee_addr, doc.consignee_city,
-    doc.consignee_country, doc.consignee_tel) if x))
-
-st.subheader(t("明細"))
-st.dataframe(pd.DataFrame([{
+st.subheader(t("明細（HS・原産国・重量は直接直せる）"))
+st.caption(t("赤字の「要確認」がある行を確認・補完してから PDF を作る。"
+             "「PG にも保存」にチェックすると次回から自動で入る。"))
+base = pd.DataFrame([{
     "JAN": j,
     t("品名"): l.description,
     t("数量"): l.units,
-    "HS": l.hs_code or "—",
-    t("原産国"): l.origin or "—",
-    t("正味 kg"): l.net_weight_kg or "—",
+    "HS": l.hs_code or "",
+    t("原産国"): l.origin or "",
+    t("正味 g/個"): round(l.net_weight_kg * 1000, 1) if l.net_weight_kg else None,
     t("単価"): l.unit_value,
-    t("金額"): l.total_value,
-} for j, l in zip(jans, lines)]), use_container_width=True, hide_index=True)
+    t("要確認"): " / ".join(warn_by_jan.get(j, [])),
+} for j, l in zip(jans, lines)])
+edited = st.data_editor(
+    base, hide_index=True, use_container_width=True, key=f"ed_{ci['no']}",
+    disabled=["JAN", t("品名"), t("数量"), t("単価"), t("要確認")],
+    column_config={
+        "HS": st.column_config.TextColumn(help=t("6〜10 桁の数字")),
+        t("原産国"): st.column_config.TextColumn(help=t("ISO 2 文字（JP / CN / KR …）"), max_chars=2),
+        t("正味 g/個"): st.column_config.NumberColumn(min_value=0.0, step=1.0),
+    })
 
+# 入力チェック（間違った値で PDF を出さない）
+bad = []
+for _, r in edited.iterrows():
+    hs, cc, wg = str(r["HS"] or "").strip(), str(r[t("原産国")] or "").strip().upper(), r[t("正味 g/個")]
+    if not re.fullmatch(r"\d{6,10}", hs):
+        bad.append(f"{r['JAN']}: HS が 6〜10 桁の数字でない（{hs or '空'}）")
+    if not re.fullmatch(r"[A-Z]{2}", cc):
+        bad.append(f"{r['JAN']}: 原産国が 2 文字コードでない（{cc or '空'}）")
+    if not wg or pd.isna(wg) or wg <= 0:
+        bad.append(f"{r['JAN']}: 重量が空")
+if bad:
+    st.error(t("このままでは PDF を出せない：") + "\n\n" + "\n\n".join("· " + b for b in bad))
+
+new_lines = []
+for l, (_, r) in zip(lines, edited.iterrows()):
+    w = r[t("正味 g/個")]
+    new_lines.append(type(l)(description=l.description, units=l.units,
+                             net_weight_kg=round(float(w) / 1000, 3) if w and not pd.isna(w) else 0.0,
+                             hs_code=str(r["HS"] or "").strip(),
+                             origin=str(r[t("原産国")] or "").strip().upper(),
+                             unit_value=l.unit_value))
+doc = so.to_ci_doc(order, new_lines, awb=awb.strip(), total_packages=int(pkgs),
+                   total_gross_kg=float(gross) or None)
+
+st.write(" / ".join(x for x in (
+    doc.consignee_name, *doc.consignee_addr, doc.consignee_city,
+    doc.consignee_country, doc.consignee_tel) if x))
 c1, c2, c3 = st.columns(3)
 c1.metric(t("ユニット数合計"), f"{doc.total_units:.0f}")
 c2.metric(t("正味重量合計 kg"), f"{doc.total_net_kg:.2f}")
 c3.metric(t("インボイス合計"), f"{doc.invoice_total:.2f} {order.get('currencyCode', '')}")
 
-if warn:
-    st.error(t("要確認（欠けている値は PG `logistics.item_customs` を直してから出し直す）："))
-    for w in warn:
-        st.write("· " + w)
+save = st.checkbox(t("直した値を PG にも保存する（次回から自動で入る）"), value=True)
+if st.button(t("PDF を作る"), type="primary", disabled=bool(bad)):
+    if save:
+        changed = []
+        for (_, b), (_, e) in zip(base.iterrows(), edited.iterrows()):
+            row = {"jan": e["JAN"]}
+            if str(e["HS"]).strip() != str(b["HS"]).strip():
+                row["hs_code"] = str(e["HS"]).strip()
+            if str(e[t("原産国")]).strip().upper() != str(b[t("原産国")]).strip().upper():
+                row["origin_country"] = str(e[t("原産国")]).strip().upper()
+            if e[t("正味 g/個")] != b[t("正味 g/個")] and not pd.isna(e[t("正味 g/個")]):
+                row["net_weight_g"] = float(e[t("正味 g/個")])
+            if len(row) > 1 and row["jan"]:
+                changed.append(row)
+        if changed:
+            from shared.db import get_connection
+            conn = get_connection()
+            try:
+                n = so.save_manual(conn, changed)
+            finally:
+                conn.close()
+            st.success(t("PG に保存：") + f"{n} " + t("件"))
+    st.session_state["ci_pdf"] = build(doc)
 
-pdf = build(doc)
-st.download_button(
-    t("PDF をダウンロード"), data=pdf,
-    file_name=f"CI_{so.normalize_order_no(order_no).lstrip('#')}.pdf",
-    mime="application/pdf", type="primary")
+if st.session_state.get("ci_pdf"):
+    st.download_button(
+        t("PDF をダウンロード"), data=st.session_state["ci_pdf"],
+        file_name=f"CI_{so.normalize_order_no(ci['no']).lstrip('#')}.pdf",
+        mime="application/pdf", type="primary")

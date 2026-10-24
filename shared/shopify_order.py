@@ -193,3 +193,31 @@ def to_ci_doc(order: dict, lines: list, awb: str = "",
         total_gross_kg=total_gross_kg,
         lines=lines,
     )
+
+
+def save_manual(conn, rows: list[dict]) -> int:
+    """発票画面で人が補った値を PG に書き戻す（src='manual'）。
+
+    rows: {"jan", "hs_code", "origin_country", "net_weight_g"} のうち
+    **変更された項目だけ**を持つ dict。空・None の項目は触らない。
+    行が無い JAN（主档未登録）は新規に作る。戻り値は書いた行数。
+    """
+    n = 0
+    for r in rows:
+        jan = r["jan"]
+        conn.execute("insert into logistics.item_customs (jan) values (?) "
+                     "on conflict (jan) do nothing", (jan,))
+        if r.get("hs_code"):
+            conn.execute("update logistics.item_customs set hs_code=?, hs_src='manual',"
+                         " updated_at=now() where jan=?", (r["hs_code"], jan))
+        if r.get("origin_country"):
+            conn.execute("update logistics.item_customs set origin_country=?,"
+                         " origin_src='manual', updated_at=now() where jan=?",
+                         (r["origin_country"], jan))
+        if r.get("net_weight_g"):
+            conn.execute("update logistics.item_customs set net_weight_g=?,"
+                         " weight_src='manual', updated_at=now() where jan=?",
+                         (r["net_weight_g"], jan))
+        n += 1
+    conn.commit()
+    return n
