@@ -117,7 +117,9 @@ def customs_by_jan(conn, jans: list[str]) -> dict[str, dict]:
         return {}
     rows = conn.execute(
         "select jan, hs_code, name_en, origin_country, origin_src,"
-        "       net_weight_g, gross_weight_g, weight_src"
+        "       net_weight_g, gross_weight_g, weight_src,"
+        "       extra->'origin_candidates' as origin_candidates,"
+        "       extra->>'hs_flag' as hs_flag"
         "  from logistics.item_customs where jan = any(?)", (jans,)).fetchall()
     return {r["jan"]: dict(r) for r in rows}
 
@@ -143,8 +145,17 @@ def to_ci_lines(order: dict, customs: dict[str, dict]) -> tuple[list, list[str]]
         title = li.get("title") or ""
         if not hs:
             warn.append(f"{jan or '(JAN なし)'} {title[:30]}: HS コードが無い")
+        if c.get("hs_flag"):
+            # 2026-10-24 HS 審査で「事実どおりにしか書けない」とした品（虫よけ・殺菌剤・医薬品）
+            warn.append(f"{jan} {title[:30]}: HS {hs} 要注意 — {c['hs_flag']}")
         if not c.get("origin_country"):
             warn.append(f"{jan or '(JAN なし)'} {title[:30]}: 原産国が無い")
+        elif c.get("origin_src") == "default-conflict":
+            # Boss 2026-10-24「全部 JP で、invoice を作る時に警告」。
+            # 楽天の店舗間で原産国が割れていた 272 件。JP で出すが実物の表示を確認する
+            cands = c.get("origin_candidates") or []
+            warn.append(f"{jan} {title[:30]}: 原産国を JP で出力・要確認"
+                        f"（ネット上の表記が割れている: {' / '.join(cands)}）")
         if not w_g:
             warn.append(f"{jan or '(JAN なし)'} {title[:30]}: 重量が無い")
         lines.append(CiLine(

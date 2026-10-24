@@ -92,7 +92,7 @@ c2.metric(t("正味重量合計 kg"), f"{doc.total_net_kg:.2f}")
 c3.metric(t("インボイス合計"), f"{doc.invoice_total:.2f} {order.get('currencyCode', '')}")
 
 if warn:
-    st.error(t("欠けている項目（PG `logistics.item_customs` を直してから出し直す）："))
+    st.error(t("要確認（欠けている値は PG `logistics.item_customs` を直してから出し直す）："))
     for w in warn:
         st.write("· " + w)
 
