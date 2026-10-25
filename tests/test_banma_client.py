@@ -331,3 +331,35 @@ def test_call_signs_with_raw_params(monkeypatch):
     c.call("GET", "/v1/order/package", {"OrderDisplayID": "CB用商品"})
     assert seen["sign"] == c.sign_params(
         "GET", "/v1/order/package", {"OrderDisplayID": "CB用商品"}, seen["ts"])
+
+
+# ── 2026-10-25: 401 を受けたら GetToken し直して 1 回だけ再試行 ──
+def test_401で自動的にtokenを取り直して再試行する():
+    from shared.banma_client import BanmaClient, BanmaAuthError
+    c = BanmaClient.__new__(BanmaClient)
+    c.access_token = "old"
+    seen = []
+
+    def fake(method, path, *a, **k):
+        seen.append((path, c.access_token))
+        if path == "/v1/Auth/GetToken":
+            return {"AccessToken": "new"}
+        if c.access_token == "old":
+            raise BanmaAuthError(401, "invalid access_token")
+        return {"ok": 1}
+    c._call = fake
+    assert c.call("GET", "/v1/product/sku") == {"ok": 1}
+    assert seen == [("/v1/product/sku", "old"), ("/v1/Auth/GetToken", None), ("/v1/product/sku", "new")]
+
+
+def test_Auth系の401はそのまま投げる():
+    import pytest
+    from shared.banma_client import BanmaClient, BanmaAuthError
+    c = BanmaClient.__new__(BanmaClient)
+    c.access_token = None
+
+    def fake(method, path, *a, **k):
+        raise BanmaAuthError(401, "bad sign")
+    c._call = fake
+    with pytest.raises(BanmaAuthError):
+        c.call("GET", "/v1/Auth/GetToken")

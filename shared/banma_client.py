@@ -127,7 +127,25 @@ class BanmaClient:
             time.sleep(wait)
         self._last_call = time.monotonic()
 
-    def call(self, method: str, path: str, params: dict | None = None,
+    # 同事が同じ APP で凭证を取ると、こちらの token は期限前でも即無効になる
+    # （2026-10-24/25 実測）。Boss 2026-10-25「报错后自动更新就好」→ 401 を受けたら
+    # その場で GetToken し直して 1 回だけ再試行する。Auth 系の呼出し自身は対象外（無限ループ防止）。
+    # ponytail: 新 token は PG に書き戻さない。次のプロセスは古い token で 1 回 401 を踏んで
+    # ここで自己回復する（1 リクエスト余分）。書き戻しが要るなら ensure_token 側に保存フックを足す
+    def call(self, method: str, path: str, *args, **kwargs):
+        try:
+            return self._call(method, path, *args, **kwargs)
+        except BanmaAuthError:
+            if path.startswith("/v1/Auth/"):
+                raise
+            self.access_token = None
+            data = self._call("GET", "/v1/Auth/GetToken") or {}
+            self.access_token = data.get("AccessToken") or None
+            if not self.access_token:
+                raise
+            return self._call(method, path, *args, **kwargs)
+
+    def _call(self, method: str, path: str, params: dict | None = None,
              max_retries: int = 5):
         """→ 応答 envelope の Data。再試行判据は 2026-08-28 全 ingester 統一形。"""
         query = urllib.parse.urlencode(params, doseq=True, safe=":,-T") \
