@@ -36,7 +36,7 @@ def _row(pccc, status, msg=""):
 
 
 def test_audit_ok_ng_fault_retry_format_and_empty():
-    ts = [A.target_from_order(_order(i, p)) for i, p in
+    ts = [A.target_from_order(_order(i, p, phone="010-1111-2222")) for i, p in
           enumerate(["P000000000001", "P000000000002", "P000000000003", "P12345", ""], 1)]
     calls = []
 
@@ -104,3 +104,20 @@ def test_page_lists_only_problem_orders_and_csv_has_no_pii():
     df = at.dataframe[0].value
     assert list(df.iloc[:, 0]) == ["31002"] and df.iloc[0]["PCCC"] == "P00*******002"
     assert "박민수" not in df.to_string() and "박*수" in df.to_string()
+
+
+def test_safe_number_replaced_by_dummy_mobile_and_phone_mismatch_counts_as_ok():
+    ts = [A.target_from_order(_order(1, "P000000000001")),                          # 0504 安心番号
+          A.target_from_order(_order(2, "P000000000002", phone="010-9876-5432"))]   # 本物の携帯はそのまま
+    sent = []
+
+    def check(rows):
+        sent.extend(rows)
+        return [_row("P000000000001", P.STATUS_NG, "납세의무자 전화번호가 일치하지 않습니다"),
+                _row("P000000000002", P.STATUS_NG, "납세의무자 전화번호가 일치하지 않습니다")], ""
+    rows, _ = A.audit(ts, check=check)
+    assert [r["phone"] for r in sent] == ["010-0000-0000", "010-9876-5432"]
+    v = {r["order_id"]: r for r in rows}
+    assert v["1"]["verdict"] == A.VERDICT_OK and "未核对" in v["1"]["reason"]
+    assert v["2"]["verdict"] == A.VERDICT_NG            # 本物の番号での電話不一致は誤りのまま
+    assert A.reason_zh("현재 사용중이 아닌 개인통관고유부호 입니다.") == "PCCC 已停用（非使用中）"

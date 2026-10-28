@@ -15,6 +15,12 @@ from shared.coupang_to_ecms_xlsx import zip5
 
 VERDICT_OK, VERDICT_NG, VERDICT_UNCHECKED = "正常", "有误", "未能检查"
 _PCCC_RE = re.compile(r"P\d{12}")
+# Coupang の受取人電話は 050x の安心番号（4-4-4 桁）。関税庁は 01x 携帯形式以外を「시스템 장애」で返す
+# （2026-10-28 実測: 0504-1234-5678 / 050412345678 / 空 / 0 → すべて 장애、010-1234-5678 → 正常に照合）。
+# 照合は「存在 → 使用中か → 氏名 → 電話」の順で止まる（実データ 3 件: 不存在・使用中止・氏名不一致は
+# 電話より先に返った）→ 01x 形式でない電話はダミー携帯番号で送り、「電話不一致」なら PCCC と氏名は通過と読む。
+DUMMY_PHONE = "010-0000-0000"
+_MOBILE_RE = re.compile(r"01\d-?\d{3,4}-?\d{4}")
 
 # 관세청 メッセージ → 中文の要点（原文も併記する）
 _REASONS = (
@@ -23,6 +29,7 @@ _REASONS = (
     ("성명", "姓名与 PCCC 登记不一致"),
     ("전화번호", "电话与 PCCC 登记不一致"),
     ("우편번호", "邮编与 PCCC 登记不一致"),
+    ("사용중이 아닌", "PCCC 已停用（非使用中）"),
     ("13자리", "PCCC 位数不对"),
     ("P로 시작", "PCCC 不是 P 开头"),
     ("사용정지", "PCCC 已停用"),
@@ -61,7 +68,7 @@ def target_from_order(order: dict) -> dict | None:
             "display_id": str(m.get("DisplayOrderID") or m.get("OriginalOrderID") or m.get("ID") or ""),
             "name": (a.get("Name") or "").strip(),
             "pccc": (a.get("TaxNo") or "").strip().upper(),
-            "phone": (a.get("Phone") or "").strip(),     # 書式はいじらない（pccc_check 9/08 実測時と同じ扱い）
+            "phone": (a.get("Phone") or "").strip(),
             "zip": zip5(a.get("PostalCode"))}
 
 
@@ -88,7 +95,9 @@ def fetch_pending(client, on_progress=None) -> tuple[list[dict], list[str]]:
 def audit(targets: list[dict], check=None) -> tuple[list[dict], str]:
     """→ (注文ごとの判定, 照合ツールのエラー文字列)。形式不正は送らずに 有误。장애 は 1 回だけ再照会。"""
     check = check or pccc_check.check
-    send = [t for t in targets if _PCCC_RE.fullmatch(t["pccc"])]
+    send = [{**t, "phone": t["phone"] if _MOBILE_RE.fullmatch(t["phone"]) else DUMMY_PHONE}
+            for t in targets if _PCCC_RE.fullmatch(t["pccc"])]
+    dummy = {t["pccc"] for t in send if t["phone"] == DUMMY_PHONE}
     res, err = check(send) if send else ([], "")
     smap = pccc_check.status_map(res)
     retry = [t for t in send if (smap.get(t["pccc"]) or {}).get("status") != pccc_check.STATUS_OK
@@ -114,6 +123,9 @@ def audit(targets: list[dict], check=None) -> tuple[list[dict], str]:
         msg = hit.get("message", "")
         if st == pccc_check.STATUS_OK:
             rows.append({**base, "verdict": VERDICT_OK, "reason": "", "message": msg})
+        elif st == pccc_check.STATUS_NG and t["pccc"] in dummy and "전화번호" in msg:
+            rows.append({**base, "verdict": VERDICT_OK,
+                         "reason": "PCCC 与姓名一致（电话为 Coupang 虚拟号，未核对）", "message": msg})
         elif st == pccc_check.STATUS_NG:
             rows.append({**base, "verdict": VERDICT_NG, "reason": reason_zh(msg) or "关税厅返回错误", "message": msg})
         else:
