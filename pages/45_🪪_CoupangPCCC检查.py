@@ -11,6 +11,7 @@ import streamlit as st
 st.set_page_config(page_title="Coupang PCCC检查", page_icon="🪪", layout="wide")
 
 from shared import banma_client  # noqa: E402
+from shared import coupang_client  # noqa: E402
 from shared import coupang_pccc_audit as A  # noqa: E402
 from shared.auth import require_admin  # noqa: E402
 from shared.db import get_connection  # noqa: E402
@@ -38,10 +39,18 @@ if st.button(t("🔍 一键检查"), type="primary", use_container_width=True):
         bar = st.progress(0.0, text=t("拉取斑马订单…"))
         targets, missing = A.fetch_pending(
             client, on_progress=lambda n, tot: bar.progress(n / tot, text=f"{t('拉取斑马订单…')} {n}/{tot}"))
+        n_real = 0
+        if coupang_client.is_configured():
+            bar.progress(1.0, text=t("从 Coupang 取真实手机号…"))
+            try:
+                n_real = A.attach_real_phones(targets, coupang_client.fetch_shippable(days=30))
+            except Exception as e:  # noqa: BLE001 — 取れなければダミー番号で照合を続ける
+                st.warning(t("Coupang 接口取手机号失败，电话改用替代号码核对：") + f"{type(e).__name__}: {e}")
         bar.progress(1.0, text=t("提交关税厅核对…"))
         rows, err = A.audit(targets)
         bar.empty()
-        st.session_state["p45_result"] = {"rows": rows, "missing": missing, "err": err}
+        st.session_state["p45_result"] = {"rows": rows, "missing": missing, "err": err,
+                                          "n_real": n_real, "n_all": len(targets)}
     except Exception as e:  # noqa: BLE001
         st.error(t("检查失败：") + f"{type(e).__name__}: {e}")
 
@@ -57,6 +66,8 @@ if res:
     c2.metric(t("正常"), n_ok)
     c3.metric(t("PCCC 有误"), n_ng)
     c4.metric(t("未能检查"), n_un + len(res["missing"]))
+    st.caption(t("电话：{a}/{b} 单用 Coupang 真实手机号核对，其余用替代号码（只核对 PCCC 与姓名）")
+               .format(a=res.get("n_real", 0), b=res.get("n_all", len(df))))
     if res["err"]:
         st.warning(t("核对工具返回异常：") + res["err"])
     if res["missing"]:

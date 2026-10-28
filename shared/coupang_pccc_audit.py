@@ -92,6 +92,20 @@ def fetch_pending(client, on_progress=None) -> tuple[list[dict], list[str]]:
     return targets, missing
 
 
+def attach_real_phones(targets: list[dict], boxes: list[dict]) -> int:
+    """斑马は安心番号（050x）しか持たない → Coupang ordersheets の実番号（coupang_ecms.customs_phone）で置換。
+    2026-10-28 実測: 斑马 3/3 件が 050x、同じ注文の Coupang API は 3/3 件 010 実番号。→ 置換した件数。"""
+    from shared.coupang_ecms import customs_phone
+    real = {str(b.get("orderId")): customs_phone(b) for b in boxes}
+    n = 0
+    for t in targets:
+        p = real.get(t["display_id"]) or ""
+        if _MOBILE_RE.fullmatch(p):
+            t["phone"] = p
+            n += 1
+    return n
+
+
 def audit(targets: list[dict], check=None) -> tuple[list[dict], str]:
     """→ (注文ごとの判定, 照合ツールのエラー文字列)。形式不正は送らずに 有误。장애 は 1 回だけ再照会。"""
     check = check or pccc_check.check

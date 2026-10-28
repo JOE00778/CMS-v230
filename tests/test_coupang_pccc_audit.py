@@ -93,7 +93,10 @@ def test_page_lists_only_problem_orders_and_csv_has_no_pii():
          mock.patch("shared.banma_client.ensure_token"), \
          mock.patch("shared.db.get_connection"), \
          mock.patch("shared.pccc_check.check", side_effect=check), \
-         mock.patch("shared.auth.require_admin"):
+         mock.patch("shared.auth.require_admin"), \
+         mock.patch("shared.coupang_client.is_configured", return_value=True), \
+         mock.patch("shared.coupang_client.fetch_shippable",
+                    return_value=[{"orderId": 31002, "overseaShippingInfoDto": {"ordererPhoneNumber": "01011112222"}}]):
         at = AppTest.from_file(str(PAGE), default_timeout=60)
         at.session_state["__auth_ok"] = True
         at.run()
@@ -121,3 +124,13 @@ def test_safe_number_replaced_by_dummy_mobile_and_phone_mismatch_counts_as_ok():
     assert v["1"]["verdict"] == A.VERDICT_OK and "未核对" in v["1"]["reason"]
     assert v["2"]["verdict"] == A.VERDICT_NG            # 本物の番号での電話不一致は誤りのまま
     assert A.reason_zh("현재 사용중이 아닌 개인통관고유부호 입니다.") == "PCCC 已停用（非使用中）"
+
+
+def test_attach_real_phones_only_takes_mobile_numbers():
+    ts = [A.target_from_order(_order(1, "P000000000001")), A.target_from_order(_order(2, "P000000000002")),
+          A.target_from_order(_order(3, "P000000000003"))]
+    boxes = [{"orderId": 31001, "overseaShippingInfoDto": {"ordererPhoneNumber": "01012345678"}},
+             {"orderId": 31002, "receiver": {"safeNumber": "0504-1111-2222"}},   # 実番号なし → 置換しない
+             {"orderId": 99999, "overseaShippingInfoDto": {"ordererPhoneNumber": "01099998888"}}]
+    assert A.attach_real_phones(ts, boxes) == 1
+    assert [t["phone"] for t in ts] == ["01012345678", "0504-1234-5678", "0504-1234-5678"]
