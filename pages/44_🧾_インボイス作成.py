@@ -17,7 +17,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from shared.db import get_readonly_connection
+from shared.db import get_connection, get_readonly_connection
 from shared.i18n import lang_selector, t
 
 st.set_page_config(page_title=t("インボイス作成"), page_icon="🧾", layout="wide")
@@ -62,6 +62,16 @@ if st.button(t("注文を読み込む"), type="primary", disabled=not order_no):
             for li in items]
     with get_readonly_connection() as conn:
         customs = so.customs_by_jan(conn, jans)
+    # 清関は斑马 → API → FedEx（Boss 2026-10-29）→ HS・清関品名・重量は斑马が主、PG は補完
+    from shared import banma_client  # noqa: E402
+    if banma_client.is_configured():
+        try:
+            bm_client = banma_client.BanmaClient.from_env()
+            with get_connection() as conn:
+                banma_client.ensure_token(conn, bm_client)
+            customs = so.merge_banma(customs, so.banma_customs_by_jan(bm_client, jans))
+        except Exception as e:  # noqa: BLE001 — 斑马が落ちても PG の値で続ける
+            st.warning(t("斑马の報関情報を取得できず、PG の値で表示：") + f"{type(e).__name__}: {e}")
     lines, warn = so.to_ci_lines(order, customs)
     titles = [li.get("title") or "" for li in items]
     st.session_state.pop("ci_pdf", None)

@@ -125,6 +125,39 @@ def customs_by_jan(conn, jans: list[str]) -> dict[str, dict]:
     return {r["jan"]: dict(r) for r in rows}
 
 
+def banma_customs_by_jan(client, jans: list[str]) -> dict[str, dict]:
+    """斑马の報関情報（SKU 編碼 = JAN）→ {jan: {hs_code, customs_name_en, gross_weight_g}}。
+
+    Boss 2026-10-29「清関は斑马 → API → FedEx。斑马が主」。斑马に無い / 空の項目は返さない。
+    SKU 一覧は Code にカンマ区切りで JAN を渡すと該当 SKU だけ返る（2026-10-29 実測 5/5）。
+    """
+    jans = [j for j in dict.fromkeys(jans) if j]
+    out: dict[str, dict] = {}
+    for i in range(0, len(jans), 50):
+        d = client.call("GET", "/v1/product/sku",
+                        {"Code": ",".join(jans[i:i + 50]), "PageNumber": 1, "PageSize": 100}) or {}
+        for s in d.get("SKUs") or []:
+            jan = str(s.get("Code") or "")
+            if jan not in jans or jan in out:
+                continue
+            c = (client.call("GET", f"/v1/product/sku/{s['SKUID']}/customs") or {}).get("Customs") or {}
+            row = {"hs_code": (c.get("Code") or "").strip(), "customs_name_en": (c.get("NameEn") or "").strip(),
+                   "gross_weight_g": c.get("Weight") or None}
+            out[jan] = {k: v for k, v in row.items() if v}
+    return out
+
+
+def merge_banma(customs: dict[str, dict], bm: dict[str, dict]) -> dict[str, dict]:
+    """PG の値に斑马の値を上書き（斑马が主・PG は斑马に無い項目の補完だけ）。"""
+    merged = {j: dict(c) for j, c in customs.items()}
+    for jan, b in bm.items():
+        c = merged.setdefault(jan, {})
+        c.update(b)
+        if "gross_weight_g" in b:
+            c["net_weight_g"] = None        # to_ci_lines は net を優先するので斑马の重量を効かせる
+    return merged
+
+
 def to_ci_lines(order: dict, customs: dict[str, dict]) -> tuple[list, list[str]]:
     """注文 → CiLine の一覧 と、欠けている項目の警告。
 
