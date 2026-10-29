@@ -4,6 +4,7 @@
 检查: ① 三边/重量: 缺失的按 JDL 实测 > NST 包装重量补值，组合品按单品计算，
         生成可直接上传斑马「产品 → 批量修改SKU信息」的 Excel（≤1000 行/个・成本价留空=不改）；补不了的列问题。
       ② 报关信息: 有无、英文名（标准报关名・组合品 Nset）、HS 编码 → 问题清单（模板无报关栏，只出清单）。
+勾选: 重量 / 三边 / 报关英文名 / HS编码（默认三边不勾 · Boss 2026-10-29）。下载 = 一个 Excel（数据・示例・问题清单・导入明细）。
 判定规则见 shared/banma_dims.py。
 
 数据源（PG・本页只读，「立即从斑马拉取」只置 run_now）:
@@ -19,7 +20,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-from shared.banma_dims import build, customs_issues, in_scope, table_xlsx, upload_zip
+from shared.banma_dims import CHUNK, build, customs_issues, in_scope, report_xlsx, select
 from shared.db import get_connection, get_readonly_connection
 from shared.i18n import lang_selector, t
 
@@ -69,19 +70,6 @@ def _load():
     return skus, customs, std, jdl, nst, ranked
 
 
-def _issue_tab(issues: list[dict], name: str, key: str):
-    if not issues:
-        st.success(t("没有问题 SKU"))
-        return
-    df = pd.DataFrame(issues)
-    kinds = df["问题"].value_counts()
-    pick = st.multiselect(t("问题类型"), list(kinds.index), format_func=lambda k: f"{k}（{kinds[k]}）", key=key)
-    show = df[df["问题"].isin(pick)] if pick else df
-    st.download_button(t("📥 下载问题清单"), table_xlsx(show.to_dict("records"), name),
-                       file_name=f"斑马健康度_{name}_{stamp}.xlsx", key=key + "_dl")
-    st.dataframe(show, use_container_width=True, height=520, hide_index=True)
-
-
 # ── 刷新 ──
 c1, c2, c3 = st.columns([2, 2, 3])
 wconn = get_connection()
@@ -124,29 +112,45 @@ if pd.Timestamp.now(tz="UTC") - pd.Timestamp(pulled) > pd.Timedelta(hours=26):
     st.warning(t("斑马数据超过 1 天未更新，上传前请先点「立即从斑马拉取」"))
 
 stamp = dt.datetime.now().strftime("%Y%m%d")
+st.markdown("**" + t("检查项") + "**")
+k1, k2, k3, k4 = st.columns(4)
+checks = {name for col, name, default in ((k1, "重量", True), (k2, "三边", False),
+                                          (k3, "英文名", True), (k4, "HS", True))
+          if col.checkbox(t({"英文名": "报关英文名", "HS": "HS编码"}.get(name, name)), value=default, key=f"chk_{name}")}
+if not checks:
+    st.info(t("请至少勾选一项"))
+    st.stop()
+
 rows, dim_issues = build(skus, jdl, nst, ranked)
-cus_issues = customs_issues(skus, customs, std, ranked)
+rows, issues = select(rows, dim_issues + customs_issues(skus, customs, std, ranked), checks)
 
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3 = st.columns(3)
 m1.metric(t("检查对象 SKU"), f"{len(in_scope(skus, ranked)):,}")
-m2.metric(t("三边/重量 可上传补值"), f"{len(rows):,}")
-m3.metric(t("三边/重量 问题"), f"{len(dim_issues):,}")
-m4.metric(t("报关信息 问题 SKU"), f"{len({i['SKU编码'] for i in cus_issues}):,}")
+m2.metric(t("可直接上传斑马"), f"{len(rows):,}")
+m3.metric(t("问题 SKU"), f"{len({x['SKU编码'] for x in issues}):,}")
 
-tab_up, tab_dim, tab_cus = st.tabs([t("✅ 三边/重量 可上传斑马"), t("⚠️ 三边/重量 问题"), t("📄 报关信息 问题")])
+# 一个 Excel = 数据（斑马上传用）+ 示例 + 问题清单 + 导入明细；>1000 行时第 2 批起另出文件（斑马每次 ≤1000）
+batches = [rows[k:k + CHUNK] for k in range(0, len(rows), CHUNK)] or [[]]
+for n, part in enumerate(batches, 1):
+    st.download_button(
+        t("📥 下载 Excel（「数据」页可直接上传斑马 + 问题清单）") + (f" · {t('第')}{n}{t('批')}" if len(batches) > 1 else ""),
+        report_xlsx(part, issues if n == 1 else []),
+        file_name=f"斑马健康度检查_{stamp}" + (f"_{n}" if len(batches) > 1 else "") + ".xlsx",
+        type="primary" if n == 1 else "secondary", key=f"dl_{n}")
+st.caption(t("「数据」页 = 斑马「批量修改SKU信息」格式，空栏 = 不修改；报关信息斑马模板没有栏位，只在问题清单里 · "
+             "上传后点「立即从斑马拉取」，已改好的会从表中消失"))
+
+tab_up, tab_issue = st.tabs([t("✅ 可直接上传斑马"), t("⚠️ 问题清单")])
 with tab_up:
     if rows:
-        n_files = (len(rows) - 1) // 1000 + 1
-        st.download_button(
-            t("📥 下载斑马导入文件") + f"（{n_files} " + t("个") + " + " + t("核对明细") + "，zip）",
-            upload_zip(rows, stamp), file_name=f"斑马批量修改SKU_体积重量_{stamp}.zip",
-            mime="application/zip", type="primary")
-        st.caption(t("每个文件 ≤1000 行；空栏 = 斑马不修改；上传后点「立即从斑马拉取」，已上传的会从本表消失"))
         st.dataframe(pd.DataFrame(rows), use_container_width=True, height=520, hide_index=True)
     else:
         st.success(t("没有需要补的 SKU"))
-with tab_dim:
-    _issue_tab(dim_issues, "三边重量问题", "dim")
-with tab_cus:
-    st.caption(t("标准英文报关名 = 品类名（+「, 容量」，组合品再加「 Nset」）· 斑马导入模板没有报关栏，此处只出清单"))
-    _issue_tab(cus_issues, "报关信息问题", "cus")
+with tab_issue:
+    if issues:
+        df = pd.DataFrame(issues)
+        kinds = df["问题"].value_counts()
+        pick = st.multiselect(t("问题类型"), list(kinds.index), format_func=lambda k: f"{k}（{kinds[k]}）")
+        st.dataframe(df[df["问题"].isin(pick)] if pick else df, use_container_width=True, height=520, hide_index=True)
+    else:
+        st.success(t("没有问题 SKU"))

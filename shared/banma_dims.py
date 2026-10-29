@@ -18,7 +18,6 @@ from __future__ import annotations
 import io
 import math
 import re
-import zipfile
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -292,8 +291,35 @@ def _sheet(ws, head, rows):
         ws.append(r)
 
 
-def template_xlsx(rows: list[dict]) -> bytes:
-    """斑马「批量修改SKU信息」模板（数据 + 示例 两页）。成本价留空 = 不改。"""
+# 问题类型 → 检查项（page46 勾选用）。「通用」= 任一项勾选都列；报关信息有无 = 英文名或 HS 勾选时列
+GROUP = {
+    "重量待人工": "重量", "重量缺失·无数据源": "重量", "斑马重量与JDL相差≥1.8倍": "重量", "组合品·单品缺重量": "重量",
+    "三边缺失·无数据源": "三边", "三边待人工": "三边", "组合品·单品缺三边": "三边",
+    "英文名为空或「-」": "英文名", "英文名不是标准报关名": "英文名", "组合品英文名缺「Nset」": "英文名",
+    "英文名与HS不对应": "英文名", "HS编码缺失或格式错误": "HS",
+    "无报关信息": "报关", "组合品·编码与明细件数不一致": "通用", "SKU编码重复": "通用",
+}
+
+
+def select(rows: list[dict], issues: list[dict], checks: set[str]) -> tuple[list[dict], list[dict]]:
+    """按勾选（重量 / 三边 / 英文名 / HS）筛导入行与问题。未勾的栏置空 = 斑马不改。"""
+    out = []
+    for r in rows:
+        r = dict(r)
+        if "重量" not in checks:
+            r["重量(g)"] = None
+        if "三边" not in checks:
+            r["长(cm)"] = r["宽(cm)"] = r["高(cm)"] = None
+        if r["重量(g)"] is not None or r["长(cm)"] is not None:
+            r["来源"] = "；".join(x for x in r["来源"].split("；") if x.split(":")[0] in checks)
+            out.append(r)
+    keep = checks | {"通用"} | ({"报关"} if checks & {"英文名", "HS"} else set())
+    return out, [i for i in issues if GROUP.get(i["问题"], "通用") in keep]
+
+
+def report_xlsx(rows: list[dict], issues: list[dict]) -> bytes:
+    """一个 Excel: 「数据」「示例」= 斑马「批量修改SKU信息」模板（数据 放第一页；成本价留空 = 不改），
+    「问题清单」「导入明细」（来源与原值）。rows 由调用方按 ≤1000 行分批。"""
     wb = Workbook()
     ws = wb.active
     ws.title = "数据"
@@ -304,29 +330,11 @@ def template_xlsx(rows: list[dict]) -> bytes:
             if r[k] is not None:
                 ws.cell(i, col, int(r[k]))
     _sheet(wb.create_sheet("示例"), TEMPLATE_HEAD, TEMPLATE_EXAMPLE)
+    for title, data in (("问题清单", issues), ("导入明细", rows)):
+        sh = wb.create_sheet(title)
+        head = list(data[0].keys()) if data else ["(无)"]
+        _sheet(sh, head, [[d.get(k) for k in head] for d in data])
+        sh.freeze_panes = "B2"
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
-
-
-def table_xlsx(rows: list[dict], title: str) -> bytes:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = title[:31]
-    head = list(rows[0].keys()) if rows else ["(无)"]
-    _sheet(ws, head, [[r.get(k) for k in head] for r in rows])
-    ws.freeze_panes = "B2"
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
-def upload_zip(rows: list[dict], stamp: str) -> bytes:
-    """≤1000 行/个的导入文件 + 一份带来源和原值的核对明细。"""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for k in range(0, len(rows), CHUNK):
-            part = rows[k:k + CHUNK]
-            z.writestr(f"斑马导入_{k // CHUNK + 1:02d}_{k + 1}-{k + len(part)}_{stamp}.xlsx", template_xlsx(part))
-        z.writestr(f"导入明细_来源与原值_{stamp}.xlsx", table_xlsx(rows, "导入明细"))
     return buf.getvalue()

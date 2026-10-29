@@ -1,9 +1,8 @@
 import io
-import zipfile
 
 from openpyxl import load_workbook
 
-from shared.banma_dims import build, grid, upload_zip
+from shared.banma_dims import build, grid, report_xlsx, select
 
 
 def sku(i, code, spu="P1", typ="普通", w=0, d=(0, 0, 0), comb=None, cat="Export"):
@@ -43,10 +42,11 @@ def test_build_rules():
     assert ("4900000000003", "重量待人工") in kinds
     assert ("4900000000004", "三边待人工") in kinds
     assert ("4900000000002_3", "组合品·编码与明细件数不一致") in kinds
-    z = zipfile.ZipFile(io.BytesIO(upload_zip(rows, "x")))
-    f = [n for n in z.namelist() if n.startswith("斑马导入_01")][0]
-    wb = load_workbook(io.BytesIO(z.read(f)))
-    assert wb.sheetnames == ["数据", "示例"]
+    r2, i2 = select(rows, issues, {"重量"})
+    assert all(r["长(cm)"] is None for r in r2) and {i["问题"] for i in i2} >= {"重量待人工"}
+    assert "三边待人工" not in {i["问题"] for i in i2}
+    wb = load_workbook(io.BytesIO(report_xlsx(r2, i2)))
+    assert wb.sheetnames == ["数据", "示例", "问题清单", "导入明细"]
     vals = list(wb["数据"].iter_rows(values_only=True))
     assert vals[0][0] == "SKU编码" and vals[1][1] is None   # 成本价留空
 
