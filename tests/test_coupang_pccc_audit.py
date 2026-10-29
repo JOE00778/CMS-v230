@@ -78,9 +78,11 @@ class _FakeClient:
 
 
 def test_fetch_pending_uses_detail_api_and_reports_missing():
-    cl = _FakeClient([_order(1, "P000000000001"), {"Master": {"ID": 2}, "Addresses": []}])
-    targets, missing = A.fetch_pending(cl)
-    assert [t["order_id"] for t in targets] == ["1"] and missing == ["2"]
+    held = _order(3, "P000000000003")
+    held["Master"]["HoldStatus"] = "已暂停"
+    cl = _FakeClient([_order(1, "P000000000001"), {"Master": {"ID": 2}, "Addresses": []}, held])
+    targets, missing, paused = A.fetch_pending(cl)
+    assert [t["order_id"] for t in targets] == ["1"] and missing == ["2"] and paused == 1
 
 
 def test_page_lists_only_problem_orders_and_csv_has_no_pii():

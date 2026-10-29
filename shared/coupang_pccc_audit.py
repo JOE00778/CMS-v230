@@ -72,8 +72,10 @@ def target_from_order(order: dict) -> dict | None:
             "zip": zip5(a.get("PostalCode"))}
 
 
-def fetch_pending(client, on_progress=None) -> tuple[list[dict], list[str]]:
-    """Coupang 待审核 を全件 → (対象, 住所が取れなかった斑马注文 ID)。"""
+def fetch_pending(client, on_progress=None) -> tuple[list[dict], list[str], int]:
+    """Coupang 待审核 を全件 → (対象, 住所が取れなかった斑马注文 ID, 暂停中で除外した件数)。
+    斑马は暂停した注文も Status=待审核 のまま返す（画面では「暂停中」タブ）。区別は詳細の
+    HoldStatus=已暂停（2026-10-29 実測 39 件中 3 件・HoldReason「PCCC错误」）→ 検査しない。"""
     ids, page = [], 1
     while True:
         d = client.call("GET", "/v1/order/", {"Status": "待审核", "Platform": "Coupang",
@@ -82,14 +84,18 @@ def fetch_pending(client, on_progress=None) -> tuple[list[dict], list[str]]:
         if not (d.get("Page") or {}).get("HasMore"):
             break
         page += 1
-    targets, missing = [], []
+    targets, missing, paused = [], [], 0
     for n, oid in enumerate(ids, 1):
         dd = client.call("GET", f"/v1/order/{oid}") or {}
-        t = target_from_order(dd.get("Order") or dd)
-        targets.append(t) if t else missing.append(oid)
+        order = dd.get("Order") or dd
+        if (order.get("Master") or {}).get("HoldStatus") == "已暂停":
+            paused += 1
+        else:
+            t = target_from_order(order)
+            targets.append(t) if t else missing.append(oid)
         if on_progress:
             on_progress(n, len(ids))
-    return targets, missing
+    return targets, missing, paused
 
 
 def attach_real_phones(targets: list[dict], boxes: list[dict]) -> int:
