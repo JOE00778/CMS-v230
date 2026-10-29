@@ -58,3 +58,19 @@ def test_rank_scope():
     jdl = {"4900000000001": (120, (100, 50, 30)), "4900000000002": (80, (90, 50, 30))}
     rows, issues = build(skus, jdl, {}, ranked={"4900000000001"})
     assert {r["SKU编码"] for r in rows} == {"4900000000001", "4900000000001_2"} and not issues
+
+
+def test_customs_issues():
+    from shared.banma_dims import customs_issues
+    std = [("340111", "香皂", "Toilet soap bar, solid, for washing")]
+    skus = [sku("1", "4900000000001"), sku("2", "4900000000002", spu="P2"), sku("3", "4900000000003", spu="P3"),
+            sku("4", "4900000000001_3", typ="组合", comb=[{"SKUID": "1", "SKUCode": "4900000000001", "Quantity": 3}]),
+            sku("5", "4900000000004", spu="P4")]
+    customs = {"1": {"name_en": "Toilet soap bar, solid, for washing, 80g", "hs_code": "340111"},
+               "2": {"name_en": "Pelican SoapKATE", "hs_code": "1"},
+               "3": {"name_en": "Toilet soap bar, solid, for washing", "hs_code": "330499"},
+               "4": {"name_en": "Toilet soap bar, solid, for washing, 80g 2set", "hs_code": "340111"}}
+    got = {(i["SKU编码"], i["问题"]) for i in customs_issues(skus, customs, std, None)}
+    assert got == {("4900000000002", "HS编码缺失或格式错误"), ("4900000000002", "英文名不是标准报关名"),
+                   ("4900000000003", "英文名与HS不对应"), ("4900000000001_3", "组合品英文名缺「Nset」"),
+                   ("4900000000004", "无报关信息")}

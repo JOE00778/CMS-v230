@@ -1,4 +1,4 @@
-"""斑马 SKU 三边/重量检查 → 可直接上传斑马「批量修改SKU信息」的 Excel（page46 用・纯函数）.
+"""斑马信息健康度检查（page46 用・纯函数）: 三边/重量 → 可直接上传斑马「批量修改SKU信息」的 Excel；报关信息 → 问题清单.
 
 口径 = 2026-10-07〜09 Boss 逐条拍板的规则（斑马 Export 一括整备时用过的）:
 - 范围: 有效 SKU、顶层类目 Export、且 NST 有商品等级（A/B/C/NEW · Boss 2026-10-29「没有商品等级的不用检查」）。
@@ -105,6 +105,19 @@ def _single_weight(jdl_g, nst_g) -> tuple[int | None, str, str]:
     return v, src, ""
 
 
+def in_scope(skus: list[dict], ranked: set | None) -> list[dict]:
+    """有效 · 顶层 Export · NST 有等级（组合品 = 全部组成单品有等级）。ranked=None 不限等级。"""
+    def graded(s):
+        if ranked is None:
+            return True
+        if s.get("sku_type") == "组合":
+            comb = s.get("combine") or []
+            return bool(comb) and all(str(c.get("SKUCode")) in ranked for c in comb)
+        return s["code"] in ranked
+
+    return [s for s in skus if s.get("is_valid") and s.get("category_top") == "Export" and graded(s)]
+
+
 def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> tuple[list[dict], list[dict]]:
     """skus = banma.sku_dims 全行；jdl = {jan: (weight_g, (l_mm, w_mm, h_mm))}；nst = {jan: package_weight_g}；
     ranked = 有商品等级的 JAN（None = 不限）。
@@ -114,15 +127,7 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
     code_n: dict[str, int] = {}
     for s in valid:
         code_n[s["code"]] = code_n.get(s["code"], 0) + 1
-    def graded(s):
-        if ranked is None:
-            return True
-        if s.get("sku_type") == "组合":
-            comb = s.get("combine") or []
-            return bool(comb) and all(str(c.get("SKUCode")) in ranked for c in comb)
-        return s["code"] in ranked
-
-    scope = [s for s in valid if s.get("category_top") == "Export" and graded(s)]
+    scope = in_scope(skus, ranked)
     sib: dict[str, list[tuple]] = {}
     for s in valid:
         if s.get("sku_type") != "组合" and (d := real_dims(s)):
@@ -231,6 +236,52 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
                      "商品名": s.get("spu_title"), "规格": s.get("specification")})
     rows.sort(key=lambda r: (r["类型"] == "组合", r["SKU编码"]))
     return rows, issues
+
+
+_HS = re.compile(r"\d{6}(\d{2}){0,2}")
+_SPEC = re.compile(r", \d+(?:\.\d+)?(?:ml|g|L|kg)$")
+_SET = re.compile(r" (\d+)set$")
+
+
+def customs_issues(skus: list[dict], customs: dict, std: list[tuple], ranked: set | None) -> list[dict]:
+    """报关信息检查（只列问题，斑马「批量修改SKU信息」模板不含报关栏 → 无导入文件）。
+    customs = {sku_id: {name_cn, name_en, hs_code}}；std = [(hs, name_cn, name_en)]（9/19 统一的标准英文报关名）。
+    英文名标准 = 「标准品类句」或「标准品类句, 容量(ml/g/L/kg)」，组合品末尾再加「 Nset」（10/23 Boss）。"""
+    hs_of: dict[str, set] = {}
+    for hs, _, en in std:
+        hs_of.setdefault(en, set()).add(hs)
+    out = []
+    for s in in_scope(skus, ranked):
+        c = customs.get(s["sku_id"])
+        base = {"SKU编码": s["code"], "类型": s.get("sku_type"), "商品名": s.get("spu_title"),
+                "规格": s.get("specification"), "斑马英文名": (c or {}).get("name_en"),
+                "斑马HS": (c or {}).get("hs_code"), "斑马中文名": (c or {}).get("name_cn")}
+
+        def add(kind, detail=""):
+            out.append({**base, "问题": kind, "说明": detail})
+
+        if c is None:
+            add("无报关信息")
+            continue
+        hs = str(c.get("hs_code") or "").strip()
+        en = str(c.get("name_en") or "").strip()
+        if not _HS.fullmatch(hs):
+            add("HS编码缺失或格式错误", f"「{hs}」不是 6/8/10 位数字")
+        if en in ("", "-"):
+            add("英文名为空或「-」")
+            continue
+        comb = s.get("combine") or []
+        if s.get("sku_type") == "组合" and len(comb) == 1:
+            n = int(comb[0].get("Quantity") or 0)
+            m = _SET.search(en)
+            if not m or int(m.group(1)) != n:
+                add("组合品英文名缺「Nset」", f"应以「 {n}set」结尾")
+        core = _SPEC.sub("", _SET.sub("", en))
+        if core not in hs_of:
+            add("英文名不是标准报关名", "含品牌/商品名，或不在标准品类名表里")
+        elif _HS.fullmatch(hs) and hs[:6] not in hs_of[core]:
+            add("英文名与HS不对应", f"「{core}」对应 HS {'/'.join(sorted(hs_of[core]))}")
+    return out
 
 
 def _sheet(ws, head, rows):
