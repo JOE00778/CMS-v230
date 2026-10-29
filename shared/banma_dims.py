@@ -319,16 +319,18 @@ def select(rows: list[dict], issues: list[dict], checks: set[str]) -> tuple[list
 
 def report_xlsx(rows: list[dict], issues: list[dict]) -> bytes:
     """一个 Excel: 「数据」「示例」= 斑马「批量修改SKU信息」模板（数据 放第一页；成本价留空 = 不改），
-    「问题清单」「导入明细」（来源与原值）。rows 由调用方按 ≤1000 行分批。"""
+    「问题清单」「导入明细」（来源与原值）。斑马每次 ≤1000 行 → 超出另起「数据2」「数据3」…
+    （Boss 2026-10-29「行数超出另起一个工作表，会有人做检查和处理」）。"""
     wb = Workbook()
-    ws = wb.active
-    ws.title = "数据"
-    ws.append(TEMPLATE_HEAD)
-    for i, r in enumerate(rows, start=2):
-        ws.cell(i, 1, str(r["SKU编码"])).number_format = "@"
-        for col, k in ((3, "重量(g)"), (4, "长(cm)"), (5, "宽(cm)"), (6, "高(cm)")):
-            if r[k] is not None:
-                ws.cell(i, col, int(r[k]))
+    wb.remove(wb.active)
+    for n, k in enumerate(range(0, max(len(rows), 1), CHUNK), 1):
+        ws = wb.create_sheet("数据" if n == 1 else f"数据{n}")
+        ws.append(TEMPLATE_HEAD)
+        for i, r in enumerate(rows[k:k + CHUNK], start=2):
+            ws.cell(i, 1, str(r["SKU编码"])).number_format = "@"
+            for col, key in ((3, "重量(g)"), (4, "长(cm)"), (5, "宽(cm)"), (6, "高(cm)")):
+                if r[key] is not None:
+                    ws.cell(i, col, int(r[key]))
     _sheet(wb.create_sheet("示例"), TEMPLATE_HEAD, TEMPLATE_EXAMPLE)
     for title, data in (("问题清单", issues), ("导入明细", rows)):
         sh = wb.create_sheet(title)

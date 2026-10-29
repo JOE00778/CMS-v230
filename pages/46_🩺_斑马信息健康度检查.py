@@ -20,7 +20,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-from shared.banma_dims import CHUNK, build, customs_issues, in_scope, report_xlsx, select
+from shared.banma_dims import build, customs_issues, in_scope, report_xlsx, select
 from shared.db import get_connection, get_readonly_connection
 from shared.i18n import lang_selector, t
 
@@ -129,16 +129,11 @@ m1.metric(t("检查对象 SKU"), f"{len(in_scope(skus, ranked)):,}")
 m2.metric(t("可直接上传斑马"), f"{len(rows):,}")
 m3.metric(t("问题 SKU"), f"{len({x['SKU编码'] for x in issues}):,}")
 
-# 一个 Excel = 数据（斑马上传用）+ 示例 + 问题清单 + 导入明细；>1000 行时第 2 批起另出文件（斑马每次 ≤1000）
-batches = [rows[k:k + CHUNK] for k in range(0, len(rows), CHUNK)] or [[]]
-for n, part in enumerate(batches, 1):
-    st.download_button(
-        t("📥 下载 Excel（「数据」页可直接上传斑马 + 问题清单）") + (f" · {t('第')}{n}{t('批')}" if len(batches) > 1 else ""),
-        report_xlsx(part, issues if n == 1 else []),
-        file_name=f"斑马健康度检查_{stamp}" + (f"_{n}" if len(batches) > 1 else "") + ".xlsx",
-        type="primary" if n == 1 else "secondary", key=f"dl_{n}")
-st.caption(t("「数据」页 = 斑马「批量修改SKU信息」格式，空栏 = 不修改；报关信息斑马模板没有栏位，只在问题清单里 · "
-             "上传后点「立即从斑马拉取」，已改好的会从表中消失"))
+# 一个 Excel = 数据（斑马上传用・超 1000 行另起 数据2…）+ 示例 + 问题清单 + 导入明细
+st.download_button(t("📥 下载 Excel（「数据」页可直接上传斑马 + 问题清单）"), report_xlsx(rows, issues),
+                   file_name=f"斑马健康度检查_{stamp}.xlsx", type="primary")
+st.caption(t("「数据」页 = 斑马「批量修改SKU信息」格式，空栏 = 不修改；超过 1000 行另起「数据2」「数据3」… · "
+             "报关信息斑马模板没有栏位，只在问题清单里 · 上传后点「立即从斑马拉取」，已改好的会从表中消失"))
 
 tab_up, tab_issue = st.tabs([t("✅ 可直接上传斑马"), t("⚠️ 问题清单")])
 with tab_up:

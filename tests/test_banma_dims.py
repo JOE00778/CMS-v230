@@ -74,3 +74,11 @@ def test_customs_issues():
     assert got == {("4900000000002", "HS编码缺失或格式错误"), ("4900000000002", "英文名不是标准报关名"),
                    ("4900000000003", "英文名与HS不对应"), ("4900000000001_3", "组合品英文名缺「Nset」"),
                    ("4900000000004", "无报关信息")}
+
+
+def test_report_overflow_sheets():
+    rows = [{"SKU编码": str(4900000000000 + i), "重量(g)": 10, "长(cm)": None, "宽(cm)": None, "高(cm)": None}
+            for i in range(2001)]
+    wb = load_workbook(io.BytesIO(report_xlsx(rows, [])))
+    assert wb.sheetnames[:4] == ["数据", "数据2", "数据3", "示例"]
+    assert wb["数据"].max_row == 1001 and wb["数据3"].max_row == 2
