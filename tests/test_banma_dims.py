@@ -49,3 +49,12 @@ def test_build_rules():
     assert wb.sheetnames == ["数据", "示例"]
     vals = list(wb["数据"].iter_rows(values_only=True))
     assert vals[0][0] == "SKU编码" and vals[1][1] is None   # 成本价留空
+
+
+def test_rank_scope():
+    skus = [sku("1", "4900000000001"), sku("2", "4900000000002", spu="P2"),
+            sku("3", "4900000000001_2", typ="组合", comb=[{"SKUID": "1", "SKUCode": "4900000000001", "Quantity": 2}]),
+            sku("4", "4900000000002_2", typ="组合", comb=[{"SKUID": "2", "SKUCode": "4900000000002", "Quantity": 2}])]
+    jdl = {"4900000000001": (120, (100, 50, 30)), "4900000000002": (80, (90, 50, 30))}
+    rows, issues = build(skus, jdl, {}, ranked={"4900000000001"})
+    assert {r["SKU编码"] for r in rows} == {"4900000000001", "4900000000001_2"} and not issues

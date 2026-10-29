@@ -1,7 +1,8 @@
 """斑马 SKU 三边/重量检查 → 可直接上传斑马「批量修改SKU信息」的 Excel（page46 用・纯函数）.
 
 口径 = 2026-10-07〜09 Boss 逐条拍板的规则（斑马 Export 一括整备时用过的）:
-- 范围: 有效 SKU、顶层类目 Export。只补「缺失」(占位值)，不覆盖已有实值。
+- 范围: 有效 SKU、顶层类目 Export、且 NST 有商品等级（A/B/C/NEW · Boss 2026-10-29「没有商品等级的不用检查」）。
+  组合品看组成单品：全部单品都有等级才检查。只补「缺失」(占位值)，不覆盖已有实值。
   例外: 组合品重量 = 单品重量 × 件数，不一致就按计算值改（Boss 规则）。
 - 重量占位值 = 0/1/10/100/200/300/500（g）。三边占位 = 有 0、1×1×1、10×10×10。
 - 单品重量: JDL 实测毛重优先，NST 包装重量补位；两源都有且相差 ≥1.8 倍 → 人工。
@@ -104,15 +105,24 @@ def _single_weight(jdl_g, nst_g) -> tuple[int | None, str, str]:
     return v, src, ""
 
 
-def build(skus: list[dict], jdl: dict, nst: dict) -> tuple[list[dict], list[dict]]:
-    """skus = banma.sku_dims 全行；jdl = {jan: (weight_g, (l_mm, w_mm, h_mm))}；nst = {jan: package_weight_g}。
+def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> tuple[list[dict], list[dict]]:
+    """skus = banma.sku_dims 全行；jdl = {jan: (weight_g, (l_mm, w_mm, h_mm))}；nst = {jan: package_weight_g}；
+    ranked = 有商品等级的 JAN（None = 不限）。
     → (导入行, 问题行)。导入行 weight/L/W/H 为 None = 该栏留空（斑马不改）。"""
     by_id = {s["sku_id"]: s for s in skus}
     valid = [s for s in skus if s.get("is_valid")]
     code_n: dict[str, int] = {}
     for s in valid:
         code_n[s["code"]] = code_n.get(s["code"], 0) + 1
-    scope = [s for s in valid if s.get("category_top") == "Export"]
+    def graded(s):
+        if ranked is None:
+            return True
+        if s.get("sku_type") == "组合":
+            comb = s.get("combine") or []
+            return bool(comb) and all(str(c.get("SKUCode")) in ranked for c in comb)
+        return s["code"] in ranked
+
+    scope = [s for s in valid if s.get("category_top") == "Export" and graded(s)]
     sib: dict[str, list[tuple]] = {}
     for s in valid:
         if s.get("sku_type") != "组合" and (d := real_dims(s)):
