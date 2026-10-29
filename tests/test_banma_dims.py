@@ -82,3 +82,16 @@ def test_report_overflow_sheets():
     wb = load_workbook(io.BytesIO(report_xlsx(rows, [])))
     assert wb.sheetnames[:4] == ["数据", "数据2", "数据3", "示例"]
     assert wb["数据"].max_row == 1001 and wb["数据3"].max_row == 2
+
+
+def test_report_strips_control_chars():
+    issues = [{"SKU编码": "4903301321217", "问题": "x", "商品名": "abc\x02def"}]
+    wb = load_workbook(io.BytesIO(report_xlsx([], issues)))
+    assert wb["问题清单"]["C2"].value == "abcdef"
+
+
+def test_customs_std_without_hs():
+    from shared.banma_dims import customs_issues
+    std = [("", "洗濯用洗剤", "Laundry detergent, retail pack")]
+    customs = {"1": {"name_en": "Laundry detergent, retail pack, 900g", "hs_code": "340220"}}
+    assert customs_issues([sku("1", "4900000000001")], customs, std, None) == []

@@ -20,6 +20,7 @@ import math
 import re
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Font
 
 W_PH = {0, 1, 10, 100, 200, 300, 500}
@@ -248,7 +249,7 @@ def customs_issues(skus: list[dict], customs: dict, std: list[tuple], ranked: se
     英文名标准 = 「标准品类句」或「标准品类句, 容量(ml/g/L/kg)」，组合品末尾再加「 Nset」（10/23 Boss）。"""
     hs_of: dict[str, set] = {}
     for hs, _, en in std:
-        hs_of.setdefault(en, set()).add(hs)
+        hs_of.setdefault(en, set()).update({hs} if hs else set())  # 审查规则句无 HS → 只算「标准名」，不判对应
     out = []
     for s in in_scope(skus, ranked):
         c = customs.get(s["sku_id"])
@@ -278,7 +279,7 @@ def customs_issues(skus: list[dict], customs: dict, std: list[tuple], ranked: se
         core = _SPEC.sub("", _SET.sub("", en))
         if core not in hs_of:
             add("英文名不是标准报关名", "含品牌/商品名，或不在标准品类名表里")
-        elif _HS.fullmatch(hs) and hs[:6] not in hs_of[core]:
+        elif _HS.fullmatch(hs) and hs_of[core] and hs[:6] not in hs_of[core]:
             add("英文名与HS不对应", f"「{core}」对应 HS {'/'.join(sorted(hs_of[core]))}")
     return out
 
@@ -287,8 +288,8 @@ def _sheet(ws, head, rows):
     ws.append(head)
     for x in ws[1]:
         x.font = Font(bold=True)
-    for r in rows:
-        ws.append(r)
+    for r in rows:  # 斑马商品名里混有控制字符，openpyxl 会直接报错 → 去掉
+        ws.append([ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v for v in r])
 
 
 # 问题类型 → 检查项（page46 勾选用）。「通用」= 任一项勾选都列；报关信息有无 = 英文名或 HS 勾选时列
