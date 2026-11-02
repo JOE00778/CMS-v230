@@ -8,7 +8,7 @@
 判定规则见 shared/banma_dims.py。
 
 数据源（PG・本页只读，「立即从斑马拉取」只置 run_now）:
-  · banma.sku_dims / sku_customs / name_en_std  pull_sku_health（jdl_scheduler 每日 04:00 JST · 约 1 小时）
+  · banma.sku_dims / sku_customs / name_en_std  pull_sku_health（jdl_scheduler 每日 04:00 JST · 约 3 小时）
   · jdl.v_goods_dimensions                      JDL 仓库实测毛重/三边
   · nst.item_master_raw                         NST 包装重量 package_weight_g · 商品等级 item_rank
 """
@@ -85,13 +85,13 @@ else:
     c2.caption(t("上次拉取") + ": " + (str(job["last_run_at"])[:16] if job["last_run_at"] else "-")
                + " · " + str(job["last_status"] or "-"))
     if job["run_now"]:
-        c1.info(t("⏳ 拉取中（约 1 小时），完成后刷新本页"))
+        c1.info(t("⏳ 拉取中（约 3 小时），完成后刷新本页"))
     elif c1.button(t("▶️ 立即从斑马拉取"), type="primary"):
         try:
             wconn.execute("UPDATE jdl.pull_schedule SET run_now=TRUE, updated_at=now() WHERE job_key=%s", (JOB,))
             wconn.commit()
             st.cache_data.clear()
-            st.success(t("已预约，1 分钟内开始，约 1 小时完成"))
+            st.success(t("已预约，1 分钟内开始，约 3 小时完成"))
             st.rerun()
         except Exception as e:
             wconn.rollback()
