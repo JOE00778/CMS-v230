@@ -5,8 +5,10 @@ page06「库存监控 → 库存风控」の SKU 360 宽表と、発注AI v3 が
 「JDL库存 / 在途残 / 前N天销量」を別ソースで引いていて数字が割れたので統合した）。
 
 ⚠️ ソースの選択には意味があるので勝手に変えないこと:
-  · JDL库存  = `jdl.v_inventory_reconciliation.jdl_qty_in_stock`（JD 実物在庫・JAN 突合）
-               ← `nst.inventory_snapshot.qty_on_hand`（NST 帳簿在庫）**ではない**
+  · 当前库存 = NST 弁天倉庫 bin 快照最新日 ×「输出」棚（输出中国/返品/不良品 除外）の手持合計
+               （item_internal_id 突合）。Boss 2026-11-04「京东库存删除・改大分弁天」で
+               旧 `jdl.v_inventory_reconciliation.jdl_qty_in_stock`（JD 実物）から置換。
+               口径は page06 弁天 vs 斑马 对账の NST 侧（shared.benten_recon.NST_SQL）と同じ
   · 在途残   = `nst.purchase_order_line` の未入荷残（closed=FALSE の quantity − received）
                ← `inventory_snapshot.qty_on_order` **ではない**
   · 母集団   = `item_rank` が入っている商品だけ（等級未設定は対象外）
@@ -18,10 +20,19 @@ import pandas as pd
 
 DEFAULT_WINDOW_DAYS = 30
 
+BENTEN_EXPORT_STOCK_SQL = """
+SELECT b.item_internal_id AS internal_id, SUM(b.qty_on_hand) AS current_stock
+FROM nst.inventory_bin_snapshot b
+LEFT JOIN nst.bin_category bc ON bc.bin_number = b.bin_number
+WHERE b.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_bin_snapshot)
+  AND NOT (COALESCE(bc.is_return, FALSE) OR COALESCE(bc.is_defect, FALSE) OR COALESCE(bc.is_cb, FALSE))
+GROUP BY b.item_internal_id
+"""
+
 
 def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS,
                  *, errors: list | None = None) -> pd.DataFrame:
-    """商品マスタ（等級あり）× 前N日販売 × JDL 実在庫 × 未入荷残。
+    """商品マスタ（等級あり）× 前N日販売 × 弁天输出棚在庫 × 未入荷残。
 
     戻り列: internal_id / item_code / jan / display_name / rank / handling_cd /
             maker / date_created / cost_estimate / last_purchase_cost /
@@ -32,7 +43,7 @@ def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS,
     販売 / マスタ側の失敗は例外のまま呼び出し側へ投げる（黙って空にしない）。
 
     ⚠️ `errors` に list を渡すと、在庫 / 在途の取得失敗を**メッセージとして受け取れる**。
-    渡さないと従来どおり 0 で埋めて黙って続行する。2026-10-01 にこれで事故った:
+    渡さないと従来どおり 0 で埋めて黙って続行する。2026-10-01 にこれで事故った（当時の在庫源）:
     `jdl.v_inventory_reconciliation` が 73.7 秒まで遅くなり cms_reader の
     statement_timeout=30s に掛かって QueryCanceled → ここが握り潰して current_stock
     全件 0 → 可售天数が算出不能 → 库存风控が「何も出ない」ように見えた。
@@ -72,18 +83,17 @@ def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS,
     # 取扱区分は未設定が普通にあるので空文字に寄せる（表示でも判定でも None を回さない）
     df["handling_cd"] = df["handling_cd"].fillna("").astype(str)
 
-    # 当前库存 = JDL 実物在庫（jdl.v_inventory_reconciliation · jan 突合）
+    # 当前库存 = 弁天「输出」棚の手持（nst.inventory_bin_snapshot 最新日 · item_internal_id 突合）
     try:
-        _jdl = _df("SELECT jan, jdl_qty_in_stock AS current_stock "
-                   "FROM jdl.v_inventory_reconciliation")
+        _stk = _df(BENTEN_EXPORT_STOCK_SQL)
     except Exception as e:
         if errors is not None:
             errors.append(
-                "JDL 在庫（jdl.v_inventory_reconciliation）が取得できません → "
+                "弁天在庫（nst.inventory_bin_snapshot）が取得できません → "
                 f"在庫・可售天数・リスク分档はすべて 0 / 判定不能として表示されます: {e}")
-        _jdl = pd.DataFrame(columns=["jan", "current_stock"])
-    if not _jdl.empty:
-        df = df.merge(_jdl, how="left", on="jan")
+        _stk = pd.DataFrame(columns=["internal_id", "current_stock"])
+    if not _stk.empty:
+        df = df.merge(_stk, how="left", on="internal_id")
     if "current_stock" not in df.columns:
         df["current_stock"] = 0
     df["current_stock"] = pd.to_numeric(df["current_stock"], errors="coerce").fillna(0)

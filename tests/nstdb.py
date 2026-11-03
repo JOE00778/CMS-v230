@@ -43,6 +43,18 @@ CREATE TABLE nst.inventory_snapshot (
     qty_available    REAL,
     qty_on_order     REAL
 );
+CREATE TABLE nst.inventory_bin_snapshot (
+    item_internal_id TEXT,
+    bin_number       TEXT,
+    snapshot_date    TEXT,
+    qty_on_hand      REAL
+);
+CREATE TABLE nst.bin_category (
+    bin_number TEXT,
+    is_cb      INTEGER DEFAULT 0,
+    is_return  INTEGER DEFAULT 0,
+    is_defect  INTEGER DEFAULT 0
+);
 CREATE TABLE nst.inventory_activity_monthly (
     item_internal_id TEXT,
     year_month       TEXT,
@@ -104,6 +116,16 @@ def seed_inventory(c, jan, *, qty_on_hand=0.0, committed=0.0, qty_on_order=0.0,
         "VALUES (?,?,?,?,?,?)",
         (internal_id or iid(jan), warehouse, snapshot_date,
          qty_on_hand, qty_on_hand - committed, qty_on_order),
+    )
+
+
+def seed_bin(c, jan, qty_on_hand, *, bin_number="1-0001A", snapshot_date="2026-04-30",
+             internal_id=None) -> None:
+    """弁天倉庫 bin 快照 1 行。bin_category に無い棚 = 通常输出。"""
+    c.execute(
+        "INSERT INTO nst.inventory_bin_snapshot "
+        "(item_internal_id, bin_number, snapshot_date, qty_on_hand) VALUES (?,?,?,?)",
+        (internal_id or iid(jan), bin_number, snapshot_date, qty_on_hand),
     )
 
 

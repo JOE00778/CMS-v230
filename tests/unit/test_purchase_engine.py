@@ -11,7 +11,7 @@ import sqlite3
 import pytest
 
 from shared.purchase_engine import compute_recommendations
-from tests.nstdb import new_conn, iid, seed_item, seed_sales, seed_inventory, seed_turnover
+from tests.nstdb import new_conn, iid, seed_item, seed_sales, seed_inventory, seed_bin, seed_turnover
 
 # 直近 3 ヶ月（sorted で時系列になる文字列）
 _YM = ["2026-02", "2026-03", "2026-04"]
@@ -48,15 +48,19 @@ def test_inventory_deduction_and_lot_rounding():
               item_rank="Aランク", handling_cd="取扱中")
     # case_qty=NULL → lot_size=50 にフォールバック → pack=50
     c.execute("INSERT INTO supplier_quote VALUES ('仕入先甲','4900000000001','商品A',100,50,NULL,0,'掛','2週間','JD_DIRECT',1,'NST1')")
-    # 手持30 + 注文済20 = 実質在庫50 (確保済は引かない、輸送中無視)
-    seed_inventory(c, "4900000000001", qty_on_hand=30, committed=0, qty_on_order=20)
+    # 弁天输出棚 手持30 + 注文済20 = 実質在庫50 (確保済は引かない、輸送中無視)
+    # JD 仓の手持・弁天の返品棚は数えない（Boss 2026-11-04 京东→弁天输出棚）
+    seed_inventory(c, "4900000000001", qty_on_hand=999, committed=0, qty_on_order=20)
+    seed_bin(c, "4900000000001", 30)
+    seed_bin(c, "4900000000001", 7, bin_number="HENPIN-EX")
+    c.execute("INSERT INTO nst.bin_category (bin_number, is_return) VALUES ('HENPIN-EX', 1)")
 
     df = compute_recommendations(c, months=3)
     assert len(df) == 1
     r = df.iloc[0]
     assert r["rec_monthly"] == pytest.approx(100.0)
     assert r["target_stock"] == pytest.approx(150.0)    # 100 × 1.5
-    assert r["eff_stock"] == pytest.approx(50.0)         # JD 30 + 注文済 20
+    assert r["eff_stock"] == pytest.approx(50.0)         # 弁天输出 30 + 注文済 20
     assert r["shortfall"] == pytest.approx(200.0)        # 100×2.5 − 50
     assert r["suggested_qty"] == 200                     # ceil(200/50)*50
     assert r["line_cost"] == 200 * 100
@@ -70,7 +74,8 @@ def test_skip_when_enough_stock():
     seed_item(c, "4900000000002", display_name="商品B", maker="メーカーX",
               item_rank=None, handling_cd="取扱中")
     c.execute("INSERT INTO supplier_quote VALUES ('仕入先甲','4900000000002','商品B',100,1,NULL,0,'掛','1週間','JD_DIRECT',1,'NST1')")
-    seed_inventory(c, "4900000000002", qty_on_hand=9999)  # JD手持 9999
+    seed_inventory(c, "4900000000002", qty_on_hand=9999)
+    seed_bin(c, "4900000000002", 9999)                    # 弁天输出棚 9999
     df = compute_recommendations(c, months=3)
     assert df.empty
 

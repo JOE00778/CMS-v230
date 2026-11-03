@@ -121,20 +121,29 @@ def _load_monthly_sales(conn, months: int = 3, sales_source: str = "auto") -> tu
 
 
 def _load_inventory(conn) -> dict[str, dict]:
-    """item_inventory_snapshot_v2 を JAN 単位に集計（Boss 2026-05-14 仕様）。
+    """在庫を JAN 単位に集計。
 
-      jd_on_hand   = JD-物流-千葉 倉庫 の手持のみ (弁天は除外)
+      bn_on_hand   = 弁天倉庫「输出」棚の手持（bin 快照最新日 · 输出中国/返品/不良品 除外）
+                     ← Boss 2026-11-04「京东库存删除・改大分弁天」で旧 JD-物流-千葉 手持を置換
       on_order     = 注文済 (発注済で未入荷 = 在途, 倉庫横断 SUM)
       committed    = 確保済 (参考用, 計算には使わない)
-      実質在庫 = jd_on_hand + on_order
+      実質在庫 = bn_on_hand + on_order
     """
     inv: dict[str, dict] = {}
-    # nst.inventory_snapshot 最新快照 → JAN 単位（旧 item_inventory_snapshot_v2 置換·2026-05-26）
-    # jd_on_hand は JD 仓のみ（弁天除外·実質在庫 = jd_on_hand + on_order の Boss 口径維持）
+    # 注文済 / 確保済 は nst.inventory_snapshot 最新快照（倉庫横断）、手持は弁天 bin 快照
     try:
+        bn = {r["jan"]: float(r["bn_oh"] or 0) for r in conn.execute(
+            "SELECT im.jan AS jan, COALESCE(SUM(b.qty_on_hand),0) AS bn_oh "
+            "FROM nst.inventory_bin_snapshot b "
+            "JOIN nst.item_master_raw im ON im.internal_id = b.item_internal_id "
+            "LEFT JOIN nst.bin_category bc ON bc.bin_number = b.bin_number "
+            "WHERE im.jan IS NOT NULL "
+            "  AND b.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_bin_snapshot) "
+            "  AND NOT (COALESCE(bc.is_return, FALSE) OR COALESCE(bc.is_defect, FALSE) "
+            "           OR COALESCE(bc.is_cb, FALSE)) "
+            "GROUP BY im.jan").fetchall()}
         rows = conn.execute(
             "SELECT im.jan AS jan, "
-            "COALESCE(SUM(CASE WHEN inv.warehouse LIKE 'JD%' THEN inv.qty_on_hand ELSE 0 END),0) AS jd_oh, "
             "COALESCE(SUM(inv.qty_on_hand),0) AS oh_all, "
             "COALESCE(SUM(inv.qty_on_hand - COALESCE(inv.qty_available, inv.qty_on_hand)),0) AS cm, "
             "COALESCE(SUM(inv.qty_on_order),0) AS oo "
@@ -148,7 +157,7 @@ def _load_inventory(conn) -> dict[str, dict]:
         return inv
     for r in rows:
         inv[r["jan"]] = {
-            "jd_on_hand": float(r["jd_oh"] or 0),
+            "bn_on_hand": bn.get(r["jan"], 0.0),
             "on_hand_all": float(r["oh_all"] or 0),
             "committed": float(r["cm"] or 0),
             "on_order": float(r["oo"] or 0),
@@ -310,7 +319,7 @@ def compute_recommendations(
 
     数量公式:
       推奨月販 = max(平均月販, 直近月販) × トレンド係数(1.2/1.0/0.7)    ← 近 `months` 月のトレンド
-      実質在庫 = JD-物流-千葉 手持 + 注文済(全倉横断)                   ← 弁天は含めない (Boss 2026-05-14)
+      実質在庫 = 弁天「输出」棚 手持 + 注文済(全倉横断)                 ← Boss 2026-11-04 JD 手持から置換
       上次発注時剩余 = 実質在庫 − 推奨月販
       目標在庫 = 推奨月販 × 1.5
       必要数 = 目標在庫 − 上次発注時剩余 = 推奨月販 × 2.5 − 実質在庫
@@ -329,7 +338,7 @@ def compute_recommendations(
         months: 月販トレンドに使う直近期間数 (既定 4)
         trend_factors: {'up':1.2,'flat':1.0,'down':0.7}
         include_discontinued: True なら 取扱中止 品も含める (既定 False)
-        use_inventory: True なら 実質在庫 (JD手持+注文済) を差し引く (既定 True)
+        use_inventory: True なら 実質在庫 (弁天输出棚手持+注文済) を差し引く (既定 True)
         consolidate_by_brand / max_suppliers_per_brand / small_brand_skip: 品牌集約 (Boss 2026-05-12)
         optimize: 'zone'(既定) / 'line_cost' / 'cost' (仕入先選定方針)
         ranks: 対象ランク絞り込み (例 ('Aランク','Bランク'))
@@ -389,12 +398,12 @@ def compute_recommendations(
         for q in qlist:
             q["_eff"] = q["unit_price"] * ZONE_MARKUP.get(q["zone"], 1.0)
         iv = inv_map.get(jan, {})
-        jd_on_hand = iv.get("jd_on_hand", 0.0)
+        bn_on_hand = iv.get("bn_on_hand", 0.0)
         on_hand_all = iv.get("on_hand_all", 0.0)
         committed = iv.get("committed", 0.0)
         on_order = iv.get("on_order", 0.0)
-        # Boss 2026-05-14: 実質在庫 = JD仓 + 注文済  (弁天は除外, 確保済も差し引かない)
-        eff_stock = jd_on_hand + on_order
+        # 実質在庫 = 弁天输出棚 + 注文済（確保済は差し引かない · Boss 2026-05-14 / 11-04）
+        eff_stock = bn_on_hand + on_order
 
         base_monthly = max(avg_monthly, latest_monthly)
         trend = _classify_trend(m_seq)              # 参考: 売上方向（数量計算には使わない）
@@ -422,7 +431,7 @@ def compute_recommendations(
             "avg_monthly": avg_monthly, "latest_monthly": latest_monthly,
             "base_monthly": base_monthly, "rec_monthly": rec_monthly,
             "trend": trend, "sellthrough": st_rate, "sellthrough_factor": stfac,
-            "jd_on_hand": jd_on_hand, "on_hand_all": on_hand_all,
+            "bn_on_hand": bn_on_hand, "on_hand_all": on_hand_all,
             "committed": committed, "on_order": on_order,
             "eff_stock": eff_stock,
             "is_new_passive": is_new_passive,
@@ -487,7 +496,7 @@ def compute_recommendations(
             "sellthrough_factor": d.get("sellthrough_factor"),
             "rec_monthly": round(rec_monthly, 1),
             "lead_time_text": best["lead_time_text"],
-            "jd_on_hand": d["jd_on_hand"],
+            "bn_on_hand": d["bn_on_hand"],
             "on_hand_all": d["on_hand_all"],
             "qty_committed": d["committed"],
             "on_order": d["on_order"],
@@ -521,7 +530,7 @@ def compute_recommendations(
             "n_alt_suppliers": len(cands),
             "alt_suppliers": " / ".join(_supplier_label(q) for q in cands[:5]),
             # 旧仕様互換用フィールド (UI 表示はこれら使う場面あり)
-            "on_hand": d["jd_on_hand"],          # = 実質在庫の JD 部分 (旧名)
+            "on_hand": d["bn_on_hand"],          # = 実質在庫の 弁天输出棚 部分
             "order_months": 2.5,                  # 新仕様の固定相当値
         }
 
@@ -593,7 +602,7 @@ def compute_recommendations(
         z = ZONE_LABEL_JA.get(r["zone"], r["zone"])
         rm = r["rec_monthly"]
         base = (f"{z}・単価{r['unit_price']}・{r['trend']}×{r['trend_factor']}"
-                f"｜推奨月販{rm:.1f}×2.5={rm*2.5:.0f}−実質在庫{r['eff_stock']:.0f}(JD{r['jd_on_hand']:.0f}+注文済{r['on_order']:.0f})"
+                f"｜推奨月販{rm:.1f}×2.5={rm*2.5:.0f}−実質在庫{r['eff_stock']:.0f}(弁天{r['bn_on_hand']:.0f}+注文済{r['on_order']:.0f})"
                 f"＝必要{r['shortfall']:.0f}→{r['boxes']}箱×{r['pack_size']}={r['suggested_qty']}個"
                 f"(発注後在庫{r['stock_months_after']:.1f}ヶ月)")
         if r["consolidated"]:

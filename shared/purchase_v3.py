@@ -102,7 +102,7 @@ def compute_order(*, sold_30d, stock, transit, pack, price, item_rank) -> dict |
 
     Args:
         sold_30d: 前 30 日販売数（S30）
-        stock:    現在庫（JDL 在庫）
+        stock:    現在庫（弁天「输出」棚在庫 · shared.sku360）
         transit:  在途残（注文済・未入荷）
         pack:     起訂量 / 箱規。0 以下・空は呼び出し側で弾く前提（ここでは None を返す）
         price:    仕入単価。空でも数量は出す（金額だけ None · 原典 §16）

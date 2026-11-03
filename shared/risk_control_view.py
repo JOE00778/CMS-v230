@@ -1,4 +1,4 @@
-"""库存风控ビュー · 可售天数（JDL库存 / 前N天日均销量）による在庫リスク監視盘。
+"""库存风控ビュー · 可售天数（弁天库存 / 前N天日均销量）による在庫リスク監視盘。
 
 page06 库存监控 の「🛡️ 库存风控」タブから `render(conn)` で呼ぶ（旧 page18 を統合·
 Boss 2026-06-04）。set_page_config / 認証 / テーマ / lang_selector は呼び出し側
@@ -6,9 +6,9 @@ Boss 2026-06-04）。set_page_config / 認証 / テーマ / lang_selector は呼
 
 データ源（current-snapshot · 月份次元なし）:
   · 前N天销量   = nst.sales_daily（直近 N 日 SUM·item_internal_id 単位）
-  · 当前库存(JDL) = jdl.v_inventory_reconciliation.jdl_qty_in_stock（JD物流実物在仓·jan 単位）
-  · 可售天数      = JDL库存 / 日均销量 → 阈値(天)で 3 档（断货风险 / 正常 / 压库存）
-  · 资金占用 = JDL库存 × 平均单价。只取有商品等级的（item_rank 非空·无等级忽略）。
+  · 当前库存(弁天) = NST 弁天倉庫「输出」棚の手持（shared.sku360 · Boss 2026-11-04 JDL から置換）
+  · 可售天数      = 弁天库存 / 日均销量 → 阈値(天)で 3 档（断货风险 / 正常 / 压库存）
+  · 资金占用 = 弁天库存 × 平均单价。只取有商品等级的（item_rank 非空·无等级忽略）。
 
 ⚠️ リスク識別のみ。発注量・仕入先選択 → 📦 発注AI v2（page25·唯一の下单引擎）。
 """
@@ -35,7 +35,7 @@ def render(conn) -> None:
         return cached_df(conn, sql, params, ver=data_version("basic", "inventory", "sales", "purchase"))
 
     st.title(t("🛡️ 库存风控"))
-    st.caption(t("按可售天数(JDL库存/日均销量)识别断货 / 压库存风险 · 仅有等级商品 · "
+    st.caption(t("按可售天数(弁天库存/日均销量)识别断货 / 压库存风险 · 仅有等级商品 · "
                  "🛒 精确补货量请用「📦 発注AI v2」"))
 
     # ============================================================
@@ -52,7 +52,7 @@ def render(conn) -> None:
             t("🔴 断货线 (可售天数 <)"),
             min_value=0.0, max_value=365.0, value=float(_saved["reorder_days"]), step=5.0,
             key="risk_th_reorder",
-            help=t("可售天数 = JDL库存 / 日均销量(窗口销量/窗口天数)。低于此线 = 断货风险, 要补货"))
+            help=t("可售天数 = 弁天库存 / 日均销量(窗口销量/窗口天数)。低于此线 = 断货风险, 要补货"))
         overstock = tcol2.number_input(
             t("🟡 压库存线 (可售天数 >)"),
             min_value=0.0, max_value=999.0, value=float(_saved["overstock_days"]), step=5.0,
@@ -87,7 +87,7 @@ def render(conn) -> None:
     # ============================================================
     # 数据加载（current-snapshot·只取有等级）
     #   口径は shared/sku360.py に集約（発注AI v3 と同じ数字を見るため）:
-    #   qty_sold=前N天销量(sales_daily) · current_stock=JDL实物在库(jdl 对账视图)
+    #   qty_sold=前N天销量(sales_daily) · current_stock=弁天输出棚在库(sku360)
     #   · in_transit_qty=未关闭PO的入荷残(purchase_order_line)
     # ============================================================
     _fetch_errs: list[str] = []
@@ -109,7 +109,7 @@ def render(conn) -> None:
 
     # 派生列（可售天数 / risk_label）· 销量窗口 = window_days
     df_all = enrich(df_all, _th, days_in_period=window_days)
-    # 资金占用 = 平均单价(COALESCE average_cost, 定義原価) × JDL库存
+    # 资金占用 = 平均单价(COALESCE average_cost, 定義原価) × 弁天库存
     df_all["avg_unit_price"] = pd.to_numeric(df_all.get("avg_unit_price", 0), errors="coerce").fillna(0)
     df_all["capital_exposure"] = df_all["current_stock"] * df_all["avg_unit_price"]
     # 毛利率 = 前N天 gross_profit / revenue
@@ -123,7 +123,7 @@ def render(conn) -> None:
         for stk, sld, prc, rk in zip(df_all["current_stock"], df_all["qty_sold"],
                                      df_all["avg_unit_price"], df_all["rank"])
     ]
-    # 断货标记：前N天有销量 且 当前 JDL 库存 = 0
+    # 断货标记：前N天有销量 且 当前弁天库存 = 0
     df_all["is_stockout"] = [is_stockout(s, k) for s, k in zip(df_all["qty_sold"], df_all["current_stock"])]
 
     # ============================================================
@@ -145,7 +145,7 @@ def render(conn) -> None:
     with f4:
         sel_instock = st.selectbox(
             t("库存状态"), [t("全部"), t("有货"), t("断货")], index=0, key="page18_instock",
-            help=t("断货 = 前{d}天有销量 但 当前JDL库存=0").format(d=window_days))
+            help=t("断货 = 前{d}天有销量 但 当前弁天库存=0").format(d=window_days))
 
     search_kw = st.text_area(
         t("JAN / item_code 搜索（多个用 空格 / 逗号 / 换行 分隔）"),
@@ -195,14 +195,14 @@ def render(conn) -> None:
     k5.metric(t("💰 压库存资金占用"), f"¥{overstock_capital:,.0f}")
     k6.metric(t("♻️ 可释放库存金额(各等级标准)"), f"¥{releasable_total:,.0f}")
 
-    st.caption(t("前{w}天销售 + JDL实物库存 · 断货线<{r}天 / 压库存线>{o}天 · "
+    st.caption(t("前{w}天销售 + 弁天库存 · 断货线<{r}天 / 压库存线>{o}天 · "
                  "仅有等级商品 · 当前筛选 {n} 行").format(
                      w=window_days, r=f"{reorder:g}", o=f"{overstock:g}", n=len(df)))
 
-    # 断货率卡片（按商品等级·有等级全量·断货=前N天有销量+JDL库存0）
+    # 断货率卡片（按商品等级·有等级全量·断货=前N天有销量+弁天库存0）
     _so = stockout_rate_by_rank(df_all)
     if not _so.empty:
-        _so_title = t("各等级断货率（前{d}天有销量 + 当前JDL库存=0）").format(d=window_days)
+        _so_title = t("各等级断货率（前{d}天有销量 + 当前弁天库存=0）").format(d=window_days)
         st.markdown(f"##### 📊 {_so_title}")
         _rows = list(_so.itertuples(index=False))
         for _start in range(0, len(_rows), 6):
@@ -256,7 +256,7 @@ def render(conn) -> None:
         ("risk_label", t("风险")),
         ("is_stockout", t("断货")), ("qty_sold", t("前{d}天销量").format(d=window_days)),
         ("gross_margin", t("毛利率")),
-        ("current_stock", t("JDL库存")), ("days_of_supply", t("可售天数")),
+        ("current_stock", t("弁天库存")), ("days_of_supply", t("可售天数")),
         ("in_transit_qty", t("在途残")), ("in_transit_suppliers", t("在途供应商")),
         ("latest_po", t("最近PO")), ("last_purchase_cost", t("最近采购价")),
         ("avg_unit_price", t("平均单价")), ("capital_exposure", t("资金占用(¥)")),

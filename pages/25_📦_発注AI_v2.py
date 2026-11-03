@@ -117,7 +117,7 @@ def _build_nst_csv(df_sup: pd.DataFrame, *, nst_supplier: str, order_date: date,
         amount = qty * price
         rows.append({
             "外部ID": eid, "仕入先": nst_supplier, "日付": order_date.strftime("%Y/%m/%d"),
-            "従業員": employee, "部門": department, "メモ": memo, "場所": "JD-物流-千葉",
+            "従業員": employee, "部門": department, "メモ": memo, "場所": "弁天倉庫",  # Boss 2026-11-04 京东→弁天
             "アイテム": f"{r['jan']} {r['display_name']}".strip(),
             "数量": qty, "単価/率": price, "金額": amount, "税額": 0, "総額": amount,
         })
@@ -482,7 +482,7 @@ with top_v2:
                         df_hold[["jan", "display_name", "maker", "rank", "status", "on_hand", "suggested_qty",
                                  "pack_size", "stock_months_after", "supplier_name", "zone", "unit_price",
                                  "line_cost", "reason"]]
-                        .rename(columns={"rank": "ランク", "status": "状態", "on_hand": "JD在庫",
+                        .rename(columns={"rank": "ランク", "status": "状態", "on_hand": "弁天在庫",
                                          "suggested_qty": "発注数(参考)", "pack_size": "ケース",
                                          "stock_months_after": "発注後在庫月数", "supplier_name": "仕入先",
                                          "unit_price": "単価", "line_cost": "金額(参考)", "reason": "理由"})
@@ -496,7 +496,7 @@ with top_v2:
                     st.dataframe(
                         df_new[["jan", "display_name", "maker", "rank", "rec_monthly", "on_hand", "supplier_primary",
                                 "zone", "unit_price", "pack_size", "lead_time_text", "reason"]]
-                        .rename(columns={"rank": "ランク", "rec_monthly": "推奨月販", "on_hand": "JD在庫",
+                        .rename(columns={"rank": "ランク", "rec_monthly": "推奨月販", "on_hand": "弁天在庫",
                                          "supplier_primary": "候補仕入先", "unit_price": "単価", "pack_size": "ケース",
                                          "lead_time_text": "納期", "reason": "理由"}),
                         use_container_width=True, hide_index=True,
@@ -525,7 +525,7 @@ with top_v2:
                     st.dataframe(
                         sub[["jan", "display_name", "maker", "rank", "status", "avg_monthly", "latest_monthly",
                              "trend", "sellthrough", "sellthrough_factor", "rec_monthly",
-                             "jd_on_hand", "on_order", "eff_stock", "target_stock", "shortfall",
+                             "bn_on_hand", "on_order", "eff_stock", "target_stock", "shortfall",
                              "case_qty", "lot_size", "pack_size", "pack_source",
                              "boxes", "suggested_qty", "stock_months_after",
                              "unit_price", "line_cost", "lead_time_text",
@@ -535,7 +535,7 @@ with top_v2:
                             "rank": "ランク", "status": "状態",
                             "avg_monthly": "平均月販", "latest_monthly": "直近月販", "trend": "傾向(参考)",
                             "sellthrough": "完売率", "sellthrough_factor": "係数", "rec_monthly": "推奨月販",
-                            "jd_on_hand": "JD在庫", "on_order": "注文済", "eff_stock": "実質在庫",
+                            "bn_on_hand": "弁天在庫", "on_order": "注文済", "eff_stock": "実質在庫",
                             "target_stock": "目標(×1.5)", "shortfall": "必要数",
                             "case_qty": "ケース入数", "lot_size": "ロット",
                             "pack_size": "取整単位", "pack_source": "単位種別",
@@ -764,7 +764,7 @@ def _v3_fetch_skus():
     （Boss 2026-09-28「全部匹配桌面版的」）。デスクトップ订货助手が毎日取り込む
     CSV はこの宽表のダウンロードなので、同じ取得層 `shared/sku360.fetch_sku360`
     を呼ぶ。ここで独自クエリを書くと数字が割れる（実際に一度割れた）。
-      · JDL库存 = jdl.v_inventory_reconciliation（JD 実物在庫）
+      · 在庫    = NST 弁天倉庫「输出」棚の手持（Boss 2026-11-04 JDL から置換）
       · 在途残  = nst.purchase_order_line の未入荷残
       · 母集団  = item_rank が入っている商品のみ
     """
@@ -857,9 +857,9 @@ def render_purchase_v3() -> None:
     win_d, n_sku = st.session_state.get("v3_asof", (PV3.SALES_WINDOW_DAYS, 0))
     st.caption(_v3l(
         f"SKU {n_sku:,} 件（有等级商品）· 口径与「库存监控 → 库存风控 → SKU 360」完全一致 · "
-        f"销量窗口 = 今天往前 {win_d} 天 · 库存 = JDL 实物在库 · 在途 = 未关闭 PO 的入荷残",
+        f"销量窗口 = 今天往前 {win_d} 天 · 库存 = 弁天输出棚在库 · 在途 = 未关闭 PO 的入荷残",
         f"SKU {n_sku:,} 件（等級あり）· 口径は「库存监控 → 库存风控 → SKU 360」と完全一致 · "
-        f"販売ウィンドウ = 本日から {win_d} 日 · 在庫 = JDL 実在庫 · 在途 = 未クローズ PO の入荷残"))
+        f"販売ウィンドウ = 本日から {win_d} 日 · 在庫 = 弁天输出棚在庫 · 在途 = 未クローズ PO の入荷残"))
 
     orders = pd.DataFrame(res["orders"])
     k1, k2, k3, k4, k5 = st.columns(5)

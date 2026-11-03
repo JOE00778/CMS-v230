@@ -2,7 +2,7 @@
 
 每个业务模块独立 tab：
   - tab2 発注 AI v2       → shared.order_settings
-  - tab3 NST vs JDL 对账   → shared.jdl_recon_settings（差异档位阈值）
+  - tab3 弁天 vs 斑马 对账 → shared.jdl_recon_settings（差异档位阈值 · 2026-11-04 JDL から置換）
   - tab4 货架用途指定     → nst.bin_category (PG · 弁天棚号用途人工分类)
   - tab5 输出供应商名单   → nst.po_export_vendor (PG · 仕入先白名单)
 数据同步（NST/JDL 手动触发）已移除 → 统一到「📥 数据获取」页（功能重复·2026-06-23）。
@@ -44,7 +44,7 @@ st.caption(t("仅授权人员可改 · 各业务模块阈值/白名单独立 tab
 
 tab2, tab3, tab4, tab5, tab6 = st.tabs([
     t("📦 発注 AI v2"),
-    t("📊 NST vs JDL 账实对账"),
+    t("📊 弁天 vs 斑马 库存对账"),
     t("🏷️ 货架用途指定"),
     t("🏢 输出供应商名单"),
     t("🛡️ 合规数据源"),
@@ -91,14 +91,14 @@ with tab2:
     )
 
 # ============================================================
-# tab3 · NST vs JDL 账实对账（差异档位阈值）
+# tab3 · 弁天 vs 斑马 库存对账（差异档位阈值）
 # ============================================================
 with tab3:
     from shared.jdl_recon_settings import load_recon_params, save_recon_params
 
     st.subheader(t("差异档位阈值"))
     st.caption(t(
-        "|NST 账面 − JDL 实物| 在阈值内 = MINOR_DIFF（轻微差异）· 超出 = MAJOR_DIFF（必须查）。"
+        "|NST 弁天输出 − 斑马合格品| 在阈值内 = MINOR_DIFF（轻微差异）· 超出 = MAJOR_DIFF（必须查）。"
         "两个阈值满足任一即 MINOR。"
     ))
 
@@ -122,7 +122,7 @@ with tab3:
             "minor_abs_threshold": int(_rabs),
             "minor_pct_threshold": float(_rpct),
         })
-        st.success(t("✅ 已保存。到「📦 库存监控 → 库存构成分析 → 📊 NST vs JDL 对账」tab 刷新即生效。"))
+        st.success(t("✅ 已保存。到「📦 库存监控 → 库存构成分析 → 📊 弁天 vs 斑马 库存对账」tab 刷新即生效。"))
 
     st.divider()
     st.caption(
