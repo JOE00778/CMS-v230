@@ -57,9 +57,10 @@ _rank_sql = (
     f"FROM rank_history rh "
     f"LEFT JOIN nst.item_master_raw im ON im.item_code = rh.sku "
     f"LEFT JOIN ("
-    f"    SELECT item_internal_id, qty_on_hand "
+    f"    SELECT item_internal_id, SUM(qty_on_hand) AS qty_on_hand "   # 弁天倉庫のみ（2026-11-04）
     f"    FROM nst.inventory_snapshot "
     f"    WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
+    f"      AND warehouse = '弁天倉庫' GROUP BY item_internal_id"
     f") inv ON inv.item_internal_id = im.internal_id "
     f"WHERE rh.quarter IN ({_in_clause}) "
     f"ORDER BY rh.changed_at DESC"

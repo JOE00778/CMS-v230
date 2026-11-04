@@ -35,8 +35,7 @@ CUSTOMER_OPTIONS = [
     "C000495 三金商事株式会社（不良品処分専用）",
 ]
 LOCATION_OPTIONS = [
-    "弁天倉庫",
-    "JD-物流-千葉",
+    "弁天倉庫",   # Boss 2026-11-04 京东仓不再使用
 ]
 DEPARTMENT_OPTIONS = [
     "輸出事業部",

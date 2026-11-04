@@ -40,12 +40,12 @@ _INV_OLD = (
     "(SELECT item_internal_id, qty_on_hand FROM nst.inventory_snapshot "
     "WHERE snapshot_date=(SELECT max(snapshot_date) FROM nst.inventory_snapshot))"
 )
-# 新（修复）：每品一行 + JD+弁天 范围（与 pages/04 _INV 修复后一致）
+# 新（修复）：每品一行 + 弁天倉庫のみ（与 pages/04 _INV 一致 · 2026-11-04 京东/CGF 除外）
 _INV_NEW = (
     "(SELECT item_internal_id, SUM(qty_on_hand) AS qty_on_hand "
     "FROM nst.inventory_snapshot "
     "WHERE snapshot_date=(SELECT max(snapshot_date) FROM nst.inventory_snapshot) "
-    "  AND warehouse IN ('JD-物流-千葉', '弁天倉庫') "
+    "  AND warehouse = '弁天倉庫' "
     "GROUP BY item_internal_id)"
 )
 
@@ -102,8 +102,8 @@ def test_new_query_no_fanout(conn):
 
 
 def test_new_query_onhand_is_warehouse_sum(conn):
-    """修复后 on_hand = JD+弁天 之和（30+20），且只取 latest 快照（排除 999 旧行）。"""
+    """on_hand = 弁天倉庫 latest 快照のみ（JD 30 / 旧 999 は含まない · 2026-11-04）。"""
     by_jan, *_ = _totals(conn, _INV_NEW)
-    assert by_jan["P0001"][4] == 50    # 30 + 20，不是 MAX 也不含 999
-    assert by_jan["Q0002"][4] == 40
+    assert by_jan["P0001"][4] == 20    # 弁天 20 だけ
+    assert by_jan["Q0002"][4] is None  # JD にしか無い → 在庫なし扱い
     assert by_jan["R0003"][4] is None  # 无库存 → NULL

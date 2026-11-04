@@ -2,11 +2,12 @@
 
 两个数据源顶层 tab：
   - NST  · NetSuite API（商品マスタ / 在庫 / 売上 / スケジュール / 手動更新 / 履歴）
-  - JDL  · 京东物流海外仓 OpenAPI（库存 / 调度+手动同步 / 拉取历史）
+  - JDL  · 京东物流海外仓 OpenAPI（调度+手动同步 / 拉取历史）· 京东库存は 2026-11-04 から使わない
+           （jdl_inventory_daily 停用・京东商品重量 weekly と斑马の job はここで管理）
 
 PG schema：
   - nst.item_master_raw / nst.inventory_snapshot / nst.sales_monthly / nst._pull_runs / nst.pull_schedule
-  - jdl.inventory_snapshot / jdl.pull_log / jdl.pull_schedule
+  - jdl.pull_log / jdl.pull_schedule
 
 データは元川の PG に閉じる（原価含むため require_admin）。
 """
@@ -110,7 +111,7 @@ def _job_title(category, frequency, run_time) -> str:
 # ============================================================
 top_nst, top_jdl, top_cp = st.tabs([
     t("🏬 NST（NetSuite）"),
-    t("🚚 JDL（京东物流海外仓）"),
+    t("⏰ 定时任务（JDL重量 / 斑马）"),
     t("🇰🇷 Coupang（韩国店）"),
 ])
 
@@ -120,7 +121,7 @@ top_nst, top_jdl, top_cp = st.tabs([
 with top_nst:
     tab1, tab2, tab_sales, tab_vendor, tab_sched, tab_manual, tab3 = st.tabs([
         t("📦 商品マスタ"),
-        t("🏬 在庫 (JD-物流-千葉)"),
+        t("🏬 在庫 (弁天倉庫)"),
         t("💰 売上"),
         t("🏭 仕入先マスタ"),
         t("⏰ スケジュール設定"),
@@ -202,7 +203,8 @@ with top_nst:
     with tab2:
         meta_df, err = _query(
             "SELECT max(snapshot_date) d, count(*) c FROM nst.inventory_snapshot "
-            "WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"
+            "WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot) "
+            "  AND warehouse = '弁天倉庫'"   # Boss 2026-11-04 京东库存不再使用
         )
         if err:
             st.error(t("テーブル未取得 or 接続エラー: ") + err)
@@ -214,7 +216,8 @@ with top_nst:
     
             kw = st.text_input(t("JAN / 商品名 検索 "), key="inv_kw",
                                placeholder="JAN コード or 表示名の一部")
-            where, params = ["inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)"], []
+            where, params = ["inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)",
+                             "inv.warehouse = '弁天倉庫'"], []
             if kw.strip():
                 where.append("(im.jan LIKE ? OR im.display_name LIKE ?)")
                 like = f"%{kw.strip()}%"; params += [like, like]
@@ -503,72 +506,20 @@ with top_nst:
 
 
 # ============================================================
-# JDL 顶层 tab · 3 个子 tab（库存数据 / 调度+手动同步 / 拉取历史）
+# JDL 顶层 tab · 2 个子 tab（调度+手动同步 / 拉取历史）· 京东库存浏览は 2026-11-04 削除
 # ============================================================
 with top_jdl:
-    j_inv, j_sched, j_log = st.tabs([
-        t("📦 库存数据"),
+    j_sched, j_log = st.tabs([
         t("▶️ 调度 + 手动同步"),
         t("📜 拉取历史"),
     ])
 
-    # ── 库存数据：jdl.inventory_snapshot 最新快照 ─────────────
-    with j_inv:
-        meta_df, err = _query(
-            "SELECT max(snapshot_date) d, count(*) c FROM jdl.inventory_snapshot "
-            "WHERE snapshot_date = (SELECT max(snapshot_date) FROM jdl.inventory_snapshot)"
-        )
-        if err:
-            st.error(t("テーブル未取得 or 接続エラー: ") + err)
-        elif meta_df is None or meta_df.empty or meta_df["d"].iloc[0] is None:
-            st.info(t("尚无 JDL 库存数据。请到「调度 + 手动同步」tab 触发首次拉取。"))
-        else:
-            m = meta_df.iloc[0]
-            c1, c2 = st.columns(2)
-            c1.metric(t("最新快照日"), str(m["d"]))
-            c2.metric(t("库存行数"), f"{int(m['c']):,}")
-
-            kw = st.text_input(t("JAN / 商品名 模糊搜索"), key="jdl_inv_kw",
-                               placeholder="JAN コード or 商品名の一部")
-            where = ["snapshot_date = (SELECT max(snapshot_date) FROM jdl.inventory_snapshot)"]
-            params: list = []
-            if kw.strip():
-                where.append("(jan LIKE ? OR goods_name LIKE ?)")
-                like = f"%{kw.strip()}%"
-                params += [like, like]
-            df, err2 = _query(
-                "SELECT jan, jd_goods_id, goods_name, warehouse_code, warehouse_name, "
-                "       qty_total, qty_available, qty_preoccupied, qty_inbound, "
-                "       qty_operator_lock, qty_inventory_lock, stock_level_name "
-                "FROM jdl.inventory_snapshot WHERE " + " AND ".join(where) +
-                " ORDER BY qty_total DESC LIMIT 2000",
-                tuple(params),
-            )
-            if err2:
-                st.error(err2)
-            elif df is not None:
-                st.caption(t("表示件数（最大 2000 件）: ") + f"{len(df):,}")
-                st.dataframe(df, use_container_width=True, height=560,
-                             column_config={
-                                 "jan": "JAN (customerGoodsId)",
-                                 "jd_goods_id": t("JD商品ID"),
-                                 "goods_name": t("商品名"),
-                                 "warehouse_code": t("仓库代码"),
-                                 "warehouse_name": t("仓库名"),
-                                 "qty_total": t("总库存"),
-                                 "qty_available": t("可用"),
-                                 "qty_preoccupied": t("订单预占"),
-                                 "qty_inbound": t("在途"),
-                                 "qty_operator_lock": t("操作锁定"),
-                                 "qty_inventory_lock": t("库存锁定"),
-                                 "stock_level_name": t("等级"),
-                             })
-
     # ── 调度 + 手动同步：jdl.pull_schedule ────────────────────
     with j_sched:
-        st.subheader(t("JDL 库存定时拉取"))
+        st.subheader(t("定时拉取任务"))
         st.caption(t(
-            "元川的常驻 jdl_scheduler 容器毎分检查此表，到时间或 run_now=TRUE 时启动 daily_pull。"
+            "元川的常驻 jdl_scheduler 容器每分钟检查此表，到时间或 run_now=TRUE 时启动对应任务"
+            "（京东商品重量 / 斑马健康度 / 斑马库存）。京东库存拉取 2026-11-04 起停用。"
         ))
         jdl_sched_df, err = _query(
             "SELECT job_key, frequency, enabled, run_time, run_now, "

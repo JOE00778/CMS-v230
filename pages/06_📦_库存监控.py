@@ -1,7 +1,7 @@
 """模块 #06 库存监控 · 库存构成分析 + 库存健康监控 2 タブ統合（Boss 2026-06-02）.
 
 旧 page33 库存构成分析 + page18 库存风控 を 1 ページ 2 タブに統合。
-- tab1 构成分析：弁天(+CGF) 用途/等级構成（内部に 棚別/SKU別/弁天-斑马対账 の 3 子タブ）
+- tab1 构成分析：弁天のみ 用途/等级構成（内部に 棚別/SKU別/弁天-斑马対账 の 3 子タブ）
 - tab2 库存风控：可售天数(弁天输出棚库存/日均销量)による断货 / 压库存リスク監視（shared.risk_control_view）
 Boss 2026-11-04: 京东(JD-物流-千葉)库存を全面削除 → 大分弁天へ。NST vs JDL 対账 → 弁天 vs 斑马 対账、京东库存查询タブ削除。
 旧「库存健康监控」タブは 2026-06-04 削除。各 body は関数化し st.stop()→return。
@@ -31,7 +31,7 @@ st.title(t("📦 库存监控"))
 
 def _render_composition():
     st.title(t("📦 库存构成分析（弁天）"))
-    st.caption(t("弁天按棚番号分类（输出 / 输出中国 / 返品 / 不良品）· CGF(Coupang) 不分 bin 归通常输出 · 不含京东仓"))
+    st.caption(t("弁天按棚番号分类（输出 / 输出中国 / 返品 / 不良品）· 只看大分弁天倉庫（不含京东仓 / CGF）"))
 
 
     def _df(sql: str, params=None) -> pd.DataFrame:
@@ -55,16 +55,11 @@ def _render_composition():
     st.caption(t("库存快照：{d1} · 弁天 bin 快照：{d2}").format(
         d1=str(inv_date), d2=str(bin_date) if bin_date else t("（暂无）")))
 
-    # 全仓库 × item × bin level → 加 category 列（item × cost_estimate → 金额）
-    # JD:  除外（Boss 2026-11-04 京东库存を表示しない）
-    # CGF: bin_number=NULL → 类别='输出'（Coupang 海外仓·2026-08 新设·bin 无し）
+    # 弁天 × item × bin level → 加 category 列（item × cost_estimate → 金额）
+    # 弁天倉庫のみ（Boss 2026-11-04「只用大分弁天库存」· JD / CGF は表示しない）
     # 弁天: LEFT JOIN nst.bin_category 按 bool 标识判定（优先级 返品 > 不良品 > 输出中国 > 输出）
     _SQL = """
     WITH inv_all AS (
-        SELECT warehouse, item_internal_id, qty_on_hand, NULL::TEXT AS bin_number
-        FROM nst.inventory_snapshot
-        WHERE snapshot_date = %(d_jd)s AND warehouse NOT IN ('弁天倉庫', 'JD-物流-千葉')
-        UNION ALL
         SELECT '弁天倉庫' AS warehouse, item_internal_id, qty_on_hand, bin_number
         FROM nst.inventory_bin_snapshot
         WHERE snapshot_date = %(d_bn)s
@@ -89,7 +84,7 @@ def _render_composition():
     """
 
     try:
-        df = _df(_SQL, {"d_jd": inv_date, "d_bn": bin_date or inv_date})
+        df = _df(_SQL, {"d_bn": bin_date or inv_date})
     except Exception as e:
         st.error(t("⚠️ 构成查询失败") + f"\n\n{e}")
         return
@@ -104,7 +99,7 @@ def _render_composition():
     # ============================================================
     # 顶部 4 类别构成卡（全仓库合算）
     # ============================================================
-    st.subheader(t("📊 构成 KPI（全仓库合算）"))
+    st.subheader(t("📊 构成 KPI（弁天）"))
     by_cat = df.groupby("category", as_index=False).agg(qty=("qty_on_hand", "sum"), amt=("amt", "sum"))
     cat_map = {r["category"]: r for _, r in by_cat.iterrows()}
     tot_amt = float(by_cat["amt"].sum())
@@ -153,20 +148,10 @@ def _render_composition():
     ), bin_me AS (
         SELECT to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
         FROM nst.inventory_bin_snapshot, win WHERE snapshot_date >= win.d0 GROUP BY 1
-    ), snap_me AS (
-        -- 月次入出庫の集計が無い倉庫（CGF）は日次スナップショットの月末で代用
-        SELECT warehouse, to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
-        FROM nst.inventory_snapshot, win
-        WHERE snapshot_date >= win.d0 AND warehouse NOT IN ('JD-物流-千葉', '弁天倉庫')
-        GROUP BY 1, 2
     ), inv_all AS (
         SELECT m.ym, m.d AS as_of, '弁天倉庫' AS warehouse, b.item_internal_id,
                b.qty_on_hand, b.bin_number
         FROM nst.inventory_bin_snapshot b JOIN bin_me m ON m.d = b.snapshot_date
-        UNION ALL
-        SELECT m.ym, m.d, s.warehouse, s.item_internal_id, s.qty_on_hand, NULL::TEXT
-        FROM nst.inventory_snapshot s
-        JOIN snap_me m ON m.d = s.snapshot_date AND m.warehouse = s.warehouse
     )
     SELECT
         inv_all.ym, max(inv_all.as_of) AS as_of, inv_all.warehouse,
@@ -395,11 +380,11 @@ def _render_composition():
 
     # ============================================================
     # tab1 按棚番号查商品（弁天）
-    # tab2 按 SKU 查棚分布（弁天 + CGF）
+    # tab2 按 SKU 查棚分布（弁天）
     # ============================================================
     tab1, tab2, tab4 = st.tabs([
         t("🔎 按棚番号查商品（弁天）"),
-        t("🔍 按 SKU 查库存分布（全仓库）"),
+        t("🔍 按 SKU 查库存分布（弁天）"),
         t("📊 弁天 vs 斑马 库存对账"),
     ])
 
@@ -502,7 +487,7 @@ def _render_composition():
             st.info(t("无匹配数据"))
         else:
             if not sku_in.strip():
-                st.caption(t("提示：输入商品コード / JAN 可精确定位 · 当前展示全仓库筛选后明细"))
+                st.caption(t("提示：输入商品コード / JAN 可精确定位 · 当前展示弁天筛选后明细"))
             disp2 = sub2[["item_code", "jan", "display_name", "warehouse",
                           "bin_number", "category", "qty_on_hand", "amt"]].rename(columns={
                 "item_code": t("商品コード"), "jan": t("JAN"),

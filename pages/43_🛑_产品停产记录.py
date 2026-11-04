@@ -56,6 +56,7 @@ _STOCK_SQL = """
 SELECT item_internal_id, SUM(qty_on_hand) AS qty
 FROM nst.inventory_snapshot
 WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot)
+  AND warehouse = '弁天倉庫'   -- Boss 2026-11-04 京东库存不再使用
   AND item_internal_id IN ({ph})
 GROUP BY item_internal_id
 """

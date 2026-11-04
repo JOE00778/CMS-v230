@@ -1,10 +1,10 @@
-"""每日库存构成 飞书汇报 · 复用 CMS page06「构成 KPI（全仓库合算）」单一事实源.
+"""每日库存构成 飞书汇报 · 复用 CMS page06「构成 KPI（弁天）」单一事实源.
 
 数据口径与 pages/06_📦_库存监控.py 的 _render_composition() 完全一致:
-  · 全仓库 = nst.inventory_snapshot（JD-物流-千葉 / CGF倉庫（COUPANG））
-    + 弁天倉庫(nst.inventory_bin_snapshot · bin 単位で用途判定)
+  · 弁天倉庫のみ(nst.inventory_bin_snapshot · bin 単位で用途判定)
+    Boss 2026-11-04「只用大分弁天库存」→ JD-物流-千葉 / CGF倉庫（COUPANG） は外した
   · 金额 = qty_on_hand × item_master_raw.cost_estimate
-  · 用途分类 CASE: JD 全归「输出」; 弁天按 nst.bin_category 标识(优先级 返品>不良品>输出中国>输出)
+  · 用途分类 CASE: 弁天按 nst.bin_category 标识(优先级 返品>不良品>输出中国>输出)
 
 汇报结构（Boss 2026-06-25 拍板）:
   顶层 4 桶: 通常输出 / 输出中国 / 返品(HENPIN-EX) / 不良品(FF-3) + 库存合计 + 总数量
@@ -43,10 +43,6 @@ from psycopg2.extras import DictCursor
 # 在原 4 类别分组上多带一列 item_rank，用于「通常输出」内部按等级细分。
 _SQL = """
 WITH inv_all AS (
-    SELECT warehouse, item_internal_id, qty_on_hand, NULL::TEXT AS bin_number
-    FROM nst.inventory_snapshot
-    WHERE snapshot_date = %(d_jd)s AND warehouse <> '弁天倉庫'
-    UNION ALL
     SELECT '弁天倉庫' AS warehouse, item_internal_id, qty_on_hand, bin_number
     FROM nst.inventory_bin_snapshot
     WHERE snapshot_date = %(d_bn)s
@@ -104,7 +100,7 @@ def build_composition(conn) -> dict:
     if not inv_date:
         raise RuntimeError("nst.inventory_snapshot 无快照数据")
 
-    cur.execute(_SQL, {"d_jd": inv_date, "d_bn": bin_date or inv_date})
+    cur.execute(_SQL, {"d_bn": bin_date or inv_date})
 
     cat_agg: dict[str, dict] = {}          # category -> {qty, amt}
     shutsu_rank: dict[str, dict] = {}      # 仅 category='输出' 的 rank_label -> {qty, amt}
@@ -201,7 +197,7 @@ def render_card(d: dict, recv: dict | None = None) -> dict:
     elements = [
         {"tag": "div", "text": {"tag": "lark_md",
             "content": (f"**库存合计** ¥{d['tot_amt']:,.0f}　·　总数量 {d['tot_qty']:,.0f}\n"
-                        f"<font color='grey'>快照日 JD {d['inv_date']} · 弁天 {d['bin_date']}</font>")}},
+                        f"<font color='grey'>快照日 弁天 {d['bin_date']}</font>")}},
         {"tag": "hr"},
         {"tag": "div", "fields": cat_fields},
         {"tag": "hr"},

@@ -105,7 +105,7 @@ if not SUPPLIERS:
     st.stop()
 EMPLOYEES = ["079 隋艶偉", "005 川崎里子", "037 米澤和敏", "043 徐越"]
 DEPARTMENTS = ["輸出事業", "輸出事業 : 輸出（中国）"]
-LOCATIONS = ["JD-物流-千葉", "弁天倉庫"]
+LOCATIONS = ["弁天倉庫"]  # Boss 2026-11-04 京东仓不再使用
 
 
 def _guess_supplier(filename: str) -> int:

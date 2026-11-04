@@ -37,7 +37,7 @@ RATIO_THRESHOLDS = {
 GMROI_THRESHOLD = {"short": 0.0, "normal": 0.0, "long": 0.0}
 
 # 仓库硬过滤（v2 决策 · 只看 JD-千叶仓库的库存）
-WAREHOUSE_FILTER = "JD-物流-千葉"
+WAREHOUSE_FILTER = "弁天倉庫"  # Boss 2026-11-04 京东库存不再使用
 
 
 @dataclass

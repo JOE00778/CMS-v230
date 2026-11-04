@@ -91,7 +91,7 @@ def test_filter_by_stock_status_out(conn):
 
 
 def test_multi_warehouse_no_duplicate_rows():
-    """同一 SKU 多仓（JD-千葉 + 弁天）同日快照 → 检索仍 1 行·qty 合计。
+    """同一 SKU 多仓（JD-千葉 + 弁天）同日快照 → 检索仍 1 行·qty は弁天のみ（2026-11-04 京东除外）。
 
     回归：inventory_snapshot 主键含 warehouse，inv CTE 不聚合会按仓库数重复行。
     """
@@ -102,7 +102,7 @@ def test_multi_warehouse_no_duplicate_rows():
     c.commit()
     df = search_items(c, SearchFilters(stock_status=STOCK_ALL))
     assert len(df) == 1                          # 不按仓库重复
-    assert int(df.iloc[0]["qty_on_hand"]) == 15  # 两仓合计 10+5
+    assert int(df.iloc[0]["qty_on_hand"]) == 5   # 弁天 5 だけ（JD 10 は数えない）
 
 
 def test_filter_by_created_at(conn):

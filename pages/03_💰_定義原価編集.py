@@ -120,8 +120,8 @@ if step == 1:
 
     # 場所(warehouse) 候选 = 该快照下的仓库
     loc_all = [r["warehouse"] for r in conn.execute(
-        "SELECT DISTINCT warehouse FROM nst.inventory_snapshot "
-        "WHERE snapshot_date=? AND warehouse IS NOT NULL ORDER BY warehouse",
+        "SELECT DISTINCT warehouse FROM nst.inventory_snapshot "   # 弁天倉庫のみ（Boss 2026-11-04）
+        "WHERE snapshot_date=? AND warehouse = '弁天倉庫' ORDER BY warehouse",
         (sel_snapshot,)
     ).fetchall() if r["warehouse"]]
     handle_all = [r["handling_cd"] for r in conn.execute(

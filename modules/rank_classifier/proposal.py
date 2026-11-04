@@ -1,7 +1,7 @@
 """等级判定提案生成（T-016）— generate_proposal + export_csv
 
 v2 决策（2026-05-05）：
-- 仓库限定 = JD-物流-千葉（其他仓库不参与等级 / 订货决策）
+- 仓库限定 = 弁天倉庫（2026-11-04 京东库存不再使用）
 - 月周转率 = 订货决策核心指标（决定再订货点 + 下单量）
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from shared.rank_settings import load_rank_params, safety_factor
 
 
 # 仓库硬过滤（v2 决策 · 跟 modules/inventory_health/metrics.py 保持一致）
-WAREHOUSE_FILTER = "JD-物流-千葉"
+WAREHOUSE_FILTER = "弁天倉庫"  # Boss 2026-11-04 京东库存不再使用
 
 # 安全系数の既定（互換用 · 実際は shared.rank_settings の保存値を使う）
 SAFETY_FACTOR = {'Aランク': 1.5, 'Bランク': 1.0, 'Cランク': 0.5, '取扱中止': 0.0}
@@ -117,7 +117,7 @@ def generate_proposal(
         rank_pcts = calc_sales_rank(sku_to_sales)
         status_map = {row['item_code']: row['handling_status'] or '取扱中' for row in sales_data}
 
-        # 在庫量（NST 最新スナップショット · JD-物流-千葉 単一仓）→ reorder 字段用のみ
+        # 在庫量（NST 最新スナップショット · 弁天倉庫のみ）→ reorder 字段用のみ
         qty_map = {}
         try:
             inv_data = conn.execute("""
@@ -125,8 +125,9 @@ def generate_proposal(
                 FROM nst.inventory_snapshot inv
                 JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id
                 WHERE inv.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot)
+                  AND inv.warehouse = ?
                 GROUP BY im.item_code
-            """).fetchall()
+            """, (WAREHOUSE_FILTER,)).fetchall()
             qty_map = {row['item_code']: float(row['qty'] or 0) for row in inv_data}
         except Exception:
             pass

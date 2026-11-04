@@ -110,13 +110,14 @@ if chk is None or int(chk.iloc[0]["c"]) == 0:
 def load_sku_view() -> pd.DataFrame:
     sql = """
         WITH inv AS (
-            -- 主键含 warehouse（JD-千葉/弁天多仓多行）→ 按 item 聚合，否则详情/表格重复行
+            -- 主键含 warehouse（多仓多行）→ 按 item 聚合 · 弁天倉庫のみ（Boss 2026-11-04 京东库存不再使用）
             SELECT item_internal_id,
                    SUM(qty_on_hand) AS qty_on_hand,
                    SUM(qty_available) AS qty_available,
                    SUM(qty_on_order) AS qty_on_order
             FROM nst.inventory_snapshot
             WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)
+              AND warehouse = '弁天倉庫'
             GROUP BY item_internal_id
         ),
         sales AS (

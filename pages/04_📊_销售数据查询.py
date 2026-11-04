@@ -512,14 +512,14 @@ with _q_tab:
     # ============================================================
     # クエリ組み立て
     # ============================================================
-    # _INV 必须「每品一行」：inventory_snapshot 按仓库分行(JD-物流-千葉 + 弁天倉庫)，
+    # _INV 必须「每品一行」：inventory_snapshot 按仓库分行(弁天倉庫 / JD / CGF …)，
     # 不聚合就 join 下方 sales_monthly 会把销售行 fan-out 翻倍 → SUM(qty_sold/revenue/
-    # gross_profit) 虚高(比率类免疫，绝对值类全错)。SUM(qty_on_hand) + 限 JD+弁天，
-    # 口径对齐本页 库存总金额 KPI。修复 2026-06-16 · 回归 tests/test_sales_inventory_fanout.py
+    # gross_profit) 虚高(比率类免疫，绝对值类全错)。SUM(qty_on_hand) + 限弁天倉庫
+    # （Boss 2026-11-04 京东/CGF 库存不再使用），口径对齐本页 库存总金额 KPI。修复 2026-06-16 · 回归 tests/test_sales_inventory_fanout.py
     _INV = ("(SELECT item_internal_id, SUM(qty_on_hand) AS qty_on_hand "
             "FROM nst.inventory_snapshot "
             "WHERE snapshot_date=(SELECT max(snapshot_date) FROM nst.inventory_snapshot) "
-            "  AND warehouse IN ('JD-物流-千葉', '弁天倉庫', 'CGF倉庫（COUPANG）') "
+            "  AND warehouse = '弁天倉庫' "
             "GROUP BY item_internal_id)")
 
     # 月份以外の筛选（下方の推移図 = 全月集計で再利用するため分離）
@@ -623,7 +623,7 @@ with _q_tab:
         tot_q = df["qty_sold"].astype(float).sum()
         tot_r = df["revenue"].astype(float).sum()
         tot_g = df["arari"].astype(float).sum()
-        # 库存总金额/数量 = 输出部门 · JD + 弁天 最新快照
+        # 库存总金额/数量 = 输出部门 · 弁天倉庫 最新快照（2026-11-04 京东/CGF 除外）
         # 应用 _filt 中 im.* 条件（等级/厂商/取扱区分/SKU 关键词），s.shop 库存无适用故剔除
         _filt_im = [c for c in _filt if c.startswith("im.")]
         _filtp_im: list = []
@@ -645,7 +645,7 @@ with _q_tab:
             "SELECT SUM(inv.qty_on_hand * im.cost_estimate) sv, SUM(inv.qty_on_hand) soh "
             "FROM nst.inventory_snapshot inv "
             "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
-            "WHERE inv.warehouse IN ('JD-物流-千葉', '弁天倉庫', 'CGF倉庫（COUPANG）') "
+            "WHERE inv.warehouse = '弁天倉庫' "
             "  AND im.department = '輸出事業' "
             "  AND inv.snapshot_date = " + _SNAP_OF_MONTH
         )

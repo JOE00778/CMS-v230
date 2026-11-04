@@ -149,14 +149,14 @@ st.markdown(f"##### {t('业务大盘')}")
 sku_total = _safe_scalar(
     "SELECT COUNT(*) FROM nst.item_master_raw WHERE jan IS NOT NULL", default=0)
 
-# 2) 在库金额（nst.inventory_snapshot 手持数 × 定義原価 · JD主仓最新快照 · 对齐库存监控页06）
+# 2) 在库金额（nst.inventory_snapshot 手持数 × 定義原価 · 弁天倉庫最新快照 · 对齐库存监控页06 合计 · Boss 2026-11-04 京东→弁天）
 inv_amount = _safe_scalar(
     """
     SELECT COALESCE(SUM(inv.qty_on_hand * COALESCE(im.cost_estimate, 0)), 0)
     FROM nst.inventory_snapshot inv
     JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id
     WHERE inv.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot)
-      AND inv.warehouse = 'JD-物流-千葉'
+      AND inv.warehouse = '弁天倉庫'
     """,
     default=0,
 )

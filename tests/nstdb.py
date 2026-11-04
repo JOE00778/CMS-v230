@@ -107,7 +107,7 @@ def seed_sales(c, jan, year_month, qty_sold, *, revenue=0.0, gross_profit=0.0,
 
 
 def seed_inventory(c, jan, *, qty_on_hand=0.0, committed=0.0, qty_on_order=0.0,
-                   warehouse="JD-物流-千葉", snapshot_date="2026-04-30",
+                   warehouse="弁天倉庫", snapshot_date="2026-04-30",
                    internal_id=None) -> None:
     """qty_available = qty_on_hand − committed（業務コードの committed 算出に合わせる）。"""
     c.execute(

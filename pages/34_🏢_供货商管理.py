@@ -356,19 +356,29 @@ def _sales_m13() -> pd.DataFrame:
 
 @_memo
 def _inventory() -> pd.DataFrame:
-    """jan → JD在库 / 在途（nst.inventory_snapshot 最新快照 · purchase_engine 同口径）。"""
+    """jan → 弁天输出棚在库 / 在途（purchase_engine 同口径 · Boss 2026-11-04 京东→弁天）。"""
     _d = _read(
-        "SELECT im.jan AS jan, "
-        "COALESCE(SUM(CASE WHEN inv.warehouse LIKE 'JD%' THEN inv.qty_on_hand ELSE 0 END),0) AS jd_on_hand, "
-        "COALESCE(SUM(inv.qty_on_order),0) AS on_order "
-        "FROM nst.inventory_snapshot inv "
-        "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
-        "WHERE im.jan IS NOT NULL "
-        "AND inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot) "
+        "WITH bn AS ("
+        "  SELECT b.item_internal_id, SUM(b.qty_on_hand) AS q "
+        "  FROM nst.inventory_bin_snapshot b "
+        "  LEFT JOIN nst.bin_category bc ON bc.bin_number = b.bin_number "
+        "  WHERE b.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_bin_snapshot) "
+        "    AND NOT (COALESCE(bc.is_return, FALSE) OR COALESCE(bc.is_defect, FALSE) "
+        "             OR COALESCE(bc.is_cb, FALSE)) "
+        "  GROUP BY b.item_internal_id) "
+        "SELECT im.jan AS jan, COALESCE(SUM(bn.q),0) AS bn_on_hand, "
+        "       COALESCE(SUM(oo.on_order),0) AS on_order "
+        "FROM nst.item_master_raw im "
+        "LEFT JOIN bn ON bn.item_internal_id = im.internal_id "
+        "LEFT JOIN (SELECT item_internal_id, SUM(qty_on_order) AS on_order "
+        "           FROM nst.inventory_snapshot "
+        "           WHERE snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot) "
+        "           GROUP BY item_internal_id) oo ON oo.item_internal_id = im.internal_id "
+        "WHERE im.jan IS NOT NULL AND (bn.q IS NOT NULL OR oo.on_order IS NOT NULL) "
         "GROUP BY im.jan")
     if _d.empty:
-        return pd.DataFrame(columns=["jan", "jd_on_hand", "on_order"])
-    for _c in ("jd_on_hand", "on_order"):
+        return pd.DataFrame(columns=["jan", "bn_on_hand", "on_order"])
+    for _c in ("bn_on_hand", "on_order"):
         _d[_c] = pd.to_numeric(_d[_c], errors="coerce").fillna(0)
     return _d
 
@@ -381,7 +391,7 @@ def _sku_frame(ranks: list[str]) -> pd.DataFrame:
         main_supplier, main_price, cur_supplier, cur_rate,
         cur_price(主供价>最近PO单价), cur_src, plan_supplier(计划归属),
         msrp_taxex, best_supplier, best_price, best_validity, n_eligible, n_backup,
-        n_quotes, qty_lm(直近完整月販), qty_3m(近3完整月合計), jd_on_hand, on_order,
+        n_quotes, qty_lm(直近完整月販), qty_3m(近3完整月合計), bn_on_hand, on_order,
         buy_price(現仕入価=NST最終購入原価→直近PO単価), buy_src,
         buy_saving, buy_saving_amt(×qty_lm · 現仕入価基準·最適化余地の判定), flags。
     """
@@ -442,7 +452,7 @@ def _sku_frame(ranks: list[str]) -> pd.DataFrame:
         f[_c] = pd.to_numeric(f.get(_c), errors="coerce").fillna(0)
     # 在库/在途
     f = f.merge(_inventory(), on="jan", how="left")
-    for _c in ("jd_on_hand", "on_order"):
+    for _c in ("bn_on_hand", "on_order"):
         f[_c] = pd.to_numeric(f.get(_c), errors="coerce").fillna(0)
     # 理论节省（機会測算 · spec: (現仕入価−最低有効見積)×対応需要）。
     # 「まだ下げる余地があるか」を見るのが目的なので、基準は人手 Excel の指定価ではなく
@@ -519,7 +529,7 @@ with tab_cp:
         _fm["qty_m"] = pd.to_numeric(_fm["qty_m"], errors="coerce").fillna(0)
         _fm["plan_amt"] = (_fm["qty_m"] * _fm["cur_price"]).fillna(0.0)
         _fm["saving_m"] = (_fm["buy_saving"] * _fm["qty_m"]).fillna(0.0)
-        _fm["short_risk"] = ((_fm["jd_on_hand"] + _fm["on_order"]) < _fm["qty_m"]) \
+        _fm["short_risk"] = ((_fm["bn_on_hand"] + _fm["on_order"]) < _fm["qty_m"]) \
             & (_fm["qty_m"] > 0)
         _has_sup = _fm[_fm["plan_supplier"].notna()
                        & (_fm["plan_supplier"].astype(str).str.strip() != "")]
@@ -607,14 +617,14 @@ with tab_cp:
             _dsk = _dsk.sort_values("plan_amt", ascending=False)
             _dshow = _dsk[["jan", "display_name", "item_rank", "qty_m", "cur_price",
                            "plan_amt", "best_supplier", "best_price", "saving_m",
-                           "jd_on_hand", "on_order", "flags"]].rename(columns={
+                           "bn_on_hand", "on_order", "flags"]].rename(columns={
                 "jan": t("JAN"), "display_name": t("商品名"), "item_rank": t("RANK"),
                 "qty_m": _dl("需求数量", "需要数量"), "cur_price": _dl("当前价", "現行価"),
                 "plan_amt": _dl("计划金额", "計画金額"),
                 "best_supplier": _dl("最低报价供应商", "最安見積先"),
                 "best_price": _dl("最低有效报价", "最安有効見積"),
                 "saving_m": _dl("理论节省", "理論節約"),
-                "jd_on_hand": _dl("库存", "在庫"), "on_order": _dl("在途", "発注残"),
+                "bn_on_hand": _dl("库存", "在庫"), "on_order": _dl("在途", "発注残"),
                 "flags": _dl("状态", "状態")})
             st.dataframe(_dshow, hide_index=True, use_container_width=True, height=420,
                          column_config={
@@ -917,7 +927,7 @@ with tab_sku:
                    "main_supplier": t("主供货商"),
                    "cur_supplier": _dl("最近PO供应商", "直近PO仕入先"),
                    "qty_3m": _dl("近三月销量", "直近3ヶ月販売"),
-                   "jd_on_hand": _dl("库存", "在庫"), "on_order": _dl("在途", "発注残"),
+                   "bn_on_hand": _dl("库存", "在庫"), "on_order": _dl("在途", "発注残"),
                    "flags": _dl("状态", "状態")}
         _shows = _v[list(_cols_s.keys())].rename(columns=_cols_s)
         _SRC_LABEL = {"nst": _dl("NST最终购入", "NST最終購入"),

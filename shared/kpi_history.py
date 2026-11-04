@@ -9,7 +9,7 @@
 字段（数据源 2026-07 全部切 nst.* · 旧 item_v2/shop_sales 已弃）:
 - year_month       (主键, YYYYMM)
 - sku_total        nst.item_master_raw 行数（有 JAN）
-- stock_value_jpy  nst.inventory_snapshot 手持 × 定義原価（JD主仓最新快照·对齐page06）
+- stock_value_jpy  nst.inventory_snapshot 手持 × 定義原価（弁天倉庫最新快照·对齐page06·2026-11-04 京东→弁天）
 - month_revenue_jpy nst.sales_daily 当月 SUM(revenue)
 - gross_margin     nst.sales_daily 当月 gross_profit / revenue (0~1·对齐page05)
 - snapshot_at      ISO timestamp
@@ -86,7 +86,7 @@ def take_snapshot(conn=None) -> dict:
         "FROM nst.inventory_snapshot inv "
         "JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id "
         "WHERE inv.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot) "
-        "AND inv.warehouse = 'JD-物流-千葉'",
+        "AND inv.warehouse = '弁天倉庫'",
         0.0,
     ) or 0.0
     _ym_dash = datetime.now().strftime("%Y-%m")

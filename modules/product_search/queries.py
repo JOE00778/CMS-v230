@@ -87,13 +87,14 @@ def build_where(f: SearchFilters) -> tuple[str, list]:
 def _base_sql(where: str) -> str:
     return f"""
         WITH inv AS (
-            -- inventory_snapshot 主键含 warehouse（JD-千葉 / 弁天 多仓多行）→
-            -- 必须按 item 聚合，否则 LEFT JOIN 后同一 SKU 按仓库数重复行（且 qty 不全）
+            -- inventory_snapshot 主键含 warehouse（多仓多行）→ 必须按 item 聚合
+            -- 弁天倉庫のみ（Boss 2026-11-04 京东库存不再使用）
             SELECT item_internal_id, SUM(qty_on_hand) AS qty_on_hand
             FROM nst.inventory_snapshot
             WHERE snapshot_date = (
                 SELECT MAX(snapshot_date) FROM nst.inventory_snapshot
             )
+              AND warehouse = '弁天倉庫'
             GROUP BY item_internal_id
         )
         SELECT

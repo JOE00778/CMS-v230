@@ -1,22 +1,18 @@
-"""模块 #25 発注AI · 旧版（JD基线）+ v2（多仕入先決定版）合并
+"""模块 #25 発注AI · v2（多仕入先決定版）+ v3（可售天数基準）
 
-旧版（来自旧 page 08 · JD 库存基线）:
-  A/B/C 档 + sold×倍率 + lot 圆整 → orders_available_based.csv
+旧版（JD基线 · 旧 page 08）は 2026-11-04 削除（京东库存不再使用）。
 
 v2（Boss 2026-05-11 多仕入先決定版）:
   月販トレンド × zone 优先 × 単価最安 → NST 発注 CSV
 
 板块（顶层 tabs）:
-  📦 旧版（JD基线）       — 一键计算 + 按供应商分组 CSV
   🆕 v2（多仕入先決定版）
       📊 発注計算 / 🚚 仕入先 / 🏷️ 商品 / 🏭 品牌
 """
 from __future__ import annotations
 
 import io
-import math
-import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
@@ -35,7 +31,7 @@ conn = get_readonly_connection()
 
 st.title(t("📦 発注AI"))
 st.caption(t(
-    "📦 旧版（JD基线・page 08 から合并）+ 🆕 v2（多仕入先決定版・Boss 2026-05-11）— 上方 tab で切替"
+    "🆕 v2（多仕入先決定版・Boss 2026-05-11）+ 🆕 v3（可售天数基準）— 上方 tab で切替 · 在庫は弁天输出棚"
 ))
 
 
@@ -61,32 +57,6 @@ NST_SUPPLIERS = [
 ]
 EMPLOYEES = ["079 隋艶偉", "005 川崎里子", "037 米澤和敏", "043 徐越"]
 DEPARTMENTS = ["輸出事業", "輸出事業 : 輸出（中国）"]
-
-
-# ============================================================
-# helpers（旧版：page 08 移植）
-# ============================================================
-def _normalize_jan(x):
-    s = str(x).strip() if x is not None else ""
-    if re.fullmatch(r"\d+(\.0+)?", s):
-        return str(int(float(s)))
-    return s
-
-
-def _normalize_rank_base(rank: str) -> str:
-    """ランク -> A/B/C/'' (TEST/NEW 归 '')."""
-    if not rank:
-        return ""
-    r = str(rank)
-    for k in ("A", "B", "C"):
-        if k in r:
-            return k
-    return ""
-
-
-def _df(sql: str) -> pd.DataFrame:
-    from shared.cache import cached_df, data_version
-    return cached_df(conn, sql, ver=data_version("basic", "inventory", "sales", "purchase"))
 
 
 # ============================================================
@@ -128,237 +98,13 @@ def _build_nst_csv(df_sup: pd.DataFrame, *, nst_supplier: str, order_date: date,
 
 
 # ============================================================
-# 旧版（JD基线）主体 — page 08 line 60-282 移植，封装为函数
-# ============================================================
-def render_legacy_jd_baseline() -> None:
-    st.caption(t("✅ JD-千叶仓库库存为基线·自动算 need_qty + 最优 lot 选择（page 08 兼容算法）"))
-    if not st.button(t("🤖 开始计算"), type="primary", key="legacy_calc_btn"):
-        return
-
-    with st.spinner(t("📦 数据加载中...")):
-        df_sales = _df("SELECT * FROM sales_line")
-        df_purchase = _df("SELECT * FROM purchase_data")
-        df_master = _df("SELECT * FROM item_master")
-        df_warehouse = _df("SELECT * FROM warehouse_stock")
-        df_history = _df("SELECT * FROM purchase_history")
-        df_benten = _df("SELECT * FROM benten_stock")
-
-    if df_sales.empty or df_purchase.empty or df_master.empty:
-        st.warning(t("必要数据不足（需要 sales / purchase_data / item_master）"))
-        return
-    if df_warehouse.empty:
-        st.warning(t("warehouse_stock 数据不足"))
-        return
-
-    sales_jan_col = "jan" if "jan" in df_sales.columns else "internal_id"
-    sold_col = "quantity_sold" if "quantity_sold" in df_sales.columns else "qty"
-    df_sales["jan"] = df_sales[sales_jan_col].apply(_normalize_jan)
-    df_sales["quantity_sold"] = pd.to_numeric(df_sales[sold_col], errors="coerce").fillna(0).astype(int)
-    if "stock_available" not in df_sales.columns:
-        df_sales["stock_available"] = 0
-    df_sales["stock_available"] = pd.to_numeric(df_sales["stock_available"], errors="coerce").fillna(0).astype(int)
-
-    df_purchase["jan"] = df_purchase["jan"].apply(_normalize_jan)
-    df_purchase["order_lot"] = pd.to_numeric(df_purchase["order_lot"], errors="coerce").fillna(0).astype(int)
-    df_purchase["price"] = pd.to_numeric(df_purchase["price"], errors="coerce")
-
-    df_master["jan"] = df_master["jan"].apply(_normalize_jan)
-
-    df_warehouse["product_code"] = df_warehouse["product_code"].apply(_normalize_jan)
-    df_warehouse["stock_available"] = pd.to_numeric(df_warehouse["stock_available"], errors="coerce").fillna(0).astype(int)
-
-    if df_history.empty:
-        df_history = pd.DataFrame(columns=["jan", "quantity", "memo", "order_date"])
-    df_history["jan"] = df_history["jan"].apply(_normalize_jan)
-    df_history["quantity"] = pd.to_numeric(df_history["quantity"], errors="coerce").fillna(0).astype(int)
-    df_history["memo"] = df_history["memo"].astype(str).fillna("")
-
-    df_shanghai = df_history[df_history["memo"].str.contains("上海", na=False)]
-    df_shanghai_grouped = df_shanghai.groupby("jan")["quantity"].sum().reset_index(name="shanghai_quantity")
-    if "発注済" not in df_master.columns:
-        df_master["発注済"] = 0
-    df_master = df_master.merge(df_shanghai_grouped, on="jan", how="left")
-    df_master["shanghai_quantity"] = df_master["shanghai_quantity"].fillna(0).astype(int)
-    df_master["発注済_修正後"] = (
-        pd.to_numeric(df_master["発注済"], errors="coerce").fillna(0) - df_master["shanghai_quantity"]
-    ).clip(lower=0)
-
-    df_sales.drop(columns=["発注済"], errors="ignore", inplace=True)
-    df_sales = df_sales.merge(df_master[["jan", "発注済_修正後"]], on="jan", how="left")
-    df_sales["発注済"] = df_sales["発注済_修正後"].fillna(0).astype(int)
-
-    rank_multiplier = {"Cランク": 1.0, "TEST": 1.5, "NEW": 1.5}
-
-    df_history["order_date_dt"] = pd.to_datetime(df_history["order_date"], errors="coerce").dt.date
-    today = date.today()
-    yesterday = today - timedelta(days=1)
-    recent_jans = set(
-        df_history[df_history["order_date_dt"].isin([today, yesterday])]["jan"]
-        .dropna().astype(str).apply(_normalize_jan).unique().tolist()
-    )
-
-    results = []
-    with st.spinner(t("🤖 計算中...")):
-        for _, row in df_sales.iterrows():
-            jan = row["jan"]
-            sold = int(row["quantity_sold"])
-            ordered = int(row["発注済"])
-
-            stock_row = df_warehouse[df_warehouse["product_code"] == jan]
-            stock = int(stock_row["stock_available"].values[0]) if not stock_row.empty else 0
-
-            rank_row = df_master[df_master["jan"] == jan]
-            rank = ""
-            if not rank_row.empty and ("ランク" in df_master.columns):
-                rk = rank_row.iloc[0]["ランク"]
-                rank = str(rk) if pd.notna(rk) else ""
-            base_rank = _normalize_rank_base(rank)
-
-            if jan in recent_jans:
-                continue
-
-            current_total = stock + ordered
-
-            if base_rank in ("A", "B"):
-                reorder_point = max(math.ceil(sold * 1.2), 1)
-                if current_total >= reorder_point:
-                    continue
-            else:
-                reorder_point = max(math.floor(sold * 0.7), 1)
-                if current_total > reorder_point:
-                    continue
-
-            if base_rank in ("A", "B"):
-                base_needed = max(math.ceil(sold * 1.7), 0)
-                if stock <= 1 and sold >= 1 and base_needed <= 0:
-                    base_needed = 1
-            else:
-                m = rank_multiplier.get(rank, 1.0)
-                need_raw = math.ceil(sold * m) - stock - ordered
-                base_needed = 1 if (stock <= 1 and sold >= 1 and need_raw <= 0) else max(need_raw, 0)
-                if base_needed <= 0:
-                    continue
-
-            options_all = df_purchase[df_purchase["jan"] == jan].copy()
-            valid = pd.DataFrame()
-            if not options_all.empty:
-                lots_pos = options_all[options_all["order_lot"] > 0].copy()
-                valid = lots_pos[lots_pos["price"].notna() & (lots_pos["price"] > 0)].copy()
-
-            if valid.empty:
-                results.append({
-                    "jan": jan, "販売実績": sold, "在庫": stock, "発注済": ordered,
-                    "理論必要数": base_needed,
-                    "発注数": "", "ロット": "", "数量": "", "単価": "", "総額": "",
-                    "仕入先": "", "ランク": rank,
-                })
-                continue
-
-            options = valid.copy()
-            need_for_lot = base_needed
-            if base_rank in ("A", "B"):
-                bigger_lots = options[options["order_lot"] >= need_for_lot]
-                if not bigger_lots.empty:
-                    best = bigger_lots.sort_values("order_lot").iloc[0]
-                else:
-                    best = options.sort_values("order_lot", ascending=False).iloc[0]
-            else:
-                options["diff"] = (options["order_lot"] - need_for_lot).abs()
-                smaller = options[options["order_lot"] <= need_for_lot]
-                if not smaller.empty:
-                    best = smaller.loc[smaller["diff"].idxmin()]
-                else:
-                    near = options[
-                        (options["order_lot"] > need_for_lot)
-                        & (options["order_lot"] <= need_for_lot * 1.5)
-                        & (options["order_lot"] != 1)
-                    ]
-                    if not near.empty:
-                        best = near.loc[near["diff"].idxmin()]
-                    else:
-                        one = options[options["order_lot"] == 1]
-                        best = one.iloc[0] if not one.empty else options.sort_values("order_lot").iloc[0]
-
-            lot = int(best["order_lot"])
-            sets = math.ceil(need_for_lot / lot)
-            qty = sets * lot
-            total_cost = qty * float(best["price"])
-
-            results.append({
-                "jan": jan, "販売実績": sold, "在庫": stock, "発注済": ordered,
-                "理論必要数": base_needed,
-                "発注数": int(qty), "ロット": lot, "数量": int(sets),
-                "単価": int(best["price"]), "総額": int(total_cost),
-                "仕入先": best.get("supplier", "不明") or "不明",
-                "ランク": rank,
-            })
-
-    if not results:
-        st.info(t("当前没有需要订货的商品。"))
-        return
-
-    result_df = pd.DataFrame(results)
-
-    if "商品コード" in df_master.columns:
-        df_master["商品コード"] = df_master["商品コード"].astype(str).str.strip()
-        result_df["jan"] = result_df["jan"].astype(str).str.strip()
-        m = df_master[["商品コード", "商品名", "取扱区分"]].copy().rename(columns={"商品コード": "jan"})
-        result_df = result_df.merge(m, on="jan", how="left")
-
-    if not df_benten.empty:
-        bn = df_benten[["jan", "stock"]].copy().rename(columns={"stock": "弁天在庫"})
-        bn["jan"] = bn["jan"].apply(_normalize_jan)
-        result_df = result_df.merge(bn, on="jan", how="left")
-        result_df["弁天在庫"] = result_df["弁天在庫"].fillna(0).astype(int)
-
-    result_df.rename(columns={"在庫": "JD在庫"}, inplace=True)
-
-    if "商品名" in result_df.columns:
-        result_df = result_df[result_df["商品名"].notna()]
-    if "取扱区分" in result_df.columns:
-        result_df = result_df[result_df["取扱区分"] != "取扱中止"]
-    else:
-        st.warning(t("⚠️『取扱区分』列不存在,无法过滤已停售。"))
-
-    column_order = [
-        "jan", "商品名", "ランク", "販売実績", "JD在庫", "弁天在庫", "発注済",
-        "理論必要数", "発注数", "ロット", "数量", "単価", "総額", "仕入先",
-    ]
-    result_df = result_df[[c for c in column_order if c in result_df.columns]]
-
-    st.success(t(f"✅ 订货对象: {len(result_df)} 件"))
-    st.dataframe(result_df, use_container_width=True)
-
-    csv = result_df.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(t("📥 订货 CSV 下载"), data=csv, file_name="orders_available_based.csv",
-                       mime="text/csv", key="legacy_dl_all")
-
-    st.markdown("---")
-    st.subheader(t("📦 按供应商分组下载"))
-    if "仕入先" in result_df.columns:
-        groups = result_df[result_df["仕入先"].notna() & (result_df["仕入先"] != "")].groupby("仕入先")
-        for supplier, group in groups:
-            sup_csv = group.to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                label=f"📥 {supplier}",
-                data=sup_csv,
-                file_name=f"orders_{supplier}.csv",
-                mime="text/csv",
-                key=f"legacy_sup_{supplier}",
-            )
-    else:
-        st.info(t("仕入先列不存在。"))
-
-
-# ============================================================
 # 顶层 tabs（合并入口）
 # ============================================================
-top_legacy, top_v2, top_v3 = st.tabs([
-    t("📦 旧版（JD基线）"), t("🆕 v2（多仕入先決定版）"), t("🆕 v3（可售天数基準）"),
+# 旧版（JD基线）tab は 2026-11-04 削除（Boss「以后不用京东库存」· 参照先の warehouse_stock /
+# benten_stock は 0 行で計算不能だった）。
+top_v2, top_v3 = st.tabs([
+    t("🆕 v2（多仕入先決定版）"), t("🆕 v3（可售天数基準）"),
 ])
-
-with top_legacy:
-    render_legacy_jd_baseline()
 
 with top_v2:
     tab_calc, tab_sup, tab_item, tab_maker = st.tabs([
