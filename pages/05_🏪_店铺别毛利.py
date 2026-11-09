@@ -731,6 +731,30 @@ m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}",
 m5.metric("CM(調整後)" if _ja_kpi else "CM(调整后)", f"¥{tot_cm:,.0f}")
 m6.metric("CM率(調整後)" if _ja_kpi else "CM率(调整后)", f"{tot_cm_rate:.2f}%")
 
+# 輸出事業 月次予算 vs 実績（Boss 2026-11-09）· 実績は市場/平台フィルタに関係なく全店 NST 総収益
+from shared import sales_budget as _SB  # noqa: E402
+try:
+    _SB.ensure_schema(conn_w)
+    _bud = _SB.load(conn_w).get(ym)
+except Exception:  # noqa: BLE001 — 予算表が無くても毛利画面は出す
+    try:
+        conn_w.rollback()
+    except Exception:
+        pass
+    _bud = None
+if _bud:
+    _act_df, _ = _query("SELECT SUM(revenue) AS r FROM nst.sales_daily "
+                        "WHERE to_char(sale_date, 'YYYY-MM') = ?", (ym,))
+    _act = float(_act_df["r"].iloc[0] or 0) if _act_df is not None and not _act_df.empty else 0.0
+    b1, b2, b3, _b4 = st.columns(4)
+    b1.metric("月次予算" if _ja_kpi else "月度预算", f"¥{_bud:,.0f}")
+    b2.metric("実績(NST)" if _ja_kpi else "实绩(NST)", f"¥{_act:,.0f}")
+    b3.metric("予算達成率" if _ja_kpi else "预算达成率", f"{_act / _bud * 100:.2f}%")
+    st.caption("予算=輸出事業 予実表の予算（系统参数设定で編集）· 実績=当月 NST 総収益（NST「売上予算vs実績_FB」"
+               "輸出事業と同口径・フィルタ非連動）" if _ja_kpi else
+               "预算=输出事业 予实表的预算（在「系统参数设定」修改）· 实绩=当月 NST 总收益（与 NST「売上予算vs実績_FB」"
+               "输出事业同口径·不跟随上方筛选）")
+
 st.divider()
 
 _owner_tab = "👤 担当者別" if get_lang() == "ja" else "👤 店铺负责人"

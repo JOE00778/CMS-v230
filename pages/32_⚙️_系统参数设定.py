@@ -5,6 +5,7 @@
   - tab3 弁天 vs 斑马 对账 → shared.jdl_recon_settings（差异档位阈值 · 2026-11-04 JDL から置換）
   - tab4 货架用途指定     → nst.bin_category (PG · 弁天棚号用途人工分类)
   - tab5 输出供应商名单   → nst.po_export_vendor (PG · 仕入先白名单)
+  - tab_bud 输出营业额预算 → finance.sales_budget_monthly (PG · 店铺毛利页 达成率用 · 2026-11-09)
 数据同步（NST/JDL 手动触发）已移除 → 统一到「📥 数据获取」页（功能重复·2026-06-23）。
 """
 from __future__ import annotations
@@ -42,8 +43,9 @@ def _df(sql: str, params=None) -> pd.DataFrame:
 st.title(t("⚙️ 系统参数设定"))
 st.caption(t("仅授权人员可改 · 各业务模块阈值/白名单独立 tab 管理"))
 
-tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab2, tab_bud, tab3, tab4, tab5, tab6 = st.tabs([
     t("📦 発注 AI v2"),
+    t("💴 输出营业额预算"),
     t("📊 弁天 vs 斑马 库存对账"),
     t("🏷️ 货架用途指定"),
     t("🏢 输出供应商名单"),
@@ -89,6 +91,41 @@ with tab2:
         f"≥{_sp['low']:.2f}→×{_sp['factor_mid']:.1f}（正常） · "
         f"<{_sp['low']:.2f}→×{_sp['factor_low']:.1f}（减少）"
     )
+
+# ============================================================
+# tab_bud · 输出事业 月度营业额预算（店铺毛利页「预算达成率」用 · Boss 2026-11-09）
+# ============================================================
+with tab_bud:
+    from shared import sales_budget as SB
+
+    st.subheader(t("输出事业 月度营业额预算"))
+    st.caption(t("店铺毛利页按「实绩(NST 总收益) ÷ 预算」显示达成率。改数后点保存；预算填 0 = 删除该月。"))
+    try:
+        SB.ensure_schema(conn)
+        _bud = SB.load(conn)
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        st.error(t("⚠️ 预算表读取失败") + f"\n\n{e}")
+        _bud = None
+    if _bud is not None:
+        _bdf = pd.DataFrame({"ym": list(_bud), "budget_jpy": list(_bud.values())})
+        _ed = st.data_editor(
+            _bdf, num_rows="dynamic", hide_index=True, key="sales_budget_ed",
+            column_config={
+                "ym": st.column_config.TextColumn(t("月 (YYYY-MM)"), required=True, max_chars=7,
+                                                  validate=r"^\d{4}-(0[1-9]|1[0-2])$"),
+                "budget_jpy": st.column_config.NumberColumn(t("预算 (円)"), min_value=0, step=1000,
+                                                            format="%,d", required=True),
+            })
+        st.caption(t("合计 ¥{a:,.0f} · {n} 个月").format(
+            a=float(pd.to_numeric(_ed["budget_jpy"], errors="coerce").fillna(0).sum()), n=len(_ed)))
+        if st.button(t("💾 保存预算"), type="primary", key="save_budget"):
+            _new = {str(r["ym"]).strip(): int(r["budget_jpy"] or 0)
+                    for _, r in _ed.iterrows() if str(r["ym"] or "").strip()}
+            _gone = {ym: 0 for ym in _bud if ym not in _new}
+            n = SB.save(conn, {**_new, **_gone})
+            st.success(t("✅ 已保存 {n} 个月。").format(n=n))
+
 
 # ============================================================
 # tab3 · 弁天 vs 斑马 库存对账（差异档位阈值）
