@@ -1,4 +1,4 @@
-"""模块 #15 商品登录 · 新品首次登録（NST 取込 CSV + 斑马導入 xlsx）
+"""模块 #15 商品登录 · 新品首次登録（NST 取込 CSV + 斑马は API で直接登録）
 
 定位：商品首次登录（NST/BM 还都没有这个 SKU），不是已登录商品的修改。
 修改场景请走 page 03（定義原価編集）/ page 07（商品等级判定）等。
@@ -10,10 +10,12 @@
 
 v2 流程（オーケストレーションは shared/item_register.py）：
   ① テンプレ DL（仕入先=nst.vendor_master 完全名称 / 大分類・中分類=NST 実在組合せ / 担当者 4 人）
-  ② 記入済み xlsx を UL → ③「重量・寸法をネットで調べる」（既定 OFF）→ ④「▶ 処理する」
-     read_upload → NST 既登録 JAN を error → enrich（jancode 商品名・メーカー・固定値・HS・網調べ）
-  ⑤ ok/ng/warn 件数・issues 表・data_editor で修正
-  ⑥「📦 生成」NST CSV（有データ列のみ・原本の登録手順どおり）+ 斑马 xlsx → ZIP、同時に台帳 nst.item_register_log
+  ② 記入済み xlsx を UL（パッケージ 3 辺・重量は任意）→ ③「▶ 処理する」
+     read_upload → NST 既登録 JAN を error → enrich（jancode 商品名・メーカー・固定値・HS・網調べは常に実行）
+     → 画像（jancode → 画像検索 → 待上图）
+  ④ ok/ng/warn 件数・issues 表・data_editor で人が確認・修正
+  ⑤「📦 生成」NST CSV（ZIP）+ 斑马へ API 登録（shared/banma_register）、同時に台帳 nst.item_register_log
+     （Boss 2026-11-09「去掉包装必填·网上搜·人工确认后生成 NST CSV，同时通过 API 写入斑马」。斑马 xlsx は廃止）
 """
 from __future__ import annotations
 
@@ -31,7 +33,8 @@ import streamlit.components.v1 as components
 from data_warehouse.templates import item_entry_form as FORM
 from data_warehouse.templates import nst_item_master as TPL
 from data_warehouse.templates import jd_bm_item_master as JBM
-from shared import hs_ai, hs_classify, jan_web
+from shared import banma_client, hs_ai, hs_classify, image_search, jan_web
+from shared import banma_register as BMR
 from shared import item_register as REG
 from shared import nst_choices as NC
 from shared.auth import require_password
@@ -54,28 +57,6 @@ tab_item, tab_bundle, tab_legacy = st.tabs([
 
 JAN_COL_NAME = "JANコード"
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-
-def _augment_image_url(conn, df: pd.DataFrame) -> pd.DataFrame:
-    """从 nst.item_image_cache 按 JAN 取已有 image_url 作辅助参考列（不进 CSV）。"""
-    if df.empty or JAN_COL_NAME not in df.columns:
-        if JAN_COL_NAME not in df.columns:
-            df[JAN_COL_NAME] = ""
-        df["_画像URL（参考·来自 image cache）"] = ""
-        return df
-    jans = [str(j).strip() for j in df[JAN_COL_NAME] if pd.notna(j) and str(j).strip()]
-    if not jans:
-        df["_画像URL（参考·来自 image cache）"] = ""
-        return df
-    placeholder = ",".join(["%s"] * len(jans))
-    rows = conn.execute(
-        f"SELECT jan_cd, image_url FROM nst.item_image_cache "
-        f"WHERE jan_cd IN ({placeholder}) AND status='ok'",
-        jans,
-    ).fetchall()
-    url_map = {r["jan_cd"]: r["image_url"] for r in rows}
-    df["_画像URL（参考·来自 image cache）"] = df[JAN_COL_NAME].astype(str).str.strip().map(url_map).fillna("")
-    return df
 
 
 # ───────────────────────── tab 🆕 商品登録 v2 ─────────────────────────
@@ -115,6 +96,19 @@ def _issues_df(issues) -> pd.DataFrame:
                           t("内容"): i.message} for i in issues])
 
 
+def _search_image(jan: str) -> str:
+    """CMS 画像検索（page22 と同じ）: PG キャッシュ → 楽天 API → kakaku。取れたらキャッシュへ。"""
+    with get_connection() as conn:
+        hit = image_search._load_cache(conn, [jan]).get(jan)
+        if hit and hit.get("status") == "ok" and hit.get("image_url"):
+            return hit["image_url"]
+        status, _, size, err, url, source = image_search._fetch_image_for_jan(jan)
+        image_search._upsert_cache(conn, jan, url, source if status == "ok" else None,
+                                   status, size if status == "ok" else 0, None if status == "ok" else err)
+        conn.commit()
+    return url if status == "ok" else ""
+
+
 def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
     """read_upload → NST 既登録チェック → enrich。結果は dict で session_state へ。"""
     rows, issues = FORM.read_upload(data, choices)
@@ -150,6 +144,9 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
                                                        text=f"{d}/{n} {msg}"))
         bar.empty()
         issues += more
+        if nst_rows:
+            with st.spinner(t("画像を探しています（jancode → 画像検索 → 待上图）…")):
+                stats["images"] = REG.fill_images(nst_rows, extra, _search_image)
         ng += stats["ng"]
         if nst_rows and hs_ai.is_configured():
             with st.spinner(t("HS を AI でも判定中…")):
@@ -163,8 +160,8 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
 
 
 def _generate(edited: pd.DataFrame, res: dict) -> None:
-    """data_editor の内容 → NST CSV + 斑马 xlsx → ZIP。同時に台帳へ記録（失敗しても ZIP は出す）。"""
-    for key in ("page15_zip_bytes", "page15_zip_n", "page15_zip_src"):
+    """確認表 → NST CSV（ZIP）+ 台帳 → 斑马へ API 登録（1 件ずつ・結果を台帳へ）。error があれば何も出さない。"""
+    for key in ("page15_zip_bytes", "page15_zip_n", "page15_zip_src", "page15_bm_result"):
         st.session_state.pop(key, None)
     out_nst, out_bm, sources, gen_issues = REG.from_frame(
         edited.to_dict("records"), res["nst"], res["extra"], choices=res.get("choices"))
@@ -178,20 +175,9 @@ def _generate(edited: pd.DataFrame, res: dict) -> None:
     if not out_nst:
         st.error(t("❌ 生成できる行がありません"))
         return
-    nst_csv = REG.build_nst_registration_csv(out_nst)
-    image_url_map: dict[str, str] = {}
-    try:
-        with get_connection() as conn:
-            _df = _augment_image_url(conn, pd.DataFrame(out_nst))
-        image_url_map = {j: u for j, u in zip(_df[JAN_COL_NAME],
-                                              _df["_画像URL（参考·来自 image cache）"]) if u}
-    except Exception:  # noqa: BLE001 — 画像は参考。取れなくても生成は続ける
-        pass
-    bm_xlsx = JBM.build_bm_xlsx(out_bm, image_url_map=image_url_map)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(TPL.dated_filename(), nst_csv)
-        zf.writestr(JBM.dated_filename_bm(), bm_xlsx)
+        zf.writestr(TPL.dated_filename(), REG.build_nst_registration_csv(out_nst))
         if gen_issues:
             zf.writestr("登録前の確認事項.csv", _issues_df(gen_issues).to_csv(index=False).encode("utf-8-sig"))
     st.session_state["page15_zip_bytes"] = buf.getvalue()
@@ -200,21 +186,38 @@ def _generate(edited: pd.DataFrame, res: dict) -> None:
 
     # 台帳は append-only。同じ内容の押し直しで同じ行を重ねない（このセッション内）
     log_key = _content_hash(out_nst)
-    if st.session_state.get("page15_logged") == log_key:
+    log_ok = st.session_state.get("page15_logged") == log_key
+    if log_ok:
         st.session_state["page15_log_msg"] = ("ok", t("台帳は記録済み（同じ内容のため再記録しません）"))
-        return
-    bm_lists = [JBM.nst_to_bm_row(r, image_url=image_url_map.get(r.get(JAN_COL_NAME, ""), ""))
-                for r in out_bm]
+    else:
+        bm_lists = [JBM.nst_to_bm_row(r, image_url=r.get(REG.COL_IMAGE, "")) for r in out_bm]
+        try:
+            with get_connection() as conn:
+                n_log, err = REG.write_register_log(conn, out_nst, bm_lists, sources)
+        except Exception as e:  # noqa: BLE001 — 接続自体の失敗
+            n_log, err = 0, f"{type(e).__name__}: {e}"
+        st.session_state["page15_log_msg"] = (
+            ("error", t(f"台帳への記録に失敗: {err}（ZIP は生成済み）")) if err
+            else ("ok", t(f"台帳 nst.item_register_log に {n_log} 件記録")))
+        log_ok = not err
+        if log_ok:
+            st.session_state["page15_logged"] = log_key
+
+    # 斑马 API 登録（既存 SKU は skip するので押し直しても二重登録しない）
     try:
+        client = banma_client.BanmaClient.from_env()
         with get_connection() as conn:
-            n_log, err = REG.write_register_log(conn, out_nst, bm_lists, sources)
-    except Exception as e:  # noqa: BLE001 — 接続自体の失敗
-        n_log, err = 0, f"{type(e).__name__}: {e}"
-    st.session_state["page15_log_msg"] = (
-        ("error", t(f"台帳への記録に失敗: {err}（ZIP は生成済み）")) if err
-        else ("ok", t(f"台帳 nst.item_register_log に {n_log} 件記録")))
-    if not err:
-        st.session_state["page15_logged"] = log_key
+            banma_client.ensure_token(conn, client)
+    except Exception as e:  # noqa: BLE001
+        st.session_state["page15_bm_result"] = {"error": f"斑马に接続できません（登録していません）: {type(e).__name__}: {e}"}
+        return
+    bar = st.progress(0.0, text=t("斑马に登録中…"))
+    with get_connection() as conn:
+        record = (lambda code, r: REG.record_banma(conn, code, r)) if log_ok else None
+        results = BMR.register_all(client, out_bm, record=record,
+                                   on_progress=lambda d, n, c: bar.progress(d / n, text=f"{d}/{n} {c}"))
+    bar.empty()
+    st.session_state["page15_bm_result"] = {"rows": results, "logged": log_ok}
 
 
 def _render_result(res: dict) -> None:
@@ -230,7 +233,8 @@ def _render_result(res: dict) -> None:
             f"jancode={s['maker_jancode']} 手入力={s.get('maker_manual', 0)} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} 手入力={s['name_manual']} · "
             f"HS ok={s['hs_ok']} 判定不可={s['hs_ng']} AI一致={s.get('ai_agree', '-')} "
             f"AI採用={s.get('ai_changed', '-')} AI失敗={s.get('ai_error', '-')} · 重量 取得={s['weight_hit']} "
-            f"なし={s['weight_miss']} 失敗={s['weight_error']} 調べず={s['weight_skipped']}")
+            f"なし={s['weight_miss']} 失敗={s['weight_error']} 調べず={s['weight_skipped']}"
+            + (" · 画像 " + " ".join(f"{k}={v}" for k, v in s["images"].items()) if s.get("images") else ""))
     for n in res["notes"]:
         st.warning(n)
     if res["issues"]:
@@ -252,6 +256,8 @@ def _render_result(res: dict) -> None:
     col_config["アイテム名"] = st.column_config.TextColumn(
         "アイテム名 🤖", max_chars=REG.NAME_MAX, help=t("NST アイテム名 = 斑马 中文名称（最大 60 字）"))
     col_config[REG.COL_URL] = st.column_config.LinkColumn(REG.COL_URL)
+    col_config["画像URL"] = st.column_config.TextColumn(
+        "画像URL 🤖", help=t("斑马の商品画像（https）。jancode → 画像検索 → 待上图 の順で自動。差し替えるなら https の URL を貼る"))
     for col in FORM.COL_CARTON_DIMS:
         col_config[col] = st.column_config.TextColumn(col, help=t("必須・整箱の実測値を手入力。包装寸法や既定値 1 から転用しません"))
     for col, values in FORM.FIELD_CHOICES.items():
@@ -268,7 +274,8 @@ def _render_result(res: dict) -> None:
         disabled=[c for c in df.columns if c not in REG.EDITABLE],
         column_config=col_config, key="page15_editor")
 
-    st.info(t("ブランド・メーカーは不明なら空欄。包装寸法・重量の不足分は各 1 cm・1 g の既定仮値（非実測）です。取得・手入力済みの値は保持します。"))
+    st.info(t("ブランド・メーカーは不明なら空欄。包装寸法・重量の不足分は各 1 cm・1 g の既定仮値（非実測）です。取得・手入力済みの値は保持します。"
+              "画像の出典が「待上图」の品は、斑马に待上图の画像で登録されます。"))
     records = edited.to_dict("records")
     current_nst, _, _, current_issues = REG.from_frame(records, res["nst"], res["extra"], choices=choices)
     current_issues += REG.registration_issues(current_nst, choices=choices)
@@ -291,7 +298,8 @@ def _render_result(res: dict) -> None:
             st.success(t("JAN なし商品の待手入力項目はありません（入力済みの内容は確認してください）"))
 
     st.divider()
-    if st.button(t("📦 生成（NST.csv + 斑马.xlsx）"), type="primary", key="page15_gen"):
+    st.caption(t("確認が終わったら押してください。NST 取込 CSV を作り、同時に斑马へ API で登録します（斑马に既にある SKU は登録しません）"))
+    if st.button(t("📦 生成（NST.csv）＋ 斑马に登録"), type="primary", key="page15_gen"):
         _generate(edited, res)
     gen_issues = st.session_state.get("page15_gen_issues") or []
     if gen_issues:
@@ -306,20 +314,38 @@ def _render_result(res: dict) -> None:
             st.warning(t(f"⚠️ {st.session_state['page15_pending_n']} 件に登録前の要確認項目があります。ZIP 内の「登録前の確認事項.csv」を確認してください。"))
         n = st.session_state.get("page15_zip_n", 0)
         st.download_button(
-            t(f"⬇️ ZIP をダウンロード（{n} 件 · NST.csv + 斑马.xlsx）"), data=zip_bytes,
+            t(f"⬇️ ZIP をダウンロード（{n} 件 · NST.csv）"), data=zip_bytes,
             file_name=f"商品登録_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
             mime="application/zip", type="primary", key="page15_zip_dl")
         level, msg = st.session_state.get("page15_log_msg") or ("ok", "")
         (st.error if level == "error" else st.success)(msg)
+    bm = st.session_state.get("page15_bm_result")
+    if bm:
+        st.subheader(t("🦓 斑马 登録結果"))
+        if bm.get("error"):
+            st.error(bm["error"])
+        else:
+            rows = bm["rows"]
+            cnt = {k: sum(r["status"] == k for _, r in rows) for k in ("ok", "partial", "skipped", "fail")}
+            msg = (f"ok={cnt['ok']} 要確認={cnt['partial']} 既存のため未登録={cnt['skipped']} 失敗={cnt['fail']}"
+                   f"（計 {len(rows)} 件）")
+            (st.error if cnt["fail"] else st.warning if cnt["partial"] or cnt["skipped"] else st.success)(msg)
+            if not bm.get("logged"):
+                st.warning(t("台帳に記録できなかったため、斑马の登録結果は台帳に残っていません（下の表を保存してください）"))
+            st.dataframe(pd.DataFrame([{"型番": c, t("結果"): r["status"], "SKUID": r.get("sku_id", ""),
+                                        "SPUID": r.get("spu_id", ""), t("内容"): r.get("message", "")}
+                                       for c, r in rows]), use_container_width=True, hide_index=True)
+            if cnt["fail"]:
+                st.info(t("失敗分は原因を直してもう一度「📦 生成」を押せば、未登録の品だけ登録されます"))
 
 
 def _render_item_tab() -> None:
     """⚠️ st.stop() 禁止（スクリプト全体が止まり他タブが消える）。抜けるときは return。"""
-    st.caption(t("新品登録 · テンプレ DL → 記入 → UL → NST 取込 CSV + 斑马導入 xlsx（どちらも手でアップロード）"))
+    st.caption(t("新品登録 · テンプレ DL → 記入 → UL → 確認 → NST 取込 CSV（手でアップロード）＋ 斑马へ API で自動登録"))
     with st.expander(t("📌 使い方"), expanded=False):
         st.markdown(t(
             "- **入力項目**：JAN / 商品原価 / 仕入先（完全名称）/ 商品担当者 / 大分類・中分類 / "
-            "カートン入数 / 発注ロット / パッケージ 3 辺・重量（jancode に商品名が無い JAN は「アイテム名（任意）」も記入）\n"
+            "カートン入数 / 発注ロット（パッケージ 3 辺・重量は任意・空ならネットで調べる。jancode に商品名が無い JAN は「アイテム名（任意）」も記入）\n"
             "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名は手入力必須（ETERNAL-BONSAI の既定 6 型番は JAN 欄に直接入力可）。ブランド・メーカーは不明なら空欄。包装寸法・重量が空なら各 1 cm・1 g の仮値（非実測）。HS・通関英文名は判定結果が空なら確認表で手入力\n"
             "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "
             "型番は入力値（空なら JAN）/ 取扱中・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
@@ -327,7 +353,7 @@ def _render_item_tab() -> None:
             "- **NST 出力の JAN**：実 JAN が無い商品は原本指定に従い型番を出力（内部の実 JAN・台帳は空のまま）\n"
             "- **網調べ**は空欄だけ埋める（手入力は上書きしない）。出典 URL を表で確認\n"
             "- **NST に登録済みの JAN / 型番** はエラーで外す\n"
-            "- **出力**：NST CSV（原本の全 71 列・列名と順序を保持、空列も削除しません）+ 斑马 xlsx（中文名称 = アイテム名）"
+            "- **出力**：NST CSV（原本の全 71 列・列名と順序を保持、空列も削除しません）＋ 斑马へ API 登録（中文名称 = アイテム名・画像は jancode → 画像検索 → 待上图）"
         ))
     try:
         choices = _cached_choices()
@@ -343,10 +369,8 @@ def _render_item_tab() -> None:
 
     uploaded = st.file_uploader(t("📤 記入済みテンプレ（xlsx）をアップロード"), type=["xlsx"],
                                 key="page15_upload")
-    want_weight = st.checkbox(t("☑ 重量・寸法をネットで調べる（スーパーデリバリー）"),
-                              value=False, key="page15_want_weight")
-    if want_weight:
-        st.caption(t("目安：約 1.5〜2 秒/件（パッケージ欄に空欄がある行だけ調べます）"))
+    want_weight = True   # Boss 2026-11-09: 包装 3 辺・重量は任意 → 常にネットで調べる
+    st.caption(t("パッケージ 3 辺・重量が空欄の行はネットで調べます（SuperDelivery → NETde卸・約 1.5〜2 秒/件）"))
     col_r, col_c = st.columns([1, 1])
     run = col_r.button(t("▶ 処理する"), type="primary", disabled=uploaded is None,
                        key="page15_run", use_container_width=True)
@@ -586,7 +610,7 @@ with tab_legacy:
     st.caption(t("旧商品登録ツール（HTML 版）· 参考用 · JD 出力は廃止（2026-10-03）"))
     st.info(t(
         "📌 旧版商品登録ツール iframe 嵌入（参考用）。JD 出力は廃止済み；"
-        "新品登録（NST CSV + 斑马 xlsx）は「🆕 商品登録 (原生)」tab を使ってください。"
+        "新品登録（NST CSV + 斑马 API 登録）は「🆕 商品登録 (原生)」tab を使ってください。"
     ))
 
     html_path = Path(__file__).resolve().parent.parent / "assets" / "商品登録ツール_0418.html"

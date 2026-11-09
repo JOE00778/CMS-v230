@@ -141,7 +141,7 @@ def test_native_date_cell_is_read_in_reference_format():
     assert rows[0]['発売日']=='2026/10/14'
 
 
-def test_16_product_page_zip_and_checklist_use_only_mock_services():
+def test_16_product_page_zip_and_checklist_use_only_mock_services(page15_offline):
     import json
     import zipfile
     from pathlib import Path

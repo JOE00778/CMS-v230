@@ -77,7 +77,10 @@ SHEET_CHOICES = "_選択肢"
 FIRST_DATA_ROW = 2
 LAST_DATA_ROW = 1001
 
-_REQUIRED = {name for mark, name in NST_MASTER_COLUMNS if mark == "必須"} - {COL_JAN, COL_ITEM_CODE}
+# パッケージ 3 辺・重量は NST 必須だが、記入は任意（Boss 2026-11-09「去掉必填·网上搜」）→ 処理で必ず網調べ・
+# 見つからなければ 1 cm・1 g の仮値（非実測）。テンプレでは灰色（任意）で出す
+_REQUIRED = ({name for mark, name in NST_MASTER_COLUMNS if mark == "必須"}
+             - {COL_JAN, COL_ITEM_CODE, *COL_PKG_DIMS, COL_PKG_WEIGHT})
 
 # 見出しコメント（原本 row3 を短くしたもの）
 _HELP = {
@@ -93,10 +96,10 @@ _HELP = {
     COL_MIDDLE: "大分類を先に選ぶと、その中分類だけが出ます",
     COL_CARTON: "カートン入数（正の数。原本は整数または小数）",
     COL_LOT: "発注時のロット数・条件（原本例：1色1000、最大 60 字）",
-    COL_PKG_DIMS[0]: "外装パッケージの高さ（整数または小数）。空欄は網調べ後も不明なら 1 cm の仮値（非実測）",
-    COL_PKG_DIMS[1]: "外装パッケージの幅（整数または小数）。不明なら 1 cm の仮値（非実測）",
-    COL_PKG_DIMS[2]: "外装パッケージの奥行（整数または小数）。不明なら 1 cm の仮値（非実測）",
-    COL_PKG_WEIGHT: "外装込みの重量 g（整数または小数）。不明なら 1 g の仮値（非実測）",
+    COL_PKG_DIMS[0]: "任意。空欄ならネットで調べます。外装パッケージの高さ（整数または小数）。見つからなければ 1 cm の仮値（非実測）",
+    COL_PKG_DIMS[1]: "任意。空欄ならネットで調べます。外装パッケージの幅（整数または小数）。見つからなければ 1 cm の仮値（非実測）",
+    COL_PKG_DIMS[2]: "任意。空欄ならネットで調べます。外装パッケージの奥行（整数または小数）。見つからなければ 1 cm の仮値（非実測）",
+    COL_PKG_WEIGHT: "任意。空欄ならネットで調べます。外装込みの重量 g（整数または小数）。見つからなければ 1 g の仮値（非実測）",
 }
 
 
@@ -371,8 +374,6 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
             if rec[c] and not ((n := _num(rec[c])) is not None and n > 0):
                 warns.append(f"{c} が正の数ではないので空にしました（{rec[c]}）")
                 rec[c] = ""
-        if any(rec[c] == "" for c in COL_PKG_DIMS):
-            warns.append("パッケージ 3 辺のどれかが空です（網調べ後も不明なら 1 cm の仮値・非実測）")
 
         if errs:
             issues.extend(Issue(i, code or jan, "error", m) for m in errs)

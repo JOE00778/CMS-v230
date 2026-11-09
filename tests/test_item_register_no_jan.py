@@ -82,7 +82,7 @@ def test_existing_item_codes_query_uses_itemid_and_pg_fallback():
     assert found == {SKUS[1]} and warnings
 
 
-def test_page15_no_jan_generation_and_existing_code_exclusion():
+def test_page15_no_jan_generation_and_existing_code_exclusion(page15_offline):
     import pathlib
     import zipfile
     from unittest.mock import patch
@@ -120,9 +120,8 @@ def test_page15_no_jan_generation_and_existing_code_exclusion():
             nst = next(n for n in z.namelist() if n.endswith('.csv'))
             rows = list(csv.DictReader(io.StringIO(z.read(nst).decode('utf-8-sig'))))
             assert [r['型番'] for r in rows] == SKUS[1:]
-            bm_name = next(n for n in z.namelist() if n.endswith('.xlsx'))
-            ws = openpyxl.load_workbook(io.BytesIO(z.read(bm_name)))['数据']
-            assert [ws.cell(i, 13).value for i in range(3, 8)] == SKUS[1:]
+            assert not any(n.endswith('.xlsx') for n in z.namelist())
+        assert [c.args[1]['型番'] for c in page15_offline.call_args_list] == SKUS[1:]
 
 
 def test_manual_input_checklist_reports_only_missing_no_jan_fields():

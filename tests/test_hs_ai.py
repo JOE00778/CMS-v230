@@ -69,3 +69,28 @@ def test_cross_check_agree_change_and_error():
     assert set(msgs) == {"2", "3"} and "AI=330590" in msgs["2"] and "整髪料" in msgs["2"]
     frame = R.to_frame(rows, extra)
     assert frame[1]["HS"] == "330590" and frame[1]["HS 判定"] == "AI（規則=なし）"
+
+
+def test_transient_http_retries_honor_retry_after_and_do_not_sleep_after_final_failure():
+    import io
+    calls, sleeps = [], []
+    def post(body):
+        calls.append(1)
+        raise urllib.error.HTTPError('u',503,'Service Unavailable',{'Retry-After':'7'},
+            io.BytesIO(b'{"error":{"status":"UNAVAILABLE","message":"model overloaded"}}'))
+    out=hs_ai.judge([('sku','name','')],post=post,sleep=sleeps.append)
+    assert len(calls)==3 and sleeps==[7.0,7.0]
+    assert 'UNAVAILABLE' in out['sku'] and 'overloaded' in out['sku']
+
+
+def test_permanent_http_error_is_not_retried_and_secret_is_redacted(monkeypatch):
+    import io
+    monkeypatch.setenv('GEMINI_API_KEY','sensitive-test-key')
+    calls,sleeps=[],[]
+    def post(body):
+        calls.append(1)
+        raise urllib.error.HTTPError('u',403,'Forbidden',{},
+            io.BytesIO(b'{"error":{"message":"bad key sensitive-test-key"}}'))
+    out=hs_ai.judge([('sku','name','')],post=post,sleep=sleeps.append)
+    assert len(calls)==1 and sleeps==[] and 'sensitive-test-key' not in out['sku']
+    assert '[REDACTED]' in out['sku']

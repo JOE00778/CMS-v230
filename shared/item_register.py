@@ -36,6 +36,11 @@ COL_ITEM_CODE = "型番"
 COL_TAX = "税率"
 COL_NAME_EN = "_name_en"
 COL_HS = "_hs"
+COL_IMAGE = "_image_url"
+# 「待上图」固定画像（Boss 2026-09-16 店小秘の画像スペースに上げたもの）。
+# 斑马の新規登録は画像必須（https）→ jancode・画像検索で取れない品はこれで登録（Boss 2026-11-09）
+PLACEHOLDER_IMAGE_URL = ("https://wxalbum-10001658-file.dianxiaomi.com/wxalbum/1690986/"
+                         "20260916101746/28d213db06b54b04f2d533d24e207801.jpg")
 
 # WeightHit の属性 → NST 列
 _WEIGHT_FIELDS = {
@@ -70,20 +75,21 @@ def _derived(row: dict) -> dict:
 # 画面の表（data_editor）: 表示名 → 行 dict のキー
 FRAME_COLUMNS: dict[str, str] = {
     "型番": COL_ITEM_CODE, "JANコード": COL_JAN, "アイテム名": COL_NAME, "メーカー名": COL_MAKER,
-    "通関英文名": COL_NAME_EN, "HS": COL_HS,
+    "通関英文名": COL_NAME_EN, "HS": COL_HS, "画像URL": COL_IMAGE,
     "大分類": "大分類", "中分類": "中分類", "商品原価": "商品原価",
     "仕入先1：仕入先": "仕入先1：仕入先", "商品担当者": COL_OWNER,
     **{c: c for c in (*COL_PKG_DIMS, COL_PKG_WEIGHT)},
     "カートン入数": "カートン入数", "発注ロット": "発注ロット",
 }
 FRAME_COLUMNS.update({c: c for c in ADDITIONAL_INPUT_COLUMNS})
-EDITABLE = list(dict.fromkeys(["アイテム名", "メーカー名", "通関英文名", "HS",
+EDITABLE = list(dict.fromkeys(["アイテム名", "メーカー名", "通関英文名", "HS", "画像URL",
     *INPUT_COLUMNS[1:], *ADDITIONAL_INPUT_COLUMNS]))
 COL_AUTO = "🤖 自動入力"
 COL_URL = "網調べ URL"
 COL_HS_CHECK = "HS 判定"
 COL_WEIGHT_NOTE = "重量・寸法の取得メモ"
 COL_WEIGHT_SOURCES = "重量・寸法の出典"
+COL_IMAGE_SOURCE = "画像の出典"
 
 
 def item_key(row: dict) -> str:
@@ -208,8 +214,10 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
                COL_TAX: r.get(COL_TAX) or ("★" if r.get(COL_LARGE) == "食品" else "")}
         row.update(_derived(row))
 
+        img = (getattr(meta, "image_url", "") or "") if jc_ok else ""
         extra = {"maker_source": maker_src, "auto": auto,
-                 "weight_source": None, "weight_url": "", "weight_note": ""}
+                 "weight_source": None, "weight_url": "", "weight_note": "",
+                 COL_IMAGE: img, "image_source": "jancode" if img else ""}
         if jan in hits:
             hit = hits[jan]
             if isinstance(hit, dict):
@@ -227,7 +235,11 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
                     stats["weight_hit"] += 1
                     auto.append(f"{'/'.join(filled)}({hit.source})")
                     extra.update(weight_source=hit.source, weight_url=hit.url,
-                                 weight_note=hit.note)
+                                 weight_note=hit.note, weight_field_urls={_WEIGHT_FIELDS[c]: url
+                                     for c in filled
+                                     if (url := (getattr(hit, "field_urls", None) or {}).get(_WEIGHT_FIELDS[c]))})
+                    if hit.note:
+                        warns.append("重量・寸法: " + hit.note)
                 else:  # 取れた値は手入力済みの列だけ（上書きしない）
                     stats["weight_miss"] += 1
         elif want_weight:
@@ -266,6 +278,34 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             issues.extend(Issue(0, code, "warn", m) for m in warns)
         stats["ok"] += 1
     return nst_rows, bm_extra, issues, stats
+
+
+def fill_images(nst_rows: list[dict], bm_extra: dict[str, dict], search) -> dict:
+    """斑马用の画像（Boss 2026-11-09）: jancode（enrich 済み）→ CMS 画像検索 search(jan) → 待上图。
+
+    search(jan) は https URL か空を返す（page22 と同じ キャッシュ → 楽天 → kakaku）。例外は待上图へ落とす。
+    戻り = 出典ごとの件数。bm_extra[code] の COL_IMAGE / image_source を埋める。
+    """
+    counts = {"jancode": 0, "画像検索": 0, "待上图": 0, "search_error": 0}
+    for r in nst_rows:
+        ex = bm_extra[item_key(r)]
+        if ex.get(COL_IMAGE):
+            counts["jancode"] += 1
+            continue
+        url, jan = "", str(r.get(COL_JAN) or "").strip()
+        if jan:
+            try:
+                url = search(jan) or ""
+            except Exception as e:  # noqa: BLE001 — 1 件の失敗で全体を止めない
+                counts["search_error"] += 1
+                ex["image_note"] = f"画像検索失敗: {type(e).__name__}: {e}"
+        if url.startswith("https://"):
+            ex.update({COL_IMAGE: url, "image_source": "画像検索"})
+            counts["画像検索"] += 1
+        else:
+            ex.update({COL_IMAGE: PLACEHOLDER_IMAGE_URL, "image_source": "待上图"})
+            counts["待上图"] += 1
+    return counts
 
 
 def cross_check_hs(nst_rows: list[dict], bm_extra: dict[str, dict], stats: dict,
@@ -315,6 +355,7 @@ def to_frame(nst_rows: list[dict], bm_extra: dict[str, dict]) -> list[dict]:
         rec[COL_HS_CHECK] = ex.get("hs_check", "")
         rec[COL_WEIGHT_NOTE] = ex.get("weight_note", "")
         urls = ex.get("weight_field_urls", {})
+        rec[COL_IMAGE_SOURCE] = ex.get("image_source", "")
         rec[COL_WEIGHT_SOURCES] = " · ".join(f"{col}: {urls[attr]}" for col, attr in _WEIGHT_FIELDS.items() if attr in urls)
         out.append(rec)
     return out
@@ -376,7 +417,7 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
             if len(edited[c]) > NAME_MAX:
                 issues.append(Issue(0, jan, "warn", f"{c} を {NAME_MAX} 字で切りました"))
                 edited[c] = edited[c][:NAME_MAX]
-        hs, name_en = edited.pop(COL_HS), edited.pop(COL_NAME_EN)
+        hs, name_en, image = edited.pop(COL_HS), edited.pop(COL_NAME_EN), edited.pop(COL_IMAGE)
         for c, v in edited.items():
             if v:
                 row[c] = v
@@ -394,7 +435,8 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
         if defaults:
             issues.append(Issue(0, jan, "warn", _default_note(defaults)))
         out_nst.append(row)
-        out_bm.append({**row, COL_HS: hs, COL_NAME_EN: name_en})
+        out_bm.append({**row, COL_HS: hs, COL_NAME_EN: name_en,
+                       COL_IMAGE: image if image.startswith("https://") else PLACEHOLDER_IMAGE_URL})
         if ex.get("weight_source"):
             sources[jan] = ex["weight_source"]
         elif any(row.get(c) for c in _WEIGHT_FIELDS):
@@ -505,3 +547,14 @@ def write_register_log(conn, nst_rows: list[dict], bm_rows: list[list] | None,
             pass
         return 0, f"{type(e).__name__}: {e}"
     return len(params), ""
+
+
+def record_banma(conn, code: str, res: dict) -> None:
+    """斑马 API 登録結果を、その型番の最新の台帳行に書く（036 の列）。1 件ごとに commit。"""
+    conn.execute(
+        "UPDATE nst.item_register_log SET banma_status = ?, banma_sku_id = ?, banma_spu_id = ?, "
+        "banma_message = ?, banma_at = now() "
+        "WHERE id = (SELECT max(id) FROM nst.item_register_log WHERE item_code = ?)",
+        (res.get("status"), res.get("sku_id") or None, res.get("spu_id") or None,
+         res.get("message") or None, code))
+    conn.commit()

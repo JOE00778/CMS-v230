@@ -122,7 +122,7 @@ def _w(g):
 
 def test_fetch_weight_never_calls_netsea(no_sleep):
     op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": W200, "pd_p/12285405": _w(198)})
-    jw.fetch_weight(JAN, opener=op)
+    jw.fetch_superdelivery_weight(JAN, opener=op)
     assert op.calls and not any("netsea" in u for u in op.calls)
     assert not hasattr(jw, "NETSEA_SEARCH") and not hasattr(jw, "parse_netsea_links")
     assert no_sleep and all(s >= 0.8 for s in no_sleep)
@@ -130,7 +130,7 @@ def test_fetch_weight_never_calls_netsea(no_sleep):
 
 def test_fetch_weight_two_agreeing_shops():
     op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": W200, "pd_p/12285405": _w(198)})
-    hit = jw.fetch_weight(JAN, opener=op)
+    hit = jw.fetch_superdelivery_weight(JAN, opener=op)
     assert hit.source == "superdelivery" and hit.weight_g in (198.0, 200.0) and "1店舗のみ" not in hit.note
 
 
@@ -139,7 +139,7 @@ def test_fetch_weight_typo_shop_is_outvoted():
     links = SEARCH + '<a href="/p/r/pd_p/3/">x</a>'
     op = make_opener({"superdelivery.com/p/do/psl": links, "pd_p/11889369": _w(19),
                       "pd_p/12285405": W200, "pd_p/3/": _w(196)})
-    hit = jw.fetch_weight(JAN, opener=op)
+    hit = jw.fetch_superdelivery_weight(JAN, opener=op)
     assert hit.weight_g in (196.0, 200.0)
     assert "外れ値を除外" in hit.note and "19g" in hit.note
 
@@ -147,14 +147,14 @@ def test_fetch_weight_typo_shop_is_outvoted():
 def test_fetch_weight_two_disagreeing_shops_leave_weight_blank():
     """2 店しか無く値が割れる → どちらも選ばず重量は空。推測で選ばない。"""
     op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": _w(19), "pd_p/12285405": W200})
-    hit = jw.fetch_weight(JAN, opener=op)
+    hit = jw.fetch_superdelivery_weight(JAN, opener=op)
     assert hit.weight_g is None and "一致せず" in hit.note
 
 
 def test_fetch_weight_single_shop_is_marked_unverified():
     op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": W200,
                       "pd_p/12285405": "<html>別商品</html>"})
-    hit = jw.fetch_weight(JAN, opener=op)
+    hit = jw.fetch_superdelivery_weight(JAN, opener=op)
     assert (hit.weight_g, hit.url) == (200.0, "https://www.superdelivery.com/p/r/pd_p/11889369/")
     assert "1店舗のみ" in hit.note
 
@@ -163,27 +163,27 @@ def test_fetch_weight_none_when_only_case_values():
     jan = "4901525010283"
     op = make_opener({"superdelivery.com/p/do/psl": '<a href="/p/r/pd_p/10186509/">x</a>',
                       "pd_p/10186509": fx("sd_detail_case_only.html")})
-    assert jw.fetch_weight(jan, opener=op) is None
+    assert jw.fetch_superdelivery_weight(jan, opener=op) is None
 
 
 def test_fetch_weight_http_errors_raise_not_none():
     """通信失敗は「個装の記載なし(None)」と区別して例外(fetch_many が error として残す)。"""
     with pytest.raises(jw.FetchError, match="http=503"):
-        jw.fetch_weight(JAN, opener=make_opener({"superdelivery.com": 503}))
+        jw.fetch_superdelivery_weight(JAN, opener=make_opener({"superdelivery.com": 503}))
 
 
 def test_fetch_weight_detail_error_moves_to_next_shop_and_all_failed_raises():
     op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/11889369": 403, "pd_p/12285405": W200})
-    assert jw.fetch_weight(JAN, opener=op).url.endswith("/12285405/")
+    assert jw.fetch_superdelivery_weight(JAN, opener=op).url.endswith("/12285405/")
     op = make_opener({"superdelivery.com/p/do/psl": SEARCH, "pd_p/": 403})
     with pytest.raises(jw.FetchError):
-        jw.fetch_weight(JAN, opener=op)
+        jw.fetch_superdelivery_weight(JAN, opener=op)
 
 
 def test_fetch_weight_caps_shops():
     links = "".join(f'<a href="/p/r/pd_p/{i}/">' for i in range(10))
     op = make_opener({"superdelivery.com/p/do/psl": links, "pd_p/": f"<p>{JAN}</p>"})
-    jw.fetch_weight(JAN, opener=op)
+    jw.fetch_superdelivery_weight(JAN, opener=op)
     assert sum("pd_p/" in u for u in op.calls) == jw.MAX_SHOPS
 
 
@@ -201,3 +201,41 @@ def test_fetch_many_keeps_errors_and_reports_progress(no_sleep):
     assert out["bad"] == {"error": "ValueError: boom"}
     assert seen == [(1, 3, "a"), (2, 3, "bad"), (3, 3, "c")]
     assert no_sleep == [1.0, 1.0]                     # 1 件目の前は待たない
+
+
+def test_netde_matches_product_number_and_reads_single_unit_not_case():
+    page='<th>商品管理番号</th><td>4936201110209</td><th>サイズ</th><td>【単品サイズ】幅80×高60×奥80(mm)<br>【単品重量】265.0g<br>【ケースサイズ】幅500×高140×奥335(mm)<br>【ケース重量】16.5kg</td>'
+    hit=jw.parse_netde_package('4936201110209',page,'https://netdeoroshi.com/product.php?id=31060')
+    assert (hit.height_cm,hit.width_cm,hit.depth_cm,hit.weight_g)==(6,8,8,265)
+    assert jw.parse_netde_package('9999999999999',page,'url') is None
+    assert jw.parse_netde_package('4936201110209',page.replace('単品サイズ','本体サイズ').replace('単品重量','内容量'),'url') is None
+
+
+def test_multisource_fills_missing_fields_and_preserves_conflict_evidence(monkeypatch):
+    a=jw.WeightHit('j',200,None,None,None,'superdelivery','sd')
+    b=jw.WeightHit('j',210,6,8,8,'netde','nd')
+    monkeypatch.setattr(jw,'fetch_superdelivery_weight',lambda *a,**k:a_hit)
+    a_hit=a
+    monkeypatch.setattr(jw,'fetch_netde_weight',lambda *a,**k:b)
+    hit=jw.fetch_weight('j')
+    assert hit.weight_g==200 and (hit.height_cm,hit.width_cm,hit.depth_cm)==(6,8,8)
+    assert '重量' in hit.note and 'netde' in hit.source
+    assert hit.field_urls['weight_g']=='sd' and hit.field_urls['height_cm']=='nd'
+
+
+def test_multisource_tries_next_when_first_source_fails(monkeypatch):
+    def failed(*a,**k):raise jw.FetchError('http=503')
+    monkeypatch.setattr(jw,'fetch_superdelivery_weight',failed)
+    b=jw.WeightHit('j',210,6,8,8,'netde','nd')
+    monkeypatch.setattr(jw,'fetch_netde_weight',lambda *a,**k:b)
+    hit=jw.fetch_weight('j')
+    assert hit is b and '503' in hit.note
+
+
+def test_parse_jancode_image_url():
+    from shared import jan_web as J
+    page = ('<th>商品名</th><td>メリーズ</td>'
+            '<img src="/images/14b49/ad/12b/4901301230881.jpg" alt="x"><img src="/assets/img/shop/rakuten.png">')
+    assert J.parse_jancode("4901301230881", page).image_url == \
+        "https://www.jancode.xyz/images/14b49/ad/12b/4901301230881.jpg"
+    assert J.parse_jancode("4901301230881", "<th>商品名</th><td>x</td>").image_url == ""

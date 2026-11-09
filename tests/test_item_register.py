@@ -267,3 +267,31 @@ def test_manual_name_rescues_jancode_not_found_and_wins_over_jancode():
     warn = {i.jan: i.message for i in issues if i.level == "warn" and "手入力" in i.message}
     assert set(warn) == {"4900000000003", "4911111111113"}
     assert [i.jan for i in issues if i.level == "error"] == ["4900000000003"]
+
+
+def test_weight_provenance_only_labels_auto_filled_fields():
+    def weight(jan):
+        hit = _weight(jan)
+        hit.field_urls = {a: 'https://source/' + a for a in ('height_cm','width_cm','depth_cm','weight_g')}
+        return hit
+    nst, extra, _, _ = _enrich([_row('4901234567894', **{'パッケージ高さ(cm)': '20'})],
+                              want_weight=True, fw=weight)
+    frame = R.to_frame(nst, extra)[0]
+    assert nst[0]['パッケージ高さ(cm)'] == '20'
+    assert 'パッケージ高さ(cm)' not in frame[R.COL_WEIGHT_SOURCES]
+    assert 'パッケージ幅(cm)' in frame[R.COL_WEIGHT_SOURCES]
+
+
+def test_fill_images_order_jancode_search_placeholder():
+    from shared import item_register as R
+    rows = [{"型番": c, "JANコード": c} for c in ("A1", "B2", "C3", "D4")]
+    extra = {"A1": {R.COL_IMAGE: "https://jc/a.jpg", "image_source": "jancode"},
+             "B2": {R.COL_IMAGE: ""}, "C3": {R.COL_IMAGE: ""}, "D4": {R.COL_IMAGE: ""}}
+    def search(jan):
+        if jan == "D4":
+            raise RuntimeError("boom")
+        return {"B2": "https://rk/b.jpg", "C3": "http://not-https"}.get(jan, "")
+    counts = R.fill_images(rows, extra, search)
+    assert counts == {"jancode": 1, "画像検索": 1, "待上图": 2, "search_error": 1}
+    assert extra["B2"][R.COL_IMAGE] == "https://rk/b.jpg" and extra["B2"]["image_source"] == "画像検索"
+    assert extra["C3"][R.COL_IMAGE] == R.PLACEHOLDER_IMAGE_URL and extra["D4"]["image_source"] == "待上图"

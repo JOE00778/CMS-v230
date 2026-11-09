@@ -48,6 +48,7 @@ class JanMeta:
     genre: str
     status: str          # "ok" | "not_found" | "error"
     error: str = ""
+    image_url: str = ""  # 詳細ページの商品画像（https 絶対 URL・無ければ空）
 
 
 @dataclass
@@ -60,6 +61,7 @@ class WeightHit:
     source: str          # "superdelivery"
     url: str
     note: str = ""       # 軸の対応が推定のとき等
+    field_urls: dict[str, str] | None = None
 
 
 class FetchError(Exception):
@@ -100,7 +102,9 @@ def parse_jancode(jan: str, page: str) -> JanMeta:
     name, maker = _th_td(page, "商品名"), _th_td(page, "会社名")
     genre = re.sub(r"\s*>\s*", " > ", _th_td(page, "商品ジャンル"))
     status = "ok" if (name or maker) else "not_found"
-    return JanMeta(jan, name, maker, genre, status)
+    img = re.search(rf'<img[^>]+src="(/images/[^"]*{re.escape(jan)}[^"]*)"', page)
+    return JanMeta(jan, name, maker, genre, status,
+                   image_url="https://www.jancode.xyz" + img.group(1) if img else "")
 
 
 def fetch_meta(jan: str, *, opener=None) -> JanMeta:
@@ -218,7 +222,7 @@ def _agreeing(hits: list[WeightHit]) -> list[WeightHit]:
     return ok if len(ok) >= 2 else []
 
 
-def fetch_weight(jan: str, *, opener=None) -> WeightHit | None:
+def fetch_superdelivery_weight(jan: str, *, opener=None) -> WeightHit | None:
     """スーパーデリバリーの個装重量を **店舗横断で照合**して 1 つ返す。
 
     1 店だけを信じない。実例: 4971671192232(JD 実測 196g)は先頭店が「個装 19g」と
@@ -256,6 +260,85 @@ def fetch_weight(jan: str, *, opener=None) -> WeightHit | None:
         return h
     if hits:
         return hits[0]
+    if errors:
+        raise FetchError("; ".join(errors))
+    return None
+
+
+def parse_netde_package(jan: str, page: str, url: str) -> WeightHit | None:
+    """卸の管理番号を照合し、単品出荷単位だけ採る。本体・ケース・内容量は採らない。"""
+    if _th_td(page, "商品管理番号") != jan:
+        return None
+    text = unicodedata.normalize("NFKC", _th_td(page, "サイズ"))
+    size = re.search(r"【単品サイズ】(.*?)(?=【|$)", text)
+    weight = re.search(r"【単品重量】\s*(\d+(?:\.\d+)?)\s*(kg|g)\b", text, re.I)
+    dims = _parse_segment("個装サイズ " + size.group(1))[1] if size and re.search(r"mm|cm", size.group(1), re.I) else {}
+    if dims and any(v <= 0 for v in dims.values()):
+        dims = {}
+    w = float(weight.group(1)) * (1000 if weight.group(2).lower() == "kg" else 1) if weight else None
+    if w is not None and w <= 0:
+        w = None
+    if not dims and w is None:
+        return None
+    return WeightHit(jan, w, dims.get("height"), dims.get("width"), dims.get("depth"),
+                     "netde", url, "卸の単品出荷単位（本体・ケース・内容量は不採用）")
+
+
+def fetch_netde_weight(jan: str, *, opener=None) -> WeightHit | None:
+    page = _get("https://netdeoroshi.com/list.php?keyword=" + urllib.parse.quote(jan), opener)
+    page = page.split('class="__block __block--recommend"')[0]
+    ids = list(dict.fromkeys(re.findall(r"product\.php\?id=(\d+)", page)))[:3]
+    errors = []
+    for pid in ids:
+        time.sleep(INTERVAL)
+        url = "https://netdeoroshi.com/product.php?id=" + pid
+        try:
+            hit = parse_netde_package(jan, _get(url, opener), url)
+            if hit:
+                return hit
+        except FetchError as e:
+            errors.append(str(e))
+    if errors:
+        raise FetchError("; ".join(errors))
+    return None
+
+
+def fetch_weight(jan: str, *, opener=None) -> WeightHit | None:
+    """SuperDelivery → 卸。欠けた値だけ補完し、競合・取得失敗も記録する。"""
+    fields = ("weight_g", "height_cm", "width_cm", "depth_cm")
+    result, errors = None, []
+    for fn in (fetch_superdelivery_weight, fetch_netde_weight):
+        try:
+            hit = fn(jan, opener=opener)
+        except FetchError as e:
+            errors.append(str(e))
+            continue
+        if hit is None:
+            continue
+        if result is None:
+            result = hit
+            result.field_urls = {f: hit.url for f in fields if getattr(hit, f) is not None}
+        else:
+            filled, conflicts = [], []
+            for field in fields:
+                old, new = getattr(result, field), getattr(hit, field)
+                if old is None and new is not None:
+                    setattr(result, field, new)
+                    result.field_urls[field] = hit.url
+                    filled.append(field)
+                elif old is not None and new is not None and old != new:
+                    conflicts.append(f"{field}: {old:g} / {new:g}")
+            if filled:
+                result.source += " + " + hit.source
+                result.note += " · 補完=" + "/".join(filled) + " " + hit.url
+            if conflicts:
+                result.note += " · 重量・寸法の源間不一致（先の値を保持・確認してください）: " + ", ".join(conflicts)
+        if all(getattr(result, f) is not None for f in fields):
+            break
+    if result:
+        if errors:
+            result.note += " · 別の源の取得失敗: " + "; ".join(errors)
+        return result
     if errors:
         raise FetchError("; ".join(errors))
     return None

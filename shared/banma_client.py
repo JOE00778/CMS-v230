@@ -146,8 +146,15 @@ class BanmaClient:
             return self._call(method, path, *args, **kwargs)
 
     def _call(self, method: str, path: str, params: dict | None = None,
-             max_retries: int = 5):
-        """→ 応答 envelope の Data。再試行判据は 2026-08-28 全 ingester 統一形。"""
+             max_retries: int = 5, body=None):
+        """→ 応答 envelope の Data。再試行判据は 2026-08-28 全 ingester 統一形。
+
+        body（dict/list）は JSON で送り、署名にも同じ文字列を入れる。**GET 以外は再試行しない**
+        （POST /v1/product は非冪等。応答が読めなかった時の再送は二重登録になる → 呼び出し側が Code で照会）。
+        """
+        payload = json.dumps(body, ensure_ascii=False) if body is not None else ""
+        if method.upper() != "GET":
+            max_retries = 1
         query = urllib.parse.urlencode(params, doseq=True, safe=":,-T") \
             if params else ""
         url = GATEWAY + path + (("?" + query) if query else "")
@@ -159,14 +166,14 @@ class BanmaClient:
                 "X-BANMA-APP-ID": self.app_id,
                 "X-BANMA-TIMESTAMP": ts,
                 # 署名は生値（params）で作る——query はエンコード済みなので使わない
-                "X-BANMA-SIGN": self.sign_params(method, path, params or {}, ts),
+                "X-BANMA-SIGN": self.sign_params(method, path, params or {}, ts, payload),
                 "X-BANMA-SIGN-METHOD": "SHA256",
                 "Content-Type": "application/json",
             }
             if self.access_token:
                 headers["X-BANMA-ACCESS-TOKEN"] = self.access_token
-            req = urllib.request.Request(url, method=method.upper(),
-                                         headers=headers)
+            req = urllib.request.Request(url, method=method.upper(), headers=headers,
+                                         data=payload.encode("utf-8") if payload else None)
             try:
                 with urllib.request.urlopen(req, timeout=60) as resp:
                     data = json.loads(resp.read())

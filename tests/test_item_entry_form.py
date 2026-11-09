@@ -149,7 +149,8 @@ def test_read_upload_ok_and_errors():
     warn_rows = sorted({i.row for i in issues if i.level == "warn"})
     assert warn_rows == [3, 14]
     w3 = [i.message for i in issues if i.row == 3]
-    assert any("パッケージ 3 辺" in m for m in w3) and any("パッケージ重量" in m for m in w3)
+    assert any("パッケージ重量" in m for m in w3)
+    assert not any("パッケージ 3 辺" in m for m in w3)          # 3 辺は任意（Boss 2026-11-09）・空でも警告しない
 
 
 def test_columns_reordered_and_header_missing():

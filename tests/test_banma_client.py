@@ -363,3 +363,24 @@ def test_Auth系の401はそのまま投げる():
     c._call = fake
     with pytest.raises(BanmaAuthError):
         c.call("GET", "/v1/Auth/GetToken")
+
+
+# ── 書込（page15 斑马登録 · 2026-11-09）──────────────────────
+
+def test_post_body_is_signed_and_sent_without_retry(monkeypatch):
+    sent = []
+    def fake_urlopen(req, timeout=None):
+        sent.append(req)
+        raise TimeoutError("read timed out")          # 応答が読めない → 再送しない（二重登録防止）
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(B.time, "sleep", lambda s: None)
+    c = _client()
+    body = {"Spu": {"Code": "4901234567894", "Title": "テスト"}}
+    with pytest.raises(B.BanmaError):
+        c.call("POST", "/v1/product/", body=body)
+    assert len(sent) == 1
+    req = sent[0]
+    payload = json.dumps(body, ensure_ascii=False)
+    assert req.data == payload.encode("utf-8") and req.get_method() == "POST"
+    ts = req.get_header("X-banma-timestamp")
+    assert req.get_header("X-banma-sign") == c.sign_params("POST", "/v1/product/", {}, ts, payload)

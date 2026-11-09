@@ -15,7 +15,7 @@ from shared import nst_choices as NC
 PAGE = pathlib.Path(__file__).resolve().parents[1] / "pages" / "15_📝_商品登录.py"
 
 
-def test_page15_renders_all_tabs_without_exception():
+def test_page15_renders_all_tabs_without_exception(page15_offline):
     st.cache_data.clear()
     choices = NC.Choices(suppliers=("0001 ベストアンサ株式会社",),
                          middle_by_large=dict(NC.FALLBACK_MIDDLE_BY_LARGE),
@@ -35,7 +35,7 @@ def test_page15_renders_all_tabs_without_exception():
     assert any("処理する" in x for x in labels)                     # 🆕 商品登録
     assert any("查询 PG" in x for x in labels)                      # 📦 セット品登録
     assert not any("JD" in x for x in labels)                       # JD UI は削除済み
-    assert at.checkbox[0].value is False                            # 網調べは既定 OFF
+    assert not any("ネットで調べる" in c.label for c in at.checkbox)  # 網調べは常に実行（切替なし）
 
 
 def _filled_upload(choices) -> bytes:
@@ -58,7 +58,7 @@ def _filled_upload(choices) -> bytes:
     return buf.getvalue()
 
 
-def test_page15_process_and_generate_flow():
+def test_page15_process_and_generate_flow(page15_offline):
     """UL → ▶ 処理する → 📦 生成 まで。jancode はモック、台帳 INSERT は MagicMock conn。"""
     from shared import jan_web
 
@@ -94,7 +94,6 @@ def test_page15_process_and_generate_flow():
     import io
     import zipfile
 
-    from openpyxl import load_workbook
     zf = zipfile.ZipFile(io.BytesIO(at.session_state["page15_zip_bytes"]))
     csv_name = next(n for n in zf.namelist() if n.endswith(".csv"))
     header, row = list(csv.reader(io.StringIO(zf.read(csv_name).decode("utf-8-sig"))))[:2]
@@ -102,11 +101,14 @@ def test_page15_process_and_generate_flow():
     assert header[0] == "型番" and rec["型番"] == "4901234567894"
     assert rec["アイテム名"] == "テスト クッキー 100g" and rec["税率"] == "★"
     assert rec["仕入先1：仕入先"] == "0001 ベストアンサ株式会社" and rec["仕入区分"] == "輸出専用"
-    ws = load_workbook(io.BytesIO(zf.read(next(n for n in zf.namelist()
-                                              if n.startswith("BM_"))))).active
-    bm = dict(zip([c.value for c in ws[2]], [c.value for c in ws[3]]))
-    assert bm["中文名称"] == "テスト クッキー 100g"
-    assert len(bm["英文名称"] or "") <= 76
+    assert not any(n.endswith(".xlsx") for n in zf.namelist())       # 斑马 xlsx は廃止 → API 登録
+    from shared.item_register import COL_IMAGE, PLACEHOLDER_IMAGE_URL
+    (bm_row,), _ = page15_offline.call_args[0][1:], None
+    assert page15_offline.call_count == 1
+    assert bm_row["アイテム名"] == "テスト クッキー 100g"
+    assert bm_row[COL_IMAGE] == PLACEHOLDER_IMAGE_URL                # jancode・画像検索とも無し → 待上图
+    res = at.session_state["page15_bm_result"]
+    assert res["logged"] and [c for c, _ in res["rows"]] == ["4901234567894"]
 
 
 def _run_page(choices, up, *, meta, exist=frozenset(), conn=None):
@@ -139,7 +141,7 @@ def _choices():
                       middle_by_large=dict(NC.FALLBACK_MIDDLE_BY_LARGE))
 
 
-def test_page15_existing_jan_is_excluded():
+def test_page15_existing_jan_is_excluded(page15_offline):
     from shared import jan_web
     ch = _choices()
     up = mock.MagicMock()
@@ -153,7 +155,7 @@ def test_page15_existing_jan_is_excluded():
         assert any("登録済み" in str(v) for df in at.dataframe for v in df.value.values.ravel())
 
 
-def test_page15_rerun_retries_after_jancode_error():
+def test_page15_rerun_retries_after_jancode_error(page15_offline):
     from shared import jan_web
     ch = _choices()
     up = mock.MagicMock()
@@ -167,7 +169,7 @@ def test_page15_rerun_retries_after_jancode_error():
         assert fm.call_count == 2 and [m.value for m in at.metric][:2] == ["1", "0"]
 
 
-def test_page15_broken_xlsx_shows_error_and_other_tabs_render():
+def test_page15_broken_xlsx_shows_error_and_other_tabs_render(page15_offline):
     ch = _choices()
     up = mock.MagicMock()
     up.getvalue.return_value = b"not an xlsx"
@@ -178,7 +180,7 @@ def test_page15_broken_xlsx_shows_error_and_other_tabs_render():
         assert any(b.key == "page15_bundle_query" for b in at.button)
 
 
-def test_page15_edit_hides_stale_zip_and_log_not_duplicated():
+def test_page15_edit_hides_stale_zip_and_log_not_duplicated(page15_offline):
     from shared import jan_web
     ch = _choices()
     up = mock.MagicMock()

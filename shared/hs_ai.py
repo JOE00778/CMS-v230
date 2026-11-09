@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import random
 import time
 import urllib.error
 import urllib.request
@@ -63,6 +64,33 @@ def _prompt(batch: list[tuple[str, str, str]]) -> str:
     return "次の商品の HS6 を判定してください。\n" + "\n".join(lines)
 
 
+def _http_failure(e: urllib.error.HTTPError) -> tuple[str, float | None]:
+    """HTTP のサービスエラーを限定して読む。key は必ず伏せる。"""
+    detail = str(e)
+    delay = None
+    try:
+        data = json.loads(e.read(8192).decode("utf-8", "replace"))
+        error = data.get("error", {})
+        if isinstance(error, dict):
+            detail += " · " + str(error.get("status", "")) + " " + str(error.get("message", ""))
+            for info in error.get("details", []):
+                if isinstance(info, dict) and info.get("retryDelay"):
+                    delay = float(str(info["retryDelay"]).rstrip("s"))
+    except (ValueError, OSError, AttributeError):
+        pass
+    try:
+        header = e.headers.get("Retry-After") if e.headers else None
+        if header is not None:
+            delay = float(header)
+    except ValueError:
+        pass
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        detail = detail.replace(key, "[REDACTED]")
+    detail = re.sub(r"(?i)(key=|Bearer )[A-Za-z0-9_\-]+", r"\1[REDACTED]", detail)
+    return detail[:320], min(60.0, max(0.0, delay)) if delay is not None else None
+
+
 def judge(items: list[tuple[str, str, str]], *, post=_post, sleep=time.sleep) -> dict:
     """[(jan, 商品名, メーカー)] → {jan: AiHs | str(失敗理由)}。1 バッチ失敗でも他は続ける。"""
     out: dict = {}
@@ -80,9 +108,16 @@ def judge(items: list[tuple[str, str, str]], *, post=_post, sleep=time.sleep) ->
                 if got is None:
                     err = "AI の応答に JSON がない"
                 break
+            except urllib.error.HTTPError as e:
+                detail, delay = _http_failure(e)
+                err = f"HTTPError: {detail}（model={MODEL} · 試行={attempt + 1}/3）"
+                if e.code not in (408, 429, 500, 502, 503, 504) or attempt == 2:
+                    break
+                sleep(delay if delay is not None else min(60, 10 * 2 ** attempt + random.uniform(0, 1)))
             except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
-                err = f"{type(e).__name__}: {str(e)[:80]}"
-                sleep(10 * (attempt + 1))           # 503/429 が実測で出る
+                err = f"{type(e).__name__}: {str(e)[:80]}（model={MODEL} · 試行={attempt + 1}/3）"
+                if attempt < 2:
+                    sleep(min(60, 10 * 2 ** attempt + random.uniform(0, 1)))
         for i, (jan, _, _) in enumerate(batch):
             x = (got or {}).get(str(i))
             if x is None:
