@@ -10,6 +10,9 @@ from tests.test_item_register import _enrich, _row
 CH=Choices(suppliers=('0001 TEST',),middle_by_large={'生活雑貨':('日用品雑貨',),'食品':('嗜好品（茶・コーヒー）',)})
 
 
+# 2026-11-09 以前の全列テンプレ（旧テンプレで上げても読めることを確認する）
+LEGACY=[*F.TEMPLATE_COLUMNS,*(c for c in (*F.INPUT_COLUMNS,F.COL_MAKER_MANUAL,*F.ADDITIONAL_INPUT_COLUMNS) if c not in F.TEMPLATE_COLUMNS)]
+
 def test_export_only_fallback_keeps_real_barcode_empty():
     rows=[{'型番':'ETERNAL-BONSAI-NV','JANコード':'','アイテム名':'盆栽'}]
     data=list(csv.DictReader(io.StringIO(R.build_nst_registration_csv(rows).decode('utf-8-sig'))))
@@ -54,10 +57,11 @@ def test_schema_71_and_applicable_conditions():
 
 
 def test_template_full_fields_and_decimal_carton_text_lot():
-    for c in ('カートン高さ(cm)','カートン幅(cm)','カートン奥行(cm)','SKUID','税率','メーカー型番','商品ランク'):assert c in F.TEMPLATE_COLUMNS
+    for c in ('カートン高さ(cm)','カートン幅(cm)','カートン奥行(cm)','SKUID','商品ランク'):assert c in F.TEMPLATE_COLUMNS
+    for c in ('税率','メーカー型番','発注ロット'):assert c not in F.TEMPLATE_COLUMNS
     wb=openpyxl.load_workbook(io.BytesIO(F.build_template(CH)));ws=wb[F.SHEET_INPUT]
     r={'型番':'SKU','アイテム名（任意）':'盆栽','商品原価':'100','仕入先1：仕入先':'0001 TEST','商品担当者':'043 徐越','大分類':'生活雑貨','中分類':'日用品雑貨','カートン入数':'1.5','発注ロット':'1色1000','カートン高さ(cm)':'３０','カートン幅(cm)':'40','カートン奥行(cm)':'50','SKUID':'FLAG-1','メーカー型番':'M-1'}
-    for j,c in enumerate(F.TEMPLATE_COLUMNS,1):ws.cell(2,j,r.get(c,''))
+    for j,c in enumerate(LEGACY,1):ws.cell(1,j,c);ws.cell(2,j,r.get(c,''))
     b=io.BytesIO();wb.save(b);rows,issues=F.read_upload(b.getvalue(),CH)
     assert len(rows)==1 and not any(i.level=='error' for i in issues)
     assert rows[0]['カートン高さ(cm)']=='30' and rows[0]['SKUID']=='FLAG-1' and rows[0]['発注ロット']=='1色1000'
@@ -85,13 +89,13 @@ def test_actual_16_products_end_to_end_and_review_after_simulated_corrections():
     from pathlib import Path
     from shared.hs_classify import Customs
     from shared.jan_web import JanMeta
-    from shared.nst_choices import FALLBACK_MIDDLE_BY_LARGE
+    from shared.nst_choices import MIDDLE_BY_LARGE
     original=json.loads((Path(__file__).parent/'fixtures/nst_registration_16.json').read_text())
-    choices=Choices(suppliers=tuple(dict.fromkeys(r['仕入先1：仕入先'] for r in original)),middle_by_large=dict(FALLBACK_MIDDLE_BY_LARGE))
-    wb=openpyxl.Workbook();ws=wb.active;ws.title=F.SHEET_INPUT;ws.append(F.TEMPLATE_COLUMNS)
+    choices=Choices(suppliers=tuple(dict.fromkeys(r['仕入先1：仕入先'] for r in original)),middle_by_large=dict(MIDDLE_BY_LARGE))
+    wb=openpyxl.Workbook();ws=wb.active;ws.title=F.SHEET_INPUT;ws.append(LEGACY)
     for r in original:
         row={**r,F.COL_NAME_MANUAL:r['アイテム名'],F.COL_MAKER_MANUAL:r.get('メーカー名','')}
-        ws.append([row.get(c,'') for c in F.TEMPLATE_COLUMNS])
+        ws.append([row.get(c,'') for c in LEGACY])
     b=io.BytesIO();wb.save(b);inputs,upload_issues=F.read_upload(b.getvalue(),choices)
     assert len(inputs)==16 and not any(i.level=='error' for i in upload_issues)
     metadata=MagicMock(side_effect=lambda jan:JanMeta(jan,'unused','','','ok'))
@@ -135,7 +139,7 @@ def test_native_date_cell_is_read_in_reference_format():
     import datetime
     wb=openpyxl.load_workbook(io.BytesIO(F.build_template(CH)));ws=wb[F.SHEET_INPUT]
     r={'型番':'SKU','アイテム名（任意）':'盆栽','商品原価':'100','仕入先1：仕入先':'0001 TEST','商品担当者':'043 徐越','大分類':'生活雑貨','中分類':'日用品雑貨','カートン入数':'24','発売日':datetime.datetime(2026,10,14)}
-    for j,c in enumerate(F.TEMPLATE_COLUMNS,1):ws.cell(2,j,r.get(c,''))
+    for j,c in enumerate(LEGACY,1):ws.cell(1,j,c);ws.cell(2,j,r.get(c,''))
     b=io.BytesIO();wb.save(b);rows,issues=F.read_upload(b.getvalue(),CH)
     assert len(rows)==1 and not any(i.level=='error' for i in issues)
     assert rows[0]['発売日']=='2026/10/14'
@@ -150,10 +154,10 @@ def test_16_product_page_zip_and_checklist_use_only_mock_services(page15_offline
     from streamlit.testing.v1 import AppTest
     from shared import nst_choices as NC, jan_web, hs_ai
     original=json.loads((Path(__file__).parent/'fixtures/nst_registration_16.json').read_text())
-    choices=NC.Choices(suppliers=tuple(dict.fromkeys(r['仕入先1：仕入先'] for r in original)),middle_by_large=dict(NC.FALLBACK_MIDDLE_BY_LARGE))
-    wb=openpyxl.Workbook();ws=wb.active;ws.title=F.SHEET_INPUT;ws.append(F.TEMPLATE_COLUMNS)
+    choices=NC.Choices(suppliers=tuple(dict.fromkeys(r['仕入先1：仕入先'] for r in original)),middle_by_large=dict(NC.MIDDLE_BY_LARGE))
+    wb=openpyxl.Workbook();ws=wb.active;ws.title=F.SHEET_INPUT;ws.append(LEGACY)
     for r in original:
-        row={**r,F.COL_NAME_MANUAL:r['アイテム名'],F.COL_MAKER_MANUAL:r.get('メーカー名','')};ws.append([row.get(c,'') for c in F.TEMPLATE_COLUMNS])
+        row={**r,F.COL_NAME_MANUAL:r['アイテム名'],F.COL_MAKER_MANUAL:r.get('メーカー名','')};ws.append([row.get(c,'') for c in LEGACY])
     b=io.BytesIO();wb.save(b);up=MagicMock();up.getvalue.return_value=b.getvalue();conn=MagicMock();conn.__enter__.return_value=conn
     st.cache_data.clear()
     with patch('shared.db.get_connection',return_value=conn),patch('streamlit.file_uploader',return_value=up),patch.object(NC,'load_choices',return_value=choices),patch.object(NC,'load_prefix_makers',return_value={}),patch.object(NC,'existing_jans',return_value=(set(),[])),patch.object(NC,'existing_item_codes',return_value=(set(),[])),patch.object(hs_ai,'is_configured',return_value=False),patch.object(jan_web,'fetch_meta',side_effect=lambda j:jan_web.JanMeta(j,'unused','','','ok')),patch.object(jan_web,'fetch_weight') as fw:

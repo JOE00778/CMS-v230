@@ -57,7 +57,12 @@ TEMPLATE_COLUMNS: list[str] = [COL_JAN, COL_NAME_MANUAL, *INPUT_COLUMNS[1:], COL
 ADDITIONAL_INPUT_COLUMNS = [c for _, c in NST_MASTER_COLUMNS
                            if c not in (*INPUT_COLUMNS, COL_ITEM_CODE, "アイテム名", "メーカー名",
                                         *NST_AUTOMATIC_COLUMNS, *NST_REGISTRATION_FIXED)]
-TEMPLATE_COLUMNS += ADDITIONAL_INPUT_COLUMNS
+# 書き出すテンプレは NST 原本の「必須」列のうち人が入れるものだけ（Boss 2026-11-09「只留必填项」）。
+# 固定値（取扱区分・部門・仕入区分・発注通貨）と 税率（食品=★）・メーカー名 は自動、メーカー名は確認画面で人が確認。
+# 読み込みは旧テンプレ（上の全列）も受ける。見出し必須は REQUIRED_HEADERS だけ
+TEMPLATE_COLUMNS = [COL_JAN, COL_ITEM_CODE, COL_NAME_MANUAL, "商品ランク", COL_COST, COL_SUPPLIER, COL_OWNER,
+                    COL_LARGE, COL_MIDDLE, "SKUID", *COL_PKG_DIMS, *COL_CARTON_DIMS, COL_CARTON]
+REQUIRED_HEADERS = [COL_JAN, COL_COST, COL_SUPPLIER, COL_OWNER, COL_LARGE, COL_MIDDLE, COL_CARTON]
 NUMERIC_COLUMNS = tuple(c for _, c in NST_MASTER_COLUMNS
                         if "(cm)" in c or "(g)" in c) + (COL_CARTON, COL_COST,
     "コンテナ運送費", "開発費単価", "不良率自社負担単価", "不良率(PO)", "関税(AT)",
@@ -207,8 +212,8 @@ def build_template(choices) -> bytes:
               COL_SUPPLIER: choices.suppliers[0] if choices.suppliers else "",
               COL_OWNER: choices.owners[0] if choices.owners else "",
               COL_LARGE: lg0, COL_MIDDLE: (choices.middle_by_large.get(lg0) or ("",))[0],
-              COL_CARTON: 48, COL_LOT: 12, COL_PKG_DIMS[0]: 6, COL_PKG_DIMS[1]: 23,
-              COL_PKG_DIMS[2]: 17, COL_PKG_WEIGHT: 250}
+              COL_CARTON: 48, COL_PKG_DIMS[0]: 6, COL_PKG_DIMS[1]: 23, COL_PKG_DIMS[2]: 17,
+              COL_CARTON_DIMS[0]: 36, COL_CARTON_DIMS[1]: 39, COL_CARTON_DIMS[2]: 26.5, "商品ランク": "NEW"}
     for i, name in enumerate(TEMPLATE_COLUMNS, start=1):
         ex.cell(row=2, column=i, value=sample.get(name, ""))
     ex.cell(row=4, column=1, value="※ このシートは読み込まれません。「商品登録」シートに記入してください")
@@ -280,7 +285,7 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
     pos = {}
     for j, v in enumerate(all_rows[header_idx]):
         pos.setdefault(_norm(_s(v)), j)
-    missing = [c for c in INPUT_COLUMNS if _norm(c) not in pos]
+    missing = [c for c in REQUIRED_HEADERS if _norm(c) not in pos]
     if missing:
         return [], [Issue(header_idx + 1, "", "error", "見出しが見つかりません: " + " / ".join(missing))]
 
@@ -293,7 +298,8 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
 
     data_idx = header_idx + (3 if sheet_name == "NetSuiteマスタ登録" else 1)
     for i, raw in enumerate(all_rows[data_idx:], start=data_idx + 1):
-        rec = {c: _s(raw[pos[_norm(c)]]) if pos[_norm(c)] < len(raw) else "" for c in INPUT_COLUMNS}
+        rec = {c: _s(raw[pos[_norm(c)]]) if pos.get(_norm(c), len(raw)) < len(raw) else ""
+               for c in INPUT_COLUMNS}
         p_name = pos.get(_norm(COL_NAME_MANUAL), pos.get("アイテム名"))
         rec[COL_NAME_MANUAL] = _s(raw[p_name]) if p_name is not None and p_name < len(raw) else ""
         for col in (COL_ITEM_CODE, COL_MAKER_MANUAL):
@@ -366,8 +372,6 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
             warns.append(f"{COL_CARTON} が空です（必須・手入力）")
         elif not ((n := _num(rec[COL_CARTON])) is not None and n > 0):
             errs.append(f"{COL_CARTON} が正の数ではありません（{rec[COL_CARTON]}）")
-        if not rec[COL_LOT]:
-            warns.append(f"{COL_LOT} が空です")
         errs.extend(validate_fields({c: v for c, v in rec.items() if c not in (*COL_PKG_DIMS, COL_PKG_WEIGHT)}, choices=choices))
 
         for c in (*COL_PKG_DIMS, COL_PKG_WEIGHT):

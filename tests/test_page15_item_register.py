@@ -18,7 +18,7 @@ PAGE = pathlib.Path(__file__).resolve().parents[1] / "pages" / "15_📝_商品�
 def test_page15_renders_all_tabs_without_exception(page15_offline):
     st.cache_data.clear()
     choices = NC.Choices(suppliers=("0001 ベストアンサ株式会社",),
-                         middle_by_large=dict(NC.FALLBACK_MIDDLE_BY_LARGE),
+                         middle_by_large=dict(NC.MIDDLE_BY_LARGE),
                          warnings=("NST 分類の取得に失敗したため 2026-10-02 時点の定数を使用: mock",))
     with mock.patch("shared.db.get_connection", mock.MagicMock()), \
             mock.patch.object(NC, "load_choices", return_value=choices) as lc, \
@@ -64,7 +64,7 @@ def test_page15_process_and_generate_flow(page15_offline):
 
     st.cache_data.clear()
     choices = NC.Choices(suppliers=("0001 ベストアンサ株式会社",),
-                         middle_by_large=dict(NC.FALLBACK_MIDDLE_BY_LARGE))
+                         middle_by_large=dict(NC.MIDDLE_BY_LARGE))
     up = mock.MagicMock()
     up.getvalue.return_value = _filled_upload(choices)
     meta = jan_web.JanMeta("4901234567894", "テスト クッキー 100g", "テスト製菓株式会社", "", "ok")
@@ -138,7 +138,7 @@ def _run_page(choices, up, *, meta, exist=frozenset(), conn=None):
 
 def _choices():
     return NC.Choices(suppliers=("0001 ベストアンサ株式会社",),
-                      middle_by_large=dict(NC.FALLBACK_MIDDLE_BY_LARGE))
+                      middle_by_large=dict(NC.MIDDLE_BY_LARGE))
 
 
 def test_page15_existing_jan_is_excluded(page15_offline):

@@ -58,17 +58,20 @@ def test_template_structure():
     assert wb["_選択肢"].sheet_state == "hidden"
     ws = wb["商品登録"]
     assert [c.value for c in ws[1]] == F.TEMPLATE_COLUMNS
-    assert F.TEMPLATE_COLUMNS[1] == "アイテム名（任意）" and F.COL_NAME_MANUAL not in F.INPUT_COLUMNS
+    assert F.TEMPLATE_COLUMNS[2] == "アイテム名（任意）" and F.COL_NAME_MANUAL not in F.INPUT_COLUMNS
+    # NST 原本の必須だけ（Boss 2026-11-09）。メーカー名・発注ロット・パッケージ重量・海外仕入項目は出さない
+    for c in (F.COL_MAKER_MANUAL, "発注ロット", "パッケージ重量(g)", "税率", "生原価", "発売日"):
+        assert c not in F.TEMPLATE_COLUMNS
     assert ws.freeze_panes == "B2"
     dvs = ws.data_validations.dataValidation
-    assert len(dvs) == 4 + len(F.FIELD_CHOICES)
+    assert len(dvs) == 4 + 1   # 仕入先・担当・大分類・中分類 ＋ 商品ランク
     for dv in dvs:
         assert dv.type == "list" and dv.showErrorMessage is True and not dv.showDropDown
         assert len(dv.formula1) < 255
         assert str(dv.sqref).endswith("1001")
     by_col = {str(dv.sqref)[0]: dv.formula1 for dv in dvs}
-    assert by_col["D"] == "'_選択肢'!$A$2:$A$602"      # 仕入先 601 件は範囲参照
-    assert by_col["G"].startswith("INDIRECT(VLOOKUP($F2,")
+    assert by_col["F"] == "'_選択肢'!$A$2:$A$602"      # 仕入先 601 件は範囲参照
+    assert by_col["I"].startswith("INDIRECT(VLOOKUP($H2,")
     # 定義名 MID_xx → 各大分類の中分類列
     ch = wb["_選択肢"]
     names = dict(wb.defined_names.items())
@@ -147,7 +150,7 @@ def test_read_upload_ok_and_errors():
     assert "仕入先" in msg[9] and "商品担当者" in msg[10] and "大分類が選択肢" in msg[11]
     assert "中分類「加工食品」" in msg[12] and "カートン入数" in msg[13]
     warn_rows = sorted({i.row for i in issues if i.level == "warn"})
-    assert warn_rows == [3, 14]
+    assert warn_rows == [3]   # 発注ロット空は警告しない（NST 原本で任意）
     w3 = [i.message for i in issues if i.row == 3]
     assert any("パッケージ重量" in m for m in w3)
     assert not any("パッケージ 3 辺" in m for m in w3)          # 3 辺は任意（Boss 2026-11-09）・空でも警告しない
@@ -177,7 +180,8 @@ def test_filename():
 
 
 def test_new_template_layout_reads_manual_name():
-    r = [J1, "  手入力の商品名 50ml ", *OK[1:]]
+    d = {**dict(zip(F.INPUT_COLUMNS, OK)), F.COL_NAME_MANUAL: "  手入力の商品名 50ml "}
+    r = [d.get(c, "") for c in F.TEMPLATE_COLUMNS]
     rows, issues = F.read_upload(_upload([r], header=F.TEMPLATE_COLUMNS), CH)
     assert issues == [] and rows[0][F.COL_NAME_MANUAL] == "手入力の商品名 50ml"
     assert rows[0]["商品原価"] == "1250" and rows[0]["仕入先1：仕入先"] == SUPPLIERS[1]

@@ -2,7 +2,7 @@
 
 正の源は NST（Boss 2026-10-03「すべて NST が核心」）。NST に無いものだけ PG で補う。
 - 仕入先: PG `nst.vendor_master`（NST Vendor の毎日 06:50 全件鏡像）· page10 と共有
-- 大分類・中分類: SuiteQL で item の実在組合せ。失敗時は 2026-10-02 実測の定数
+- 商品担当者・大分類・中分類: NST 原本テンプレ V260326EX のデータベース シートの写し（定数）
 - 既存 JAN: SuiteQL item.upccode（NST 全体）。失敗時は PG `nst.item_master_raw`（輸出部門のみ）
 - メーカー名: JAN 先頭 7 桁が NST 既存品で 1 種類に決まればそれ → jancode 会社名 → 空
 
@@ -12,38 +12,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-OWNERS: tuple[str, ...] = ("037 米澤和敏", "043 徐越", "005 川崎里子", "079 隋艶偉")
+# 商品担当者・大分類・中分類 = NST 原本テンプレ「20260000_NetSuite【アイテム】マスタ登録-V260326EX」
+# データベース シート（C2:C12 / R2:W2 / 各列の中分類 = INDIRECT 用の定義名）の写し（Boss 2026-11-09「按照模板」）。
+# 原本の版が変わったらここを差し替える。ASEAN / USA の定義名は原本で #REF!（大分類の選択肢に無い）ので入れない。
+OWNERS: tuple[str, ...] = ("000李キン", "003 石川徳道", "007 安部龍也", "010 祁王傑", "020 中村陽太",
+                           "031 斎藤裕史", "037 米澤和敏", "043 徐越", "060 中村貴明", "067 星野麻衣",
+                           "005 川崎里子")
 FIXED: dict[str, str] = {"取扱区分": "取扱中", "商品ランク": "NEW", "部門": "輸出事業",
                          "仕入区分": "輸出専用", "発注通貨": "日本円"}
 MAKER_MAX = 60
 _JAN_CHUNK = 200
 
-# 2026-10-02 SuiteQL 実測の (大分類, 中分類) 組合せ（中分類は件数の多い順）。
-# 61 組・中分類 32（2026-10-03 元川で再実測し全件一致を確認）。
-# SuiteQL 不通時のフォールバック。NST 側で分類を増やしたらここも直す。
-FALLBACK_MIDDLE_BY_LARGE: dict[str, tuple[str, ...]] = {
-    "ASEAN": ("日用消耗品", "日用品雑貨", "輸出専用", "パール", "加工食品", "衛生日用品",
-              "ホビー", "その他（生活雑貨）"),
-    "USA": ("日用品雑貨", "日用消耗品", "DIY・工具", "ホビー", "アウトドア用品", "スポーツ・健康",
-            "季節家電"),
-    "アウトドア・防災": ("アウトドア用品", "スポーツ・健康", "防災", "その他（アウトドア・防災）",
-                         "保安整備"),
-    "カー・バイク用品": ("その他（カー・バイク用品）", "アクセサリー", "カーエレクトロニクス",
-                         "保安整備", "その他", "生活家電", "洗車用品", "自転車用品"),
+_LIFE = ("生活家電", "季節家電", "ガーデン・エクステリア", "DIY・工具", "日用品雑貨", "季節雑貨", "ホビー",
+         "スポーツ・健康", "衛生日用品", "日用消耗品", "その他（生活雑貨）")
+_OUTDOOR = ("アウトドア用品", "防災", "その他（アウトドア・防災）")
+_CAR = ("カーエレクトロニクス", "アクセサリー", "保安整備", "その他（カー・バイク用品）")
+MIDDLE_BY_LARGE: dict[str, tuple[str, ...]] = {
+    "カー・バイク用品": _CAR,
+    "アウトドア・防災": _OUTDOOR,
+    "生活雑貨": _LIFE,
+    "食品": ("加工食品", "菓子", "健康食品", "嗜好品（茶・コーヒー）", "調味料"),
+    "中国": ("パール", *_LIFE, *_OUTDOOR, *_CAR, "加工食品"),
     "パール": ("パール",),
-    "中国": ("日用消耗品", "日用品雑貨", "パール", "加工食品", "アクセサリー", "アウトドア用品",
-             "その他（生活雑貨）", "輸出専用", "ホビー", "衛生日用品"),
-    "生活雑貨": ("DIY・工具", "日用品雑貨", "日用消耗品", "スポーツ・健康", "ホビー",
-                 "ガーデン・エクステリア", "その他（生活雑貨）", "衛生日用品", "生活家電", "季節家電",
-                 "季節雑貨", "加工食品", "雑貨", "日用品", "工具", "その他", "洗濯機・洗濯乾燥機"),
-    "食品": ("加工食品", "健康食品", "菓子", "嗜好品（茶・コーヒー）", "調味料"),
 }
 
 
 @dataclass(frozen=True)
 class Choices:
     suppliers: tuple[str, ...]                      # "0001 ベストアンサ株式会社"
-    middle_by_large: dict[str, tuple[str, ...]]     # 大分類 -> 中分類（実在組合せ）
+    middle_by_large: dict[str, tuple[str, ...]]     # 大分類 -> 中分類（NST 原本テンプレ）
     owners: tuple[str, ...] = OWNERS
     warnings: tuple[str, ...] = ()                  # フォールバック使用などの通知
 
@@ -79,49 +76,13 @@ def load_suppliers(conn) -> list[str]:
     return [f"{r['vendor_code']} {r['company_name']}" for r in rows]
 
 
-def load_categories(*, suiteql=None) -> tuple[dict[str, tuple[str, ...]], list[str]]:
-    """NST item の (大分類, 中分類) 実在組合せ（部門で絞らない＝NST 全体）。
-
-    戻り: ({大分類: (中分類, ...)}, 警告)。大分類・中分類とも件数の多い順。
-    SuiteQL 失敗・0 件なら (FALLBACK_MIDDLE_BY_LARGE, [警告])。
-    """
-    q = suiteql or _default_suiteql()
-    try:
-        rows = q(
-            "SELECT BUILTIN.DF(custitem_fb_large_category) AS large, "
-            "BUILTIN.DF(custitem_fb_middle_category) AS middle, COUNT(*) AS n "
-            "FROM item "
-            "WHERE custitem_fb_large_category IS NOT NULL "
-            "AND custitem_fb_middle_category IS NOT NULL "
-            "GROUP BY BUILTIN.DF(custitem_fb_large_category), "
-            "BUILTIN.DF(custitem_fb_middle_category)",
-            limit=1000)
-    except Exception as e:  # noqa: BLE001 — テンプレ DL を止めない
-        return (dict(FALLBACK_MIDDLE_BY_LARGE),
-                [f"NST 分類の取得に失敗したため 2026-10-02 時点の定数を使用: {e}"])
-    pairs = [((r.get("large") or "").strip(), (r.get("middle") or "").strip(),
-              int(r.get("n") or 0)) for r in rows]
-    pairs = [p for p in pairs if p[0] and p[1]]
-    if not pairs:
-        return (dict(FALLBACK_MIDDLE_BY_LARGE),
-                ["NST 分類が 0 件だったため 2026-10-02 時点の定数を使用"])
-    total: dict[str, int] = {}
-    for lg, _, n in pairs:
-        total[lg] = total.get(lg, 0) + n
-    out: dict[str, tuple[str, ...]] = {}
-    for lg in sorted(total, key=lambda k: -total[k]):
-        mids = sorted((p for p in pairs if p[0] == lg), key=lambda p: -p[2])
-        out[lg] = tuple(dict.fromkeys(p[1] for p in mids))
-    return out, []
-
-
-def load_choices(conn, *, suiteql=None) -> Choices:
+def load_choices(conn, *, suiteql=None) -> Choices:  # noqa: ARG001 — suiteql は旧呼び出し互換
     suppliers = load_suppliers(conn)
-    middle_by_large, warns = load_categories(suiteql=suiteql)
+    warns: list[str] = []
     if not suppliers:
         warns.append("仕入先マスタが空です。page 27「📥 NST 取得データ」→ "
                      "「🏭 仕入先マスタ」で更新してください。")
-    return Choices(suppliers=tuple(suppliers), middle_by_large=middle_by_large,
+    return Choices(suppliers=tuple(suppliers), middle_by_large=dict(MIDDLE_BY_LARGE),
                    warnings=tuple(warns))
 
 

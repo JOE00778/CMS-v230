@@ -45,44 +45,19 @@ def test_load_suppliers_full_name_sorted_and_skips_blank(conn):
     assert C.load_suppliers(conn) == ["0001 ベストアンサ株式会社", "0002 株式会社あいう"]
 
 
-def test_fallback_matches_spec_listing():
-    F = C.FALLBACK_MIDDLE_BY_LARGE
-    assert set(F) == {"カー・バイク用品", "生活雑貨", "アウトドア・防災", "ASEAN",
-                      "パール", "USA", "中国", "食品"}
-    assert F["ASEAN"][0] == "日用消耗品" and "その他" in F["カー・バイク用品"]
+def test_categories_and_owners_follow_nst_template_v260326ex():
+    # 原本 データベース R2:W2 の 6 大分類・各中分類件数・C2:C12 の 11 人（2026-11-09 原本と全件照合済）
+    F = C.MIDDLE_BY_LARGE
+    assert list(F) == ["カー・バイク用品", "アウトドア・防災", "生活雑貨", "食品", "中国", "パール"]
+    assert [len(v) for v in F.values()] == [4, 3, 11, 5, 20, 1]
     assert all(len(v) == len(set(v)) for v in F.values())
-
-
-def test_load_categories_groups_by_count_and_passes_limit():
-    seen = {}
-
-    def fake(sql, *, limit):
-        seen["sql"], seen["limit"] = sql, limit
-        return [{"large": "食品", "middle": "菓子", "n": "5"},
-                {"large": "生活雑貨", "middle": "日用品", "n": "4"},
-                {"large": "生活雑貨", "middle": "DIY・工具", "n": "100"},
-                {"large": "食品", "middle": "加工食品", "n": "50"},
-                {"large": None, "middle": "x", "n": "9"}]
-
-    m, warns = C.load_categories(suiteql=fake)
-    assert m == {"生活雑貨": ("DIY・工具", "日用品"), "食品": ("加工食品", "菓子")}
-    assert warns == []
-    assert "GROUP BY" in seen["sql"] and "department" not in seen["sql"]
-    assert seen["limit"] >= 100
-
-
-def test_load_categories_falls_back_on_error_and_empty():
-    m, warns = C.load_categories(suiteql=_boom)
-    assert m == C.FALLBACK_MIDDLE_BY_LARGE and "503" in warns[0]
-    m2, warns2 = C.load_categories(suiteql=lambda sql, *, limit: [])
-    assert m2 == C.FALLBACK_MIDDLE_BY_LARGE and warns2
+    assert len(C.OWNERS) == 11 and "079 隋艶偉" not in C.OWNERS
 
 
 def test_load_choices(conn):
-    ch = C.load_choices(conn, suiteql=_boom)
+    ch = C.load_choices(conn)
     assert ch.suppliers[0] == "0001 ベストアンサ株式会社"
-    assert ch.owners == ("037 米澤和敏", "043 徐越", "005 川崎里子", "079 隋艶偉")
-    assert ch.large[0] == "ASEAN" and len(ch.warnings) == 1
+    assert ch.owners == C.OWNERS and ch.middle_by_large == C.MIDDLE_BY_LARGE and ch.warnings == ()
 
 
 def test_existing_jans_suiteql_chunks_of_200():
