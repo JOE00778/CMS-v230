@@ -59,9 +59,10 @@ ADDITIONAL_INPUT_COLUMNS = [c for _, c in NST_MASTER_COLUMNS
                                         *NST_AUTOMATIC_COLUMNS, *NST_REGISTRATION_FIXED)]
 # 書き出すテンプレは NST 原本の「必須」列のうち人が入れるものだけ（Boss 2026-11-09「只留必填项」）。
 # 固定値（取扱区分・部門・仕入区分・発注通貨）と 税率（食品=★）・メーカー名 は自動、メーカー名は確認画面で人が確認。
+# SKUID（★輸出専用項目）= 斑马 SKUID。斑马登録後に page15 が入れる（人は入れない）。
 # 読み込みは旧テンプレ（上の全列）も受ける。見出し必須は REQUIRED_HEADERS だけ
 TEMPLATE_COLUMNS = [COL_JAN, COL_ITEM_CODE, COL_NAME_MANUAL, "商品ランク", COL_COST, COL_SUPPLIER, COL_OWNER,
-                    COL_LARGE, COL_MIDDLE, "SKUID", *COL_PKG_DIMS, *COL_CARTON_DIMS, COL_CARTON]
+                    COL_LARGE, COL_MIDDLE, *COL_PKG_DIMS, *COL_CARTON_DIMS, COL_CARTON]
 REQUIRED_HEADERS = [COL_JAN, COL_COST, COL_SUPPLIER, COL_OWNER, COL_LARGE, COL_MIDDLE, COL_CARTON]
 NUMERIC_COLUMNS = tuple(c for _, c in NST_MASTER_COLUMNS
                         if "(cm)" in c or "(g)" in c) + (COL_CARTON, COL_COST,

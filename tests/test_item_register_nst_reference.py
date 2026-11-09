@@ -26,7 +26,8 @@ def test_export_only_fallback_keeps_real_barcode_empty():
 def test_carton_editing_and_prompts_for_all_products():
     nst,extra,_,_=_enrich([_row('4901234567894')]);frame=R.to_frame(nst,extra)
     fields=('カートン高さ(cm)','カートン幅(cm)','カートン奥行(cm)')
-    assert all(c in frame[0] and c in R.EDITABLE for c in (*fields,'SKUID','税率','大分類','中分類'))
+    assert all(c in frame[0] and c in R.EDITABLE for c in (*fields,'税率','大分類','中分類'))
+    assert 'SKUID' in frame[0] and 'SKUID' not in R.EDITABLE      # 斑马登録で取る（手入力しない）
     issues=R.registration_issues(nst)
     assert all(any(c in i.message and '手入力' in i.message for i in issues) for c in fields)
     for c,v in zip(fields,('30','40','50')):frame[0][c]=v
@@ -50,15 +51,15 @@ def test_tea_review_and_tax_recalculation_after_edit():
 def test_schema_71_and_applicable_conditions():
     assert [r['項目'] for r in R.nst_field_rules()]==[c for _,c in N.NST_MASTER_COLUMNS]
     export=R.registration_issues([{'型番':'X','仕入区分':'輸出専用'}])
-    assert any('SKUID' in i.message and '確認' in i.message for i in export)
+    assert not any('SKUID' in i.message for i in export)        # 生成時に斑马 SKUID を入れるので事前には問わない
     assert not any('20GP入数' in i.message for i in export)
     assert any('20GP入数' in i.message for i in R.registration_issues([{'型番':'X','仕入区分':'海外仕入'}]))
     assert any('参考販売価格' in i.message for i in R.registration_issues([{'型番':'X','ライセンス率':'6'}]))
 
 
 def test_template_full_fields_and_decimal_carton_text_lot():
-    for c in ('カートン高さ(cm)','カートン幅(cm)','カートン奥行(cm)','SKUID','商品ランク'):assert c in F.TEMPLATE_COLUMNS
-    for c in ('税率','メーカー型番','発注ロット'):assert c not in F.TEMPLATE_COLUMNS
+    for c in ('カートン高さ(cm)','カートン幅(cm)','カートン奥行(cm)','商品ランク'):assert c in F.TEMPLATE_COLUMNS
+    for c in ('税率','メーカー型番','発注ロット','SKUID'):assert c not in F.TEMPLATE_COLUMNS
     wb=openpyxl.load_workbook(io.BytesIO(F.build_template(CH)));ws=wb[F.SHEET_INPUT]
     r={'型番':'SKU','アイテム名（任意）':'盆栽','商品原価':'100','仕入先1：仕入先':'0001 TEST','商品担当者':'043 徐越','大分類':'生活雑貨','中分類':'日用品雑貨','カートン入数':'1.5','発注ロット':'1色1000','カートン高さ(cm)':'３０','カートン幅(cm)':'40','カートン奥行(cm)':'50','SKUID':'FLAG-1','メーカー型番':'M-1'}
     for j,c in enumerate(LEGACY,1):ws.cell(1,j,c);ws.cell(2,j,r.get(c,''))
@@ -108,7 +109,7 @@ def test_actual_16_products_end_to_end_and_review_after_simulated_corrections():
     assert len(out)==len(bm)==16 and not any(i.level=='error' for i in errors)
     checks=R.registration_issues(out,choices=choices)
     assert len({i.jan for i in checks if 'カートン高さ' in i.message})==16
-    assert len({i.jan for i in checks if 'SKUID' in i.message})==16
+    assert not any('SKUID' in i.message for i in checks)
     assert len({i.jan for i in checks if '分類・税率' in i.message})==5
     assert sum(not r.get('メーカー名') for r in out)==11
     csv_rows=list(csv.DictReader(io.StringIO(R.build_nst_registration_csv(out).decode('utf-8-sig'))))
@@ -167,16 +168,25 @@ def test_16_product_page_zip_and_checklist_use_only_mock_services(page15_offline
         assert [m.value for m in at.metric][:2]==['16','0']
         editor=next(d.value for d in at.dataframe if 'カートン高さ(cm)' in d.value.columns)
         assert len(editor)==16 and editor['カートン高さ(cm)'].eq('').all()
-        check=next(d.value for d in at.dataframe if '型番 / JAN' in d.value.columns and any('SKUID' in str(v) for v in d.value.values.ravel()))
+        check=next(d.value for d in at.dataframe if '型番 / JAN' in d.value.columns and any('カートン高さ' in str(v) for v in d.value.values.ravel()))
         assert sum('カートン高さ' in str(v) for v in check.values.ravel())==16
+        # 斑马 SKUID: 1 件目は登録失敗（SKUID 空）、他は 19 桁の SKUID が返る
+        codes=[]
+        def fake_reg(client,row):
+            codes.append(R.item_key(row))
+            return ({'status':'fail','message':'x'} if len(codes)==1 else {'status':'ok','sku_id':f'19265312941796{len(codes):05d}','spu_id':'','message':''})
+        page15_offline.side_effect=fake_reg
         at.button(key='page15_gen').click().run()
         assert not at.exception,[e.value for e in at.exception]
+        assert at.session_state['page15_skuid_blank']==1
         assert at.session_state['page15_zip_n']==16 and at.session_state['page15_pending_n']==16 and not fw.called
         z=zipfile.ZipFile(io.BytesIO(at.session_state['page15_zip_bytes']))
         assert '登録前の確認事項.csv' in z.namelist()
         nst_name=next(n for n in z.namelist() if 'NetSuite' in n)
         csv_rows=list(csv.DictReader(io.StringIO(z.read(nst_name).decode('utf-8-sig'))))
         assert len(csv_rows)==16 and all(r['JANコード']==(o['JANコード'] or o['型番']) for r,o in zip(csv_rows,original))
+        sku={r['型番']:r['SKUID'] for r in csv_rows}
+        assert sku[codes[0]]=='' and sku[codes[1]]=='1926531294179600002' and sum(bool(v) for v in sku.values())==15
         assert all(not r[c] for r in csv_rows for c in F.COL_CARTON_DIMS)
         # Real barcode in the simulated ledger remains blank for six no-JAN models.
         assert sum(not p[1] for p in conn.executemany.call_args.args[1])==6

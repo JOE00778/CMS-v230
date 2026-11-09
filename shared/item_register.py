@@ -82,8 +82,8 @@ FRAME_COLUMNS: dict[str, str] = {
     "カートン入数": "カートン入数", "発注ロット": "発注ロット",
 }
 FRAME_COLUMNS.update({c: c for c in ADDITIONAL_INPUT_COLUMNS})
-EDITABLE = list(dict.fromkeys(["アイテム名", "メーカー名", "通関英文名", "HS", "画像URL",
-    *INPUT_COLUMNS[1:], *ADDITIONAL_INPUT_COLUMNS]))
+EDITABLE = [c for c in dict.fromkeys(["アイテム名", "メーカー名", "通関英文名", "HS", "画像URL",
+    *INPUT_COLUMNS[1:], *ADDITIONAL_INPUT_COLUMNS]) if c != "SKUID"]   # SKUID = 斑马登録で取得（手入力しない）
 COL_AUTO = "🤖 自動入力"
 COL_URL = "網調べ URL"
 COL_HS_CHECK = "HS 判定"
@@ -502,8 +502,6 @@ def registration_issues(rows: list[dict], *, choices=None) -> list[Issue]:
                 required = not (row.get(COL_JAN) or code)
             if required and not value:
                 out.append(Issue(0, code, "warn", f"{col}: 必須項目が空です。確認済みの値を手入力してください"))
-        if row.get("仕入区分") == "輸出専用" and not row.get("SKUID"):
-            out.append(Issue(0, code, "warn", "SKUID: 輸出専用の在庫連携フラグID。適用と登録値を担当者に確認してください（型番を自動代入しません）"))
         if row.get("商品ランク") == "NEW":
             out.append(Issue(0, code, "warn", "商品ランク=NEW: 原本は該当が無い場合は空欄。適用を確認し、不適用なら確認表で空欄にしてください"))
         name = str(row.get(COL_NAME) or "")

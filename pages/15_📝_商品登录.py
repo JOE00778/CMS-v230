@@ -80,7 +80,8 @@ def _cached_prefix_makers() -> dict[str, str]:
 
 
 _ITEM_KEYS = ["page15_result", "page15_zip_bytes", "page15_zip_n", "page15_log_msg",
-              "page15_gen_issues", "page15_editor", "page15_zip_src", "page15_pending_n"]
+              "page15_gen_issues", "page15_editor", "page15_zip_src", "page15_pending_n",
+              "page15_skuid_blank"]
 
 
 def _content_hash(records) -> str:
@@ -160,8 +161,12 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
 
 
 def _generate(edited: pd.DataFrame, res: dict) -> None:
-    """確認表 → NST CSV（ZIP）+ 台帳 → 斑马へ API 登録（1 件ずつ・結果を台帳へ）。error があれば何も出さない。"""
-    for key in ("page15_zip_bytes", "page15_zip_n", "page15_zip_src", "page15_bm_result"):
+    """確認表 → 台帳 → 斑马へ API 登録（1 件ずつ・結果を台帳へ）→ 斑马 SKUID を入れて NST CSV（ZIP）。
+
+    NST の SKUID（custitem_item_skuid）= 斑马 SKUID（在庫同期用・2026-11-09 実品で一致確認）。斑马に登録しないと
+    取れないので、斑马の後に CSV を作る（Boss 2026-11-09）。取れなかった品は SKUID 空で出して件数を出す。
+    error があれば何も出さない。"""
+    for key in ("page15_zip_bytes", "page15_zip_n", "page15_zip_src", "page15_bm_result", "page15_skuid_blank"):
         st.session_state.pop(key, None)
     out_nst, out_bm, sources, gen_issues = REG.from_frame(
         edited.to_dict("records"), res["nst"], res["extra"], choices=res.get("choices"))
@@ -175,15 +180,6 @@ def _generate(edited: pd.DataFrame, res: dict) -> None:
     if not out_nst:
         st.error(t("❌ 生成できる行がありません"))
         return
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(TPL.dated_filename(), REG.build_nst_registration_csv(out_nst))
-        if gen_issues:
-            zf.writestr("登録前の確認事項.csv", _issues_df(gen_issues).to_csv(index=False).encode("utf-8-sig"))
-    st.session_state["page15_zip_bytes"] = buf.getvalue()
-    st.session_state["page15_zip_n"] = len(out_nst)
-    st.session_state["page15_zip_src"] = _content_hash(edited.to_dict("records"))
-
     # 台帳は append-only。同じ内容の押し直しで同じ行を重ねない（このセッション内）
     log_key = _content_hash(out_nst)
     log_ok = st.session_state.get("page15_logged") == log_key
@@ -197,27 +193,41 @@ def _generate(edited: pd.DataFrame, res: dict) -> None:
         except Exception as e:  # noqa: BLE001 — 接続自体の失敗
             n_log, err = 0, f"{type(e).__name__}: {e}"
         st.session_state["page15_log_msg"] = (
-            ("error", t(f"台帳への記録に失敗: {err}（ZIP は生成済み）")) if err
+            ("error", t(f"台帳への記録に失敗: {err}")) if err
             else ("ok", t(f"台帳 nst.item_register_log に {n_log} 件記録")))
         log_ok = not err
         if log_ok:
             st.session_state["page15_logged"] = log_key
 
-    # 斑马 API 登録（既存 SKU は skip するので押し直しても二重登録しない）
+    # 斑马 API 登録（既存 SKU は skip するので押し直しても二重登録しない。skip でも SKUID は返る）
+    results: list = []
     try:
         client = banma_client.BanmaClient.from_env()
         with get_connection() as conn:
             banma_client.ensure_token(conn, client)
     except Exception as e:  # noqa: BLE001
         st.session_state["page15_bm_result"] = {"error": f"斑马に接続できません（登録していません）: {type(e).__name__}: {e}"}
-        return
-    bar = st.progress(0.0, text=t("斑马に登録中…"))
-    with get_connection() as conn:
-        record = (lambda code, r: REG.record_banma(conn, code, r)) if log_ok else None
-        results = BMR.register_all(client, out_bm, record=record,
-                                   on_progress=lambda d, n, c: bar.progress(d / n, text=f"{d}/{n} {c}"))
-    bar.empty()
-    st.session_state["page15_bm_result"] = {"rows": results, "logged": log_ok}
+    else:
+        bar = st.progress(0.0, text=t("斑马に登録中…"))
+        with get_connection() as conn:
+            record = (lambda code, r: REG.record_banma(conn, code, r)) if log_ok else None
+            results = BMR.register_all(client, out_bm, record=record,
+                                       on_progress=lambda d, n, c: bar.progress(d / n, text=f"{d}/{n} {c}"))
+        bar.empty()
+        st.session_state["page15_bm_result"] = {"rows": results, "logged": log_ok}
+
+    sku_by_code = {code: str(r.get("sku_id") or "") for code, r in results}
+    for row in out_nst:
+        row["SKUID"] = sku_by_code.get(REG.item_key(row), "")
+    st.session_state["page15_skuid_blank"] = sum(not row["SKUID"] for row in out_nst)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(TPL.dated_filename(), REG.build_nst_registration_csv(out_nst))
+        if gen_issues:
+            zf.writestr("登録前の確認事項.csv", _issues_df(gen_issues).to_csv(index=False).encode("utf-8-sig"))
+    st.session_state["page15_zip_bytes"] = buf.getvalue()
+    st.session_state["page15_zip_n"] = len(out_nst)
+    st.session_state["page15_zip_src"] = _content_hash(edited.to_dict("records"))
 
 
 def _render_result(res: dict) -> None:
@@ -281,7 +291,7 @@ def _render_result(res: dict) -> None:
     current_issues += REG.registration_issues(current_nst, choices=choices)
     st.subheader(t("✍️ 全商品の必須・条件項目チェック"))
     if current_issues:
-        st.warning(t("未入力・要確認項目があります。整箱三辺は実測値を手入力し、SKUID・分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
+        st.warning(t("未入力・要確認項目があります。整箱三辺は実測値を手入力し、分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
         st.dataframe(_issues_df(current_issues), use_container_width=True, hide_index=True)
     else:
         st.success(t("NST テンプレ項目チェックで未入力・要確認項目はありません"))
@@ -298,7 +308,7 @@ def _render_result(res: dict) -> None:
             st.success(t("JAN なし商品の待手入力項目はありません（入力済みの内容は確認してください）"))
 
     st.divider()
-    st.caption(t("確認が終わったら押してください。NST 取込 CSV を作り、同時に斑马へ API で登録します（斑马に既にある SKU は登録しません）"))
+    st.caption(t("確認が終わったら押してください。斑马へ API で登録し、取れた斑马 SKUID を入れて NST 取込 CSV を作ります（斑马に既にある SKU は登録せず SKUID だけ取ります）"))
     if st.button(t("📦 生成（NST.csv）＋ 斑马に登録"), type="primary", key="page15_gen"):
         _generate(edited, res)
     gen_issues = st.session_state.get("page15_gen_issues") or []
@@ -313,6 +323,9 @@ def _render_result(res: dict) -> None:
         if st.session_state.get("page15_pending_n"):
             st.warning(t(f"⚠️ {st.session_state['page15_pending_n']} 件に登録前の要確認項目があります。ZIP 内の「登録前の確認事項.csv」を確認してください。"))
         n = st.session_state.get("page15_zip_n", 0)
+        if st.session_state.get("page15_skuid_blank"):
+            st.error(t(f"❌ SKUID（斑马）が空の品 {st.session_state['page15_skuid_blank']} 件。斑马に登録できていないため在庫同期されません。"
+                       "原因を直して「📦 生成」を押し直してください（登録済みの品は SKUID だけ取り直します）"))
         st.download_button(
             t(f"⬇️ ZIP をダウンロード（{n} 件 · NST.csv）"), data=zip_bytes,
             file_name=f"商品登録_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
@@ -345,9 +358,10 @@ def _render_item_tab() -> None:
     with st.expander(t("📌 使い方"), expanded=False):
         st.markdown(t(
             "- **入力項目**（NST 原本の必須項目だけ）：JAN / 型番 / 商品ランク / 商品原価 / 仕入先（完全名称）/ 商品担当者 / "
-            "大分類・中分類（NST 原本の選択肢）/ SKUID / カートン 3 辺・入数（パッケージ 3 辺は任意・空ならネットで調べる。"
+            "大分類・中分類（NST 原本の選択肢）/ カートン 3 辺・入数（パッケージ 3 辺は任意・空ならネットで調べる。"
             "jancode に商品名が無い JAN は「アイテム名（任意）」も記入）\n"
             "- **メーカー名は入力しません**：自動で埋め、確認表で人が確認・修正します\n"
+            "- **SKUID は入力しません**：生成時に斑马へ登録して取れた斑马 SKUID を NST CSV に入れます（在庫同期用）\n"
             "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名は手入力必須（ETERNAL-BONSAI の既定 6 型番は JAN 欄に直接入力可）。ブランド・メーカーは不明なら空欄。包装寸法・重量が空なら各 1 cm・1 g の仮値（非実測）。HS・通関英文名は判定結果が空なら確認表で手入力\n"
             "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "
             "型番は入力値（空なら JAN）/ 取扱中・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
