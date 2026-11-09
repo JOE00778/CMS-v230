@@ -39,6 +39,8 @@ import urllib.request
 import psycopg2
 from psycopg2.extras import DictCursor
 
+_JST = dt.timezone(dt.timedelta(hours=9))
+
 # page06 _render_composition() 的口径搬运（保持单一事实源）。
 # 在原 4 类别分组上多带一列 item_rank，用于「通常输出」内部按等级细分。
 _SQL = """
@@ -147,6 +149,27 @@ def build_composition(conn) -> dict:
     }
 
 
+def build_sales_progress(conn) -> dict:
+    """本月业绩（Boss 2026-11-09「群通知第一项：目标业绩 / 实际业绩 / 进度」）。
+
+    月 = JST 的「昨天」所在月（1 号推送 = 上月最终结果）。
+    实际 = nst.sales_daily 当月 SUM(revenue)（輸出事業部门客户的伝票 · 与 NST「売上予算vs実績_FB」
+           輸出事業 实绩同口径 · 2026-10 一致确认）。目标 = finance.sales_budget_monthly（CMS page32 维护）。
+    """
+    cur = conn.cursor(cursor_factory=DictCursor)
+    ym = (dt.datetime.now(_JST).date() - dt.timedelta(days=1)).strftime("%Y-%m")
+    cur.execute("SELECT budget_jpy FROM finance.sales_budget_monthly WHERE ym = %s", (ym,))
+    row = cur.fetchone()
+    budget = float(row["budget_jpy"]) if row else None
+    cur.execute("SELECT COALESCE(SUM(revenue), 0) AS r, MAX(sale_date) AS d FROM nst.sales_daily "
+                "WHERE to_char(sale_date, 'YYYY-MM') = %s", (ym,))
+    r = cur.fetchone()
+    actual = float(r["r"] or 0)
+    return {"ym": ym, "budget": budget, "actual": actual,
+            "as_of": str(r["d"]) if r["d"] else None,
+            "rate": actual / budget * 100 if budget else None}
+
+
 def build_receipt_yesterday(conn) -> dict:
     """前日（昨天）一天的收货 4 指标 · 口径同 page30「📦 入库状态 → 前日入库」tab。
     前日无数据则兜底落最新有收货的一天（与 shared/receipt_status_view._render_yesterday 一致）。
@@ -178,8 +201,8 @@ def build_receipt_yesterday(conn) -> dict:
     }
 
 
-def render_card(d: dict, recv: dict | None = None) -> dict:
-    """渲染飞书 interactive 卡片（4 构成桶 + 通常输出按等级内訳 + 可选 前日入库段）。"""
+def render_card(d: dict, recv: dict | None = None, sales: dict | None = None) -> dict:
+    """渲染飞书 interactive 卡片（可选 本月业绩 + 4 构成桶 + 通常输出按等级内訳 + 可选 前日入库段）。"""
     cat_fields = [{
         "is_short": True,
         "text": {"tag": "lark_md",
@@ -194,7 +217,23 @@ def render_card(d: dict, recv: dict | None = None) -> dict:
                              f"{r['pct']:.0f}% · {r['sku']:,} SKU · {r['qty']:,.0f} 件")},
     } for r in d["rank_rows"]]
 
-    elements = [
+    elements = []
+    if sales:
+        _asof = f"（截至 {sales['as_of'][5:].replace('-', '/')}）" if sales["as_of"] else ""
+        elements += [
+            {"tag": "div", "text": {"tag": "lark_md",
+                "content": f"**🎯 本月业绩 · {sales['ym']}**{_asof}"}},
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content":
+                    "**目标业绩**\n" + (f"¥{sales['budget']:,.0f}" if sales["budget"] else "未设定")}},
+                {"is_short": True, "text": {"tag": "lark_md", "content":
+                    f"**实际业绩**\n¥{sales['actual']:,.0f}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content":
+                    "**进度**\n" + (f"{sales['rate']:.2f}%" if sales["rate"] is not None else "—")}},
+            ]},
+            {"tag": "hr"},
+        ]
+    elements += [
         {"tag": "div", "text": {"tag": "lark_md",
             "content": (f"**库存合计** ¥{d['tot_amt']:,.0f}　·　总数量 {d['tot_qty']:,.0f}\n"
                         f"<font color='grey'>快照日 弁天 {d['bin_date']}</font>")}},
@@ -270,6 +309,12 @@ def main() -> int:
         return 2
     conn = psycopg2.connect(args.db_url)
     try:
+        try:
+            sales = build_sales_progress(conn)
+        except Exception as e:          # 业绩段失败不应拖垮库存汇报主体
+            sales = None
+            conn.rollback()
+            print(f"[warn] 本月业绩段取数失败，本次汇报省略该段: {e}")
         data = build_composition(conn)
         try:
             recv = build_receipt_yesterday(conn)
@@ -279,10 +324,15 @@ def main() -> int:
             print(f"[warn] 前日入库段取数失败，本次汇报省略该段: {e}")
     finally:
         conn.close()
-    card = render_card(data, recv)
+    card = render_card(data, recv, sales)
 
     if args.dry_run:
         # ASCII 友好明细（Windows cmd 终端中文会乱码，数字可读；rank 顺序固定 A/B/C/NEW/中止/未分类）
+        if sales:
+            print(f"  SALES ym={sales['ym']} as_of={sales['as_of']} budget={sales['budget'] or 0:,.0f} "
+                  f"actual={sales['actual']:,.0f} rate={sales['rate'] if sales['rate'] is None else round(sales['rate'], 2)}")
+        else:
+            print("  SALES (省略·取数失败)")
         print(f"[dry-run] tot_amt={data['tot_amt']:,.0f} tot_qty={data['tot_qty']:,.0f} "
               f"shutsu_amt={data['shutsu_amt']:,.0f}")
         for i, b in enumerate(data["buckets"]):
