@@ -61,8 +61,12 @@ def test_enrich_fills_fixed_maker_name_hs_and_counts():
     prog = []
     nst, extra, issues, st = _enrich(rows, want_weight=True, on_progress=lambda *a: prog.append(a))
 
-    assert [r["JANコード"] for r in nst] == ["4901234567894", "4512345678906"]
-    a, b = nst
+    # 名前の取れない 3 件も行は残す（アイテム名は空・確認画面で入力）
+    assert [r["JANコード"] for r in nst] == ["4901234567894", "4512345678906", "4900000000003",
+                                            "4911111111113", "4922222222223"]
+    assert all(not r.get("アイテム名") for r in nst[2:]) and st["name_missing"] == 3
+    assert sum("商品名が取れません" in i.message for i in issues) == 3
+    a, b = nst[:2]
     assert a["型番"] == "4901234567894" and a["アイテム名"] == "テスト シャンプー 480ml"
     assert a["メーカー名"] == "NSTメーカー" and extra[a["JANコード"]]["maker_source"] == "nst-prefix"
     assert all(a[k] == v for k, v in FIXED.items() if k != "商品ランク")
@@ -77,13 +81,12 @@ def test_enrich_fills_fixed_maker_name_hs_and_counts():
     assert extra[a["JANコード"]]["_hs"] == "330510"
     assert extra[b["JANコード"]]["_hs"] == ""
 
-    errs = {i.jan for i in issues if i.level == "error"}
-    assert errs == {"4900000000003", "4911111111113", "4922222222223"}
-    assert st["ok"] == 2 and st["ng"] == 3 and st["warn"] == 1
+    assert not any(i.level == "error" for i in issues)       # 名前なしは error にせず残す（確認画面で入力）
+    assert st["ok"] == 5 and st["ng"] == 0 and st["warn"] == 4
     assert (st["jancode_ok"], st["jancode_not_found"], st["jancode_error"]) == (2, 1, 2)
-    assert (st["hs_ok"], st["hs_ng"], st["name_cut"]) == (1, 1, 1)
-    assert (st["maker_nst"], st["maker_none"]) == (1, 1)
-    assert st["weight_hit"] == 2
+    assert (st["hs_ok"], st["hs_ng"], st["name_cut"]) == (1, 4, 1)
+    assert (st["maker_nst"], st["maker_none"]) == (1, 4)
+    assert st["weight_hit"] == 5
     assert prog[-1][0] == prog[-1][1]                         # 進捗は total に届く
 
 
@@ -257,8 +260,7 @@ def test_enrich_real_fetch_weight_network_failure_counts_as_error(monkeypatch):
 def test_manual_name_rescues_jancode_not_found_and_wins_over_jancode():
     rows = [_row("4900000000003", **{"アイテム名（任意）": "手入力 シャンプー 300ml"}),   # jancode に名前なし
             _row("4911111111113", **{"アイテム名（任意）": "手入力B"}),                   # jancode 取得失敗
-            _row("4901234567894", **{"アイテム名（任意）": "人が直した名前"}),            # jancode あり → 手入力優先
-            _row("4900000000003")]                                                        # 手入力なし → 従来どおり error
+            _row("4901234567894", **{"アイテム名（任意）": "人が直した名前"})]            # jancode あり → 手入力優先
     nst, extra, issues, st = _enrich(rows)
     by = {r["JANコード"]: r for r in nst}
     assert by["4900000000003"]["アイテム名"] == "手入力 シャンプー 300ml"
@@ -270,7 +272,7 @@ def test_manual_name_rescues_jancode_not_found_and_wins_over_jancode():
     assert st["name_manual"] == 3
     warn = {i.jan: i.message for i in issues if i.level == "warn" and "手入力" in i.message}
     assert set(warn) == {"4900000000003", "4911111111113"}
-    assert [i.jan for i in issues if i.level == "error"] == ["4900000000003"]
+    assert not any(i.level == "error" for i in issues)       # 名前なしでも error にせず確認画面で入力（Boss 2026-11-10）
 
 
 def test_weight_provenance_only_labels_auto_filled_fields():

@@ -134,7 +134,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
     jans = [r[COL_JAN] for r in rows if r.get(COL_JAN)]
     total = len(jans) * (2 if want_weight else 1)
     stats = {k: 0 for k in (
-        "ok", "ng", "warn", "jancode_ok", "jancode_not_found", "jancode_error", "name_rakuten",
+        "ok", "ng", "warn", "jancode_ok", "jancode_not_found", "jancode_error", "name_rakuten", "name_missing",
         "name_cut", "name_manual", "maker_nst", "maker_jancode", "maker_manual", "maker_none", "hs_ok", "hs_ng",
         "weight_hit", "weight_miss", "weight_error", "weight_skipped")}
 
@@ -181,14 +181,15 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             jc_err = ""
         jc_ok = not jc_err
         if jc_err and not manual:
-            stats["ng"] += 1
-            issues.append(Issue(0, code, "error", jc_err))
-            continue
-        if jc_err:
+            # 名前が取れなくても行は残す → 確認画面で アイテム名 を入れれば生成できる（Boss 2026-11-10「再アップロード不要」）
+            stats["name_missing"] += 1
+            warns.append("商品名が取れません（jancode・楽天・Yahoo）→ 確認画面の「手入力が必要な項目」で アイテム名 を入力してください"
+                         f"（{jc_err.split('：', 1)[-1].split(': ', 1)[-1]}）")
+        elif jc_err:
             # 手入力の名前があれば登録できる。メーカー名は手入力 → NST 同プレフィックスを使用
             warns.append(jc_err.split("（")[0] + " → 手入力のアイテム名で登録")
 
-        name = manual or meta.name.strip()
+        name = manual or (meta.name.strip() if jc_ok else "")
         if manual:
             stats["name_manual"] += 1
         if len(name) > NAME_MAX:

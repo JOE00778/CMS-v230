@@ -275,22 +275,26 @@ def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
     st.session_state["page15_csv_src"] = _content_hash(edited.to_dict("records"))
 
 
-def _weight_fix(edited: pd.DataFrame) -> pd.DataFrame:
-    """重量が空の品だけの小さな入力表（Boss 2026-11-10「CMS 上で直接填写」）。値は確認表に重ねて生成に使う。"""
-    col = REG.COL_PKG_WEIGHT
-    if col not in edited.columns:
+def _missing_fix(edited: pd.DataFrame) -> pd.DataFrame:
+    """アイテム名（どこからも取れない）・重量（ネットに無い）が空の品だけの入力表（Boss 2026-11-10「CMS 上で直接填写」）。
+    値は確認表に重ねて生成に使う。"""
+    name, wt = "アイテム名", REG.COL_PKG_WEIGHT
+    if name not in edited.columns or wt not in edited.columns:
         return edited
-    miss = edited[col].fillna("").astype(str).str.strip() == ""
+    blank = lambda c: edited[c].fillna("").astype(str).str.strip() == ""   # noqa: E731
+    miss = blank(name) | blank(wt)
     if not miss.any():
         return edited
-    st.subheader(t(f"⚖️ パッケージ重量の手入力（ネットで見つからなかった {int(miss.sum())} 件）"))
-    st.caption(t("ここに入れれば再アップロード不要です。単位 g・不明なら 1 も可。斑马の重量に使います"))
+    st.subheader(t(f"✍️ 手入力が必要な項目（{int(miss.sum())} 件：アイテム名 {int(blank(name).sum())} · 重量 {int(blank(wt).sum())}）"))
+    st.caption(t("ここに入れれば再アップロード不要です。アイテム名 = jancode・楽天・Yahoo のどこにも無かった品（最大 60 字）。"
+                 "重量 = 単位 g・不明なら 1 も可（斑马の重量に使います）"))
     fixed = st.data_editor(
-        edited.loc[miss, ["型番", "アイテム名", col]], key="page15_weight_fix", hide_index=True,
-        num_rows="fixed", use_container_width=True, disabled=["型番", "アイテム名"],
-        column_config={col: st.column_config.TextColumn(f"{col} ✍️", help=t("g（整数または小数）。不明なら 1"))})
+        edited.loc[miss, ["型番", name, wt]], key="page15_weight_fix", hide_index=True,
+        num_rows="fixed", use_container_width=True, disabled=["型番"],
+        column_config={name: st.column_config.TextColumn(f"{name} ✍️", max_chars=REG.NAME_MAX),
+                       wt: st.column_config.TextColumn(f"{wt} ✍️", help=t("g（整数または小数）。不明なら 1"))})
     out = edited.copy()
-    out.loc[fixed.index, col] = fixed[col]
+    out.loc[fixed.index, [name, wt]] = fixed[[name, wt]]
     return out
 
 
@@ -359,7 +363,7 @@ def _render_result(res: dict) -> None:
 
     st.info(t("ブランド・メーカーは不明なら空欄。包装 3 辺の不足分は 1 cm の既定仮値（非実測）です。パッケージ重量(g) がネットで見つからない品は手入力必須（不明なら 1 も可）。取得・手入力済みの値は保持します。"
               "画像の出典が「待上图」の品は、斑马に待上图の画像で登録されます。"))
-    edited = _weight_fix(edited)
+    edited = _missing_fix(edited)
     records = edited.to_dict("records")
     current_nst, _, _, current_issues = REG.from_frame(records, res["nst"], res["extra"], choices=choices)
     current_issues += REG.registration_issues(current_nst, choices=choices)

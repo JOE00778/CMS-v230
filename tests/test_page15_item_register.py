@@ -210,7 +210,9 @@ def test_page15_rerun_retries_after_jancode_error(page15_offline):
     err = jan_web.JanMeta("4901234567894", "", "", "", "error", "http=403")
     at, stack, fm, _ = _run_page(ch, up, meta=err)
     with stack:
-        assert fm.call_count == 1 and [m.value for m in at.metric][:2] == ["0", "1"]
+        assert fm.call_count == 1 and [m.value for m in at.metric][:2] == ["1", "0"]   # 名前なしでも行は残る
+        fix = next(d.value for d in at.dataframe if list(d.value.columns) == ["型番", "アイテム名", "パッケージ重量(g)"])
+        assert fix["型番"].tolist() == ["4901234567894"] and fix["アイテム名"].fillna("").eq("").all()
         fm.return_value = jan_web.JanMeta("4901234567894", "テスト クッキー", "", "", "ok")
         at.button(key="page15_run").click().run()
         assert fm.call_count == 2 and [m.value for m in at.metric][:2] == ["1", "0"]
