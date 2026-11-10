@@ -340,3 +340,28 @@ def test_page15_missing_weight_can_be_typed_in_cms(page15_offline):
     rec = next(csv.DictReader(io.StringIO(at.session_state["page15_csv_bytes"].decode("utf-8-sig"))))
     assert rec["パッケージ重量(g)"] == "55"
     assert page15_offline.call_args[0][1]["パッケージ重量(g)"] == "55"   # 斑马にも同じ重量
+
+
+def test_page15_hs_retry_button_fills_blank_hs(page15_offline):
+    """1 回目の AI が 429 で HS 空 → 「HS を AI で再判定」で空の品だけ埋まる（Boss 2026-11-10）。"""
+    from shared import hs_ai, jan_web
+    ch = _choices()
+    up = mock.MagicMock()
+    up.getvalue.return_value = _filled_upload(ch)
+    meta = jan_web.JanMeta("4901234567894", "テスト クッキー 100g", "", "", "ok")
+    calls = []
+
+    def judge(items):
+        calls.append([k for k, *_ in items])
+        if len(calls) == 1:
+            return {k: "HTTPError: HTTP Error 429: Too Many Requests" for k, *_ in items}
+        return {k: hs_ai.AiHs("190590", "Biscuits", "菓子", 0.9) for k, *_ in items}
+    with mock.patch.object(hs_ai, "is_configured", return_value=True), mock.patch.object(hs_ai, "judge", judge):
+        at, stack, fm, _ = _run_page(ch, up, meta=meta)
+        with stack:
+            assert not at.exception, [e.value for e in at.exception]
+            at.button(key="page15_hs_retry").click().run()
+            assert not at.exception, [e.value for e in at.exception]
+    assert calls == [["4901234567894"], ["4901234567894"]]           # 食品は規則を使わず AI（1 回目 429）→ 再判定
+    assert at.session_state["page15_result"]["extra"]["4901234567894"]["_hs"] == "190590"
+    assert any("1 件中 1 件に HS が入りました" in i.value for i in at.info)

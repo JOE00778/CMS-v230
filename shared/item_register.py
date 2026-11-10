@@ -260,8 +260,13 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
 
         cus = classify_customs(name, maker, jan, prefix_map=prefix_makers)
         hs, name_en, cat, basis = cus.hs, cus.name_en, cus.category, cus.basis
-        # 判定規則は食品を想定していない（ポテトチップス→化粧小物、ミルクチョコ→乳液）。推測で埋めない
-        if hs and r.get(COL_LARGE) == "食品" and cat not in _FOOD_CATS:
+        # 判定規則は食品を想定していない（ポテトチップス→化粧小物、抹茶ミルク→乳液）。
+        # 食品は規則を使わず AI に任せる（Boss 2026-11-10）。AI 未設定なら従来どおり規則の食品以外を空に
+        from shared.hs_ai import is_configured as _ai_on
+        if r.get(COL_LARGE) == "食品" and _ai_on():
+            hs = name_en = cat = None
+            basis = "food-ai"
+        elif hs and r.get(COL_LARGE) == "食品" and cat not in _FOOD_CATS:
             warns.append(f"HS: 大分類=食品 なのに品類「{cat}」と判定 → 空にしました（手で記入可）")
             hs = name_en = cat = None
             basis = "food-veto"

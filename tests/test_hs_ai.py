@@ -34,7 +34,7 @@ def test_judge_retries_then_reports_failure_per_item():
         calls.append(1)
         raise urllib.error.HTTPError("u", 503, "Service Unavailable", {}, None)
     out = hs_ai.judge([("4900000000001", "A", "")], post=post, sleep=lambda s: None)
-    assert len(calls) == 3 and "503" in out["4900000000001"]
+    assert len(calls) == hs_ai.ATTEMPTS == 5 and "503" in out["4900000000001"]
 
 
 def test_judge_batches_of_25():
@@ -79,7 +79,7 @@ def test_transient_http_retries_honor_retry_after_and_do_not_sleep_after_final_f
         raise urllib.error.HTTPError('u',503,'Service Unavailable',{'Retry-After':'7'},
             io.BytesIO(b'{"error":{"status":"UNAVAILABLE","message":"model overloaded"}}'))
     out=hs_ai.judge([('sku','name','')],post=post,sleep=sleeps.append)
-    assert len(calls)==3 and sleeps==[7.0,7.0]
+    assert len(calls)==hs_ai.ATTEMPTS and sleeps==[7.0]*(hs_ai.ATTEMPTS-1)   # Retry-After どおり・最後の失敗の後は待たない
     assert 'UNAVAILABLE' in out['sku'] and 'overloaded' in out['sku']
 
 

@@ -81,7 +81,7 @@ def _cached_prefix_makers() -> dict[str, str]:
 
 _ITEM_KEYS = ["page15_result", "page15_csv_bytes", "page15_csv_name", "page15_csv_n", "page15_log_msg",
               "page15_gen_issues", "page15_editor", "page15_csv_src", "page15_pending_n",
-              "page15_skuid_blank", "page15_weight_fix"]
+              "page15_skuid_blank", "page15_weight_fix", "page15_hs_retry_msg"]
 
 
 def _content_hash(records) -> str:
@@ -298,6 +298,29 @@ def _missing_fix(edited: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _hs_retry(res: dict, records: list[dict]) -> None:
+    """HS が空の品だけ AI に再判定させるボタン（Gemini 429 などで空のまま残った分・Boss 2026-11-10）。
+    名前は確認画面の今の値（手入力したアイテム名も使う）。結果は res["extra"] に入り、確認表の HS・通関英文名に出る。"""
+    if st.session_state.get("page15_hs_retry_msg"):
+        st.info(st.session_state["page15_hs_retry_msg"])
+    if not hs_ai.is_configured():
+        return
+    names = {str(r.get("型番") or ""): str(r.get("アイテム名") or "").strip() for r in records}
+    blank = [{**r, "アイテム名": names.get(REG.item_key(r)) or r.get("アイテム名", "")} for r in res["nst"]
+             if not res["extra"].get(REG.item_key(r), {}).get(REG.COL_HS)
+             and (names.get(REG.item_key(r)) or r.get("アイテム名"))]
+    if not blank:
+        return
+    if st.button(t(f"🤖 HS を AI で再判定（HS が空の {len(blank)} 件だけ）"), key="page15_hs_retry"):
+        with st.spinner(t("HS を AI で判定中…")):
+            more = REG.cross_check_hs(blank, res["extra"], res["stats"], hs_ai.judge)
+        res["issues"] += more
+        left = sum(not res["extra"].get(REG.item_key(r), {}).get(REG.COL_HS) for r in blank)
+        st.session_state["page15_hs_retry_msg"] = t(f"再判定: {len(blank)} 件中 {len(blank) - left} 件に HS が入りました"
+                                                     + (f"（{left} 件はまだ空・時間をおいて再度）" if left else ""))
+        st.rerun()
+
+
 def _render_result(res: dict) -> None:
     c1, c2, c3 = st.columns(3)
     c1.metric("OK", res["ok"])
@@ -365,6 +388,7 @@ def _render_result(res: dict) -> None:
               "画像の出典が「待上图」の品は、斑马に待上图の画像で登録されます。"))
     edited = _missing_fix(edited)
     records = edited.to_dict("records")
+    _hs_retry(res, records)
     current_nst, _, _, current_issues = REG.from_frame(records, res["nst"], res["extra"], choices=choices)
     current_issues += REG.registration_issues(current_nst, choices=choices)
     if current_issues:

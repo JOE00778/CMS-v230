@@ -22,6 +22,7 @@ from pathlib import Path
 URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 MODEL = "gemini-3.6-flash"
 BATCH = 25
+ATTEMPTS = 5   # 429・5xx の再試行込みの最大回数（2026-11-10: 3 → 5）
 TIMEOUT = 180
 
 SYSTEM = (
@@ -100,7 +101,7 @@ def judge(items: list[tuple[str, str, str]], *, post=_post, sleep=time.sleep) ->
                 "messages": [{"role": "system", "content": SYSTEM},
                              {"role": "user", "content": _prompt(batch)}]}
         err, got = "", None
-        for attempt in range(3):
+        for attempt in range(ATTEMPTS):
             try:
                 txt = post(body)
                 m = re.search(r"\[.*\]", txt, re.S)
@@ -110,13 +111,14 @@ def judge(items: list[tuple[str, str, str]], *, post=_post, sleep=time.sleep) ->
                 break
             except urllib.error.HTTPError as e:
                 detail, delay = _http_failure(e)
-                err = f"HTTPError: {detail}（model={MODEL} · 試行={attempt + 1}/3）"
-                if e.code not in (408, 429, 500, 502, 503, 504) or attempt == 2:
+                err = f"HTTPError: {detail}（model={MODEL} · 試行={attempt + 1}/{ATTEMPTS}）"
+                if e.code not in (408, 429, 500, 502, 503, 504) or attempt == ATTEMPTS - 1:
                     break
-                sleep(delay if delay is not None else min(60, 10 * 2 ** attempt + random.uniform(0, 1)))
+                # 429 は Gemini の指示（retryDelay / Retry-After）どおり待つ。無ければ 15→30→60 秒（Boss 2026-11-10）
+                sleep(delay if delay is not None else min(60, 15 * 2 ** attempt + random.uniform(0, 1)))
             except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
-                err = f"{type(e).__name__}: {str(e)[:80]}（model={MODEL} · 試行={attempt + 1}/3）"
-                if attempt < 2:
+                err = f"{type(e).__name__}: {str(e)[:80]}（model={MODEL} · 試行={attempt + 1}/{ATTEMPTS}）"
+                if attempt < ATTEMPTS - 1:
                     sleep(min(60, 10 * 2 ** attempt + random.uniform(0, 1)))
         for i, (jan, _, _) in enumerate(batch):
             x = (got or {}).get(str(i))
