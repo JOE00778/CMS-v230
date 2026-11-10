@@ -13,7 +13,9 @@ def test_missing_defaults_preserve_known_values_and_optional_maker():
     assert '非実測' in frame[0][R.COL_WEIGHT_NOTE]
     assert R.COL_PKG_DIMS[1] in frame[0][R.COL_WEIGHT_NOTE]
     out, _, sources, _ = R.from_frame(frame, nst, extra)
-    assert out == nst
+    carton = (*R.COL_CARTON_DIMS, 'カートン入数')
+    assert {k: v for k, v in out[0].items() if k not in carton} == {k: v for k, v in nst[0].items() if k not in carton}
+    assert [out[0][c] for c in R.COL_CARTON_DIMS] == ['1', '1', '1']     # NST 必須 → 空は 1（Boss 2026-11-10）
     assert 'default-placeholder' in sources[row['型番']]
     frame[0][R.COL_PKG_DIMS[1]] = '12'
     frame[0][R.COL_PKG_DIMS[2]] = '13'

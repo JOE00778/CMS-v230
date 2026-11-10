@@ -298,7 +298,7 @@ def _render_result(res: dict) -> None:
     col_config["画像URL"] = st.column_config.TextColumn(
         "画像URL 🤖", help=t("斑马の商品画像（https）。jancode → 画像検索 → 待上图 の順で自動。差し替えるなら https の URL を貼る"))
     for col in FORM.COL_CARTON_DIMS:
-        col_config[col] = st.column_config.TextColumn(col, help=t("必須・整箱の実測値を手入力。包装寸法や既定値 1 から転用しません"))
+        col_config[col] = st.column_config.TextColumn(col, help=t("整箱の実測値。空なら NST 取込用に 1 を入れます（仮値・非実測）"))
     for col, values in FORM.FIELD_CHOICES.items():
         if col in df.columns:
             col_config[col] = st.column_config.SelectboxColumn(col, options=["", *values])
@@ -325,7 +325,7 @@ def _render_result(res: dict) -> None:
             st.error(t(f"❌ error {n_cur_err} 件があり、このままでは生成できません（下を開いて確認）"))
         with st.expander(t(f"✍️ 全商品の必須・条件項目チェック（{len(current_issues)} 件・error {n_cur_err} 件）"),
                          expanded=False):
-            st.warning(t("未入力・要確認項目があります。整箱三辺は実測値を手入力し、分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
+            st.warning(t("要確認項目があります。空のカートン 3 辺・入数は 1 の仮値で出します。分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
             st.dataframe(_issues_df(current_issues), use_container_width=True, hide_index=True)
     else:
         st.success(t("NST テンプレ項目チェックで未入力・要確認項目はありません"))

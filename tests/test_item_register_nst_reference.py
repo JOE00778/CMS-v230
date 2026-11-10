@@ -59,7 +59,7 @@ def test_schema_71_and_applicable_conditions():
 
 def test_template_full_fields_and_decimal_carton_text_lot():
     for c in ('カートン高さ(cm)','カートン幅(cm)','カートン奥行(cm)'):assert c in F.TEMPLATE_COLUMNS
-    for c in ('税率','メーカー型番','発注ロット','SKUID','商品ランク'):assert c not in F.TEMPLATE_COLUMNS
+    for c in ('税率','メーカー型番','SKUID','商品ランク'):assert c not in F.TEMPLATE_COLUMNS
     wb=openpyxl.load_workbook(io.BytesIO(F.build_template(CH)));ws=wb[F.SHEET_INPUT]
     r={'型番':'SKU','アイテム名（任意）':'盆栽','商品原価':'100','仕入先1：仕入先':'0001 TEST','商品担当者':'043 徐越','大分類':'生活雑貨','中分類':'日用品雑貨','カートン入数':'1.5','発注ロット':'1色1000','カートン高さ(cm)':'３０','カートン幅(cm)':'40','カートン奥行(cm)':'50','SKUID':'FLAG-1','メーカー型番':'M-1'}
     for j,c in enumerate(LEGACY,1):ws.cell(1,j,c);ws.cell(2,j,r.get(c,''))
@@ -78,10 +78,10 @@ def test_reference_sheet_skips_instructions_and_examples():
 
 
 @pytest.mark.parametrize('value',['0','-1','abc','nan','inf'])
-def test_invalid_carton_is_not_defaulted(value):
+def test_invalid_carton_is_defaulted_to_1(value):
     nst,extra,_,_=_enrich([_row('4901234567894')]);frame=R.to_frame(nst,extra);frame[0]['カートン高さ(cm)']=value
     out,_,_,issues=R.from_frame(frame,nst,extra)
-    assert not out[0].get('カートン高さ(cm)')
+    assert out[0]['カートン高さ(cm)']=='1'          # 不正値は空にした上で NST 必須なので 1（Boss 2026-11-10）
     assert any('カートン高さ(cm)' in i.message for i in issues)
 
 
@@ -108,7 +108,8 @@ def test_actual_16_products_end_to_end_and_review_after_simulated_corrections():
     frame=R.to_frame(nst,extra);out,bm,_,errors=R.from_frame(frame,nst,extra,choices=choices)
     assert len(out)==len(bm)==16 and not any(i.level=='error' for i in errors)
     checks=R.registration_issues(out,choices=choices)
-    assert len({i.jan for i in checks if 'カートン高さ' in i.message})==16
+    assert not any('カートン高さ' in i.message for i in checks)            # 空は 1 を入れたので必須欠けなし
+    assert len({i.jan for i in errors if 'カートン高さ(cm) / カートン幅(cm) / カートン奥行(cm)' in i.message and '仮値' in i.message})==16
     assert not any('SKUID' in i.message for i in checks)
     assert len({i.jan for i in checks if '分類・税率' in i.message})==5
     assert sum(not r.get('メーカー名') for r in out)==11
@@ -117,7 +118,7 @@ def test_actual_16_products_end_to_end_and_review_after_simulated_corrections():
     for a,b in zip(original,csv_rows):
         assert b['JANコード']==(a['JANコード'] or a['型番'])
         assert all(b[c]==a[c] for c in R._WEIGHT_FIELDS)
-        assert all(not b[c] for c in F.COL_CARTON_DIMS)
+        assert all(b[c]=='1' for c in F.COL_CARTON_DIMS)          # 空 → NST 必須なので 1
     assert sum(not r.get('JANコード') for r in out)==6
     tea={i.jan for i in checks if '分類・税率' in i.message}
     # Synthetic correction round proves editing/recalculation, never supplies real carton facts.
@@ -128,7 +129,7 @@ def test_actual_16_products_end_to_end_and_review_after_simulated_corrections():
     assert len(corrected)==16 and not any(i.level=='error' for i in issues)
     assert R.registration_issues(corrected,choices=choices)==[]
     assert all(r['納税スケジュール']=='仕入8%＆販売免税' for r in corrected if r['型番'] in tea)
-    assert all(not r.get(c) for r in out for c in F.COL_CARTON_DIMS)
+    assert all(r.get(c)=='1' for r in out for c in F.COL_CARTON_DIMS)
 
 
 def test_license_zero_does_not_require_license_price():
@@ -179,13 +180,13 @@ def test_16_product_page_zip_and_checklist_use_only_mock_services(page15_offline
         at.button(key='page15_gen').click().run()
         assert not at.exception,[e.value for e in at.exception]
         assert at.session_state['page15_skuid_blank']==1
-        assert at.session_state['page15_csv_n']==16 and at.session_state['page15_pending_n']==16 and not fw.called
+        assert at.session_state['page15_csv_n']==16 and at.session_state['page15_pending_n']==5 and not fw.called
         assert 'NetSuite' in at.session_state['page15_csv_name'] and '登録者名' not in at.session_state['page15_csv_name']
         csv_rows=list(csv.DictReader(io.StringIO(at.session_state['page15_csv_bytes'].decode('utf-8-sig'))))
         assert len(csv_rows)==16 and all(r['JANコード']==(o['JANコード'] or o['型番']) for r,o in zip(csv_rows,original))
         sku={r['型番']:r['SKUID'] for r in csv_rows}
         assert sku[codes[0]]=='' and sku[codes[1]]=='1926531294179600002' and sum(bool(v) for v in sku.values())==15
-        assert all(not r[c] for r in csv_rows for c in F.COL_CARTON_DIMS)
+        assert all(r[c]=='1' for r in csv_rows for c in F.COL_CARTON_DIMS)
         # Real barcode in the simulated ledger remains blank for six no-JAN models.
         assert sum(not p[1] for p in conn.executemany.call_args.args[1])==6
 

@@ -60,7 +60,8 @@ def test_template_structure():
     assert [c.value for c in ws[1]] == F.TEMPLATE_COLUMNS
     assert F.TEMPLATE_COLUMNS[2] == "アイテム名（任意）" and F.COL_NAME_MANUAL not in F.INPUT_COLUMNS
     # NST 原本の必須だけ（Boss 2026-11-09）。メーカー名・発注ロット・パッケージ重量・海外仕入項目は出さない
-    for c in (F.COL_MAKER_MANUAL, "発注ロット", "パッケージ重量(g)", "税率", "生原価", "発売日"):
+    assert F.TEMPLATE_COLUMNS[-1] == "発注ロット"                      # 任意だが Boss 2026-11-10 追加
+    for c in (F.COL_MAKER_MANUAL, "パッケージ重量(g)", "税率", "生原価", "発売日"):
         assert c not in F.TEMPLATE_COLUMNS
     assert ws.freeze_panes == "B2"
     dvs = ws.data_validations.dataValidation

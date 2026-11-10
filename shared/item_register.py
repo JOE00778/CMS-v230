@@ -439,6 +439,12 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
         if not str(row.get(COL_PKG_WEIGHT) or "").strip():
             issues.append(Issue(0, jan, "error", WEIGHT_REQUIRED_MSG))
             continue
+        # カートン 3 辺・入数は NST 取込で必須（空だと「必須フィールドがありません」）→ 空なら 1（Boss 2026-11-10）
+        carton_default = [c for c in (*COL_CARTON_DIMS, "カートン入数") if not str(row.get(c) or "").strip()]
+        for c in carton_default:
+            row[c] = "1"
+        if carton_default:
+            issues.append(Issue(0, jan, "warn", " / ".join(carton_default) + " = 1（既定の仮値・非実測）"))
         defaults = _default_package(row)
         defaults = [c for c in COL_PKG_DIMS if c in defaults or
                     (c in ex.get("default_package_fields", []) and row.get(c) == base[jan].get(c))]

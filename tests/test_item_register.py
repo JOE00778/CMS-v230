@@ -137,7 +137,7 @@ def test_frame_roundtrip_edits_and_outputs():
     assert out_bm[0]["_name_en"] == "Shampoo" and out_bm[0]["_hs"] == "330510"
     assert src["4901234567894"].startswith("superdelivery")
     assert "パッケージ重量(g)" not in src["4901234567894"]      # 手入力は仮値扱いしない
-    assert {i.level for i in issues} == {"error"}            # アイテム名を空にした 2 件目
+    assert {i.level for i in issues} == {"warn", "error"}    # カートン 3 辺の仮値 1 / アイテム名を空にした 2 件目
 
     # NST CSV: 有データ列のみ・先頭は 型番（原本の登録手順どおり Internal ID 列は無い）
     cols = R.csv_field_columns(out_nst)

@@ -60,7 +60,7 @@ ADDITIONAL_INPUT_COLUMNS = [c for _, c in NST_MASTER_COLUMNS
 # 商品ランクも入れない: 斑马にも登録 = NEW / NST のみ = 空（page15 生成時に決める・Boss 2026-11-10）
 # 読み込みは旧テンプレ（上の全列）も受ける。見出し必須は REQUIRED_HEADERS だけ
 TEMPLATE_COLUMNS = [COL_JAN, COL_ITEM_CODE, COL_NAME_MANUAL, COL_COST, COL_SUPPLIER, COL_OWNER,
-                    COL_LARGE, COL_MIDDLE, *COL_PKG_DIMS, *COL_CARTON_DIMS, COL_CARTON]
+                    COL_LARGE, COL_MIDDLE, *COL_PKG_DIMS, *COL_CARTON_DIMS, COL_CARTON, COL_LOT]   # 発注ロットは任意（Boss 2026-11-10 追加）
 REQUIRED_HEADERS = [COL_JAN, COL_COST, COL_SUPPLIER, COL_OWNER, COL_LARGE, COL_MIDDLE, COL_CARTON]
 NUMERIC_COLUMNS = tuple(c for _, c in NST_MASTER_COLUMNS
                         if "(cm)" in c or "(g)" in c) + (COL_CARTON, COL_COST,
@@ -98,7 +98,7 @@ _HELP = {
     COL_OWNER: "このアイテムの担当者を選択",
     COL_LARGE: "大分類を選択",
     COL_MIDDLE: "大分類を先に選ぶと、その中分類だけが出ます",
-    COL_CARTON: "カートン入数（正の数。原本は整数または小数）",
+    COL_CARTON: "カートン入数（正の数。原本は整数または小数）。空なら 1",
     COL_LOT: "発注時のロット数・条件（原本例：1色1000、最大 60 字）",
     COL_PKG_DIMS[0]: "任意。空欄ならネットで調べます。外装パッケージの高さ（整数または小数）。見つからなければ 1 cm の仮値（非実測）",
     COL_PKG_DIMS[1]: "任意。空欄ならネットで調べます。外装パッケージの幅（整数または小数）。見つからなければ 1 cm の仮値（非実測）",
@@ -211,7 +211,7 @@ def build_template(choices) -> bytes:
               COL_OWNER: choices.owners[0] if choices.owners else "",
               COL_LARGE: lg0, COL_MIDDLE: (choices.middle_by_large.get(lg0) or ("",))[0],
               COL_CARTON: 48, COL_PKG_DIMS[0]: 6, COL_PKG_DIMS[1]: 23, COL_PKG_DIMS[2]: 17,
-              COL_CARTON_DIMS[0]: 36, COL_CARTON_DIMS[1]: 39, COL_CARTON_DIMS[2]: 26.5}
+              COL_CARTON_DIMS[0]: 36, COL_CARTON_DIMS[1]: 39, COL_CARTON_DIMS[2]: 26.5, COL_LOT: 12}
     for i, name in enumerate(TEMPLATE_COLUMNS, start=1):
         ex.cell(row=2, column=i, value=sample.get(name, ""))
     ex.cell(row=4, column=1, value="※ このシートは読み込まれません。「商品登録」シートに記入してください")
@@ -367,7 +367,7 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
         elif rec[COL_MIDDLE] not in mbl[rec[COL_LARGE]]:
             errs.append(f"大分類「{rec[COL_LARGE]}」に中分類「{rec[COL_MIDDLE] or '空'}」はありません")
         if rec[COL_CARTON] == "":
-            warns.append(f"{COL_CARTON} が空です（必須・手入力）")
+            warns.append(f"{COL_CARTON} が空です（生成時に 1 を入れます）")
         elif not ((n := _num(rec[COL_CARTON])) is not None and n > 0):
             errs.append(f"{COL_CARTON} が正の数ではありません（{rec[COL_CARTON]}）")
         errs.extend(validate_fields({c: v for c, v in rec.items() if c not in (*COL_PKG_DIMS, COL_PKG_WEIGHT)}, choices=choices))
