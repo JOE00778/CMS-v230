@@ -20,7 +20,7 @@ def _row(jan, large="生活雑貨", **kw):
     r = {"JANコード": jan, "商品原価": "100", "仕入先1：仕入先": "0001 ベストアンサ株式会社",
          "商品担当者": "043 徐越", "大分類": large, "中分類": "日用品雑貨" if large == "生活雑貨" else "菓子",
          "カートン入数": "24", "発注ロット": "1", "パッケージ高さ(cm)": "", "パッケージ幅(cm)": "",
-         "パッケージ奥行(cm)": "", "パッケージ重量(g)": ""}
+         "パッケージ奥行(cm)": "", "パッケージ重量(g)": "120"}
     r.update(kw)
     return r
 
@@ -55,7 +55,7 @@ def _enrich(rows, want_weight=False, **kw):
 
 
 def test_enrich_fills_fixed_maker_name_hs_and_counts():
-    rows = [_row("4901234567894", **{"パッケージ高さ(cm)": "20"}),
+    rows = [_row("4901234567894", **{"パッケージ高さ(cm)": "20", "パッケージ重量(g)": ""}),
             _row("4512345678906", large="食品"),
             _row("4900000000003"), _row("4911111111113"), _row("4922222222223")]
     prog = []
@@ -127,13 +127,17 @@ def test_frame_roundtrip_edits_and_outputs():
     recs[0]["通関英文名"] = "Shampoo"
     recs[0]["パッケージ重量(g)"] = "abc"
     recs[1]["アイテム名"] = ""
+    out_nst, _, _, issues = R.from_frame(recs, nst, extra)
+    assert out_nst == []                                     # 重量が無い品は出さない（Boss 2026-11-10）
+    assert any(i.level == "error" and i.message == R.WEIGHT_REQUIRED_MSG for i in issues)
+    recs[0]["パッケージ重量(g)"] = "1"                         # 不明なら手入力 1 も可
     out_nst, out_bm, src, issues = R.from_frame(recs, nst, extra)
     assert [r["JANコード"] for r in out_nst] == ["4901234567894"]
     assert out_nst[0]["パッケージ重量(g)"] == "1"
     assert out_bm[0]["_name_en"] == "Shampoo" and out_bm[0]["_hs"] == "330510"
     assert src["4901234567894"].startswith("superdelivery")
-    assert "default-placeholder:パッケージ重量(g)" in src["4901234567894"]
-    assert {i.level for i in issues} == {"warn", "error"}
+    assert "パッケージ重量(g)" not in src["4901234567894"]      # 手入力は仮値扱いしない
+    assert {i.level for i in issues} == {"error"}            # アイテム名を空にした 2 件目
 
     # NST CSV: 有データ列のみ・先頭は 型番（原本の登録手順どおり Internal ID 列は無い）
     cols = R.csv_field_columns(out_nst)

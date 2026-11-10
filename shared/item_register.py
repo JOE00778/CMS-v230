@@ -109,16 +109,20 @@ def _banned_warn(col: str, val: str) -> str | None:
     return None
 
 
+WEIGHT_REQUIRED_MSG = (f"{COL_PKG_WEIGHT}: ネットで見つかりませんでした。手入力してください"
+                       "（斑马の重量に使うため必須。不明なら 1 も可）")
+
+
 def _default_package(row: dict) -> list[str]:
-    """Fill missing package fields only; never infer provenance from value 1."""
-    filled = [c for c in _WEIGHT_FIELDS if not str(row.get(c) or "").strip()]
+    """空のパッケージ 3 辺だけ 1 cm の仮値に。重量は仮値にしない（Boss 2026-11-10「斑马重量必须有」→ 手入力必須）。"""
+    filled = [c for c in COL_PKG_DIMS if not str(row.get(c) or "").strip()]
     for c in filled:
         row[c] = "1"
     return filled
 
 
 def _default_note(fields: list[str]) -> str:
-    return " / ".join(fields) + " = 1（寸法 cm・重量 g、既定の仮値・非実測）"
+    return " / ".join(fields) + " = 1 cm（既定の仮値・非実測）"
 
 
 def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_customs,
@@ -246,6 +250,8 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             stats["weight_skipped"] += 1
 
         defaults = _default_package(row)
+        if not str(row.get(COL_PKG_WEIGHT) or "").strip():
+            warns.append(WEIGHT_REQUIRED_MSG)
         extra["default_package_fields"] = defaults
         if defaults:
             note = _default_note(defaults)
@@ -429,8 +435,11 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
         if validation:
             issues.extend(Issue(0, jan, "error", message) for message in validation)
             continue
+        if not str(row.get(COL_PKG_WEIGHT) or "").strip():
+            issues.append(Issue(0, jan, "error", WEIGHT_REQUIRED_MSG))
+            continue
         defaults = _default_package(row)
-        defaults = [c for c in _WEIGHT_FIELDS if c in defaults or
+        defaults = [c for c in COL_PKG_DIMS if c in defaults or
                     (c in ex.get("default_package_fields", []) and row.get(c) == base[jan].get(c))]
         if defaults:
             issues.append(Issue(0, jan, "warn", _default_note(defaults)))

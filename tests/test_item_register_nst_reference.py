@@ -37,7 +37,7 @@ def test_carton_editing_and_prompts_for_all_products():
 
 
 def test_tea_review_and_tax_recalculation_after_edit():
-    nst=[{'型番':'TEA','JANコード':'4973028760248','アイテム名':'抹茶入り玄米茶6個入り','大分類':'生活雑貨','中分類':'日用品雑貨','仕入区分':'輸出専用','商品原価':'100','仕入先1：仕入先':'0001 TEST','商品担当者':'043 徐越'}]
+    nst=[{'型番':'TEA','JANコード':'4973028760248','アイテム名':'抹茶入り玄米茶6個入り','大分類':'生活雑貨','中分類':'日用品雑貨','仕入区分':'輸出専用','商品原価':'100','仕入先1：仕入先':'0001 TEST','商品担当者':'043 徐越','パッケージ重量(g)':'200'}]
     frame=R.to_frame(nst,{})
     assert any('分類・税率' in i.message for i in R.registration_issues(nst))
     frame[0].update({'大分類':'食品','中分類':'嗜好品（茶・コーヒー）','税率':'★'})

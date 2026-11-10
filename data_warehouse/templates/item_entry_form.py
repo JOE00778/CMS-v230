@@ -7,15 +7,12 @@
 シート構成:
   商品登録  … row1=見出し（原文列名・説明はセルのコメント）/ row2〜=入力。原本 NetSuiteマスタ登録 シートの row5〜も読める
   記入例    … 見本 1 行（読まない）
-  _選択肢   … hidden。仕入先 / 商品担当者 / 大分類→定義名 対応表 / 大分類ごとの中分類列
+  _選択肢   … hidden。仕入先 / 商品担当者 / 大分類（1 行目）とその下の中分類
 
-中分類の連動（2026-10-03 実測して決めた）:
-  openpyxl 3.1.5 は中黒入りの定義名（アウトドア・防災）も書けて読み戻せる。ただし
-  Excel/LibreOffice で開いての確認は Mac に無いため不可。大分類は SuiteQL から動的に来るので、
-  将来 空白・記号・セル番地に見える名前（例 "USA" は列名としても有効）が来ても壊れないよう、
-  定義名は安全な別名 MID_01.. にし、中分類の入力規則は
-  INDIRECT(VLOOKUP(大分類, 対応表, 2, 0)) で引く。"L01" は Excel が L1 セルと解釈しうるので避けた。
-  連動はあくまで入力補助。正しさは read_upload の (大分類, 中分類) 組合せ検証で担保する。
+中分類の連動（2026-11-10 NST 原本と同じ仕組みに揃えた・Boss「中分类要和模板匹配」）:
+  _選択肢 の D1〜 に大分類、その下に中分類。定義名 = 大分類名そのもの（原本 データベース R〜W 列と同じ）。
+  大分類の入力規則 = D1:I1、中分類の入力規則 = INDIRECT(大分類セル)（行ごとの相対参照・原本 INDIRECT(N4) と同形）。
+  選択肢は nst_choices の定数（原本の写し）なので名前は固定。正しさは read_upload の組合せ検証でも担保する。
 """
 from __future__ import annotations
 
@@ -84,7 +81,7 @@ FIRST_DATA_ROW = 2
 LAST_DATA_ROW = 1001
 
 # パッケージ 3 辺・重量は NST 必須だが、記入は任意（Boss 2026-11-09「去掉必填·网上搜」）→ 処理で必ず網調べ・
-# 見つからなければ 1 cm・1 g の仮値（非実測）。テンプレでは灰色（任意）で出す
+# 3 辺は見つからなければ 1 cm の仮値（非実測）、重量は見つからなければ確認表で手入力必須（Boss 2026-11-10）。テンプレでは灰色（任意）で出す
 _REQUIRED = ({name for mark, name in NST_MASTER_COLUMNS if mark == "必須"}
              - {COL_JAN, COL_ITEM_CODE, *COL_PKG_DIMS, COL_PKG_WEIGHT})
 
@@ -105,7 +102,7 @@ _HELP = {
     COL_PKG_DIMS[0]: "任意。空欄ならネットで調べます。外装パッケージの高さ（整数または小数）。見つからなければ 1 cm の仮値（非実測）",
     COL_PKG_DIMS[1]: "任意。空欄ならネットで調べます。外装パッケージの幅（整数または小数）。見つからなければ 1 cm の仮値（非実測）",
     COL_PKG_DIMS[2]: "任意。空欄ならネットで調べます。外装パッケージの奥行（整数または小数）。見つからなければ 1 cm の仮値（非実測）",
-    COL_PKG_WEIGHT: "任意。空欄ならネットで調べます。外装込みの重量 g（整数または小数）。見つからなければ 1 g の仮値（非実測）",
+    COL_PKG_WEIGHT: "任意。空欄ならネットで調べます。外装込みの重量 g（整数または小数）。見つからなければ確認表で手入力（必須）",
 }
 
 
@@ -165,24 +162,21 @@ def build_template(choices) -> bytes:
     ch.sheet_state = "hidden"
     q = _quoted(SHEET_CHOICES)
 
-    # _選択肢: A=仕入先 B=商品担当者 C=大分類 D=定義名 E〜=大分類ごとの中分類
+    # _選択肢: A=仕入先 B=商品担当者 D1〜=大分類（1 行目）・その下に中分類。
+    # NST 原本と同じ仕組み（データベース R2:W2 + 大分類名そのものの定義名 + 中分類 = INDIRECT(大分類セル)）
     large = list(choices.large)
-    for col, title, values in ((1, "仕入先", choices.suppliers), (2, "商品担当者", choices.owners),
-                               (3, "大分類", large),
-                               (4, "定義名", [f"MID_{i:02d}" for i in range(1, len(large) + 1)])):
+    for col, title, values in ((1, "仕入先", choices.suppliers), (2, "商品担当者", choices.owners)):
         ch.cell(row=1, column=col, value=title)
         for r, v in enumerate(values, start=2):
             ch.cell(row=r, column=col, value=v)
-    for i, lg in enumerate(large, start=1):
-        col = 4 + i
-        letter = get_column_letter(col)
+    for i, lg in enumerate(large):
+        letter = get_column_letter(4 + i)
         middles = choices.middle_by_large[lg]
-        ch.cell(row=1, column=col, value=lg)
+        ch[f"{letter}1"] = lg
         for r, v in enumerate(middles, start=2):
-            ch.cell(row=r, column=col, value=v)
-        end = max(len(middles), 1) + 1
-        wb.defined_names[f"MID_{i:02d}"] = DefinedName(
-            f"MID_{i:02d}", attr_text=f"{q}!${letter}$2:${letter}${end}")
+            ch[f"{letter}{r}"] = v
+        wb.defined_names[lg] = DefinedName(lg, attr_text=f"{q}!${letter}$2:${letter}${max(len(middles), 1) + 1}")
+    large_row = f"{q}!$D$1:${get_column_letter(3 + max(len(large), 1))}$1"
 
     def rng(letter: str, n: int) -> str:
         return f"{q}!${letter}$2:${letter}${max(n, 1) + 1}"
@@ -192,13 +186,12 @@ def build_template(choices) -> bytes:
     letter_of = {name: get_column_letter(i) for i, name in enumerate(TEMPLATE_COLUMNS, start=1)}
     for r in range(FIRST_DATA_ROW, LAST_DATA_ROW + 1):   # JAN は文字列で入れてもらう（指数表記・桁落ち防止）
         ws[f"{letter_of[COL_JAN]}{r}"].number_format = "@"
-    large_cell = f"${letter_of[COL_LARGE]}{FIRST_DATA_ROW}"
+    large_cell = f"{letter_of[COL_LARGE]}{FIRST_DATA_ROW}"   # 原本と同じ相対参照（行ごとに自分の大分類）
     for dv in (
         _list_dv(rng("A", len(choices.suppliers)), letter_of[COL_SUPPLIER], COL_SUPPLIER),
         _list_dv(rng("B", len(choices.owners)), letter_of[COL_OWNER], COL_OWNER),
-        _list_dv(rng("C", len(large)), letter_of[COL_LARGE], COL_LARGE),
-        _list_dv(f"INDIRECT(VLOOKUP({large_cell},{q}!$C$2:$D${max(len(large), 1) + 1},2,0))",
-                 letter_of[COL_MIDDLE], COL_MIDDLE),
+        _list_dv(large_row, letter_of[COL_LARGE], COL_LARGE),
+        _list_dv(f"INDIRECT({large_cell})", letter_of[COL_MIDDLE], COL_MIDDLE),
     ):
         ws.add_data_validation(dv)
 

@@ -26,6 +26,9 @@ def test_cleared_or_invalid_values_default_on_export():
     frame = R.to_frame(nst, extra)
     frame[0][R.COL_PKG_DIMS[0]] = ''
     frame[0][R.COL_PKG_WEIGHT] = 'bad'
+    out, _, _, issues = R.from_frame(frame, nst, extra)
+    assert out == [] and any(i.message == R.WEIGHT_REQUIRED_MSG for i in issues)   # 重量は仮値にしない
+    frame[0][R.COL_PKG_WEIGHT] = '1'
     out, bm, sources, issues = R.from_frame(frame, nst, extra)
     assert out[0][R.COL_PKG_DIMS[0]] == bm[0][R.COL_PKG_WEIGHT] == '1'
     assert out[0][R.COL_PKG_DIMS[1]] == '7.6'

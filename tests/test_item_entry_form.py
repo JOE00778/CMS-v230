@@ -71,17 +71,17 @@ def test_template_structure():
         assert str(dv.sqref).endswith("1001")
     by_col = {str(dv.sqref)[0]: dv.formula1 for dv in dvs}
     assert by_col["F"] == "'_選択肢'!$A$2:$A$602"      # 仕入先 601 件は範囲参照
-    assert by_col["I"].startswith("INDIRECT(VLOOKUP($H2,")
-    # 定義名 MID_xx → 各大分類の中分類列
+    # NST 原本と同じ: 大分類 = _選択肢 1 行目、中分類 = INDIRECT(大分類セル)、定義名 = 大分類名そのもの
+    assert by_col["H"] == "'_選択肢'!$D$1:$" + chr(ord("C") + len(CH.large)) + "$1"
+    assert by_col["I"] == "INDIRECT(H2)"
     ch = wb["_選択肢"]
     names = dict(wb.defined_names.items())
-    for r in range(2, 2 + len(CH.large)):
-        lg, alias = ch.cell(r, 3).value, ch.cell(r, 4).value
-        ref = names[alias].attr_text.split("!")[1].replace("$", "")
-        col = ref.split(":")[0].rstrip("0123456789")
-        vals = tuple(ch[f"{col}{k}"].value for k in range(2, 2 + len(CH.middle_by_large[lg])))
-        assert ref.endswith(str(1 + len(vals)))
-        assert ch[f"{col}1"].value == lg and vals == CH.middle_by_large[lg]
+    for i, lg in enumerate(CH.large):
+        col = chr(ord("D") + i)
+        assert ch[f"{col}1"].value == lg
+        mids = CH.middle_by_large[lg]
+        assert names[lg].attr_text == f"'_選択肢'!${col}$2:${col}${1 + len(mids)}"
+        assert tuple(ch[f"{col}{k}"].value for k in range(2, 2 + len(mids))) == mids
     assert wb["記入例"].cell(2, 1).value == "4901234567894"
 
 

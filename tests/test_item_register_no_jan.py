@@ -22,7 +22,7 @@ def upload(records):
     for values in records:
         r = {'JANコード': '', '商品原価': '100', '仕入先1：仕入先': '0001 TEST',
              '商品担当者': '043 徐越', '大分類': '生活雑貨', '中分類': '日用品雑貨',
-             'カートン入数': '1', '発注ロット': '1', F.COL_NAME_MANUAL: '盆栽',
+             'カートン入数': '1', '発注ロット': '1', F.COL_NAME_MANUAL: '盆栽', 'パッケージ重量(g)': '50',
              'メーカー名（任意）': '手入力メーカー', **values}
         ws.append([r.get(c, '') for c in columns])
     b = io.BytesIO(); wb.save(b); return b.getvalue()
@@ -111,7 +111,7 @@ def test_page15_no_jan_generation_and_existing_code_exclusion(page15_offline):
         assert all('メーカー名' not in text for text in checklist['待手入力'])
         assert all(F.COL_PKG_WEIGHT not in text for text in checklist['待手入力'])
         editor = next(d.value for d in at.dataframe if R.COL_PKG_WEIGHT in d.value.columns)
-        assert all(editor[c].eq('1').all() for c in R._WEIGHT_FIELDS)
+        assert all(editor[c].eq('1').all() for c in R.COL_PKG_DIMS) and editor[R.COL_PKG_WEIGHT].eq('50').all()
         at.button(key='page15_gen').click().run()
         assert not at.exception, [e.value for e in at.exception]
         assert at.session_state['page15_zip_n'] == 5

@@ -53,6 +53,9 @@ def _filled_upload(choices) -> bytes:
     for j, cell in enumerate(ws[1], start=1):
         if cell.value in vals:
             ws.cell(row=2, column=j, value=vals[cell.value])
+    # 重量はテンプレに無い（ネット調べ→無ければ確認表で手入力）。テストでは旧テンプレ同様に列を足して入れる
+    ws.cell(row=1, column=ws.max_column + 1, value="パッケージ重量(g)")
+    ws.cell(row=2, column=ws.max_column, value="80")
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -84,9 +87,11 @@ def test_page15_process_and_generate_flow(page15_offline):
         at.button(key="page15_run").click().run()
         assert not at.exception, [e.value for e in at.exception]
         assert [m.value for m in at.metric][:2] == ["1", "0"]       # OK=1 NG=0
+        assert at.checkbox(key="page15_to_banma").value is True       # 既定 = 斑马にも登録
         at.button(key="page15_gen").click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["page15_zip_n"] == 1
+    assert at.session_state["page15_skuid_blank"] == 0              # fixture の斑马は SKUID "1" を返す
     assert at.session_state["page15_log_msg"][0] == "ok"
     assert conn.executemany.called                                   # 台帳へ INSERT
 
@@ -197,3 +202,40 @@ def test_page15_edit_hides_stale_zip_and_log_not_duplicated(page15_offline):
         at.run()
         assert not any("page15_zip_dl" in b.proto.id for b in at.get("download_button"))
         assert any("表を編集しました" in w.value for w in at.warning)
+
+
+def test_page15_unchecked_banma_makes_nst_csv_only(page15_offline):
+    """チェックを外すと斑马に触らず NST CSV だけ・SKUID は空（Boss 2026-11-10）。"""
+    import csv
+    import io
+    import zipfile
+
+    from shared import jan_web
+    st.cache_data.clear()
+    choices = NC.Choices(suppliers=("0001 ベストアンサ株式会社",), middle_by_large=dict(NC.MIDDLE_BY_LARGE))
+    up = mock.MagicMock()
+    up.getvalue.return_value = _filled_upload(choices)
+    conn = mock.MagicMock()
+    conn.__enter__.return_value = conn
+    with mock.patch("shared.db.get_connection", return_value=conn), \
+            mock.patch("streamlit.file_uploader", return_value=up), \
+            mock.patch.object(NC, "load_choices", return_value=choices), \
+            mock.patch.object(NC, "load_prefix_makers", return_value={}), \
+            mock.patch.object(NC, "existing_jans", return_value=(set(), [])), \
+            mock.patch.object(NC, "existing_item_codes", return_value=(set(), [])), \
+            mock.patch.object(jan_web, "fetch_meta",
+                              return_value=jan_web.JanMeta("4901234567894", "テスト クッキー 100g", "テスト製菓", "", "ok")), \
+            mock.patch.object(jan_web, "INTERVAL", 0):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.run()
+        at.button(key="page15_run").click().run()
+        at.checkbox(key="page15_to_banma").uncheck().run()
+        at.button(key="page15_gen").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert page15_offline.call_count == 0                            # 斑马 API は呼ばない
+    assert "page15_bm_result" not in at.session_state and at.session_state["page15_skuid_blank"] == 0
+    zf = zipfile.ZipFile(io.BytesIO(at.session_state["page15_zip_bytes"]))
+    name = next(n for n in zf.namelist() if "NetSuite" in n)
+    rec = next(csv.DictReader(io.StringIO(zf.read(name).decode("utf-8-sig"))))
+    assert rec["SKUID"] == "" and rec["パッケージ重量(g)"] == "80"

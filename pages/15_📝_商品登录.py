@@ -160,11 +160,31 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
             "notes": notes, "choices": choices, "ok": len(nst_rows), "ng": ng, "warn": warn}
 
 
-def _generate(edited: pd.DataFrame, res: dict) -> None:
+def _register_banma(out_bm: list[dict], log_ok: bool) -> list:
+    """斑马 API 登録（既存 SKU は skip するので押し直しても二重登録しない。skip でも SKUID は返る）。"""
+    try:
+        client = banma_client.BanmaClient.from_env()
+        with get_connection() as conn:
+            banma_client.ensure_token(conn, client)
+    except Exception as e:  # noqa: BLE001
+        st.session_state["page15_bm_result"] = {"error": f"斑马に接続できません（登録していません）: {type(e).__name__}: {e}"}
+        return []
+    bar = st.progress(0.0, text=t("斑马に登録中…"))
+    with get_connection() as conn:
+        record = (lambda code, r: REG.record_banma(conn, code, r)) if log_ok else None
+        results = BMR.register_all(client, out_bm, record=record,
+                                   on_progress=lambda d, n, c: bar.progress(d / n, text=f"{d}/{n} {c}"))
+    bar.empty()
+    st.session_state["page15_bm_result"] = {"rows": results, "logged": log_ok}
+    return results
+
+
+def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
     """確認表 → 台帳 → 斑马へ API 登録（1 件ずつ・結果を台帳へ）→ 斑马 SKUID を入れて NST CSV（ZIP）。
 
     NST の SKUID（custitem_item_skuid）= 斑马 SKUID（在庫同期用・2026-11-09 実品で一致確認）。斑马に登録しないと
     取れないので、斑马の後に CSV を作る（Boss 2026-11-09）。取れなかった品は SKUID 空で出して件数を出す。
+    to_banma=False（画面のチェックを外した時・Boss 2026-11-10）は斑马に触らず NST CSV だけ・SKUID は空。
     error があれば何も出さない。"""
     for key in ("page15_zip_bytes", "page15_zip_n", "page15_zip_src", "page15_bm_result", "page15_skuid_blank"):
         st.session_state.pop(key, None)
@@ -200,26 +220,12 @@ def _generate(edited: pd.DataFrame, res: dict) -> None:
             st.session_state["page15_logged"] = log_key
 
     # 斑马 API 登録（既存 SKU は skip するので押し直しても二重登録しない。skip でも SKUID は返る）
-    results: list = []
-    try:
-        client = banma_client.BanmaClient.from_env()
-        with get_connection() as conn:
-            banma_client.ensure_token(conn, client)
-    except Exception as e:  # noqa: BLE001
-        st.session_state["page15_bm_result"] = {"error": f"斑马に接続できません（登録していません）: {type(e).__name__}: {e}"}
-    else:
-        bar = st.progress(0.0, text=t("斑马に登録中…"))
-        with get_connection() as conn:
-            record = (lambda code, r: REG.record_banma(conn, code, r)) if log_ok else None
-            results = BMR.register_all(client, out_bm, record=record,
-                                       on_progress=lambda d, n, c: bar.progress(d / n, text=f"{d}/{n} {c}"))
-        bar.empty()
-        st.session_state["page15_bm_result"] = {"rows": results, "logged": log_ok}
-
+    results = _register_banma(out_bm, log_ok) if to_banma else []
     sku_by_code = {code: str(r.get("sku_id") or "") for code, r in results}
     for row in out_nst:
         row["SKUID"] = sku_by_code.get(REG.item_key(row), "")
-    st.session_state["page15_skuid_blank"] = sum(not row["SKUID"] for row in out_nst)
+    # 斑马に出さないときは SKUID 空が正常 → 件数警告は出さない
+    st.session_state["page15_skuid_blank"] = sum(not row["SKUID"] for row in out_nst) if to_banma else 0
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(TPL.dated_filename(), REG.build_nst_registration_csv(out_nst))
@@ -284,7 +290,7 @@ def _render_result(res: dict) -> None:
         disabled=[c for c in df.columns if c not in REG.EDITABLE],
         column_config=col_config, key="page15_editor")
 
-    st.info(t("ブランド・メーカーは不明なら空欄。包装寸法・重量の不足分は各 1 cm・1 g の既定仮値（非実測）です。取得・手入力済みの値は保持します。"
+    st.info(t("ブランド・メーカーは不明なら空欄。包装 3 辺の不足分は 1 cm の既定仮値（非実測）です。パッケージ重量(g) がネットで見つからない品は手入力必須（不明なら 1 も可）。取得・手入力済みの値は保持します。"
               "画像の出典が「待上图」の品は、斑马に待上图の画像で登録されます。"))
     records = edited.to_dict("records")
     current_nst, _, _, current_issues = REG.from_frame(records, res["nst"], res["extra"], choices=choices)
@@ -302,15 +308,18 @@ def _render_result(res: dict) -> None:
         needs = REG.manual_input_needs(records)
         if needs:
             st.info(t("不足している欄だけを表示しています。確認済みの値を手入力してください。"
-                      "ブランド・メーカーは不明なら空欄のまま。包装寸法・重量の空欄は 1 cm・1 g の仮値で出力します（非実測）。入力後、この一覧は更新されます。"))
+                      "ブランド・メーカーは不明なら空欄のまま。包装 3 辺の空欄は 1 cm の仮値で出力します（非実測）。パッケージ重量(g) は手入力必須（不明なら 1 も可）。入力後、この一覧は更新されます。"))
             st.dataframe(pd.DataFrame(needs), use_container_width=True, hide_index=True)
         else:
             st.success(t("JAN なし商品の待手入力項目はありません（入力済みの内容は確認してください）"))
 
     st.divider()
-    st.caption(t("確認が終わったら押してください。斑马へ API で登録し、取れた斑马 SKUID を入れて NST 取込 CSV を作ります（斑马に既にある SKU は登録せず SKUID だけ取ります）"))
-    if st.button(t("📦 生成（NST.csv）＋ 斑马に登録"), type="primary", key="page15_gen"):
-        _generate(edited, res)
+    st.caption(t("確認が終わったら押してください。チェックありなら斑马へ API で登録し、取れた斑马 SKUID を入れて NST 取込 CSV を作ります（斑马に既にある SKU は登録せず SKUID だけ取ります）。チェックなしなら NST CSV だけ"))
+    to_banma = st.checkbox(t("斑马にも登録する（斑马 SKUID を NST CSV に入れる）"), value=True, key="page15_to_banma",
+                           help=t("外すと NST 取込 CSV だけ作ります。斑马には登録せず、SKUID は空のまま"))
+    if st.button(t("📦 生成（NST.csv）＋ 斑马に登録") if to_banma else t("📦 生成（NST.csv のみ）"),
+                 type="primary", key="page15_gen"):
+        _generate(edited, res, to_banma=to_banma)
     gen_issues = st.session_state.get("page15_gen_issues") or []
     if gen_issues:
         st.dataframe(_issues_df(gen_issues), use_container_width=True, hide_index=True)
@@ -362,7 +371,7 @@ def _render_item_tab() -> None:
             "jancode に商品名が無い JAN は「アイテム名（任意）」も記入）\n"
             "- **メーカー名は入力しません**：自動で埋め、確認表で人が確認・修正します\n"
             "- **SKUID は入力しません**：生成時に斑马へ登録して取れた斑马 SKUID を NST CSV に入れます（在庫同期用）\n"
-            "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名は手入力必須（ETERNAL-BONSAI の既定 6 型番は JAN 欄に直接入力可）。ブランド・メーカーは不明なら空欄。包装寸法・重量が空なら各 1 cm・1 g の仮値（非実測）。HS・通関英文名は判定結果が空なら確認表で手入力\n"
+            "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名は手入力必須（ETERNAL-BONSAI の既定 6 型番は JAN 欄に直接入力可）。ブランド・メーカーは不明なら空欄。包装 3 辺が空なら 1 cm の仮値（非実測）、重量が取れなければ確認表で手入力必須（1 も可）。HS・通関英文名は判定結果が空なら確認表で手入力\n"
             "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "
             "型番は入力値（空なら JAN）/ 取扱中・輸出事業・輸出専用・日本円 / 税率（食品=★）/ 斑马の HS・通関英文名（≤76 字）\n"
             "- **NST 出力の JAN**：実 JAN が無い商品は原本指定に従い型番を出力（内部の実 JAN・台帳は空のまま）\n"
