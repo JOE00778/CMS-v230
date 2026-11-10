@@ -134,7 +134,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
     jans = [r[COL_JAN] for r in rows if r.get(COL_JAN)]
     total = len(jans) * (2 if want_weight else 1)
     stats = {k: 0 for k in (
-        "ok", "ng", "warn", "jancode_ok", "jancode_not_found", "jancode_error",
+        "ok", "ng", "warn", "jancode_ok", "jancode_not_found", "jancode_error", "name_rakuten",
         "name_cut", "name_manual", "maker_nst", "maker_jancode", "maker_manual", "maker_none", "hs_ok", "hs_ng",
         "weight_hit", "weight_miss", "weight_error", "weight_skipped")}
 
@@ -177,7 +177,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             stats["jancode_not_found"] += 1
             jc_err = "jancode.xyz に商品名がありません（テンプレの「アイテム名（任意）」に記入してください）"
         else:
-            stats["jancode_ok"] += 1
+            stats["name_rakuten" if getattr(meta, "source", "jancode") == "rakuten" else "jancode_ok"] += 1
             jc_err = ""
         jc_ok = not jc_err
         if jc_err and not manual:
@@ -203,7 +203,10 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             warns.append(f"メーカー名が {len(manual_maker)} 字 → {NAME_MAX} 字で切りました")
         if maker_src == "jancode" and maker not in nst_makers:
             warns.append(f"メーカー名「{maker}」は jancode 会社名で NST 既存メーカーに無い表記です（確認してください）")
-        auto = ([] if manual else ["アイテム名(jancode)"]) + ([f"メーカー名({maker_src})"] if maker and maker_src != "manual" else [])
+        from_rakuten = jc_ok and getattr(meta, "source", "jancode") == "rakuten" and not manual
+        if from_rakuten:
+            warns.append("アイテム名は楽天の出品名を jancode 形式に整えたもの（jancode 未取得・内容を確認してください）")
+        auto = ([] if manual else ["アイテム名(楽天・要確認)" if from_rakuten else "アイテム名(jancode)"]) + ([f"メーカー名({maker_src})"] if maker and maker_src != "manual" else [])
 
         row = {COL_ITEM_CODE: code, COL_NAME: name, **{c: r.get(c, "") for c in INPUT_COLUMNS},
                **{c: r.get(c, "") for c in ADDITIONAL_INPUT_COLUMNS}, COL_MAKER: maker,

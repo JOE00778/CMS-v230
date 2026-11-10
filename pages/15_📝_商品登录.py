@@ -159,15 +159,19 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
         except Exception as e:  # noqa: BLE001 — メーカーは jancode 会社名で続行
             prefix_makers = {}
             notes.append(f"NST メーカー（JAN プレフィックス）の読込に失敗・jancode 会社名だけで判定: {e}")
+        meta_fetch = jan_web.make_meta_fetcher()   # jancode（403 で即停止・上限 40）→ 楽天（jancode 形式に整形）
         bar = st.progress(0.0, text=t("処理中…"))
         nst_rows, extra, more, stats = REG.enrich(
             rows, choices=choices, prefix_makers=prefix_makers,
-            fetch_meta=jan_web.fetch_meta, fetch_weight=jan_web.fetch_weight,
+            fetch_meta=meta_fetch, fetch_weight=jan_web.fetch_weight,
             classify_customs=hs_classify.classify_customs, want_weight=want_weight,
             on_progress=lambda d, n, msg: bar.progress(min(d / n, 1.0) if n else 1.0,
                                                        text=f"{d}/{n} {msg}"))
         bar.empty()
         issues += more
+        if meta_fetch.state["blocked"]:
+            notes.append(t("jancode.xyz にアクセス制限されたため途中から楽天で商品名を取りました（制限は最長 24 時間。"
+                           "この間に処理し直しても jancode には 1 件しか行きません）"))
         for r in nst_rows:   # 片方だけ登録済みの印（生成時: NST 済 → CSV に出さない / 斑马済 → 斑马は SKUID だけ取る）
             k = REG.item_key(r)
             extra.setdefault(k, {})["nst_exists"] = k in nst_has
@@ -298,7 +302,7 @@ def _render_result(res: dict) -> None:
     s = res["stats"]
     if s:
         st.caption(
-            f"jancode ok={s['jancode_ok']} not_found={s['jancode_not_found']} "
+            f"jancode ok={s['jancode_ok']} 楽天={s.get('name_rakuten', 0)} not_found={s['jancode_not_found']} "
             f"error={s['jancode_error']} · メーカー NST={s['maker_nst']} "
             f"jancode={s['maker_jancode']} 手入力={s.get('maker_manual', 0)} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} 手入力={s['name_manual']} · "
             f"HS ok={s['hs_ok']} 判定不可={s['hs_ng']} AI一致={s.get('ai_agree', '-')} "

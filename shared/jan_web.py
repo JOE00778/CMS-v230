@@ -49,6 +49,7 @@ class JanMeta:
     status: str          # "ok" | "not_found" | "error"
     error: str = ""
     image_url: str = ""  # 詳細ページの商品画像（https 絶対 URL・無ければ空）
+    source: str = "jancode"   # "jancode" | "rakuten"（楽天の商品名を jancode 形式に整えたもの・要確認）
 
 
 @dataclass
@@ -358,3 +359,109 @@ def fetch_many(jans, fn, *, interval: float = INTERVAL, on_progress=None) -> dic
         if on_progress:
             on_progress(i + 1, len(jans), jan)
     return out
+
+
+# ---------- 楽天フォールバック（Boss 2026-11-10: jancode が制限されたら楽天・名前は jancode の形式で） ----------
+# jancode の商品名 = メーカー登録名「[メーカー/ブランド] [商品名] [規格・色] [容量]」（空白区切り・容量が末尾・販促語なし）。
+# 楽天は店ごとの出品名（【販促】[JAN] ■投函■・×24個のセット・容量の後ろに検索語の羅列）→ 下の規則で jancode 形式に寄せ、
+# 店をまたいだ多数決で 1 つに決める。2026-11-10 実測（片岡物産 辻利 / ロッシ / hiritu / ギャツビー / タミヤ）で調整。
+_SET_RE = re.compile(r"[×xX]\s*\d|\d+\s*(個|本|袋|箱|パック|点|缶)\s*(セット|組|入り?\]?$)|\d+\s*セット|まとめ買い|"
+                     r"\[セット\]|【[^】]*\d+[^】]*個[^】]*】|\d+\s*個\s*】")
+_DROP_RE = re.compile(r"【[^】]*】|\[[^\]]*\]|［[^］]*］|■[^■]*■|◆[^◆]*◆|JAN[：:]?\s*\d+|\(?\b\d{8}(\d{5})?\b\)?|"
+                      r"送料無料|お一人様\d+点まで|取り寄せ商品|キャンセル不可|メール便[^\s]*|ネコポス[^\s]*|"
+                      r"\(\s*JAN[^)]*\)")
+_PROMO_HEAD_RE = re.compile(r"^.*?(ポイント\d+倍|クーポン|エントリー|まで)[^☆★！!]*[☆★！!]+\s*")
+_VOL_RE = re.compile(r"\(?\s*(\d+(?:\.\d+)?)\s*(kg|mg|g|ml|mL|ML|L|l|個入り?|枚入り?|本入り?|包入り?|錠|粒)\s*(入)?\s*\)?",)
+
+
+def jancode_style_name(title: str) -> str:
+    """楽天の出品名 1 件を jancode 形式に。セット品・空は ""。"""
+    t = unicodedata.normalize("NFKC", str(title or "")).replace("\u3000", " ")
+    if not t.strip() or _SET_RE.search(t):
+        return ""
+    t = _PROMO_HEAD_RE.sub("", t)
+    t = _DROP_RE.sub(" ", t)
+    t = re.sub(r"^\s*(公式|新品)\s*", "", t)
+    m = _VOL_RE.search(t)
+    if m:   # 容量の後ろは検索語の羅列 → 切る。「(80g)」は「 80g」に
+        t = t[:m.start()].rstrip() + " " + m.group(1) + m.group(2).replace("mL", "ml").replace("ML", "ml").rstrip("入り")
+    return re.sub(r"\s+", " ", t).strip(" -/・")
+
+
+def pick_jancode_style(titles) -> str:
+    """店をまたいだ合議。語（空白区切り）が半数以上の店に出る＝核、少数の店だけ＝検索語の羅列。
+    各候補を「核の語数 − 少数語の数」で採点し最高点（同点は同じ書き方の店が多い → 短い）を採る。"""
+    from collections import Counter
+    names = [n for n in (jancode_style_name(x) for x in titles) if n]
+    if not names:
+        return ""
+    freq = Counter(tok for n in names for tok in set(n.split()))
+    half = len(names) / 2
+    same = Counter(names)
+
+    def score(n: str):
+        toks = n.split()
+        return (sum(freq[x] >= half for x in toks) - sum(freq[x] < half for x in toks), same[n], -len(n))
+    return max(same, key=score)
+
+
+def rakuten_meta(jan: str) -> JanMeta:
+    """楽天 ItemSearch API（公式・page22 / page39 と同じ資格情報）で JAN を引き、jancode 形式の名前を返す。"""
+    import json as _json
+    import os
+    import urllib.parse
+    from shared.jan_lookup import RAKUTEN_API, RAKUTEN_ORIGIN, UA as _UA
+    app_id = (os.environ.get("RAKUTEN_APPLICATION_ID") or "").strip()
+    key = (os.environ.get("RAKUTEN_ACCESS_KEY") or "").strip()
+    if not (app_id and key):
+        return JanMeta(jan, "", "", "", "error", "楽天 API の資格情報なし", source="rakuten")
+    q = urllib.parse.urlencode({"applicationId": app_id, "accessKey": key, "keyword": jan, "hits": "30",
+                                "format": "json"})
+    req = urllib.request.Request(f"{RAKUTEN_API}?{q}", headers={**_UA, "Origin": RAKUTEN_ORIGIN})
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                items = [x.get("Item", {}) for x in _json.loads(r.read().decode("utf-8")).get("Items", [])]
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:   # 楽天は 1 req/秒 程度
+                time.sleep(1.5)
+                continue
+            return JanMeta(jan, "", "", "", "error", f"楽天 http={e.code}", source="rakuten")
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            return JanMeta(jan, "", "", "", "error", f"楽天 {type(e).__name__}: {e}", source="rakuten")
+    name = pick_jancode_style(it.get("itemName", "") for it in items)
+    img = next((u.get("imageUrl", "").split("?")[0] for it in items for u in (it.get("mediumImageUrls") or [])
+                if str(u.get("imageUrl", "")).startswith("https://")), "")
+    return JanMeta(jan, name, "", "", "ok" if name else "not_found", image_url=img, source="rakuten")
+
+
+JANCODE_LIMIT = 40   # 1 回の処理で jancode を叩く上限（約 50 件連続で 403 になる・2026-11-10 実測 41 件目で遮断）
+
+
+def make_meta_fetcher(limit: int = JANCODE_LIMIT):
+    """jancode → 楽天。jancode は 403/429 が 1 回出たらこの処理中は二度と叩かない（制限の延長を防ぐ）・
+    上限 limit 件。jancode に名前が無い品も楽天で引く。"""
+    state = {"n": 0, "blocked": False}
+
+    def fetch(jan: str) -> JanMeta:
+        meta = None
+        if not state["blocked"] and state["n"] < limit:
+            state["n"] += 1
+            meta = fetch_meta(jan)
+            if meta.status == "error" and re.search(r"http=(403|429)", meta.error or ""):
+                state["blocked"] = True
+            elif meta.status == "ok" and (meta.name or "").strip():
+                return meta
+        rk = rakuten_meta(jan)
+        if rk.status == "ok":
+            if meta is not None and meta.maker:      # jancode に会社名だけある場合は残す
+                rk.maker = meta.maker
+            return rk
+        return meta or JanMeta(jan, "", "", "", "error",
+                               ("jancode 制限中" if state["blocked"] else "jancode 上限") + f" · {rk.error or '楽天にも無し'}",
+                               source="rakuten")
+
+    fetch.state = state
+    return fetch
+
