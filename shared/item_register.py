@@ -24,7 +24,7 @@ import re
 
 from data_warehouse.templates.item_entry_form import (
     COL_JAN, COL_LARGE, COL_NAME_MANUAL, COL_MAKER_MANUAL, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, COL_CARTON_DIMS, INPUT_COLUMNS, ADDITIONAL_INPUT_COLUMNS,
-    NUMERIC_COLUMNS, validate_fields, _num, Issue,
+    NUMERIC_COLUMNS, validate_fields, fix_banned_fields, _num, Issue,
 )
 from shared.jan_web import INTERVAL, fetch_many
 from shared.nst_choices import FIXED, resolve_maker
@@ -48,7 +48,6 @@ _WEIGHT_FIELDS = {
     COL_PKG_DIMS[2]: "depth_cm", COL_PKG_WEIGHT: "weight_g",
 }
 # NST 原本 row3「特殊文字禁止 / 全角カッコ、カンマ禁止 / ローマ数字禁止」の機械判定できる分
-_BANNED_RE = re.compile(r"[（）,，Ⅰ-ⅿ]")
 
 # NST 原本 BF〜BS 列の数式（row4）を 仕入区分=輸出専用・部門=輸出事業（FIXED）で評価した値。
 # 原本「登録手順」2 で値貼付けされて CSV に入る列。輸出専用では 適正在庫水準の日数・購買リード・タイム・
@@ -101,13 +100,6 @@ def item_key(row: dict) -> str:
 def _fmt(v) -> str:
     """195.0 → "195" / 13.5 → "13.5"。"""
     return f"{v:g}" if isinstance(v, float) else str(v)
-
-
-def _banned_warn(col: str, val: str) -> str | None:
-    bad = sorted(set(_BANNED_RE.findall(val)))
-    if bad:
-        return f"{col} に NST 原本の禁止文字（全角カッコ・カンマ・ローマ数字）: {' '.join(bad)}"
-    return None
 
 
 WEIGHT_REQUIRED_MSG = (f"{COL_PKG_WEIGHT}: ネットで見つかりませんでした。手入力してください"
@@ -273,10 +265,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
         extra.update({COL_HS: hs or "", COL_NAME_EN: name_en or "",
                       "hs_category": cat or "", "hs_basis": basis})
 
-        for col in (COL_NAME, COL_MAKER):
-            w = _banned_warn(col, row[col])
-            if w:
-                warns.append(w)
+        warns.extend(fix_banned_fields(row))   # 禁止文字は自動修正して warn（Boss 2026-11-10）
 
         nst_rows.append({k: v for k, v in row.items() if str(v).strip() != ""})
         bm_extra[code] = extra
@@ -432,6 +421,7 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
                 row.pop(c, None)
         # 大分類・税率・原価を直したら依存する自動列も再計算する。
         row.update(_derived(row))
+        issues.extend(Issue(0, jan, "warn", m) for m in fix_banned_fields(row))
         validation = validate_fields(row, choices=choices)
         if validation:
             issues.extend(Issue(0, jan, "error", message) for message in validation)

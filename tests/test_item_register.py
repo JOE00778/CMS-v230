@@ -299,3 +299,16 @@ def test_fill_images_order_jancode_search_placeholder():
     assert counts == {"jancode": 1, "画像検索": 1, "待上图": 2, "search_error": 1}
     assert extra["B2"][R.COL_IMAGE] == "https://rk/b.jpg" and extra["B2"]["image_source"] == "画像検索"
     assert extra["C3"][R.COL_IMAGE] == R.PLACEHOLDER_IMAGE_URL and extra["D4"]["image_source"] == "待上图"
+
+
+def test_banned_chars_are_auto_fixed_not_error():
+    """全角カッコ・カンマ・ローマ数字は自動修正して warn（Boss 2026-11-10）。"""
+    from data_warehouse.templates.item_entry_form import fix_banned
+    assert fix_banned("ビオレ（詰替）,340ml，Ⅱ型") == "ビオレ(詰替) 340ml II型"
+    nst, extra, _, _ = _enrich([_row("4901234567894")])
+    frame = R.to_frame(nst, extra)
+    frame[0]["アイテム名"] = "テスト（大）,詰替"
+    out, _, _, issues = R.from_frame(frame, nst, extra)
+    assert out[0]["アイテム名"] == "テスト(大) 詰替"
+    assert not any(i.level == "error" for i in issues)
+    assert any("自動修正" in i.message for i in issues)

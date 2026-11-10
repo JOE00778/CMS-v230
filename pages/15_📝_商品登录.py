@@ -97,6 +97,17 @@ def _issues_df(issues) -> pd.DataFrame:
                           t("内容"): i.message} for i in issues])
 
 
+def _issue_table(issues, key: str) -> None:
+    """error を先頭に並べ、error / warn / すべて で絞れる表（Boss 2026-11-10「warn の中から error を探すのが大変」）。"""
+    n_err = sum(i.level == "error" for i in issues)
+    labels = {"error": f"❌ error のみ（{n_err}）", "warn": f"⚠️ warn のみ（{len(issues) - n_err}）",
+              "all": f"すべて（{len(issues)}）"}
+    pick = st.radio(t("表示"), list(labels), index=0 if n_err else 2, horizontal=True, key=key,
+                    format_func=lambda k: t(labels[k]), label_visibility="collapsed")
+    shown = sorted((i for i in issues if pick == "all" or i.level == pick), key=lambda i: i.level != "error")
+    st.dataframe(_issues_df(shown), use_container_width=True, hide_index=True)
+
+
 def _search_image(jan: str) -> str:
     """CMS 画像検索（page22 と同じ）: PG キャッシュ → 楽天 API → kakaku。取れたらキャッシュへ。"""
     with get_connection() as conn:
@@ -309,7 +320,7 @@ def _render_result(res: dict) -> None:
             st.error(t(f"❌ error {n_err} 件の行は出力しません（下の「処理時の問題」を開いて確認）"))
         with st.expander(t(f"⚠️ 処理時の問題 {len(res['issues'])} 件（error {n_err} 件の行は出力しません）"),
                          expanded=False):
-            st.dataframe(_issues_df(res["issues"]), use_container_width=True, hide_index=True)
+            _issue_table(res["issues"], "page15_flt_process")
     if not res["nst"]:
         st.error(t("❌ 出力できる行がありません"))
         return
@@ -355,7 +366,7 @@ def _render_result(res: dict) -> None:
         with st.expander(t(f"✍️ 全商品の必須・条件項目チェック（{len(current_issues)} 件・error {n_cur_err} 件）"),
                          expanded=False):
             st.warning(t("要確認項目があります。空のカートン 3 辺・入数は 1 の仮値で出します。分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
-            st.dataframe(_issues_df(current_issues), use_container_width=True, hide_index=True)
+            _issue_table(current_issues, "page15_flt_check")
     else:
         st.success(t("NST テンプレ項目チェックで未入力・要確認項目はありません"))
     with st.expander(t("📑 原本の全 71 項目・入力条件")):
@@ -380,7 +391,7 @@ def _render_result(res: dict) -> None:
         _generate(edited, res, to_banma=to_banma)
     gen_issues = st.session_state.get("page15_gen_issues") or []
     if gen_issues:
-        st.dataframe(_issues_df(gen_issues), use_container_width=True, hide_index=True)
+        _issue_table(gen_issues, "page15_flt_gen")
     csv_bytes = st.session_state.get("page15_csv_bytes")
     if st.session_state.get("page15_csv_src") and not csv_bytes and st.session_state.get("page15_csv_n") == 0:
         st.info(t("NST CSV に出す品はありません（すべて NST に登録済み）"))

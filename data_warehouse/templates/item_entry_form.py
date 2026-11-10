@@ -385,6 +385,29 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
     return rows, issues
 
 
+_BANNED_MAP = str.maketrans({"（": "(", "）": ")", "，": " ", ",": " "})
+
+
+def fix_banned(value: str) -> str:
+    """NST 原本の禁止文字を自動修正（Boss 2026-11-10「以后自动修复」）: 全角カッコ → 半角 () /
+    カンマ（全角・半角）→ 空白 / ローマ数字 Ⅱ → II（NFKC）。連続空白は 1 つに。"""
+    s = re.sub(r"[Ⅰ-ⅿ]", lambda m: unicodedata.normalize("NFKC", m.group()), str(value).translate(_BANNED_MAP))
+    return re.sub(r" {2,}", " ", s).strip()
+
+
+def fix_banned_fields(row: dict) -> list[str]:
+    """禁止文字の注記がある列を row 上で直す。戻り = 直した内容（warn 用）。"""
+    notes = []
+    for col, raw in list(row.items()):
+        hint = NST_FIELD_HELP.get(col, "")
+        if raw and ("全角カッコ、カンマ禁止" in hint or "ローマ数字禁止" in hint):
+            fixed = fix_banned(raw)
+            if fixed != raw:
+                row[col] = fixed
+                notes.append(f"{col} の禁止文字を自動修正: {raw} → {fixed}")
+    return notes
+
+
 def validate_fields(row: dict, *, choices=None) -> list[str]:
     """任意入力でも原本の数値・日付・文字数・選択肢条件を守る。必須の空欄は別の待入力表へ。"""
     errors = []
