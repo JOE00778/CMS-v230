@@ -184,7 +184,7 @@ def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
 
     NST の SKUID（custitem_item_skuid）= 斑马 SKUID（在庫同期用・2026-11-09 実品で一致確認）。斑马に登録しないと
     取れないので、斑马の後に CSV を作る（Boss 2026-11-09）。取れなかった品は SKUID 空で出して件数を出す。
-    to_banma=False（画面のチェックを外した時・Boss 2026-11-10）は斑马に触らず NST CSV だけ・SKUID は空。
+    to_banma=False（画面のチェックを外した時・Boss 2026-11-10）は斑马に触らず NST CSV だけ・SKUID と商品ランクは空。
     error があれば何も出さない。"""
     for key in ("page15_zip_bytes", "page15_zip_n", "page15_zip_src", "page15_bm_result", "page15_skuid_blank"):
         st.session_state.pop(key, None)
@@ -200,6 +200,9 @@ def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
     if not out_nst:
         st.error(t("❌ 生成できる行がありません"))
         return
+    for row in out_nst:   # 商品ランク: 斑马にも登録 = NEW / NST のみ = 空（Boss 2026-11-10・テンプレには無い）
+        row["商品ランク"] = "NEW" if to_banma else ""
+
     # 台帳は append-only。同じ内容の押し直しで同じ行を重ねない（このセッション内）
     log_key = _content_hash(out_nst)
     log_ok = st.session_state.get("page15_logged") == log_key
@@ -315,8 +318,9 @@ def _render_result(res: dict) -> None:
 
     st.divider()
     st.caption(t("確認が終わったら押してください。チェックありなら斑马へ API で登録し、取れた斑马 SKUID を入れて NST 取込 CSV を作ります（斑马に既にある SKU は登録せず SKUID だけ取ります）。チェックなしなら NST CSV だけ"))
-    to_banma = st.checkbox(t("斑马にも登録する（斑马 SKUID を NST CSV に入れる）"), value=True, key="page15_to_banma",
-                           help=t("外すと NST 取込 CSV だけ作ります。斑马には登録せず、SKUID は空のまま"))
+    to_banma = st.checkbox(t("斑马にも登録する（斑马 SKUID を NST CSV に入れる・商品ランク = NEW）"), value=True,
+                           key="page15_to_banma",
+                           help=t("外すと NST 取込 CSV だけ作ります。斑马には登録せず、SKUID・商品ランクは空のまま"))
     if st.button(t("📦 生成（NST.csv）＋ 斑马に登録") if to_banma else t("📦 生成（NST.csv のみ）"),
                  type="primary", key="page15_gen"):
         _generate(edited, res, to_banma=to_banma)
@@ -366,10 +370,11 @@ def _render_item_tab() -> None:
     st.caption(t("新品登録 · テンプレ DL → 記入 → UL → 確認 → NST 取込 CSV（手でアップロード）＋ 斑马へ API で自動登録"))
     with st.expander(t("📌 使い方"), expanded=False):
         st.markdown(t(
-            "- **入力項目**（NST 原本の必須項目だけ）：JAN / 型番 / 商品ランク / 商品原価 / 仕入先（完全名称）/ 商品担当者 / "
+            "- **入力項目**（NST 原本の必須項目だけ）：JAN / 型番 / 商品原価 / 仕入先（完全名称）/ 商品担当者 / "
             "大分類・中分類（NST 原本の選択肢）/ カートン 3 辺・入数（パッケージ 3 辺は任意・空ならネットで調べる。"
             "jancode に商品名が無い JAN は「アイテム名（任意）」も記入）\n"
             "- **メーカー名は入力しません**：自動で埋め、確認表で人が確認・修正します\n"
+            "- **商品ランクは入力しません**：斑马にも登録なら NEW、NST のみなら空\n"
             "- **SKUID は入力しません**：生成時に斑马へ登録して取れた斑马 SKUID を NST CSV に入れます（在庫同期用）\n"
             "- **JAN の無い商品**：JAN 欄は空、末尾の型番 / SKU とアイテム名は手入力必須（ETERNAL-BONSAI の既定 6 型番は JAN 欄に直接入力可）。ブランド・メーカーは不明なら空欄。包装 3 辺が空なら 1 cm の仮値（非実測）、重量が取れなければ確認表で手入力必須（1 も可）。HS・通関英文名は判定結果が空なら確認表で手入力\n"
             "- **自動で埋める**：アイテム名（jancode 商品名・60 字）/ メーカー名（NST 同プレフィックス → jancode）/ "

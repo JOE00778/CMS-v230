@@ -105,6 +105,7 @@ def test_page15_process_and_generate_flow(page15_offline):
     rec = dict(zip(header, row))
     assert header[0] == "型番" and rec["型番"] == "4901234567894"
     assert rec["アイテム名"] == "テスト クッキー 100g" and rec["税率"] == "★"
+    assert rec["商品ランク"] == "NEW" and rec["SKUID"] == "1"       # 斑马にも登録 → NEW・斑马 SKUID
     assert rec["仕入先1：仕入先"] == "0001 ベストアンサ株式会社" and rec["仕入区分"] == "輸出専用"
     assert not any(n.endswith(".xlsx") for n in zf.namelist())       # 斑马 xlsx は廃止 → API 登録
     from shared.item_register import COL_IMAGE, PLACEHOLDER_IMAGE_URL
@@ -238,4 +239,4 @@ def test_page15_unchecked_banma_makes_nst_csv_only(page15_offline):
     zf = zipfile.ZipFile(io.BytesIO(at.session_state["page15_zip_bytes"]))
     name = next(n for n in zf.namelist() if "NetSuite" in n)
     rec = next(csv.DictReader(io.StringIO(zf.read(name).decode("utf-8-sig"))))
-    assert rec["SKUID"] == "" and rec["パッケージ重量(g)"] == "80"
+    assert rec["SKUID"] == "" and rec["商品ランク"] == "" and rec["パッケージ重量(g)"] == "80"

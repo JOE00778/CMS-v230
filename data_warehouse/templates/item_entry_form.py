@@ -7,11 +7,11 @@
 シート構成:
   商品登録  … row1=見出し（原文列名・説明はセルのコメント）/ row2〜=入力。原本 NetSuiteマスタ登録 シートの row5〜も読める
   記入例    … 見本 1 行（読まない）
-  _選択肢   … hidden。仕入先 / 商品担当者 / 大分類（1 行目）とその下の中分類
+  データベース … hidden。NST 原本と同じ配置（C=商品担当 / K=仕入先 / R2:W2=大分類・3 行目〜中分類）
 
 中分類の連動（2026-11-10 NST 原本と同じ仕組みに揃えた・Boss「中分类要和模板匹配」）:
-  _選択肢 の D1〜 に大分類、その下に中分類。定義名 = 大分類名そのもの（原本 データベース R〜W 列と同じ）。
-  大分類の入力規則 = D1:I1、中分類の入力規則 = INDIRECT(大分類セル)（行ごとの相対参照・原本 INDIRECT(N4) と同形）。
+  データベース の R2:W2 に大分類、その下に中分類。定義名 = 大分類名そのもの（原本と同じ R3:R6 など）。
+  大分類の入力規則 = データベース!$R$2:$W$2、中分類の入力規則 = INDIRECT(大分類セル)（行ごとの相対参照・原本 INDIRECT(N4) と同形）。
   選択肢は nst_choices の定数（原本の写し）なので名前は固定。正しさは read_upload の組合せ検証でも担保する。
 """
 from __future__ import annotations
@@ -57,8 +57,9 @@ ADDITIONAL_INPUT_COLUMNS = [c for _, c in NST_MASTER_COLUMNS
 # 書き出すテンプレは NST 原本の「必須」列のうち人が入れるものだけ（Boss 2026-11-09「只留必填项」）。
 # 固定値（取扱区分・部門・仕入区分・発注通貨）と 税率（食品=★）・メーカー名 は自動、メーカー名は確認画面で人が確認。
 # SKUID（★輸出専用項目）= 斑马 SKUID。斑马登録後に page15 が入れる（人は入れない）。
+# 商品ランクも入れない: 斑马にも登録 = NEW / NST のみ = 空（page15 生成時に決める・Boss 2026-11-10）
 # 読み込みは旧テンプレ（上の全列）も受ける。見出し必須は REQUIRED_HEADERS だけ
-TEMPLATE_COLUMNS = [COL_JAN, COL_ITEM_CODE, COL_NAME_MANUAL, "商品ランク", COL_COST, COL_SUPPLIER, COL_OWNER,
+TEMPLATE_COLUMNS = [COL_JAN, COL_ITEM_CODE, COL_NAME_MANUAL, COL_COST, COL_SUPPLIER, COL_OWNER,
                     COL_LARGE, COL_MIDDLE, *COL_PKG_DIMS, *COL_CARTON_DIMS, COL_CARTON]
 REQUIRED_HEADERS = [COL_JAN, COL_COST, COL_SUPPLIER, COL_OWNER, COL_LARGE, COL_MIDDLE, COL_CARTON]
 NUMERIC_COLUMNS = tuple(c for _, c in NST_MASTER_COLUMNS
@@ -76,7 +77,7 @@ FIELD_CHOICES = {
 
 SHEET_INPUT = "商品登録"
 SHEET_EXAMPLE = "記入例"
-SHEET_CHOICES = "_選択肢"
+SHEET_CHOICES = "データベース"   # NST 原本と同名・同配置（hidden）
 FIRST_DATA_ROW = 2
 LAST_DATA_ROW = 1001
 
@@ -162,21 +163,24 @@ def build_template(choices) -> bytes:
     ch.sheet_state = "hidden"
     q = _quoted(SHEET_CHOICES)
 
-    # _選択肢: A=仕入先 B=商品担当者 D1〜=大分類（1 行目）・その下に中分類。
-    # NST 原本と同じ仕組み（データベース R2:W2 + 大分類名そのものの定義名 + 中分類 = INDIRECT(大分類セル)）
+    # データベース: NST 原本のデータベース シートと同じ位置（Boss 2026-11-10「完全按照模板的样式」）。
+    # C=商品担当 / K=仕入先（1 行目見出し・2 行目〜値）/ R2:W2=大分類・その下 3 行目〜=中分類。
+    # 定義名 = 大分類名そのもの（原本と同じ R3:R6 など）、中分類の入力規則 = INDIRECT(大分類セル)
     large = list(choices.large)
-    for col, title, values in ((1, "仕入先", choices.suppliers), (2, "商品担当者", choices.owners)):
-        ch.cell(row=1, column=col, value=title)
+    for letter, title, values in (("C", "商品担当", choices.owners), ("K", "仕入先", choices.suppliers)):
+        ch[f"{letter}1"] = title
         for r, v in enumerate(values, start=2):
-            ch.cell(row=r, column=col, value=v)
-    for i, lg in enumerate(large):
-        letter = get_column_letter(4 + i)
-        middles = choices.middle_by_large[lg]
-        ch[f"{letter}1"] = lg
-        for r, v in enumerate(middles, start=2):
             ch[f"{letter}{r}"] = v
-        wb.defined_names[lg] = DefinedName(lg, attr_text=f"{q}!${letter}$2:${letter}${max(len(middles), 1) + 1}")
-    large_row = f"{q}!$D$1:${get_column_letter(3 + max(len(large), 1))}$1"
+    for i, lg in enumerate(large):
+        letter = get_column_letter(18 + i)          # R=18
+        middles = choices.middle_by_large[lg]
+        ch[f"{letter}2"] = lg
+        for r, v in enumerate(middles, start=3):
+            ch[f"{letter}{r}"] = v
+        end = max(len(middles), 1) + 2
+        ref = f"${letter}$3" if end == 3 else f"${letter}$3:${letter}${end}"   # 原本も 1 件は単一セル（$W$3）
+        wb.defined_names[lg] = DefinedName(lg, attr_text=f"{q}!{ref}")
+    large_row = f"{q}!$R$2:${get_column_letter(17 + max(len(large), 1))}$2"
 
     def rng(letter: str, n: int) -> str:
         return f"{q}!${letter}$2:${letter}${max(n, 1) + 1}"
@@ -188,8 +192,8 @@ def build_template(choices) -> bytes:
         ws[f"{letter_of[COL_JAN]}{r}"].number_format = "@"
     large_cell = f"{letter_of[COL_LARGE]}{FIRST_DATA_ROW}"   # 原本と同じ相対参照（行ごとに自分の大分類）
     for dv in (
-        _list_dv(rng("A", len(choices.suppliers)), letter_of[COL_SUPPLIER], COL_SUPPLIER),
-        _list_dv(rng("B", len(choices.owners)), letter_of[COL_OWNER], COL_OWNER),
+        _list_dv(rng("K", len(choices.suppliers)), letter_of[COL_SUPPLIER], COL_SUPPLIER),
+        _list_dv(rng("C", len(choices.owners)), letter_of[COL_OWNER], COL_OWNER),
         _list_dv(large_row, letter_of[COL_LARGE], COL_LARGE),
         _list_dv(f"INDIRECT({large_cell})", letter_of[COL_MIDDLE], COL_MIDDLE),
     ):
@@ -207,7 +211,7 @@ def build_template(choices) -> bytes:
               COL_OWNER: choices.owners[0] if choices.owners else "",
               COL_LARGE: lg0, COL_MIDDLE: (choices.middle_by_large.get(lg0) or ("",))[0],
               COL_CARTON: 48, COL_PKG_DIMS[0]: 6, COL_PKG_DIMS[1]: 23, COL_PKG_DIMS[2]: 17,
-              COL_CARTON_DIMS[0]: 36, COL_CARTON_DIMS[1]: 39, COL_CARTON_DIMS[2]: 26.5, "商品ランク": "NEW"}
+              COL_CARTON_DIMS[0]: 36, COL_CARTON_DIMS[1]: 39, COL_CARTON_DIMS[2]: 26.5}
     for i, name in enumerate(TEMPLATE_COLUMNS, start=1):
         ex.cell(row=2, column=i, value=sample.get(name, ""))
     ex.cell(row=4, column=1, value="※ このシートは読み込まれません。「商品登録」シートに記入してください")

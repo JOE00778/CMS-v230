@@ -83,7 +83,8 @@ FRAME_COLUMNS: dict[str, str] = {
 }
 FRAME_COLUMNS.update({c: c for c in ADDITIONAL_INPUT_COLUMNS})
 EDITABLE = [c for c in dict.fromkeys(["アイテム名", "メーカー名", "通関英文名", "HS", "画像URL",
-    *INPUT_COLUMNS[1:], *ADDITIONAL_INPUT_COLUMNS]) if c != "SKUID"]   # SKUID = 斑马登録で取得（手入力しない）
+    *INPUT_COLUMNS[1:], *ADDITIONAL_INPUT_COLUMNS]) if c not in ("SKUID", "商品ランク")]
+# SKUID = 斑马登録で取得 / 商品ランク = 斑马にも登録なら NEW・NST のみなら空（page15 生成時・手入力しない）
 COL_AUTO = "🤖 自動入力"
 COL_URL = "網調べ URL"
 COL_HS_CHECK = "HS 判定"
@@ -511,8 +512,6 @@ def registration_issues(rows: list[dict], *, choices=None) -> list[Issue]:
                 required = not (row.get(COL_JAN) or code)
             if required and not value:
                 out.append(Issue(0, code, "warn", f"{col}: 必須項目が空です。確認済みの値を手入力してください"))
-        if row.get("商品ランク") == "NEW":
-            out.append(Issue(0, code, "warn", "商品ランク=NEW: 原本は該当が無い場合は空欄。適用を確認し、不適用なら確認表で空欄にしてください"))
         name = str(row.get(COL_NAME) or "")
         tea = bool(re.search(r"玄米茶|煎茶|ほうじ茶|桜葉茶|抹茶(?:入り|スティック)", name))
         if tea and (row.get(COL_LARGE) != "食品" or row.get(COL_TAX) != "★"):

@@ -54,8 +54,8 @@ def test_check_digit():
 
 def test_template_structure():
     wb = openpyxl.load_workbook(io.BytesIO(F.build_template(CH)))
-    assert wb.sheetnames == ["商品登録", "記入例", "_選択肢"]
-    assert wb["_選択肢"].sheet_state == "hidden"
+    assert wb.sheetnames == ["商品登録", "記入例", "データベース"]
+    assert wb["データベース"].sheet_state == "hidden"
     ws = wb["商品登録"]
     assert [c.value for c in ws[1]] == F.TEMPLATE_COLUMNS
     assert F.TEMPLATE_COLUMNS[2] == "アイテム名（任意）" and F.COL_NAME_MANUAL not in F.INPUT_COLUMNS
@@ -64,24 +64,26 @@ def test_template_structure():
         assert c not in F.TEMPLATE_COLUMNS
     assert ws.freeze_panes == "B2"
     dvs = ws.data_validations.dataValidation
-    assert len(dvs) == 4 + 1   # 仕入先・担当・大分類・中分類 ＋ 商品ランク
+    assert len(dvs) == 4       # 仕入先・担当・大分類・中分類（商品ランクはテンプレに無い）
     for dv in dvs:
         assert dv.type == "list" and dv.showErrorMessage is True and not dv.showDropDown
         assert len(dv.formula1) < 255
         assert str(dv.sqref).endswith("1001")
     by_col = {str(dv.sqref)[0]: dv.formula1 for dv in dvs}
-    assert by_col["F"] == "'_選択肢'!$A$2:$A$602"      # 仕入先 601 件は範囲参照
-    # NST 原本と同じ: 大分類 = _選択肢 1 行目、中分類 = INDIRECT(大分類セル)、定義名 = 大分類名そのもの
-    assert by_col["H"] == "'_選択肢'!$D$1:$" + chr(ord("C") + len(CH.large)) + "$1"
-    assert by_col["I"] == "INDIRECT(H2)"
-    ch = wb["_選択肢"]
+    assert by_col["E"] == "'データベース'!$K$2:$K$602"     # 仕入先 601 件は範囲参照（原本と同じ K 列）
+    assert by_col["F"] == "'データベース'!$C$2:$C$" + str(1 + len(CH.owners))
+    # NST 原本と同じ配置: 大分類 = データベース!R2:W2、中分類 = INDIRECT(大分類セル)、定義名 = 大分類名（R3〜）
+    assert by_col["G"] == "'データベース'!$R$2:$" + chr(ord("Q") + len(CH.large)) + "$2"
+    assert by_col["H"] == "INDIRECT(G2)"
+    ch = wb["データベース"]
     names = dict(wb.defined_names.items())
     for i, lg in enumerate(CH.large):
-        col = chr(ord("D") + i)
-        assert ch[f"{col}1"].value == lg
+        col = chr(ord("R") + i)
+        assert ch[f"{col}2"].value == lg
         mids = CH.middle_by_large[lg]
-        assert names[lg].attr_text == f"'_選択肢'!${col}$2:${col}${1 + len(mids)}"
-        assert tuple(ch[f"{col}{k}"].value for k in range(2, 2 + len(mids))) == mids
+        ref = f"${col}$3" if len(mids) == 1 else f"${col}$3:${col}${2 + len(mids)}"
+        assert names[lg].attr_text == f"'データベース'!{ref}"
+        assert tuple(ch[f"{col}{k}"].value for k in range(3, 3 + len(mids))) == mids
     assert wb["記入例"].cell(2, 1).value == "4901234567894"
 
 

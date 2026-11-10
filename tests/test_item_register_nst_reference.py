@@ -58,8 +58,8 @@ def test_schema_71_and_applicable_conditions():
 
 
 def test_template_full_fields_and_decimal_carton_text_lot():
-    for c in ('カートン高さ(cm)','カートン幅(cm)','カートン奥行(cm)','商品ランク'):assert c in F.TEMPLATE_COLUMNS
-    for c in ('税率','メーカー型番','発注ロット','SKUID'):assert c not in F.TEMPLATE_COLUMNS
+    for c in ('カートン高さ(cm)','カートン幅(cm)','カートン奥行(cm)'):assert c in F.TEMPLATE_COLUMNS
+    for c in ('税率','メーカー型番','発注ロット','SKUID','商品ランク'):assert c not in F.TEMPLATE_COLUMNS
     wb=openpyxl.load_workbook(io.BytesIO(F.build_template(CH)));ws=wb[F.SHEET_INPUT]
     r={'型番':'SKU','アイテム名（任意）':'盆栽','商品原価':'100','仕入先1：仕入先':'0001 TEST','商品担当者':'043 徐越','大分類':'生活雑貨','中分類':'日用品雑貨','カートン入数':'1.5','発注ロット':'1色1000','カートン高さ(cm)':'３０','カートン幅(cm)':'40','カートン奥行(cm)':'50','SKUID':'FLAG-1','メーカー型番':'M-1'}
     for j,c in enumerate(LEGACY,1):ws.cell(1,j,c);ws.cell(2,j,r.get(c,''))
