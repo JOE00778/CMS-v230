@@ -365,7 +365,9 @@ def fetch_many(jans, fn, *, interval: float = INTERVAL, on_progress=None) -> dic
 # jancode の商品名 = メーカー登録名「[メーカー/ブランド] [商品名] [規格・色] [容量]」（空白区切り・容量が末尾・販促語なし）。
 # 楽天は店ごとの出品名（【販促】[JAN] ■投函■・×24個のセット・容量の後ろに検索語の羅列）→ 下の規則で jancode 形式に寄せ、
 # 店をまたいだ多数決で 1 つに決める。2026-11-10 実測（片岡物産 辻利 / ロッシ / hiritu / ギャツビー / タミヤ）で調整。
-_SET_RE = re.compile(r"[×xX]\s*\d|\d+\s*(個|本|袋|箱|パック|点|缶)\s*(セット|組|入り?\]?$)|\d+\s*セット|まとめ買い|"
+# 「×N」はセット（30g×24個・x3)）。ただし 8×4 / 8x4（エイトフォー）のように × の直前が数字・英字なら商品名とみなす
+# 単位の直後の ×N（30g×24・(12g×8本)×24）は別の枝で拾う
+_SET_RE = re.compile(r"(kg|g|ml|mL|L|個|本|袋|枚|入|\))\s*[×xX]\s*\d|(?<![\dA-Za-z])[×xX]\s*\d+\s*(個|袋|本|箱|缶|パック|セット|枚|入|\)|\s|$)|\d+\s*(個|本|袋|箱|パック|点|缶)\s*(セット|組|入り?\]?$)|\d+\s*セット|まとめ買い|"
                      r"\[セット\]|【[^】]*\d+[^】]*個[^】]*】|\d+\s*個\s*】")
 _DROP_RE = re.compile(r"【[^】]*】|\[[^\]]*\]|［[^］]*］|■[^■]*■|◆[^◆]*◆|JAN[：:]?\s*\d+|\(?\b\d{8}(\d{5})?\b\)?|"
                       r"送料無料|お一人様\d+点まで|取り寄せ商品|キャンセル不可|メール便[^\s]*|ネコポス[^\s]*|"
@@ -436,6 +438,18 @@ def rakuten_meta(jan: str) -> JanMeta:
     return JanMeta(jan, name, "", "", "ok" if name else "not_found", image_url=img, source="rakuten")
 
 
+def yahoo_meta(jan: str) -> JanMeta:
+    """Yahoo!ショッピング の検索結果（page39 と同じ取り方・1 リクエスト）から、楽天と同じ規則で jancode 形式の名前。"""
+    from shared.jan_lookup import _YAHOO_CHROME, YAHOO_SEARCH, _get, decode as _decode
+    raw = _get(YAHOO_SEARCH.format(jan=jan))
+    if raw is None:
+        return JanMeta(jan, "", "", "", "error", "Yahoo 取得失敗", source="yahoo")
+    page = _decode(raw)
+    alts = [html.unescape(a).strip() for a in re.findall(r'alt="([^"]{8,140})"', page)]
+    name = pick_jancode_style(a for a in alts if not any(x in a for x in _YAHOO_CHROME))
+    return JanMeta(jan, name, "", "", "ok" if name else "not_found", source="yahoo")
+
+
 JANCODE_LIMIT = 40   # 1 回の処理で jancode を叩く上限（約 50 件連続で 403 になる・2026-11-10 実測 41 件目で遮断）
 
 
@@ -454,12 +468,17 @@ def make_meta_fetcher(limit: int = JANCODE_LIMIT):
             elif meta.status == "ok" and (meta.name or "").strip():
                 return meta
         rk = rakuten_meta(jan)
+        if rk.status != "ok":
+            time.sleep(INTERVAL)
+            yh = yahoo_meta(jan)                 # 楽天にも無ければ Yahoo!ショッピング
+            if yh.status == "ok":
+                rk = yh
         if rk.status == "ok":
             if meta is not None and meta.maker:      # jancode に会社名だけある場合は残す
                 rk.maker = meta.maker
             return rk
         return meta or JanMeta(jan, "", "", "", "error",
-                               ("jancode 制限中" if state["blocked"] else "jancode 上限") + f" · {rk.error or '楽天にも無し'}",
+                               ("jancode 制限中" if state["blocked"] else "jancode 上限") + f" · {rk.error or '楽天・Yahoo にも無し'}",
                                source="rakuten")
 
     fetch.state = state

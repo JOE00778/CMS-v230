@@ -15,6 +15,8 @@ def page15_offline():
     from shared import banma_client, banma_register, image_search, jan_web
     reg = mock.MagicMock(return_value={"status": "ok", "sku_id": "1", "spu_id": "2", "message": ""})
     with mock.patch.object(jan_web, "fetch_weight", return_value=None), \
+            mock.patch.object(jan_web, "yahoo_meta",
+                              side_effect=lambda j: jan_web.JanMeta(j, "", "", "", "not_found", source="yahoo")), \
             mock.patch.object(jan_web, "rakuten_meta",
                               side_effect=lambda j: jan_web.JanMeta(j, "", "", "", "not_found", source="rakuten")), \
             mock.patch.object(image_search, "_fetch_image_for_jan",

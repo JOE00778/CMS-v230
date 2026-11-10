@@ -48,6 +48,8 @@ def test_sets_and_empty_are_dropped():
     assert jancode_style_name("■ポスト投函■辻利 さらっととける抹茶 30g【2個セット】") == ""
     assert pick_jancode_style(["", "6〜10個セット まとめ買い X 80g"]) == ""
     assert jancode_style_name("タミヤ GP.392 マスダンパーセット") == "タミヤ GP.392 マスダンパーセット"   # 商品名のセットは残す
+    assert jancode_style_name("8×4メン デオドラントパテ(25g)【8x4 MEN(エイトフォー メン)】") == "8×4メン デオドラントパテ 25g"
+    assert jancode_style_name("片岡物産 辻利 30g/パック 1セット(3パック)(4901305411132 x3) 取り寄せ商品") == ""
 
 
 def test_fetcher_stops_jancode_on_403_and_falls_back_to_rakuten(monkeypatch):
@@ -70,6 +72,8 @@ def test_fetcher_caps_jancode_requests(monkeypatch):
     calls = []
     monkeypatch.setattr(J, "fetch_meta", lambda jan: calls.append(jan) or J.JanMeta(jan, "名", "社", "", "ok"))
     monkeypatch.setattr(J, "rakuten_meta", lambda jan: J.JanMeta(jan, "", "", "", "not_found", source="rakuten"))
+    monkeypatch.setattr(J, "yahoo_meta", lambda jan: J.JanMeta(jan, "", "", "", "not_found", source="yahoo"))
+    monkeypatch.setattr(J, "INTERVAL", 0)
     f = J.make_meta_fetcher(limit=2)
     out = [f(j) for j in ("1", "2", "3")]
     assert calls == ["1", "2"] and [m.status for m in out] == ["ok", "ok", "error"]
