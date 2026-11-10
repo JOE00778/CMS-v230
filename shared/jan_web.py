@@ -304,11 +304,17 @@ def fetch_netde_weight(jan: str, *, opener=None) -> WeightHit | None:
     return None
 
 
+# 重量・寸法の網調べ源（順に試し、欠けた値だけ補完）。名前で持つのはテストで差し替えるため
+WEIGHT_SOURCES: tuple[str, ...] = ("fetch_netde_weight",)
+
+
 def fetch_weight(jan: str, *, opener=None) -> WeightHit | None:
-    """SuperDelivery → 卸。欠けた値だけ補完し、競合・取得失敗も記録する。"""
+    """NETde卸。欠けた値だけ補完し、競合・取得失敗も記録する。
+    SuperDelivery は 2026-11-10 時点で自動取得に全件 403（元川・Mac とも）→ 外した（Boss「OK 执行」・1 件あたり約 1 秒短縮）。
+    fetch_superdelivery_weight は残す（解除されたらここに戻す）。"""
     fields = ("weight_g", "height_cm", "width_cm", "depth_cm")
     result, errors = None, []
-    for fn in (fetch_superdelivery_weight, fetch_netde_weight):
+    for fn in (globals()[n] for n in WEIGHT_SOURCES):
         try:
             hit = fn(jan, opener=opener)
         except FetchError as e:

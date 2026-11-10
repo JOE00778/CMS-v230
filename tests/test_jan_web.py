@@ -217,6 +217,7 @@ def test_multisource_fills_missing_fields_and_preserves_conflict_evidence(monkey
     monkeypatch.setattr(jw,'fetch_superdelivery_weight',lambda *a,**k:a_hit)
     a_hit=a
     monkeypatch.setattr(jw,'fetch_netde_weight',lambda *a,**k:b)
+    monkeypatch.setattr(jw,'WEIGHT_SOURCES',('fetch_superdelivery_weight','fetch_netde_weight'))   # 源が複数のときの補完ロジック
     hit=jw.fetch_weight('j')
     assert hit.weight_g==200 and (hit.height_cm,hit.width_cm,hit.depth_cm)==(6,8,8)
     assert '重量' in hit.note and 'netde' in hit.source
@@ -228,6 +229,7 @@ def test_multisource_tries_next_when_first_source_fails(monkeypatch):
     monkeypatch.setattr(jw,'fetch_superdelivery_weight',failed)
     b=jw.WeightHit('j',210,6,8,8,'netde','nd')
     monkeypatch.setattr(jw,'fetch_netde_weight',lambda *a,**k:b)
+    monkeypatch.setattr(jw,'WEIGHT_SOURCES',('fetch_superdelivery_weight','fetch_netde_weight'))   # 源が複数のときの補完ロジック
     hit=jw.fetch_weight('j')
     assert hit is b and '503' in hit.note
 
@@ -239,3 +241,11 @@ def test_parse_jancode_image_url():
     assert J.parse_jancode("4901301230881", page).image_url == \
         "https://www.jancode.xyz/images/14b49/ad/12b/4901301230881.jpg"
     assert J.parse_jancode("4901301230881", "<th>商品名</th><td>x</td>").image_url == ""
+
+
+def test_superdelivery_is_not_queried_by_default(monkeypatch):
+    """SuperDelivery は全件 403 のため既定の源から外した（2026-11-10）。"""
+    called = []
+    monkeypatch.setattr(jw, 'fetch_superdelivery_weight', lambda *a, **k: called.append(1))
+    monkeypatch.setattr(jw, 'fetch_netde_weight', lambda *a, **k: None)
+    assert jw.fetch_weight('j') is None and not called

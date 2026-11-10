@@ -482,7 +482,7 @@ def _render_item_tab() -> None:
     uploaded = st.file_uploader(t("📤 記入済みテンプレ（xlsx）をアップロード"), type=["xlsx"],
                                 key="page15_upload")
     want_weight = True   # Boss 2026-11-09: 包装 3 辺・重量は任意 → 常にネットで調べる
-    st.caption(t("パッケージ 3 辺・重量が空欄の行はネットで調べます（SuperDelivery → NETde卸・約 1.5〜2 秒/件）"))
+    st.caption(t("パッケージ 3 辺・重量が空欄の行はネットで調べます（NETde卸）"))
     col_r, col_c = st.columns([1, 1])
     run = col_r.button(t("▶ 処理する"), type="primary", disabled=uploaded is None,
                        key="page15_run", use_container_width=True)
