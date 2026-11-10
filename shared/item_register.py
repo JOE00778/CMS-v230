@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 
 from data_warehouse.templates.item_entry_form import (
     COL_JAN, COL_LARGE, COL_NAME_MANUAL, COL_MAKER_MANUAL, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, COL_CARTON_DIMS, INPUT_COLUMNS, ADDITIONAL_INPUT_COLUMNS,
@@ -132,26 +133,26 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
     # choices: 選択肢の検証は read_upload 済み。インタフェース互換のため受けるだけ
     rows = list(rows)
     jans = [r[COL_JAN] for r in rows if r.get(COL_JAN)]
-    total = len(jans) * (2 if want_weight else 1)
     stats = {k: 0 for k in (
         "ok", "ng", "warn", "jancode_ok", "jancode_not_found", "jancode_error", "name_rakuten", "name_missing",
         "name_cut", "name_manual", "maker_nst", "maker_jancode", "maker_manual", "maker_none", "hs_ok", "hs_ng",
         "weight_hit", "weight_miss", "weight_error", "weight_skipped")}
 
-    def _prog(offset, label):
-        if on_progress is None:
-            return None
-        return lambda i, n, jan: on_progress(offset + i, total, f"{label} {i}/{n} 件目（{jan}）")
-
-    metas = fetch_many(jans, fetch_meta, interval=interval, on_progress=_prog(0, "① 商品名"))
-
+    # 商品 1 件ずつ「商品名 → 重量・寸法」を調べる。進捗は商品数で数える（Boss 2026-11-10「按商品数」）
     # 重量は 4 項目とも人が書いた行は調べない（時間の無駄）
-    need_w = [r[COL_JAN] for r in rows
-              if want_weight and r.get(COL_JAN) and any(not r.get(c) for c in _WEIGHT_FIELDS)]
-    hits = fetch_many(need_w, fetch_weight, interval=interval,
-                      on_progress=_prog(len(jans), "② 重量・寸法")) if need_w else {}
-    if want_weight and on_progress:
-        on_progress(total, total, "完了")
+    need_w = {r[COL_JAN] for r in rows
+              if want_weight and r.get(COL_JAN) and any(not r.get(c) for c in _WEIGHT_FIELDS)}
+    metas: dict = {}
+    hits: dict = {}
+    for i, jan in enumerate(jans, start=1):
+        metas.update(fetch_many([jan], fetch_meta))
+        if jan in need_w:
+            time.sleep(interval)
+            hits.update(fetch_many([jan], fetch_weight))
+        if on_progress:
+            on_progress(i, len(jans), f"商品 {i}/{len(jans)} 件目（{jan}）")
+        if i < len(jans):
+            time.sleep(interval)
 
     nst_rows: list[dict] = []
     bm_extra: dict[str, dict] = {}
