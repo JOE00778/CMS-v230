@@ -240,3 +240,64 @@ def test_page15_unchecked_banma_makes_nst_csv_only(page15_offline):
     name = next(n for n in zf.namelist() if "NetSuite" in n)
     rec = next(csv.DictReader(io.StringIO(zf.read(name).decode("utf-8-sig"))))
     assert rec["SKUID"] == "" and rec["商品ランク"] == "" and rec["パッケージ重量(g)"] == "80"
+
+
+def test_page15_missing_weight_can_be_typed_in_cms(page15_offline):
+    """重量がネットで取れない品 → 確認画面の小表に入れるだけで生成できる（再アップロード不要・Boss 2026-11-10）。"""
+    import csv
+    import io
+    import zipfile
+
+    from openpyxl import load_workbook
+
+    from data_warehouse.templates import item_entry_form as FORM
+    from shared import jan_web
+    st.cache_data.clear()
+    choices = NC.Choices(suppliers=("0001 ベストアンサ株式会社",), middle_by_large=dict(NC.MIDDLE_BY_LARGE))
+    wb = load_workbook(io.BytesIO(FORM.build_template(choices)))
+    ws = wb[FORM.SHEET_INPUT]
+    vals = {"JANコード": "4901234567894", "商品原価": "100", "仕入先1：仕入先": "0001 ベストアンサ株式会社",
+            "商品担当者": "043 徐越", "大分類": "食品", "中分類": "菓子", "カートン入数": "24"}
+    for j, cell in enumerate(ws[1], start=1):
+        if cell.value in vals:
+            ws.cell(row=2, column=j, value=vals[cell.value])
+    buf = io.BytesIO()
+    wb.save(buf)
+    up = mock.MagicMock()
+    up.getvalue.return_value = buf.getvalue()
+    conn = mock.MagicMock()
+    conn.__enter__.return_value = conn
+    with mock.patch("shared.db.get_connection", return_value=conn), \
+            mock.patch("streamlit.file_uploader", return_value=up), \
+            mock.patch.object(NC, "load_choices", return_value=choices), \
+            mock.patch.object(NC, "load_prefix_makers", return_value={}), \
+            mock.patch.object(NC, "existing_jans", return_value=(set(), [])), \
+            mock.patch.object(NC, "existing_item_codes", return_value=(set(), [])), \
+            mock.patch.object(jan_web, "fetch_meta",
+                              return_value=jan_web.JanMeta("4901234567894", "テスト クッキー 100g", "テスト製菓", "", "ok")), \
+            mock.patch.object(jan_web, "INTERVAL", 0):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.run()
+        at.button(key="page15_run").click().run()
+        at.button(key="page15_gen").click().run()                      # 重量なし → 生成されない
+        assert "page15_zip_bytes" not in at.session_state and page15_offline.call_count == 0
+        fix = next(d.value for d in at.dataframe if list(d.value.columns) == ["型番", "アイテム名", "パッケージ重量(g)"])
+        assert fix["型番"].tolist() == ["4901234567894"]                 # 重量が空の品だけ出る
+        real = st.data_editor
+
+        def typed(data, *a, **k):                                        # 人が小表に 55 と入れた状態
+            out = real(data, *a, **k)
+            if k.get("key") == "page15_weight_fix":
+                out = out.copy()
+                out["パッケージ重量(g)"] = "55"
+            return out
+        with mock.patch("streamlit.data_editor", side_effect=typed):
+            at.run()
+            at.button(key="page15_gen").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    zf = zipfile.ZipFile(io.BytesIO(at.session_state["page15_zip_bytes"]))
+    name = next(n for n in zf.namelist() if "NetSuite" in n)
+    rec = next(csv.DictReader(io.StringIO(zf.read(name).decode("utf-8-sig"))))
+    assert rec["パッケージ重量(g)"] == "55"
+    assert page15_offline.call_args[0][1]["パッケージ重量(g)"] == "55"   # 斑马にも同じ重量

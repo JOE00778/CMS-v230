@@ -81,7 +81,7 @@ def _cached_prefix_makers() -> dict[str, str]:
 
 _ITEM_KEYS = ["page15_result", "page15_zip_bytes", "page15_zip_n", "page15_log_msg",
               "page15_gen_issues", "page15_editor", "page15_zip_src", "page15_pending_n",
-              "page15_skuid_blank"]
+              "page15_skuid_blank", "page15_weight_fix"]
 
 
 def _content_hash(records) -> str:
@@ -239,6 +239,25 @@ def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
     st.session_state["page15_zip_src"] = _content_hash(edited.to_dict("records"))
 
 
+def _weight_fix(edited: pd.DataFrame) -> pd.DataFrame:
+    """重量が空の品だけの小さな入力表（Boss 2026-11-10「CMS 上で直接填写」）。値は確認表に重ねて生成に使う。"""
+    col = REG.COL_PKG_WEIGHT
+    if col not in edited.columns:
+        return edited
+    miss = edited[col].fillna("").astype(str).str.strip() == ""
+    if not miss.any():
+        return edited
+    st.subheader(t(f"⚖️ パッケージ重量の手入力（ネットで見つからなかった {int(miss.sum())} 件）"))
+    st.caption(t("ここに入れれば再アップロード不要です。単位 g・不明なら 1 も可。斑马の重量に使います"))
+    fixed = st.data_editor(
+        edited.loc[miss, ["型番", "アイテム名", col]], key="page15_weight_fix", hide_index=True,
+        num_rows="fixed", use_container_width=True, disabled=["型番", "アイテム名"],
+        column_config={col: st.column_config.TextColumn(f"{col} ✍️", help=t("g（整数または小数）。不明なら 1"))})
+    out = edited.copy()
+    out.loc[fixed.index, col] = fixed[col]
+    return out
+
+
 def _render_result(res: dict) -> None:
     c1, c2, c3 = st.columns(3)
     c1.metric("OK", res["ok"])
@@ -295,6 +314,7 @@ def _render_result(res: dict) -> None:
 
     st.info(t("ブランド・メーカーは不明なら空欄。包装 3 辺の不足分は 1 cm の既定仮値（非実測）です。パッケージ重量(g) がネットで見つからない品は手入力必須（不明なら 1 も可）。取得・手入力済みの値は保持します。"
               "画像の出典が「待上图」の品は、斑马に待上图の画像で登録されます。"))
+    edited = _weight_fix(edited)
     records = edited.to_dict("records")
     current_nst, _, _, current_issues = REG.from_frame(records, res["nst"], res["extra"], choices=choices)
     current_issues += REG.registration_issues(current_nst, choices=choices)
