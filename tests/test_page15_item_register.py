@@ -90,7 +90,7 @@ def test_page15_process_and_generate_flow(page15_offline):
         assert at.checkbox(key="page15_to_banma").value is True       # 既定 = 斑马にも登録
         at.button(key="page15_gen").click().run()
     assert not at.exception, [e.value for e in at.exception]
-    assert at.session_state["page15_zip_n"] == 1
+    assert at.session_state["page15_csv_n"] == 1
     assert at.session_state["page15_skuid_blank"] == 0              # fixture の斑马は SKUID "1" を返す
     assert at.session_state["page15_log_msg"][0] == "ok"
     assert conn.executemany.called                                   # 台帳へ INSERT
@@ -99,15 +99,13 @@ def test_page15_process_and_generate_flow(page15_offline):
     import io
     import zipfile
 
-    zf = zipfile.ZipFile(io.BytesIO(at.session_state["page15_zip_bytes"]))
-    csv_name = next(n for n in zf.namelist() if n.endswith(".csv"))
-    header, row = list(csv.reader(io.StringIO(zf.read(csv_name).decode("utf-8-sig"))))[:2]
+    header, row = list(csv.reader(io.StringIO(at.session_state["page15_csv_bytes"].decode("utf-8-sig"))))[:2]
+    assert at.session_state["page15_csv_name"].endswith("_NetSuite【アイテム】マスタ登録-V260326EX_徐越.csv")
     rec = dict(zip(header, row))
     assert header[0] == "型番" and rec["型番"] == "4901234567894"
     assert rec["アイテム名"] == "テスト クッキー 100g" and rec["税率"] == "★"
     assert rec["商品ランク"] == "NEW" and rec["SKUID"] == "1"       # 斑马にも登録 → NEW・斑马 SKUID
     assert rec["仕入先1：仕入先"] == "0001 ベストアンサ株式会社" and rec["仕入区分"] == "輸出専用"
-    assert not any(n.endswith(".xlsx") for n in zf.namelist())       # 斑马 xlsx は廃止 → API 登録
     from shared.item_register import COL_IMAGE, PLACEHOLDER_IMAGE_URL
     (bm_row,), _ = page15_offline.call_args[0][1:], None
     assert page15_offline.call_count == 1
@@ -197,11 +195,11 @@ def test_page15_edit_hides_stale_zip_and_log_not_duplicated(page15_offline):
         at.button(key="page15_gen").click().run()
         at.button(key="page15_gen").click().run()
         assert conn.executemany.call_count == 1                     # 同じ内容は台帳に 1 回だけ
-        assert any("page15_zip_dl" in b.proto.id for b in at.get("download_button"))
+        assert any("page15_csv_dl" in b.proto.id for b in at.get("download_button"))
         # 生成後に表を編集 → 古い ZIP は伏せる
-        at.session_state["page15_zip_src"] = "stale"
+        at.session_state["page15_csv_src"] = "stale"
         at.run()
-        assert not any("page15_zip_dl" in b.proto.id for b in at.get("download_button"))
+        assert not any("page15_csv_dl" in b.proto.id for b in at.get("download_button"))
         assert any("表を編集しました" in w.value for w in at.warning)
 
 
@@ -236,9 +234,7 @@ def test_page15_unchecked_banma_makes_nst_csv_only(page15_offline):
     assert not at.exception, [e.value for e in at.exception]
     assert page15_offline.call_count == 0                            # 斑马 API は呼ばない
     assert "page15_bm_result" not in at.session_state and at.session_state["page15_skuid_blank"] == 0
-    zf = zipfile.ZipFile(io.BytesIO(at.session_state["page15_zip_bytes"]))
-    name = next(n for n in zf.namelist() if "NetSuite" in n)
-    rec = next(csv.DictReader(io.StringIO(zf.read(name).decode("utf-8-sig"))))
+    rec = next(csv.DictReader(io.StringIO(at.session_state["page15_csv_bytes"].decode("utf-8-sig"))))
     assert rec["SKUID"] == "" and rec["商品ランク"] == "" and rec["パッケージ重量(g)"] == "80"
 
 
@@ -281,7 +277,7 @@ def test_page15_missing_weight_can_be_typed_in_cms(page15_offline):
         at.run()
         at.button(key="page15_run").click().run()
         at.button(key="page15_gen").click().run()                      # 重量なし → 生成されない
-        assert "page15_zip_bytes" not in at.session_state and page15_offline.call_count == 0
+        assert "page15_csv_bytes" not in at.session_state and page15_offline.call_count == 0
         fix = next(d.value for d in at.dataframe if list(d.value.columns) == ["型番", "アイテム名", "パッケージ重量(g)"])
         assert fix["型番"].tolist() == ["4901234567894"]                 # 重量が空の品だけ出る
         real = st.data_editor
@@ -296,8 +292,6 @@ def test_page15_missing_weight_can_be_typed_in_cms(page15_offline):
             at.run()
             at.button(key="page15_gen").click().run()
     assert not at.exception, [e.value for e in at.exception]
-    zf = zipfile.ZipFile(io.BytesIO(at.session_state["page15_zip_bytes"]))
-    name = next(n for n in zf.namelist() if "NetSuite" in n)
-    rec = next(csv.DictReader(io.StringIO(zf.read(name).decode("utf-8-sig"))))
+    rec = next(csv.DictReader(io.StringIO(at.session_state["page15_csv_bytes"].decode("utf-8-sig"))))
     assert rec["パッケージ重量(g)"] == "55"
     assert page15_offline.call_args[0][1]["パッケージ重量(g)"] == "55"   # 斑马にも同じ重量

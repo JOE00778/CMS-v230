@@ -114,13 +114,11 @@ def test_page15_no_jan_generation_and_existing_code_exclusion(page15_offline):
         assert all(editor[c].eq('1').all() for c in R.COL_PKG_DIMS) and editor[R.COL_PKG_WEIGHT].eq('50').all()
         at.button(key='page15_gen').click().run()
         assert not at.exception, [e.value for e in at.exception]
-        assert at.session_state['page15_zip_n'] == 5
+        assert at.session_state['page15_csv_n'] == 5
         assert not meta.called
-        with zipfile.ZipFile(io.BytesIO(at.session_state['page15_zip_bytes'])) as z:
-            nst = next(n for n in z.namelist() if n.endswith('.csv'))
-            rows = list(csv.DictReader(io.StringIO(z.read(nst).decode('utf-8-sig'))))
-            assert [r['型番'] for r in rows] == SKUS[1:]
-            assert not any(n.endswith('.xlsx') for n in z.namelist())
+        rows = list(csv.DictReader(io.StringIO(at.session_state['page15_csv_bytes'].decode('utf-8-sig'))))
+        assert [r['型番'] for r in rows] == SKUS[1:]
+        assert at.session_state['page15_csv_name'].endswith('_徐越.csv')        # 登録者名 = 担当者名（番号なし）
         assert [c.args[1]['型番'] for c in page15_offline.call_args_list] == SKUS[1:]
 
 

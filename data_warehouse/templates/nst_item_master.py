@@ -242,9 +242,11 @@ def build_nst_master_csv(
     return buf.getvalue().encode("utf-8-sig")
 
 
-def dated_filename(ext: str = "csv") -> str:
-    """下载文件名：当天日期前缀 + 原模板名。
+def dated_filename(ext: str = "csv", registrant: str = "") -> str:
+    """下载文件名：当天日期前缀 + 原模板名。registrant を渡すと末尾「登録者名」をその名前に置換。
 
     例: 20260521_NetSuite【アイテム】マスタ登録-V260326EX_登録者名.csv
+        registrant="米澤和敏" → 20260521_NetSuite【アイテム】マスタ登録-V260326EX_米澤和敏.csv
     """
-    return f"{datetime.date.today():%Y%m%d}_{TEMPLATE_BASENAME}.{ext}"
+    base = TEMPLATE_BASENAME.replace("登録者名", registrant) if registrant else TEMPLATE_BASENAME
+    return f"{datetime.date.today():%Y%m%d}_{base}.{ext}"

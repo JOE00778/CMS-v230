@@ -14,7 +14,7 @@ v2 流程（オーケストレーションは shared/item_register.py）：
      read_upload → NST 既登録 JAN を error → enrich（jancode 商品名・メーカー・固定値・HS・網調べは常に実行）
      → 画像（jancode → 画像検索 → 待上图）
   ④ ok/ng/warn 件数・issues 表・data_editor で人が確認・修正
-  ⑤「📦 生成」NST CSV（ZIP）+ 斑马へ API 登録（shared/banma_register）、同時に台帳 nst.item_register_log
+  ⑤「📦 生成」NST CSV（直接ダウンロード）+ 斑马へ API 登録（shared/banma_register）、同時に台帳 nst.item_register_log
      （Boss 2026-11-09「去掉包装必填·网上搜·人工确认后生成 NST CSV，同时通过 API 写入斑马」。斑马 xlsx は廃止）
 """
 from __future__ import annotations
@@ -79,13 +79,13 @@ def _cached_prefix_makers() -> dict[str, str]:
         return NC.load_prefix_makers(conn)
 
 
-_ITEM_KEYS = ["page15_result", "page15_zip_bytes", "page15_zip_n", "page15_log_msg",
-              "page15_gen_issues", "page15_editor", "page15_zip_src", "page15_pending_n",
+_ITEM_KEYS = ["page15_result", "page15_csv_bytes", "page15_csv_name", "page15_csv_n", "page15_log_msg",
+              "page15_gen_issues", "page15_editor", "page15_csv_src", "page15_pending_n",
               "page15_skuid_blank", "page15_weight_fix"]
 
 
 def _content_hash(records) -> str:
-    """表・行の内容ハッシュ（ZIP が今の表から作られたか / 台帳に同じ内容を記録済みか の判定）。"""
+    """表・行の内容ハッシュ（CSV が今の表から作られたか / 台帳に同じ内容を記録済みか の判定）。"""
     import json
     return hashlib.sha256(json.dumps(records, ensure_ascii=False, sort_keys=True,
                                      default=str).encode()).hexdigest()
@@ -180,13 +180,14 @@ def _register_banma(out_bm: list[dict], log_ok: bool) -> list:
 
 
 def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
-    """確認表 → 台帳 → 斑马へ API 登録（1 件ずつ・結果を台帳へ）→ 斑马 SKUID を入れて NST CSV（ZIP）。
+    """確認表 → 台帳 → 斑马へ API 登録（1 件ずつ・結果を台帳へ）→ 斑马 SKUID を入れて NST CSV。
 
     NST の SKUID（custitem_item_skuid）= 斑马 SKUID（在庫同期用・2026-11-09 実品で一致確認）。斑马に登録しないと
     取れないので、斑马の後に CSV を作る（Boss 2026-11-09）。取れなかった品は SKUID 空で出して件数を出す。
     to_banma=False（画面のチェックを外した時・Boss 2026-11-10）は斑马に触らず NST CSV だけ・SKUID と商品ランクは空。
     error があれば何も出さない。"""
-    for key in ("page15_zip_bytes", "page15_zip_n", "page15_zip_src", "page15_bm_result", "page15_skuid_blank"):
+    for key in ("page15_csv_bytes", "page15_csv_name", "page15_csv_n", "page15_csv_src", "page15_bm_result",
+                "page15_skuid_blank"):
         st.session_state.pop(key, None)
     out_nst, out_bm, sources, gen_issues = REG.from_frame(
         edited.to_dict("records"), res["nst"], res["extra"], choices=res.get("choices"))
@@ -229,14 +230,12 @@ def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
         row["SKUID"] = sku_by_code.get(REG.item_key(row), "")
     # 斑马に出さないときは SKUID 空が正常 → 件数警告は出さない
     st.session_state["page15_skuid_blank"] = sum(not row["SKUID"] for row in out_nst) if to_banma else 0
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(TPL.dated_filename(), REG.build_nst_registration_csv(out_nst))
-        if gen_issues:
-            zf.writestr("登録前の確認事項.csv", _issues_df(gen_issues).to_csv(index=False).encode("utf-8-sig"))
-    st.session_state["page15_zip_bytes"] = buf.getvalue()
-    st.session_state["page15_zip_n"] = len(out_nst)
-    st.session_state["page15_zip_src"] = _content_hash(edited.to_dict("records"))
+    # CSV を直接ダウンロード（Boss 2026-11-10）。登録者名 = 商品担当者の名前（番号なし・複数なら ・ で連結）
+    owners = dict.fromkeys(re.sub(r"^\d+\s*", "", str(r.get("商品担当者") or "")).strip() for r in out_nst)
+    st.session_state["page15_csv_bytes"] = REG.build_nst_registration_csv(out_nst)
+    st.session_state["page15_csv_name"] = TPL.dated_filename(registrant="・".join(o for o in owners if o))
+    st.session_state["page15_csv_n"] = len(out_nst)
+    st.session_state["page15_csv_src"] = _content_hash(edited.to_dict("records"))
 
 
 def _weight_fix(edited: pd.DataFrame) -> pd.DataFrame:
@@ -353,22 +352,22 @@ def _render_result(res: dict) -> None:
     gen_issues = st.session_state.get("page15_gen_issues") or []
     if gen_issues:
         st.dataframe(_issues_df(gen_issues), use_container_width=True, hide_index=True)
-    zip_bytes = st.session_state.get("page15_zip_bytes")
-    if zip_bytes and st.session_state.get("page15_zip_src") != _content_hash(edited.to_dict("records")):
-        # 画面は編集後の値なのに ZIP は編集前 → 気づけないので伏せる（セット品タブと同じ対策）
-        st.warning(t("⚠️ 表を編集しました。もう一度「📦 生成」を押してください（前回の ZIP は隠しています）"))
-        zip_bytes = None
-    if zip_bytes:
+    csv_bytes = st.session_state.get("page15_csv_bytes")
+    if csv_bytes and st.session_state.get("page15_csv_src") != _content_hash(edited.to_dict("records")):
+        # 画面は編集後の値なのに CSV は編集前 → 気づけないので伏せる（セット品タブと同じ対策）
+        st.warning(t("⚠️ 表を編集しました。もう一度「📦 生成」を押してください（前回の CSV は隠しています）"))
+        csv_bytes = None
+    if csv_bytes:
         if st.session_state.get("page15_pending_n"):
-            st.warning(t(f"⚠️ {st.session_state['page15_pending_n']} 件に登録前の要確認項目があります。ZIP 内の「登録前の確認事項.csv」を確認してください。"))
-        n = st.session_state.get("page15_zip_n", 0)
+            st.warning(t(f"⚠️ {st.session_state['page15_pending_n']} 件に登録前の要確認項目があります。上の「全商品の必須・条件項目チェック」を確認してください。"))
+        n = st.session_state.get("page15_csv_n", 0)
         if st.session_state.get("page15_skuid_blank"):
             st.error(t(f"❌ SKUID（斑马）が空の品 {st.session_state['page15_skuid_blank']} 件。斑马に登録できていないため在庫同期されません。"
                        "原因を直して「📦 生成」を押し直してください（登録済みの品は SKUID だけ取り直します）"))
         st.download_button(
-            t(f"⬇️ ZIP をダウンロード（{n} 件 · NST.csv）"), data=zip_bytes,
-            file_name=f"商品登録_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-            mime="application/zip", type="primary", key="page15_zip_dl")
+            t(f"⬇️ NST CSV をダウンロード（{n} 件）"), data=csv_bytes,
+            file_name=st.session_state.get("page15_csv_name") or TPL.dated_filename(),
+            mime="text/csv", type="primary", key="page15_csv_dl")
         level, msg = st.session_state.get("page15_log_msg") or ("ok", "")
         (st.error if level == "error" else st.success)(msg)
     bm = st.session_state.get("page15_bm_result")

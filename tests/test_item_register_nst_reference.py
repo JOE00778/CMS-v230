@@ -179,11 +179,9 @@ def test_16_product_page_zip_and_checklist_use_only_mock_services(page15_offline
         at.button(key='page15_gen').click().run()
         assert not at.exception,[e.value for e in at.exception]
         assert at.session_state['page15_skuid_blank']==1
-        assert at.session_state['page15_zip_n']==16 and at.session_state['page15_pending_n']==16 and not fw.called
-        z=zipfile.ZipFile(io.BytesIO(at.session_state['page15_zip_bytes']))
-        assert '登録前の確認事項.csv' in z.namelist()
-        nst_name=next(n for n in z.namelist() if 'NetSuite' in n)
-        csv_rows=list(csv.DictReader(io.StringIO(z.read(nst_name).decode('utf-8-sig'))))
+        assert at.session_state['page15_csv_n']==16 and at.session_state['page15_pending_n']==16 and not fw.called
+        assert 'NetSuite' in at.session_state['page15_csv_name'] and '登録者名' not in at.session_state['page15_csv_name']
+        csv_rows=list(csv.DictReader(io.StringIO(at.session_state['page15_csv_bytes'].decode('utf-8-sig'))))
         assert len(csv_rows)==16 and all(r['JANコード']==(o['JANコード'] or o['型番']) for r,o in zip(csv_rows,original))
         sku={r['型番']:r['SKUID'] for r in csv_rows}
         assert sku[codes[0]]=='' and sku[codes[1]]=='1926531294179600002' and sum(bool(v) for v in sku.values())==15
