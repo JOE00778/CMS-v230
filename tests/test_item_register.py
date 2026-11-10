@@ -314,3 +314,17 @@ def test_banned_chars_are_auto_fixed_not_error():
     assert out[0]["アイテム名"] == "テスト(大) 詰替"
     assert not any(i.level == "error" for i in issues)
     assert any("自動修正" in i.message for i in issues)
+
+
+def test_cross_check_hs_skips_rows_without_name():
+    """名前の取れない品（アイテム名キーなし）があっても AI 突合で落ちない（2026-11-10 KeyError 'アイテム名'）。"""
+    nst, extra, _, st = _enrich([_row("4901234567894"), _row("4900000000003")])
+    assert "アイテム名" not in nst[1]
+    sent = []
+
+    def judge(items):
+        sent.extend(items)
+        return {}
+    issues = R.cross_check_hs(nst, extra, st, judge)
+    assert [k for k, *_ in sent] == ["4901234567894"]                    # 名前のある品だけ AI へ
+    assert all(i.jan == "4901234567894" for i in issues)

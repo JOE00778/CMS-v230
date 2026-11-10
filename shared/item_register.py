@@ -321,9 +321,11 @@ def cross_check_hs(nst_rows: list[dict], bm_extra: dict[str, dict], stats: dict,
 
     for k in ("ai_agree", "ai_changed", "ai_error"):
         stats.setdefault(k, 0)
-    res = ai_judge([(item_key(r), r[COL_NAME], r.get(COL_MAKER, "")) for r in nst_rows])
+    # アイテム名が無い品（どこにも無く確認画面で入力待ち）は判定材料が無いので AI に送らない
+    named = [r for r in nst_rows if (r.get(COL_NAME) or "").strip()]
+    res = ai_judge([(item_key(r), r[COL_NAME], r.get(COL_MAKER, "")) for r in named]) if named else {}
     issues: list[Issue] = []
-    for r in nst_rows:
+    for r in named:
         jan, ex = item_key(r), bm_extra[item_key(r)]
         rule, got = ex.get(COL_HS, ""), res.get(jan)
         if not hasattr(got, "hs"):
