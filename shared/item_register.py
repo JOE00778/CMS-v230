@@ -141,15 +141,15 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
     def _prog(offset, label):
         if on_progress is None:
             return None
-        return lambda i, n, jan: on_progress(offset + i, total, f"{label} {jan}")
+        return lambda i, n, jan: on_progress(offset + i, total, f"{label} {i}/{n} 件目（{jan}）")
 
-    metas = fetch_many(jans, fetch_meta, interval=interval, on_progress=_prog(0, "jancode"))
+    metas = fetch_many(jans, fetch_meta, interval=interval, on_progress=_prog(0, "① 商品名"))
 
     # 重量は 4 項目とも人が書いた行は調べない（時間の無駄）
     need_w = [r[COL_JAN] for r in rows
               if want_weight and r.get(COL_JAN) and any(not r.get(c) for c in _WEIGHT_FIELDS)]
     hits = fetch_many(need_w, fetch_weight, interval=interval,
-                      on_progress=_prog(len(jans), "重量")) if need_w else {}
+                      on_progress=_prog(len(jans), "② 重量・寸法")) if need_w else {}
     if want_weight and on_progress:
         on_progress(total, total, "完了")
 

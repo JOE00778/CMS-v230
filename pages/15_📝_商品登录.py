@@ -166,7 +166,7 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
             fetch_meta=meta_fetch, fetch_weight=jan_web.fetch_weight,
             classify_customs=hs_classify.classify_customs, want_weight=want_weight,
             on_progress=lambda d, n, msg: bar.progress(min(d / n, 1.0) if n else 1.0,
-                                                       text=f"{d}/{n} {msg}"))
+                                                       text=msg))
         bar.empty()
         issues += more
         if meta_fetch.state["blocked"]:
