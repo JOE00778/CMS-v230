@@ -118,18 +118,30 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
     if any(i.level == "error" and not i.row for i in issues):
         notes.append(t("ファイル全体のエラーがあります（下の表を確認）"))
     nst_rows, extra, stats = [], {}, {}
+    nst_has: set[str] = set()
+    bm_has: dict[str, str] = {}
+    skipped_both = 0
     if rows:
         with get_connection() as conn:
             exist, warns = NC.existing_jans([r[JAN_COL_NAME] for r in rows if r[JAN_COL_NAME]], conn=conn)
             codes_exist, code_warns = NC.existing_item_codes([REG.item_key(r) for r in rows], conn=conn)
         notes += code_warns
         notes += warns
-        for r in rows:
-            if r[JAN_COL_NAME] in exist or REG.item_key(r) in codes_exist:
-                issues.append(FORM.Issue(0, REG.item_key(r), "error",
-                                         "NST に登録済みの JAN / 型番です（新規登録の対象外）"))
-        ng += sum(r[JAN_COL_NAME] in exist or REG.item_key(r) in codes_exist for r in rows)
-        rows = [r for r in rows if r[JAN_COL_NAME] not in exist and REG.item_key(r) not in codes_exist]
+        nst_has = {REG.item_key(r) for r in rows if r[JAN_COL_NAME] in exist or REG.item_key(r) in codes_exist}
+        # 斑马の既存も先に見る（Boss 2026-11-10: 両方にあれば skip・片方だけなら無い方へ）
+        try:
+            client = banma_client.BanmaClient.from_env()
+            with get_connection() as conn:
+                banma_client.ensure_token(conn, client)
+            bm_has = BMR.find_skus(client, [REG.item_key(r) for r in rows])
+        except Exception as e:  # noqa: BLE001 — 照会できなくても続行。登録時に 1 件ずつ再照会する
+            bm_has = {}
+            notes.append(t(f"斑马の既存照会に失敗（生成時に 1 件ずつ再確認します）: {type(e).__name__}: {e}"))
+        both = [r for r in rows if REG.item_key(r) in nst_has and REG.item_key(r) in bm_has]
+        for r in both:
+            issues.append(FORM.Issue(0, REG.item_key(r), "warn", "NST・斑马とも登録済みのためスキップ（何もしません）"))
+        skipped_both = len(both)
+        rows = [r for r in rows if r not in both]
     if rows:
         try:
             prefix_makers = _cached_prefix_makers()
@@ -145,6 +157,10 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
                                                        text=f"{d}/{n} {msg}"))
         bar.empty()
         issues += more
+        for r in nst_rows:   # 片方だけ登録済みの印（生成時: NST 済 → CSV に出さない / 斑马済 → 斑马は SKUID だけ取る）
+            k = REG.item_key(r)
+            extra.setdefault(k, {})["nst_exists"] = k in nst_has
+            extra[k]["bm_sku_id"] = bm_has.get(k, "")
         if nst_rows:
             with st.spinner(t("画像を探しています（jancode → 画像検索 → 待上图）…")):
                 stats["images"] = REG.fill_images(nst_rows, extra, _search_image)
@@ -157,7 +173,8 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
     ok_jans = {REG.item_key(r) for r in nst_rows}
     warn = len({i.jan for i in issues if i.level == "warn"} & ok_jans)
     return {"nst": nst_rows, "extra": extra, "issues": issues, "stats": stats,
-            "notes": notes, "choices": choices, "ok": len(nst_rows), "ng": ng, "warn": warn}
+            "notes": notes, "choices": choices, "ok": len(nst_rows), "ng": ng, "warn": warn,
+            "skipped_both": skipped_both}
 
 
 def _register_banma(out_bm: list[dict], log_ok: bool) -> list:
@@ -224,17 +241,22 @@ def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
             st.session_state["page15_logged"] = log_key
 
     # 斑马 API 登録（既存 SKU は skip するので押し直しても二重登録しない。skip でも SKUID は返る）
-    results = _register_banma(out_bm, log_ok) if to_banma else []
+    results = _register_banma(out_bm, log_ok) if to_banma else []   # 斑马済は register_one が skip して SKUID だけ返す
     sku_by_code = {code: str(r.get("sku_id") or "") for code, r in results}
     for row in out_nst:
         row["SKUID"] = sku_by_code.get(REG.item_key(row), "")
     # 斑马に出さないときは SKUID 空が正常 → 件数警告は出さない
-    st.session_state["page15_skuid_blank"] = sum(not row["SKUID"] for row in out_nst) if to_banma else 0
-    # CSV を直接ダウンロード（Boss 2026-11-10）。登録者名 = 商品担当者の名前（番号なし・複数なら ・ で連結）
-    owners = dict.fromkeys(re.sub(r"^\d+\s*", "", str(r.get("商品担当者") or "")).strip() for r in out_nst)
-    st.session_state["page15_csv_bytes"] = REG.build_nst_registration_csv(out_nst)
-    st.session_state["page15_csv_name"] = TPL.dated_filename(registrant="・".join(o for o in owners if o))
-    st.session_state["page15_csv_n"] = len(out_nst)
+    st.session_state["page15_skuid_blank"] = (sum(not row["SKUID"] for row in out_nst
+                                                  if not res["extra"].get(REG.item_key(row), {}).get("nst_exists"))
+                                              if to_banma else 0)
+    # NST 登録済み（斑马だけ未登録）の品は CSV に出さない（Boss 2026-11-10）
+    csv_rows = [r for r in out_nst if not res["extra"].get(REG.item_key(r), {}).get("nst_exists")]
+    st.session_state["page15_csv_n"] = len(csv_rows)
+    if csv_rows:
+        # CSV を直接ダウンロード（Boss 2026-11-10）。登録者名 = 商品担当者の名前（番号なし・複数なら ・ で連結）
+        owners = dict.fromkeys(re.sub(r"^\d+\s*", "", str(r.get("商品担当者") or "")).strip() for r in csv_rows)
+        st.session_state["page15_csv_bytes"] = REG.build_nst_registration_csv(csv_rows)
+        st.session_state["page15_csv_name"] = TPL.dated_filename(registrant="・".join(o for o in owners if o))
     st.session_state["page15_csv_src"] = _content_hash(edited.to_dict("records"))
 
 
@@ -274,6 +296,13 @@ def _render_result(res: dict) -> None:
             + (" · 画像 " + " ".join(f"{k}={v}" for k, v in s["images"].items()) if s.get("images") else ""))
     for n in res["notes"]:
         st.warning(n)
+    ex = res["extra"]
+    only_nst = [k for k, v in ex.items() if v.get("nst_exists")]
+    only_bm = [k for k, v in ex.items() if v.get("bm_sku_id") and not v.get("nst_exists")]
+    if res.get("skipped_both") or only_nst or only_bm:
+        st.info(t(f"登録済みの扱い（同じ型番 / JAN）: NST・斑马とも済 → スキップ {res.get('skipped_both', 0)} 件 / "
+                  f"NST だけ済 → 斑马にだけ登録 {len(only_nst)} 件 / 斑马だけ済 → NST CSV にだけ出す {len(only_bm)} 件"
+                  "（斑马 SKUID は既存のものを入れる）"))
     if res["issues"]:
         n_err = sum(i.level == "error" for i in res["issues"])
         if n_err:
@@ -353,6 +382,8 @@ def _render_result(res: dict) -> None:
     if gen_issues:
         st.dataframe(_issues_df(gen_issues), use_container_width=True, hide_index=True)
     csv_bytes = st.session_state.get("page15_csv_bytes")
+    if st.session_state.get("page15_csv_src") and not csv_bytes and st.session_state.get("page15_csv_n") == 0:
+        st.info(t("NST CSV に出す品はありません（すべて NST に登録済み）"))
     if csv_bytes and st.session_state.get("page15_csv_src") != _content_hash(edited.to_dict("records")):
         # 画面は編集後の値なのに CSV は編集前 → 気づけないので伏せる（セット品タブと同じ対策）
         st.warning(t("⚠️ 表を編集しました。もう一度「📦 生成」を押してください（前回の CSV は隠しています）"))

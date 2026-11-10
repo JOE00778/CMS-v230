@@ -436,7 +436,7 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
         if validation:
             issues.extend(Issue(0, jan, "error", message) for message in validation)
             continue
-        if not str(row.get(COL_PKG_WEIGHT) or "").strip():
+        if not str(row.get(COL_PKG_WEIGHT) or "").strip() and not ex.get("bm_sku_id"):   # 斑马済なら重量は使わない
             issues.append(Issue(0, jan, "error", WEIGHT_REQUIRED_MSG))
             continue
         # カートン 3 辺・入数は NST 取込で必須（空だと「必須フィールドがありません」）→ 空なら 1（Boss 2026-11-10）

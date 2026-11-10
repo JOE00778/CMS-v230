@@ -87,3 +87,17 @@ def test_register_all_records_each_row():
     seen = []
     out = BMR.register_all(FakeClient(after=SKU), [ROW], record=lambda code, r: seen.append((code, r["status"])))
     assert seen == [("4901234567894", "ok")] and out[0][1]["status"] == "ok"
+
+
+def test_find_skus_chunks_by_50_and_exact_match_only():
+    from unittest.mock import MagicMock
+
+    from shared import banma_register as BMR
+    codes = [f"C{i:03d}" for i in range(120)]
+    client = MagicMock()
+    client.call.side_effect = lambda m, p, q: {"SKUs": [{"Code": c, "SKUID": "S" + c} for c in q["Code"].split(",")[:2]]
+                                               + [{"Code": "C000_2", "SKUID": "x"}]}
+    out = BMR.find_skus(client, codes + ["", "C000"])
+    assert client.call.call_count == 3                                     # 120 件 → 50/50/20
+    assert all(len(c.args[2]["Code"].split(",")) <= 50 and c.args[2]["PageSize"] == 50 for c in client.call.call_args_list)
+    assert out == {"C000": "SC000", "C001": "SC001", "C050": "SC050", "C051": "SC051", "C100": "SC100", "C101": "SC101"}

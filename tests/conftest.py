@@ -17,7 +17,8 @@ def page15_offline():
     with mock.patch.object(jan_web, "fetch_weight", return_value=None), \
             mock.patch.object(image_search, "_fetch_image_for_jan",
                               return_value=("not_found", None, 0, "offline", None, "kakaku")), \
-            mock.patch.object(banma_client.BanmaClient, "from_env", return_value=mock.MagicMock()), \
+            mock.patch.object(banma_client.BanmaClient, "from_env",
+                              return_value=mock.MagicMock(**{"call.return_value": {"SKUs": []}})), \
             mock.patch.object(banma_client, "ensure_token"), \
             mock.patch.object(banma_register, "register_one", reg):
         yield reg

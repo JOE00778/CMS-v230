@@ -56,6 +56,23 @@ def find_sku(client, code: str) -> dict | None:
     return next((s for s in skus if s.get("Code") == code), None)
 
 
+def find_skus(client, codes: list[str]) -> dict[str, str]:
+    """Code（型番）→ 斑马 SKUID。50 件ずつ照会（PageSize 上限 50・Code はカンマ区切り）。完全一致だけ採る。"""
+    out: dict[str, str] = {}
+    uniq = sorted({c for c in codes if c})
+    for i in range(0, len(uniq), 50):
+        chunk = uniq[i:i + 50]
+        page = 1
+        while True:
+            skus = (client.call("GET", SKU_PATH, {"Code": ",".join(chunk), "PageNumber": page, "PageSize": 50})
+                    or {}).get("SKUs") or []
+            out.update({s["Code"]: str(s.get("SKUID") or "") for s in skus if s.get("Code") in chunk})
+            if len(skus) < 50:
+                break
+            page += 1
+    return out
+
+
 def register_one(client, row: dict) -> dict:
     """→ {"status": ok|partial|skipped|fail, "sku_id", "spu_id", "message"}。例外は投げない。"""
     code = item_key(row)

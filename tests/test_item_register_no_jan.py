@@ -105,9 +105,9 @@ def test_page15_no_jan_generation_and_existing_code_exclusion(page15_offline):
         at.session_state['__auth_ok'] = True
         at.run(); at.button(key='page15_run').click().run()
         assert not at.exception, [e.value for e in at.exception]
-        assert [m.value for m in at.metric][:2] == ['5', '1']
+        assert [m.value for m in at.metric][:2] == ['6', '0']           # NST 済の SKUS[0] は斑马にだけ回す
         checklist = next(d.value for d in at.dataframe if '待手入力' in d.value.columns)
-        assert checklist['型番'].tolist() == SKUS[1:]
+        assert checklist['型番'].tolist() == SKUS
         assert all('メーカー名' not in text for text in checklist['待手入力'])
         assert all(F.COL_PKG_WEIGHT not in text for text in checklist['待手入力'])
         editor = next(d.value for d in at.dataframe if R.COL_PKG_WEIGHT in d.value.columns)
@@ -119,7 +119,7 @@ def test_page15_no_jan_generation_and_existing_code_exclusion(page15_offline):
         rows = list(csv.DictReader(io.StringIO(at.session_state['page15_csv_bytes'].decode('utf-8-sig'))))
         assert [r['型番'] for r in rows] == SKUS[1:]
         assert at.session_state['page15_csv_name'].endswith('_徐越.csv')        # 登録者名 = 担当者名（番号なし）
-        assert [c.args[1]['型番'] for c in page15_offline.call_args_list] == SKUS[1:]
+        assert [c.args[1]['型番'] for c in page15_offline.call_args_list] == SKUS   # 斑马には 6 件・CSV は 5 件
 
 
 def test_manual_input_checklist_reports_only_missing_no_jan_fields():

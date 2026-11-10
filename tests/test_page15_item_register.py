@@ -38,7 +38,7 @@ def test_page15_renders_all_tabs_without_exception(page15_offline):
     assert not any("ネットで調べる" in c.label for c in at.checkbox)  # 網調べは常に実行（切替なし）
 
 
-def _filled_upload(choices) -> bytes:
+def _filled_upload(choices, weight: bool = True) -> bytes:
     import io
 
     from openpyxl import load_workbook
@@ -54,8 +54,9 @@ def _filled_upload(choices) -> bytes:
         if cell.value in vals:
             ws.cell(row=2, column=j, value=vals[cell.value])
     # 重量はテンプレに無い（ネット調べ→無ければ確認表で手入力）。テストでは旧テンプレ同様に列を足して入れる
-    ws.cell(row=1, column=ws.max_column + 1, value="パッケージ重量(g)")
-    ws.cell(row=2, column=ws.max_column, value="80")
+    if weight:
+        ws.cell(row=1, column=ws.max_column + 1, value="パッケージ重量(g)")
+        ws.cell(row=2, column=ws.max_column, value="80")
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -115,7 +116,7 @@ def test_page15_process_and_generate_flow(page15_offline):
     assert res["logged"] and [c for c, _ in res["rows"]] == ["4901234567894"]
 
 
-def _run_page(choices, up, *, meta, exist=frozenset(), conn=None):
+def _run_page(choices, up, *, meta, exist=frozenset(), conn=None, bm=None):
     """▶ 処理する まで進めた AppTest と patch の ExitStack を返す（呼び出し側で close）。"""
     import contextlib
 
@@ -130,7 +131,8 @@ def _run_page(choices, up, *, meta, exist=frozenset(), conn=None):
               mock.patch.object(NC, "load_prefix_makers", return_value={}),
               mock.patch.object(NC, "existing_jans", return_value=(set(exist), [])),
               mock.patch.object(jan_web, "fetch_meta", fm),
-              mock.patch.object(jan_web, "INTERVAL", 0)):
+              mock.patch.object(jan_web, "INTERVAL", 0),
+              mock.patch("shared.banma_register.find_skus", return_value=dict(bm or {}))):
         stack.enter_context(p)
     st.cache_data.clear()
     at = AppTest.from_file(str(PAGE), default_timeout=60)
@@ -145,7 +147,8 @@ def _choices():
                       middle_by_large=dict(NC.MIDDLE_BY_LARGE))
 
 
-def test_page15_existing_jan_is_excluded(page15_offline):
+def test_page15_nst_only_existing_goes_to_banma_only(page15_offline):
+    """NST にだけある → 斑马にだけ登録・NST CSV には出さない（Boss 2026-11-10）。"""
     from shared import jan_web
     ch = _choices()
     up = mock.MagicMock()
@@ -154,9 +157,48 @@ def test_page15_existing_jan_is_excluded(page15_offline):
     at, stack, fm, _ = _run_page(ch, up, meta=meta, exist={"4901234567894"})
     with stack:
         assert not at.exception, [e.value for e in at.exception]
-        assert [m.value for m in at.metric][:2] == ["0", "1"]       # OK=0 NG=1
-        assert not fm.called
-        assert any("登録済み" in str(v) for df in at.dataframe for v in df.value.values.ravel())
+        assert [m.value for m in at.metric][:2] == ["1", "0"]
+        assert any("斑马にだけ登録 1 件" in i.value for i in at.info)
+        at.button(key="page15_gen").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+    assert page15_offline.call_count == 1                                  # 斑马には登録
+    assert at.session_state["page15_csv_n"] == 0 and "page15_csv_bytes" not in at.session_state
+    assert any("すべて NST に登録済み" in i.value for i in at.info)
+
+
+def test_page15_both_existing_is_skipped(page15_offline):
+    """NST・斑马とも済 → 何もしない（error ではなくスキップ）。"""
+    from shared import jan_web
+    ch = _choices()
+    up = mock.MagicMock()
+    up.getvalue.return_value = _filled_upload(ch)
+    meta = jan_web.JanMeta("4901234567894", "テスト クッキー", "", "", "ok")
+    at, stack, fm, _ = _run_page(ch, up, meta=meta, exist={"4901234567894"}, bm={"4901234567894": "777"})
+    with stack:
+        assert not at.exception, [e.value for e in at.exception]
+        assert [m.value for m in at.metric][:2] == ["0", "0"]
+        assert not fm.called and page15_offline.call_count == 0
+        assert any("スキップ 1 件" in i.value for i in at.info)
+
+
+def test_page15_banma_only_existing_goes_to_nst_csv_only(page15_offline):
+    """斑马にだけある → NST CSV に出し、斑马は登録せず既存 SKUID を入れる。重量の手入力は不要。"""
+    import csv
+    import io
+
+    from shared import jan_web
+    page15_offline.return_value = {"status": "skipped", "sku_id": "777", "spu_id": "", "message": "既存"}
+    ch = _choices()
+    up = mock.MagicMock()
+    up.getvalue.return_value = _filled_upload(ch, weight=False)
+    meta = jan_web.JanMeta("4901234567894", "テスト クッキー", "", "", "ok")
+    at, stack, fm, _ = _run_page(ch, up, meta=meta, bm={"4901234567894": "777"})
+    with stack:
+        assert any("NST CSV にだけ出す 1 件" in i.value for i in at.info)
+        at.button(key="page15_gen").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+    rec = next(csv.DictReader(io.StringIO(at.session_state["page15_csv_bytes"].decode("utf-8-sig"))))
+    assert rec["SKUID"] == "777" and rec["型番"] == "4901234567894"
 
 
 def test_page15_rerun_retries_after_jancode_error(page15_offline):
