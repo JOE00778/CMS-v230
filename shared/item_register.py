@@ -279,7 +279,64 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             stats["warn"] += 1
             issues.extend(Issue(0, code, "warn", m) for m in warns)
         stats["ok"] += 1
+    issues += unify_shop_brands(nst_rows, bm_extra)
     return nst_rows, bm_extra, issues, stats
+
+
+_CORP_RE = re.compile(r"株式会社|有限会社|合同会社|\(株\)|（株）|㈱|\s")
+_KANA_RE = re.compile(r"[ァ-ヴー・]{3,}")
+_LATIN_RE = re.compile(r"[A-Za-z][A-Za-z.&'-]*")
+
+
+def _head(name: str) -> str:
+    toks = [t for t in name.split() if not _LATIN_RE.fullmatch(t)]
+    return toks[0] if toks else ""
+
+
+def unify_shop_brands(nst_rows: list[dict], bm_extra: dict) -> list[Issue]:
+    """楽天・Yahoo 由来の名前の先頭ブランドを同じメーカー（JAN 先頭 7 桁）で 1 つの日本語表記に揃える
+    （Boss 2026-11-10「TAKARATOMY と タカラトミー が混在」→ 日本語で統一）。jancode 由来の名前は触らない。
+
+    ブランド = 同じ先頭 7 桁の品のメーカー名（NST 同プレフィックス / jancode 会社名・法人格を除く）→
+    無ければ楽天名の先頭語（英字を除く）で 2 件以上かつ 1/3 以上の品が使う片仮名語。
+    名前からブランド語とその直前直後の英字表記（TAKARATOMY 等）を除き、先頭に 1 回だけ付ける。"""
+    from collections import Counter
+    shop = lambda r: any(("楽天" in a or "Yahoo" in a) for a in bm_extra.get(item_key(r), {}).get("auto", []))  # noqa: E731
+    groups: dict[str, list[dict]] = {}
+    for r in nst_rows:
+        jan = str(r.get(COL_JAN) or "")
+        if len(jan) == 13 and jan.isdigit():
+            groups.setdefault(jan[:7], []).append(r)
+    issues: list[Issue] = []
+    for rows in groups.values():
+        targets = [r for r in rows if shop(r) and (r.get(COL_NAME) or "").strip()]
+        if not targets:
+            continue
+        maker = next((r.get(COL_MAKER) for r in rows if (r.get(COL_MAKER) or "").strip()), "")
+        brand = _CORP_RE.sub("", maker or "")
+        from_heads = False
+        if not brand and len(rows) >= 2:
+            heads = Counter(h for h in (_head(r.get(COL_NAME) or "") for r in rows) if _KANA_RE.fullmatch(h))
+            if heads:
+                cand, n = heads.most_common(1)[0]
+                if n >= 2 and n * 3 >= len(rows):
+                    brand, from_heads = cand, True
+        if not brand:
+            continue
+        for r in targets:
+            toks = r[COL_NAME].split()
+            drop = {i for i, t in enumerate(toks) if t == brand}
+            drop |= {j for i in drop for j in (i - 1, i + 1) if 0 <= j < len(toks) and _LATIN_RE.fullmatch(toks[j])}
+            new = " ".join([brand] + [t for i, t in enumerate(toks) if i not in drop])[:NAME_MAX]
+            code = item_key(r)
+            if new != r[COL_NAME]:
+                issues.append(Issue(0, code, "warn", f"ブランド表記を揃えました: {r[COL_NAME]} → {new}"))
+                r[COL_NAME] = new
+            if not (r.get(COL_MAKER) or "").strip() and from_heads:
+                r[COL_MAKER] = brand
+                bm_extra.setdefault(code, {})["maker_source"] = "shop-brand"
+                bm_extra[code].setdefault("auto", []).append("メーカー名(楽天の表記から・要確認)")
+    return issues
 
 
 def fill_images(nst_rows: list[dict], bm_extra: dict[str, dict], search) -> dict:

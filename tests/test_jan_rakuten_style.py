@@ -90,3 +90,30 @@ def test_enrich_marks_rakuten_name_for_review():
     assert nst[0]["アイテム名"] == "楽天名 30g" and st["name_rakuten"] == 1 and st["jancode_ok"] == 0
     assert "アイテム名(楽天・要確認)" in extra["4901234567894"]["auto"]
     assert any("楽天" in i.message and i.level == "warn" for i in issues)
+
+
+def test_shop_brand_unified_to_japanese_per_jan_prefix():
+    """同じメーカー（JAN 先頭 7 桁）の楽天名は先頭ブランドを日本語 1 つに揃える（Boss 2026-11-10）。2026-11-10 実データ。"""
+    from shared import item_register as R
+    names = ["TAKARATOMY タカラトミー トミカ C-04 メーター (スタンダードタイプ)", "カーズ トミカ C-11 チック・ヒックス",
+             "C-09 シェリフ (スタンダードタイプ)", "タカラトミー カーズ トミカ C-15 クルーズ・ラミレス(道路パトロールカータイプ)",
+             "タカラトミー トミカ C-17 フランチェスコ・ベルヌーイ(スタンダードタイプ)"]
+    rows = [{"型番": f"490481000{i:04d}", "JANコード": f"490481000{i:04d}", "アイテム名": n} for i, n in enumerate(names)]
+    rows.append({"型番": "4904810999999", "JANコード": "4904810999999", "アイテム名": "TAKARATOMY ほげ"})   # jancode 由来
+    ex = {r["型番"]: {"auto": ["アイテム名(楽天・要確認)"]} for r in rows[:-1]}
+    ex["4904810999999"] = {"auto": ["アイテム名(jancode)"]}
+    issues = R.unify_shop_brands(rows, ex)
+    assert [r["アイテム名"] for r in rows] == [
+        "タカラトミー トミカ C-04 メーター (スタンダードタイプ)", "タカラトミー カーズ トミカ C-11 チック・ヒックス",
+        "タカラトミー C-09 シェリフ (スタンダードタイプ)", "タカラトミー カーズ トミカ C-15 クルーズ・ラミレス(道路パトロールカータイプ)",
+        "タカラトミー トミカ C-17 フランチェスコ・ベルヌーイ(スタンダードタイプ)", "TAKARATOMY ほげ"]    # jancode 名は触らない
+    assert all(r.get("メーカー名") == "タカラトミー" for r in rows[:-1])
+    assert len(issues) == 3
+
+
+def test_shop_brand_uses_known_maker_without_corp_suffix():
+    from shared import item_register as R
+    rows = [{"型番": "4901305411224", "JANコード": "4901305411224", "アイテム名": "辻利 抹茶ミルク お濃い茶仕立て",
+             "メーカー名": "片岡物産株式会社"}]
+    R.unify_shop_brands(rows, {"4901305411224": {"auto": ["アイテム名(楽天・要確認)"]}})
+    assert rows[0]["アイテム名"] == "片岡物産 辻利 抹茶ミルク お濃い茶仕立て"
