@@ -419,6 +419,14 @@ def _render_result(res: dict) -> None:
                                        for c, r in rows]), use_container_width=True, hide_index=True)
             if cnt["fail"]:
                 st.info(t("失敗分は原因を直してもう一度「📦 生成」を押せば、未登録の品だけ登録されます"))
+            # NST 済・今回斑马に登録した品は SKUID が NST に入らない（新規登録 CSV の対象外）→ 提示だけ（Boss 2026-11-10）
+            nst_only = [(c, r.get("sku_id", "")) for c, r in rows
+                        if res["extra"].get(c, {}).get("nst_exists") and r.get("sku_id")]
+            if nst_only:
+                st.warning(t(f"⚠️ NST 登録済みの {len(nst_only)} 件は斑马 SKUID が NST に入っていません。"
+                             "NST の各アイテムの SKUID 欄に手で入れてください（在庫同期用）"))
+                st.dataframe(pd.DataFrame(nst_only, columns=["型番", "斑马 SKUID"]),
+                             use_container_width=True, hide_index=True)
 
 
 def _render_item_tab() -> None:

@@ -162,6 +162,7 @@ def test_page15_nst_only_existing_goes_to_banma_only(page15_offline):
         at.button(key="page15_gen").click().run()
         assert not at.exception, [e.value for e in at.exception]
     assert page15_offline.call_count == 1                                  # 斑马には登録
+    assert any("SKUID が NST に入っていません" in w.value for w in at.warning)
     assert at.session_state["page15_csv_n"] == 0 and "page15_csv_bytes" not in at.session_state
     assert any("すべて NST に登録済み" in i.value for i in at.info)
 
