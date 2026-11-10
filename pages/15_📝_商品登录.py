@@ -277,8 +277,10 @@ def _render_result(res: dict) -> None:
         st.warning(n)
     if res["issues"]:
         n_err = sum(i.level == "error" for i in res["issues"])
+        if n_err:
+            st.error(t(f"❌ error {n_err} 件の行は出力しません（下の「処理時の問題」を開いて確認）"))
         with st.expander(t(f"⚠️ 処理時の問題 {len(res['issues'])} 件（error {n_err} 件の行は出力しません）"),
-                         expanded=True):
+                         expanded=False):
             st.dataframe(_issues_df(res["issues"]), use_container_width=True, hide_index=True)
     if not res["nst"]:
         st.error(t("❌ 出力できる行がありません"))
@@ -318,10 +320,14 @@ def _render_result(res: dict) -> None:
     records = edited.to_dict("records")
     current_nst, _, _, current_issues = REG.from_frame(records, res["nst"], res["extra"], choices=choices)
     current_issues += REG.registration_issues(current_nst, choices=choices)
-    st.subheader(t("✍️ 全商品の必須・条件項目チェック"))
     if current_issues:
-        st.warning(t("未入力・要確認項目があります。整箱三辺は実測値を手入力し、分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
-        st.dataframe(_issues_df(current_issues), use_container_width=True, hide_index=True)
+        n_cur_err = sum(i.level == "error" for i in current_issues)
+        if n_cur_err:
+            st.error(t(f"❌ error {n_cur_err} 件があり、このままでは生成できません（下を開いて確認）"))
+        with st.expander(t(f"✍️ 全商品の必須・条件項目チェック（{len(current_issues)} 件・error {n_cur_err} 件）"),
+                         expanded=False):
+            st.warning(t("未入力・要確認項目があります。整箱三辺は実測値を手入力し、分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
+            st.dataframe(_issues_df(current_issues), use_container_width=True, hide_index=True)
     else:
         st.success(t("NST テンプレ項目チェックで未入力・要確認項目はありません"))
     with st.expander(t("📑 原本の全 71 項目・入力条件")):
