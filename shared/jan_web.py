@@ -445,8 +445,15 @@ def yahoo_meta(jan: str) -> JanMeta:
     if raw is None:
         return JanMeta(jan, "", "", "", "error", "Yahoo 取得失敗", source="yahoo")
     page = _decode(raw)
-    alts = [html.unescape(a).strip() for a in re.findall(r'alt="([^"]{8,140})"', page)]
-    name = pick_jancode_style(a for a in alts if not any(x in a for x in _YAHOO_CHROME))
+    alts = []
+    for a in re.findall(r'alt="([^"]{12,140})"', page):
+        a = html.unescape(a).strip()
+        if any(x in a for x in _YAHOO_CHROME) or re.search(r"スタンプ|対象|ポイント|クーポン|ストア|バナー|ランキング", a):
+            continue
+        if a.endswith(("...", "…")):     # 省略された alt は最後の切れた語ごと落とす
+            a = a.rstrip(".…").rsplit(" ", 1)[0]
+        alts.append(a)
+    name = pick_jancode_style(alts)
     return JanMeta(jan, name, "", "", "ok" if name else "not_found", source="yahoo")
 
 
