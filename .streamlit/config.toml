@@ -9,6 +9,9 @@ maxUploadSize = 200
 # 最大の余裕。サーバ側実測は正常（同一ファイル 41.7MB を協議シミュレーションで
 # 2 回 204 成功）なので、断因はクライアント側の保活と推定。
 websocketPingInterval = 60
+# 断線後のセッション保持 120s→900s（Boss 2026-11-11「保留到15分钟就可以」）: page15 で入力後に
+# 「アップロード待ち」へ戻る＝120s 超の断線で新セッション化し、ファイル・結果・編集が消えていた。
+disconnectedSessionTTL = 900
 enableCORS = false
 enableXsrfProtection = true
 enableStaticServing = true
