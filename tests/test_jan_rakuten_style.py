@@ -138,3 +138,15 @@ def test_shop_brand_uses_known_maker_without_corp_suffix():
              "メーカー名": "片岡物産株式会社"}]
     R.unify_shop_brands(rows, {"4901305411224": {"auto": ["アイテム名(楽天・要確認)"]}})
     assert rows[0]["アイテム名"] == "片岡物産 辻利 抹茶ミルク お濃い茶仕立て"
+
+
+def test_rakuten_repeated_words_and_brand_first_20261111():
+    """2026-11-11 実データ（楽天 30 件ずつ）: 末尾の「トミカ」重複・「ルーズリーフ B5 ノート」の羅列を選ばない。
+    同点ならメーカー先頭・核の語が多い名前（短すぎて規格が抜けた名前は選ばない）。"""
+    import json
+    import pathlib
+    data = json.loads((pathlib.Path(__file__).parent / "fixtures" / "rakuten_titles_20261111.json").read_text("utf-8"))
+    assert {j: pick_jancode_style(t) for j, t in data.items()} == {
+        "4901480233048": "コクヨ キャンパスルーズリーフ さらさら書ける B罫ドット B5 100枚 ノ-836BTN",
+        "4904810227984": "タカラトミー カーズ トミカ C-24 ライトニング・マックィーン(アイスレーシングタイプ)",
+        "4904810166412": "タカラトミー カーズ トミカ C-26 ラモーン(スタンダードタイプ)"}

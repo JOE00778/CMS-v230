@@ -400,7 +400,7 @@ def jancode_style_name(title: str) -> str:
 
 def pick_jancode_style(titles) -> str:
     """店をまたいだ合議。語（空白区切り）が半数以上の店に出る＝核、少数の店だけ＝検索語の羅列。
-    各候補を「核の語数 − 少数語の数」で採点し最高点（同点は同じ書き方の店が多い → 短い）を採る。"""
+    各候補を「核の語数 − 少数語の数 − 語の重複数 + メーカー先頭」で採点し最高点（同点は核の語が多い → 同じ書き方の店が多い → 短い）を採る。"""
     from collections import Counter
     names = [n for n in (jancode_style_name(x) for x in titles) if n]
     if not names:
@@ -408,11 +408,15 @@ def pick_jancode_style(titles) -> str:
     words = lambda n: re.findall(r"[^\s()]+", n)   # noqa: E731 — 括弧の中も 1 語（「(シェリフタイプ)」の有無を票に反映）
     freq = Counter(tok for n in names for tok in set(words(n)))
     half = len(names) / 2
+    top = freq.most_common(1)[0][0]
     same = Counter(names)
 
     def score(n: str):
         toks = words(n)
-        return (sum(freq[x] >= half for x in toks) - sum(freq[x] < half for x in toks), same[n], -len(n))
+        uniq = set(toks)   # 同じ語の繰り返し（「… トミカ」「ルーズリーフ B5 ノート」）は検索語の羅列 → 1 回だけ数えて減点
+        core = sum(freq[x] >= half for x in uniq)
+        lead = int(bool(toks) and toks[0] == top)   # jancode 形式＝メーカー（最頻語）が先頭
+        return (core - sum(freq[x] < half for x in uniq) - (len(toks) - len(uniq)) + lead, core, same[n], -len(n))
     return max(same, key=score)
 
 
