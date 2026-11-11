@@ -385,6 +385,7 @@ _VOL_RE = re.compile(r"\(?\s*(\d+(?:\.\d+)?)\s*(kg|mg|g|ml|mL|ML|L|l|個入り?|
 def jancode_style_name(title: str) -> str:
     """楽天の出品名 1 件を jancode 形式に。セット品・空は ""。"""
     t = unicodedata.normalize("NFKC", str(title or "")).replace("\u3000", " ")
+    t = re.sub(r"[\u2010-\u2015\u2212\uff0d]", "-", t)   # C−30（U+2212）と C-30 を同じ語に（NFKC は − を変えない）
     if not t.strip() or _SET_RE.search(t):
         return ""
     t = _PROMO_HEAD_RE.sub("", t)
@@ -393,6 +394,7 @@ def jancode_style_name(title: str) -> str:
     m = _VOL_RE.search(t)
     if m:   # 容量の後ろは検索語の羅列 → 切る。「(80g)」は「 80g」に
         t = t[:m.start()].rstrip() + " " + m.group(1) + m.group(2).replace("mL", "ml").replace("ML", "ml").rstrip("入り")
+    t = re.sub(r"\s+\(", "(", t)   # 「マックィーン (シェリフタイプ)」→「マックィーン(シェリフタイプ)」（jancode と同じ詰め書き）
     return re.sub(r"\s+", " ", t).strip(" -/・")
 
 
@@ -403,12 +405,13 @@ def pick_jancode_style(titles) -> str:
     names = [n for n in (jancode_style_name(x) for x in titles) if n]
     if not names:
         return ""
-    freq = Counter(tok for n in names for tok in set(n.split()))
+    words = lambda n: re.findall(r"[^\s()]+", n)   # noqa: E731 — 括弧の中も 1 語（「(シェリフタイプ)」の有無を票に反映）
+    freq = Counter(tok for n in names for tok in set(words(n)))
     half = len(names) / 2
     same = Counter(names)
 
     def score(n: str):
-        toks = n.split()
+        toks = words(n)
         return (sum(freq[x] >= half for x in toks) - sum(freq[x] < half for x in toks), same[n], -len(n))
     return max(same, key=score)
 

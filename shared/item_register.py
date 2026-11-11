@@ -293,54 +293,38 @@ _KANA_RE = re.compile(r"[ァ-ヴー・]{3,}")
 _LATIN_RE = re.compile(r"[A-Za-z][A-Za-z.&'-]*")
 
 
-def _head(name: str) -> str:
-    toks = [t for t in name.split() if not _LATIN_RE.fullmatch(t)]
-    return toks[0] if toks else ""
+def _drop_latin_dupe(name: str) -> str:
+    """先頭の英字表記と直後の片仮名表記が並ぶもの（TAKARATOMY タカラトミー / KOKUYO コクヨ）は英字を外す（Boss「日本語で統一」）。"""
+    toks = name.split()
+    if len(toks) >= 2 and _LATIN_RE.fullmatch(toks[0]) and _KANA_RE.fullmatch(toks[1]):
+        return " ".join(toks[1:])
+    return name
 
 
 def unify_shop_brands(nst_rows: list[dict], bm_extra: dict) -> list[Issue]:
-    """楽天・Yahoo 由来の名前の先頭ブランドを同じメーカー（JAN 先頭 7 桁）で 1 つの日本語表記に揃える
-    （Boss 2026-11-10「TAKARATOMY と タカラトミー が混在」→ 日本語で統一）。jancode 由来の名前は触らない。
+    """名前の先頭ブランドを日本語に揃える（Boss 2026-11-10「TAKARATOMY と タカラトミー が混在」→ 日本語で統一）。
 
-    ブランド = 同じ先頭 7 桁の品のメーカー名（NST 同プレフィックス / jancode 会社名・法人格を除く）→
-    無ければ楽天名の先頭語（英字を除く）で 2 件以上かつ 1/3 以上の品が使う片仮名語。
-    名前からブランド語とその直前直後の英字表記（TAKARATOMY 等）を除き、先頭に 1 回だけ付ける。"""
-    from collections import Counter
+    ① 全ての名前: 先頭の「英字 片仮名」の重複表記は英字を外す。
+    ② 楽天・Yahoo 由来の名前: メーカー名（NST 同プレフィックス / jancode 会社名・法人格を除く）が分かっていれば先頭に 1 回だけ付ける。
+    メーカー不明なら付けない。同じ JAN 先頭 7 桁でも商品ラインは別（ポケモン と カーズ はどちらもタカラトミー）なので、
+    名前の多数派の語をブランドとして他の品に付けてはいけない（2026-11-11 カーズ・KOKUYO に「ポケットモンスター」が付いた事故）。"""
     shop = lambda r: any(("楽天" in a or "Yahoo" in a) for a in bm_extra.get(item_key(r), {}).get("auto", []))  # noqa: E731
-    groups: dict[str, list[dict]] = {}
-    for r in nst_rows:
-        jan = str(r.get(COL_JAN) or "")
-        if len(jan) == 13 and jan.isdigit():
-            groups.setdefault(jan[:7], []).append(r)
     issues: list[Issue] = []
-    for rows in groups.values():
-        targets = [r for r in rows if shop(r) and (r.get(COL_NAME) or "").strip()]
-        if not targets:
+    for r in nst_rows:
+        old = (r.get(COL_NAME) or "").strip()
+        if not old:
             continue
-        maker = next((r.get(COL_MAKER) for r in rows if (r.get(COL_MAKER) or "").strip()), "")
-        brand = _CORP_RE.sub("", maker or "")
-        from_heads = False
-        if not brand and len(rows) >= 2:
-            heads = Counter(h for h in (_head(r.get(COL_NAME) or "") for r in rows) if _KANA_RE.fullmatch(h))
-            if heads:
-                cand, n = heads.most_common(1)[0]
-                if n >= 2 and n * 3 >= len(rows):
-                    brand, from_heads = cand, True
-        if not brand:
-            continue
-        for r in targets:
-            toks = r[COL_NAME].split()
+        new = _drop_latin_dupe(old)
+        brand = _CORP_RE.sub("", r.get(COL_MAKER) or "")
+        if brand and shop(r):
+            toks = new.split()
             drop = {i for i, t in enumerate(toks) if t == brand}
             drop |= {j for i in drop for j in (i - 1, i + 1) if 0 <= j < len(toks) and _LATIN_RE.fullmatch(toks[j])}
-            new = " ".join([brand] + [t for i, t in enumerate(toks) if i not in drop])[:NAME_MAX]
-            code = item_key(r)
-            if new != r[COL_NAME]:
-                issues.append(Issue(0, code, "warn", f"ブランド表記を揃えました: {r[COL_NAME]} → {new}"))
-                r[COL_NAME] = new
-            if not (r.get(COL_MAKER) or "").strip() and from_heads:
-                r[COL_MAKER] = brand
-                bm_extra.setdefault(code, {})["maker_source"] = "shop-brand"
-                bm_extra[code].setdefault("auto", []).append("メーカー名(楽天の表記から・要確認)")
+            new = " ".join([brand] + [t for i, t in enumerate(toks) if i not in drop])
+        new = new[:NAME_MAX]
+        if new != old:
+            issues.append(Issue(0, item_key(r), "warn", f"ブランド表記を揃えました: {old} → {new}"))
+            r[COL_NAME] = new
     return issues
 
 
