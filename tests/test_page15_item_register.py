@@ -1,4 +1,4 @@
-"""page15（商品登录）を Streamlit AppTest で無頭実行 — 例外なく 3 タブとも描画されること。
+"""page15（商品登录）を Streamlit AppTest で無頭実行 — 例外なく 4 タブとも描画されること。
 
 load_choices / SuiteQL / DB はモック（网络/DB 不要）。
 """
@@ -28,12 +28,13 @@ def test_page15_renders_all_tabs_without_exception(page15_offline):
         at.session_state["__auth_ok"] = True
         at.run()
     assert not at.exception, [e.value for e in at.exception]
-    assert len(at.tabs) == 3
+    assert len(at.tabs) == 4
     assert lc.called
     assert any("定数を使用" in w.value for w in at.warning)          # choices.warnings を表示
     labels = [b.label for b in at.button]
     assert any("処理する" in x for x in labels)                     # 🆕 商品登録
     assert any("查询 PG" in x for x in labels)                      # 📦 セット品登録
+    assert any("チェックする" in x for x in labels)                  # 🔎 SKUID 空チェック
     assert not any("JD" in x for x in labels)                       # JD UI は削除済み
     assert not any("ネットで調べる" in c.label for c in at.checkbox)  # 網調べは常に実行（切替なし）
 
@@ -365,3 +366,89 @@ def test_page15_hs_retry_button_fills_blank_hs(page15_offline):
     assert calls == [["4901234567894"], ["4901234567894"]]           # 食品は規則を使わず AI（1 回目 429）→ 再判定
     assert at.session_state["page15_result"]["extra"]["4901234567894"]["_hs"] == "190590"
     assert any("1 件中 1 件に HS が入りました" in i.value for i in at.info)
+
+
+def test_page15_skuid_tab_check_and_csv_20261112(page15_offline):
+    """🔎 SKUID 空チェック: 既定条件で絞り（取扱中止・非アクティブは外す）→ 斑马照会 → 有りは CSV・重複は保留・無しは一覧。"""
+    from shared import banma_client, nst_suiteql
+    from shared import banma_register as BMR
+    st.cache_data.clear()
+    blank = [{"id": "1", "code": "X1", "jan": "4900000000011", "name": "名1", "dept": "輸出事業", "handling": "取扱中",
+              "inactive": "F", "item_rank": "NEW"},
+             {"id": "2", "code": "X2", "jan": "4900000000028", "name": "名2", "dept": "輸出事業", "handling": "取扱中止",
+              "inactive": "F", "item_rank": None},
+             {"id": "3", "code": "X3", "jan": "4900000000035", "name": "名3", "dept": "輸出事業", "handling": "取扱中",
+              "inactive": "T", "item_rank": None},
+             {"id": "4", "code": "X4", "jan": "4900000000042", "name": "名4", "dept": "輸出（中国）", "handling": "取扱中",
+              "inactive": "F", "item_rank": None},
+             {"id": "5", "code": "X5", "jan": "4900000000059", "name": "名5", "dept": "輸出事業", "handling": "取扱中",
+              "inactive": "F", "item_rank": None}]
+    queries = []
+
+    def fake_all(q):
+        queries.append(q)
+        return blank if "IS NULL" in q else [{"code": "OLD", "sku_id": "105"}]
+    asked = []
+    with mock.patch("shared.db.get_connection", mock.MagicMock()), \
+            mock.patch.object(NC, "load_choices", return_value=NC.Choices(suppliers=(), middle_by_large={})), \
+            mock.patch.object(nst_suiteql, "suiteql_all", side_effect=fake_all), \
+            mock.patch.object(banma_client.BanmaClient, "from_env", return_value=object()), \
+            mock.patch.object(banma_client, "ensure_token"), \
+            mock.patch.object(BMR, "find_skus", side_effect=lambda c, keys: asked.append(keys)
+                              or {"X1": "101", "4900000000042": "104", "X5": "105"}):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.run()
+        at.button(key="p15s_run").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert asked == [["4900000000011", "4900000000042", "4900000000059", "X1", "X4", "X5"]]   # 条件外の X2・X3 は照会しない
+    assert "TO_DATE(" in queries[0]                                    # 既定 = 直近 30 日
+    info = " ".join(i.value for i in at.info)
+    assert "条件に合う 3 件" in info and "斑马に有り 3 件" in info and "重複 1 件" in info
+    assert any("斑马に無し" in h.value for h in at.subheader) is False   # 3 件とも斑马に有り
+    dl = [d for d in at.get("download_button") if "SKUID 更新 CSV" in d.proto.label]
+    assert dl and "（2 件）" in dl[0].proto.label                       # X5 は NST の OLD が同じ SKUID → 保留
+
+
+def test_page15_skuid_tab_register_misses_20261112(page15_offline):
+    """斑马に無い品: 準備（台帳 → NST）→ 斑马登録 → 取れた SKUID が CSV に加わる。斑马へ渡す行の形も確認。"""
+    from shared import banma_client, hs_ai, nst_suiteql
+    from shared import banma_register as BMR
+    from shared import item_register as REG
+    from shared import skuid_fill as SF
+    st.cache_data.clear()
+    blank = [{"id": "1", "code": "X1", "jan": "4900000000011", "name": "NST の名前", "dept": "輸出事業",
+              "handling": "取扱中", "inactive": "F", "item_rank": None, "cost": "120", "pkg_weight": "45"},
+             {"id": "2", "code": "X2", "jan": "4900000000028", "name": "名2", "dept": "輸出事業",
+              "handling": "取扱中", "inactive": "F", "item_rank": None, "cost": "300"}]
+    ledger = {"X2": {"payload": {"アイテム名": "台帳の名前", "商品原価": "377"},
+                     "bm": {"海关编码": "950300", "英文名称": "Toy", "图片URL": "https://img/x2.jpg"}}}
+    sent = []
+
+    def fake_register(client, rows, record=None, on_progress=None):
+        sent.extend(rows)
+        return [(r["型番"], {"status": "ok", "sku_id": f"9{i}", "message": ""}) for i, r in enumerate(rows)]
+    with mock.patch("shared.db.get_connection", mock.MagicMock()), \
+            mock.patch.object(NC, "load_choices", return_value=NC.Choices(suppliers=(), middle_by_large={})), \
+            mock.patch.object(NC, "load_prefix_makers", return_value={}), \
+            mock.patch.object(nst_suiteql, "suiteql_all", side_effect=lambda q: blank if "IS NULL" in q else []), \
+            mock.patch.object(banma_client.BanmaClient, "from_env", return_value=object()), \
+            mock.patch.object(banma_client, "ensure_token"), \
+            mock.patch.object(BMR, "find_skus", return_value={}), \
+            mock.patch.object(SF, "load_ledger", return_value=ledger), \
+            mock.patch.object(REG, "fill_images", return_value={"待上图": 1}), \
+            mock.patch.object(hs_ai, "is_configured", return_value=False), \
+            mock.patch.object(BMR, "register_all", side_effect=fake_register):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.run()
+        at.button(key="p15s_run").click().run()
+        assert not any("SKUID 更新 CSV" in d.proto.label for d in at.get("download_button"))
+        at.button(key="p15s_prep_btn").click().run()
+        at.button(key="p15s_reg_btn").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    by = {r["型番"]: r for r in sent}
+    assert by["X2"]["アイテム名"] == "台帳の名前" and by["X2"]["_hs"] == "950300" and by["X2"]["_image_url"] == "https://img/x2.jpg"
+    assert by["X1"]["アイテム名"] == "NST の名前" and by["X1"]["商品原価"] == "120" and by["X1"]["パッケージ重量(g)"] == "45"
+    dl = [d for d in at.get("download_button") if "SKUID 更新 CSV" in d.proto.label]
+    assert dl and "（2 件）" in dl[0].proto.label

@@ -92,11 +92,34 @@ def tba_header(method: str, url: str, *, account_id: str,
 def suiteql(sql: str, *, limit: int = 1000, max_retries: int = 4) -> list[dict]:
     """SuiteQL 1 ページ照会（配賦用途は数行 → 分頁不要 · hasMore なら fail-loud）。
     再試行判据は 2026-08-28 全 ingester 統一形。"""
+    data = _page(sql, limit=limit, offset=0, max_retries=max_retries)
+    if data.get("hasMore"):
+        raise NstError("suiteql: hasMore=true（配賦用途で想定外の大結果）")
+    return data.get("items", [])
+
+
+def suiteql_all(sql: str, *, page: int = 1000, max_rows: int = 100000, max_retries: int = 4) -> list[dict]:
+    """hasMore の間 offset で全ページ取る。SQL は最上位に ORDER BY 必須（無いとページ間で重複・欠落する）。
+    （2026-11-12 実測: 子クエリの ORDER BY + ROWNUM は並びが保たれず 2,159 件が 3,505 行に重複した）"""
+    if "ORDER BY" not in sql.upper():
+        raise NstError("suiteql_all: ORDER BY の無い SQL はページ分けできません")
+    out: list[dict] = []
+    while True:
+        data = _page(sql, limit=page, offset=len(out), max_retries=max_retries)
+        items = data.get("items", [])
+        out += items
+        if not data.get("hasMore") or not items:
+            return out
+        if len(out) >= max_rows:
+            raise NstError(f"suiteql_all: {max_rows} 行を超えました（条件を絞ってください）")
+
+
+def _page(sql: str, *, limit: int, offset: int, max_retries: int) -> dict:
     if not is_configured():
         raise NstError("NST_TBA_* 未配置（deploy/windows/.env）")
     account = _secret("NST_ACCOUNT_ID")
     url = (f"https://{account.lower()}.suitetalk.api.netsuite.com"
-           f"/services/rest/query/v1/suiteql?limit={limit}")
+           f"/services/rest/query/v1/suiteql?limit={limit}" + (f"&offset={offset}" if offset else ""))
     body = json.dumps({"q": sql}).encode()
     last_err: Exception | None = None
     for attempt in range(max_retries):
@@ -129,9 +152,7 @@ def suiteql(sql: str, *, limit: int = 1000, max_retries: int = 4) -> list[dict]:
                 break
             time.sleep(float(2 ** attempt))
             continue
-        if data.get("hasMore"):
-            raise NstError("suiteql: hasMore=true（配賦用途で想定外の大結果）")
-        return data.get("items", [])
+        return data
     raise NstError(f"retries exhausted: {last_err}") from last_err
 
 

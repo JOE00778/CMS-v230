@@ -3,8 +3,9 @@
 定位：商品首次登录（NST/BM 还都没有这个 SKU），不是已登录商品的修改。
 修改场景请走 page 03（定義原価編集）/ page 07（商品等级判定）等。
 
-三个 tab：
+四个 tab：
   🆕 商品登録 v2（Boss 2026-10-03 拍板 · JD 出力廃止）
+  🔎 SKUID 空チェック：NST で SKUID 空の品 → 斑马の SKUID（無ければ斑马に登録）→ NST 更新 CSV（shared/skuid_fill · 2026-11-12）
   📦 セット品登録：JAN_数量 → NST 父/子组合货品 CSV
   📜 旧 HTML 版：商品登録ツール iframe
 
@@ -33,8 +34,9 @@ import streamlit.components.v1 as components
 from data_warehouse.templates import item_entry_form as FORM
 from data_warehouse.templates import nst_item_master as TPL
 from data_warehouse.templates import jd_bm_item_master as JBM
-from shared import banma_client, hs_ai, hs_classify, image_search, jan_web
+from shared import banma_client, hs_ai, hs_classify, image_search, jan_web, nst_suiteql
 from shared import banma_register as BMR
+from shared import skuid_fill as SF
 from shared import item_register as REG
 from shared import nst_choices as NC
 from shared.auth import require_password
@@ -49,8 +51,9 @@ lang_selector()
 
 st.title(t("📝 商品登录"))
 
-tab_item, tab_bundle, tab_legacy = st.tabs([
+tab_item, tab_skuid, tab_bundle, tab_legacy = st.tabs([
     t("🆕 商品登録 (原生)"),
+    t("🔎 SKUID 空チェック"),
     t("📦 セット品登録 (原生)"),
     t("📜 旧 HTML 版"),
 ])
@@ -464,14 +467,18 @@ def _render_result(res: dict) -> None:
                                        for c, r in rows]), use_container_width=True, hide_index=True)
             if cnt["fail"]:
                 st.info(t("失敗分は原因を直してもう一度「📦 生成」を押せば、未登録の品だけ登録されます"))
-            # NST 済・今回斑马に登録した品は SKUID が NST に入らない（新規登録 CSV の対象外）→ 提示だけ（Boss 2026-11-10）
+            # NST 済・今回斑马に登録した品は SKUID が NST に入らない（新規登録 CSV の対象外）
+            # → 型番 + SKUID の NST 更新 CSV を出す（2026-11-10 は手入力の提示だけ → Boss 2026-11-12 CSV に）
             nst_only = [(c, r.get("sku_id", "")) for c, r in rows
                         if res["extra"].get(c, {}).get("nst_exists") and r.get("sku_id")]
             if nst_only:
                 st.warning(t(f"⚠️ NST 登録済みの {len(nst_only)} 件は斑马 SKUID が NST に入っていません。"
-                             "NST の各アイテムの SKUID 欄に手で入れてください（在庫同期用）"))
+                             "下の SKUID 更新 CSV を NST に取り込んでください（在庫同期用）"))
                 st.dataframe(pd.DataFrame(nst_only, columns=["型番", "斑马 SKUID"]),
                              use_container_width=True, hide_index=True)
+                st.download_button(t(f"⬇️ NST SKUID 更新 CSV（{len(nst_only)} 件）"), data=SF.update_csv(nst_only),
+                                   file_name=TPL.dated_filename(registrant="SKUID更新"), mime="text/csv",
+                                   key="page15_skuid_update_dl")
 
 
 def _render_item_tab() -> None:
@@ -545,6 +552,226 @@ def _render_item_tab() -> None:
 
 with tab_item:
     _render_item_tab()
+
+
+# ───────────────────────── tab 🔎 SKUID 空チェック ─────────────────────────
+# NST で SKUID（斑马 SKUID・在庫同期用）が空の品 → 斑马の同じ型番 / JAN の SKUID、無ければ斑马に登録して取る
+# → NST 更新 CSV（型番 + SKUID）。NST へは書かない（CSV は人が取り込む）。Boss 2026-11-12
+
+_SK_KEYS = ["p15s_result", "p15s_prep", "p15s_reg", "p15s_editor"]
+_SK_SOURCES = {"api": "斑马 API（実時間・遅いと 50 件で 1 分ほど）", "pg": "PG の写し（毎日 04:00 時点・速い）"}
+_SK_PKG = ["パッケージ重量(g)", "パッケージ高さ(cm)", "パッケージ幅(cm)", "パッケージ奥行(cm)"]
+
+
+def _skuid_check(opts: dict) -> dict:
+    """NST の SKUID 空 → 条件で絞る → 斑马に照会 → (hits, conflicts, misses)。照会の失敗は例外のまま（全件「無し」にしない）。"""
+    with st.spinner(t("NST で SKUID が空の品を取得中…")):
+        items = SF.blank_items(nst_suiteql.suiteql_all, days=SF.PERIODS[opts["period"]])
+    picked = SF.pick(items, depts=opts["depts"], handlings=opts["handlings"], states=opts["states"],
+                     ranks=opts["ranks"])
+    keys = SF.lookup_keys(picked, by_jan=opts["by_jan"])
+    bm: dict[str, str] = {}
+    if keys:
+        with st.spinner(t(f"斑马に {len(keys)} コードを照会中（{_SK_SOURCES[opts['source']]}）…")):
+            if opts["source"] == "api":
+                client = banma_client.BanmaClient.from_env()
+                with get_connection() as conn:
+                    banma_client.ensure_token(conn, client)
+                bm = BMR.find_skus(client, keys)
+            else:
+                with get_connection() as conn:
+                    bm = SF.mirror_skus(conn, keys)
+    found = sorted({v for v in bm.values() if v})
+    with st.spinner(t("同じ SKUID を持つ NST の品を確認中…")):
+        in_use = SF.skuids_in_use(nst_suiteql.suiteql_all, found) if found else {}
+    hits, conflicts, misses = SF.match(picked, bm, by_jan=opts["by_jan"], in_use=in_use)
+    return {"opts": opts, "total": len(items), "picked": len(picked), "hits": hits, "conflicts": conflicts,
+            "misses": misses}
+
+
+def _skuid_prepare(misses: list[dict]) -> dict:
+    """斑马に無い品 → 登録用の行（台帳 → NST の順）。HS は規則 + AI、画像は jancode → 画像検索 → 待上图（page15 と同じ）。"""
+    with get_connection() as conn:
+        ledger = SF.load_ledger(conn, [m["code"] for m in misses])
+    try:
+        prefix = _cached_prefix_makers()
+    except Exception:  # noqa: BLE001 — HS の規則判定がブランド推定なしになるだけ
+        prefix = {}
+    rows, extra = SF.register_rows(
+        misses, ledger, lambda n, m, j: hs_classify.classify_customs(n, m, j, prefix_map=prefix))
+    stats: dict = {}
+    issues = []
+    need_img = [r for r in rows if not extra[REG.item_key(r)].get(REG.COL_IMAGE)]
+    if need_img:
+        with st.spinner(t(f"画像を探しています（{len(need_img)} 件）…")):
+            stats["images"] = REG.fill_images(need_img, extra, _search_image)
+    nst_src = [r for r in rows if extra[REG.item_key(r)]["source"] == "NST"]
+    if nst_src and hs_ai.is_configured():
+        with st.spinner(t(f"HS を AI でも判定中（{len(nst_src)} 件）…")):
+            issues = REG.cross_check_hs(nst_src, extra, stats, hs_ai.judge)
+    return {"rows": rows, "extra": extra, "issues": issues, "stats": stats,
+            "n_ledger": len(rows) - len(nst_src), "n_nst": len(nst_src)}
+
+
+def _skuid_frame(prep: dict) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "型番": REG.item_key(r), t("出典"): prep["extra"][REG.item_key(r)]["source"], "JANコード": r.get("JANコード", ""),
+        "アイテム名": r.get("アイテム名", ""), "商品原価": r.get("商品原価", ""), **{c: r.get(c, "") for c in _SK_PKG},
+        "HS": prep["extra"][REG.item_key(r)].get(REG.COL_HS, ""),
+        "通関英文名": prep["extra"][REG.item_key(r)].get(REG.COL_NAME_EN, ""),
+        "画像URL": prep["extra"][REG.item_key(r)].get(REG.COL_IMAGE, ""),
+        t("HS 判定"): prep["extra"][REG.item_key(r)].get("hs_check", "")} for r in prep["rows"]])
+
+
+def _skuid_register(rows: list[dict]) -> None:
+    try:
+        client = banma_client.BanmaClient.from_env()
+        with get_connection() as conn:
+            banma_client.ensure_token(conn, client)
+    except Exception as e:  # noqa: BLE001
+        st.session_state["p15s_reg"] = {"error": f"斑马に接続できません（登録していません）: {type(e).__name__}: {e}"}
+        return
+    bar = st.progress(0.0, text=t("斑马に登録中…"))
+    with get_connection() as conn:   # 台帳に行がある品（page15 で登録失敗した品など）はその行に結果を書く
+        results = BMR.register_all(client, rows, record=lambda code, r: REG.record_banma(conn, code, r),
+                                   on_progress=lambda d, n, c: bar.progress(d / n, text=f"{d}/{n} {c}"))
+    bar.empty()
+    st.session_state["p15s_reg"] = {"rows": results}
+
+
+def _render_skuid_tab() -> None:
+    """⚠️ st.stop() 禁止（他タブが消える）。抜けるときは return。"""
+    st.caption(t("NST で SKUID（斑马 SKUID・在庫同期用）が空の品を探し、斑马の同じ型番 / JAN の SKUID を取る。"
+                 "斑马に無ければ斑马に登録してから取る → NST 更新 CSV（型番 + SKUID）を手で NST に取り込む"))
+    d = SF.DEFAULTS
+    c1, c2, c3 = st.columns(3)
+    period = c1.selectbox(t("作成日"), list(SF.PERIODS), index=list(SF.PERIODS).index(d["period"]), key="p15s_period")
+    depts = c2.multiselect(t("部門"), SF.DEPTS, default=list(d["depts"]), key="p15s_depts")
+    handlings = c3.multiselect(t("取扱区分"), SF.HANDLINGS, default=list(d["handlings"]), key="p15s_handlings")
+    c4, c5, c6 = st.columns(3)
+    states = c4.multiselect(t("状態"), SF.STATES, default=list(d["states"]), key="p15s_states")
+    ranks = c5.multiselect(t("商品ランク"), SF.RANKS, default=list(d["ranks"]), key="p15s_ranks")
+    by_jan = c6.radio(t("斑马での照合"), [True, False], index=0, key="p15s_by_jan", horizontal=True,
+                      format_func=lambda v: t("型番 + JAN") if v else t("型番のみ"),
+                      help=t("型番で見つからなければ JAN（斑马の単品 SKU コード = JAN）でも探す"))
+    c7, c8 = st.columns(2)
+    source = c7.radio(t("斑马の照会元"), list(_SK_SOURCES), index=0, key="p15s_source",
+                      format_func=lambda k: t(_SK_SOURCES[k]))
+    allow_dup = c8.checkbox(t("同じ斑马 SKUID を複数の品に入れる"), value=d["allow_dup"], key="p15s_allow_dup",
+                            help=t("既定は入れない（1 つの斑马 SKU に NST の 2 品をつなぐと在庫同期が崩れる）。"
+                                   "入れると「重複で保留」の品も CSV に出します"))
+    opts = {"period": period, "depts": tuple(depts), "handlings": tuple(handlings), "states": tuple(states),
+            "ranks": tuple(ranks), "by_jan": by_jan, "source": source}
+    b1, b2 = st.columns(2)
+    if b1.button(t("🔍 チェックする"), type="primary", key="p15s_run", use_container_width=True):
+        for k in _SK_KEYS:
+            st.session_state.pop(k, None)
+        try:
+            st.session_state["p15s_result"] = _skuid_check(opts)
+        except Exception as e:  # noqa: BLE001 — 照会失敗は「斑马に無し」にしない
+            st.error(t(f"❌ チェックに失敗（何も出力していません）: {type(e).__name__}: {e}"))
+            return
+    if b2.button(t("🗑️ 清除结果"), key="p15s_clear", use_container_width=True):
+        for k in _SK_KEYS:
+            st.session_state.pop(k, None)
+        st.rerun()
+    res = st.session_state.get("p15s_result")
+    if not res:
+        st.info(t("条件を選んで「🔍 チェックする」"))
+        return
+    if res["opts"] != opts:
+        st.warning(t("条件が変わりました。「🔍 チェックする」を押してください（前回の結果は隠しています）"))
+        return
+
+    hits, conflicts, misses = res["hits"], res["conflicts"], res["misses"]
+    n_code = sum(h["key"] == "型番" for h in hits + conflicts)
+    st.info(t(f"SKUID 空（{res['opts']['period']}・部門 輸出）{res['total']} 件 → 条件に合う {res['picked']} 件 → "
+              f"斑马に有り {len(hits) + len(conflicts)} 件（型番一致 {n_code} · JAN 一致 {len(hits) + len(conflicts) - n_code}）"
+              f"／うち同じ SKUID の重複 {len(conflicts)} 件 · 斑马に無し {len(misses)} 件"))
+    if hits:
+        st.subheader(t(f"✅ 斑马に有り（{len(hits)} 件・CSV に出す）"))
+        st.dataframe(pd.DataFrame([{"型番": h["code"], "JANコード": h["jan"], t("アイテム名"): h["name"],
+                                    t("照合"): h["key"], "斑马 SKUID": h["sku_id"]} for h in hits]),
+                     use_container_width=True, hide_index=True)
+    if conflicts:
+        st.subheader(t(f"⚠️ 同じ斑马 SKUID の重複（{len(conflicts)} 件・"
+                       + ("CSV に出す" if allow_dup else "CSV に出さない") + "）"))
+        st.dataframe(pd.DataFrame([{"型番": c["code"], "JANコード": c["jan"], t("アイテム名"): c["name"],
+                                    "斑马 SKUID": c["sku_id"], t("内容"): c["note"]} for c in conflicts]),
+                     use_container_width=True, hide_index=True)
+
+    reg = st.session_state.get("p15s_reg") or {}
+    if misses:
+        st.subheader(t(f"🦓 斑马に無し（{len(misses)} 件）→ 斑马に登録してから SKUID を取る"))
+        prep = st.session_state.get("p15s_prep")
+        if not prep:
+            st.dataframe(pd.DataFrame([{"型番": m["code"], "JANコード": m["jan"], t("アイテム名"): m["name"],
+                                        t("作成日"): m.get("created"), t("商品ランク"): m.get("item_rank") or ""}
+                                       for m in misses]), use_container_width=True, hide_index=True)
+            if st.button(t(f"📝 登録の準備（{len(misses)} 件・page15 の台帳 → NST の値・HS と画像を自動で埋める）"),
+                         key="p15s_prep_btn"):
+                try:
+                    st.session_state["p15s_prep"] = _skuid_prepare(misses)
+                except Exception as e:  # noqa: BLE001
+                    st.error(t(f"❌ 準備に失敗: {type(e).__name__}: {e}"))
+                    return
+                st.rerun()
+        else:
+            st.caption(t(f"出典: page15 の台帳 {prep['n_ledger']} 件（登録時に人が確認した値）· NST {prep['n_nst']} 件"
+                         + (" · 画像 " + " ".join(f"{k}={v}" for k, v in prep["stats"]["images"].items())
+                            if prep["stats"].get("images") else "")))
+            if prep["issues"]:
+                with st.expander(t(f"⚠️ HS の要確認 {len(prep['issues'])} 件")):
+                    st.dataframe(_issues_df(prep["issues"]), use_container_width=True, hide_index=True)
+            df = _skuid_frame(prep)
+            edited = st.data_editor(
+                df, key="p15s_editor", hide_index=True, num_rows="fixed", use_container_width=True,
+                disabled=["型番", t("出典"), "JANコード", t("HS 判定")],
+                column_config={"アイテム名": st.column_config.TextColumn(max_chars=REG.NAME_MAX),
+                               "通関英文名": st.column_config.TextColumn(max_chars=hs_classify.MAX_NAME_EN)})
+            recs = edited.to_dict("records")
+            rows = [{"型番": r["型番"], "アイテム名": str(r["アイテム名"] or "").strip(), "商品原価": r["商品原価"],
+                     **{c: r[c] for c in _SK_PKG}, REG.COL_HS: str(r["HS"] or "").strip(),
+                     REG.COL_NAME_EN: str(r["通関英文名"] or "").strip(), REG.COL_IMAGE: str(r["画像URL"] or "").strip()}
+                    for r in recs]
+            no_name = [r["型番"] for r in rows if not r["アイテム名"]]
+            no_cus = sum(not r[REG.COL_HS] or not r[REG.COL_NAME_EN] for r in rows)
+            if no_name:
+                st.error(t(f"❌ アイテム名が空の {len(no_name)} 件は登録しません: {'・'.join(no_name[:20])}"))
+            if no_cus:
+                st.warning(t(f"⚠️ HS か通関英文名が空の {no_cus} 件は報関情報なしで登録されます（斑马で後から入れる）"))
+            ok_rows = [r for r in rows if r["アイテム名"]]
+            if ok_rows and st.button(t(f"🦓 斑马に登録して SKUID を取る（{len(ok_rows)} 件）"), type="primary",
+                                     key="p15s_reg_btn"):
+                _skuid_register(ok_rows)
+                reg = st.session_state.get("p15s_reg") or {}
+        if reg.get("error"):
+            st.error(reg["error"])
+        elif reg.get("rows"):
+            cnt = {k: sum(r["status"] == k for _, r in reg["rows"]) for k in ("ok", "partial", "skipped", "fail")}
+            msg = (f"ok={cnt['ok']} 要確認={cnt['partial']} 既存のため未登録={cnt['skipped']} 失敗={cnt['fail']}"
+                   f"（計 {len(reg['rows'])} 件）")
+            (st.error if cnt["fail"] else st.warning if cnt["partial"] or cnt["skipped"] else st.success)(msg)
+            st.dataframe(pd.DataFrame([{"型番": c, t("結果"): r["status"], "SKUID": r.get("sku_id", ""),
+                                        t("内容"): r.get("message", "")} for c, r in reg["rows"]]),
+                         use_container_width=True, hide_index=True)
+            if cnt["fail"]:
+                st.info(t("失敗分はもう一度「🦓 斑马に登録」を押せば、未登録の品だけ登録されます（登録済みは SKUID だけ取ります）"))
+
+    pairs = ([(h["code"], h["sku_id"]) for h in hits] + ([(c["code"], c["sku_id"]) for c in conflicts] if allow_dup else [])
+             + [(c, r["sku_id"]) for c, r in reg.get("rows", []) if r.get("sku_id")])
+    st.divider()
+    if pairs:
+        st.download_button(t(f"⬇️ NST SKUID 更新 CSV（{len(pairs)} 件）"), data=SF.update_csv(pairs),
+                           file_name=TPL.dated_filename(registrant="SKUID更新"), mime="text/csv", type="primary",
+                           key="p15s_csv_dl")
+        st.caption(t("NST の CSV インポート（更新・型番で照合）で取り込んでください。斑马に無い品は登録後にこの CSV に加わります"))
+    else:
+        st.info(t("CSV に出す品はまだありません"))
+
+
+with tab_skuid:
+    _render_skuid_tab()
 
 
 # ───────────────────────── tab 📦 セット品登録 (原生) ─────────────────────────

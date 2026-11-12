@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -89,3 +90,21 @@ def test_suiteql_hasmore_fails_loud(monkeypatch):
                             {"hasMore": True, "items": [{}]}).encode()))
     with pytest.raises(N.NstError, match="hasMore"):
         N.suiteql("SELECT 1")
+
+
+def test_suiteql_all_pages_by_offset_20261112(monkeypatch):
+    """hasMore の間 offset で次ページ（SKUID 空チェックは 2,000 件超 · 子クエリ ORDER BY+ROWNUM は重複した）。"""
+    _env(monkeypatch)
+    seen = []
+    def fake_urlopen(req, timeout=None):
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(req.full_url).query))
+        seen.append((q["limit"], q.get("offset", "0")))
+        off = int(q.get("offset", "0"))
+        return _Resp(json.dumps({"hasMore": off == 0,
+                                 "items": [{"id": str(off + i)} for i in range(2 if off == 0 else 1)]}).encode())
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    got = N.suiteql_all("SELECT id FROM item ORDER BY id", page=2)
+    assert [r["id"] for r in got] == ["0", "1", "2"]
+    assert seen == [("2", "0"), ("2", "2")]
+    with pytest.raises(N.NstError, match="ORDER BY"):
+        N.suiteql_all("SELECT id FROM item")
