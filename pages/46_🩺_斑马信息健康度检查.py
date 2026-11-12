@@ -20,7 +20,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-from shared.banma_dims import build, customs_issues, in_scope, report_xlsx, select
+from shared.banma_dims import Msg, build, customs_issues, in_scope, report_xlsx, select
 from shared.db import get_connection, get_readonly_connection
 from shared.i18n import lang_selector, t
 
@@ -135,17 +135,40 @@ st.download_button(t("📥 下载 Excel（「数据」页可直接上传斑马 +
 st.caption(t("「数据」页 = 斑马「批量修改SKU信息」格式，空栏 = 不修改；超过 1000 行另起「数据2」「数据3」… · "
              "报关信息斑马模板没有栏位，只在问题清单里 · 上传后点「立即从斑马拉取」，已改好的会从表中消失"))
 
+
+def _tr(v):
+    """表示用の訳（Excel / 判定用の値はそのまま）: 说明 = Msg を UI 言語で組み直す · 类型 等の定型語 = t()。"""
+    if isinstance(v, Msg):
+        return t(v.tpl).format(**v.kw)
+    return t(v) if isinstance(v, str) else v
+
+
+def _src(v):
+    """来源「重量:JDL；三边:组合计算（原 300g≠单品×件数）」の定型語だけ訳す（select() が「:」「；」で読むので値は変えない）。"""
+    for w in ("重量", "三边", "组合计算", "原 ", "单品×件数"):
+        v = v.replace(w, t(w))
+    return v
+
+
+def _show(recs: list[dict]) -> pd.DataFrame:
+    """dict のまま訳してから DataFrame 化（pandas は str サブクラスを素の str にするので Msg が消える）。"""
+    def row(r):
+        return {k: (_src(v) if k == "来源" and isinstance(v, str) else _tr(v) if k in ("类型", "问题", "说明") else v)
+                for k, v in r.items()}
+    return pd.DataFrame([row(r) for r in recs]).rename(columns=t)
+
+
 tab_up, tab_issue = st.tabs([t("✅ 可直接上传斑马"), t("⚠️ 问题清单")])
 with tab_up:
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=520, hide_index=True)
+        st.dataframe(_show(rows), use_container_width=True, height=520, hide_index=True)
     else:
         st.success(t("没有需要补的 SKU"))
 with tab_issue:
     if issues:
-        df = pd.DataFrame(issues)
-        kinds = df["问题"].value_counts()
-        pick = st.multiselect(t("问题类型"), list(kinds.index), format_func=lambda k: f"{k}（{kinds[k]}）")
-        st.dataframe(df[df["问题"].isin(pick)] if pick else df, use_container_width=True, height=520, hide_index=True)
+        kinds = pd.Series([i["问题"] for i in issues]).value_counts()
+        pick = st.multiselect(t("问题类型"), list(kinds.index), format_func=lambda k: f"{t(k)}（{kinds[k]}）")
+        st.dataframe(_show([i for i in issues if not pick or i["问题"] in pick]), use_container_width=True,
+                     height=520, hide_index=True)
     else:
         st.success(t("没有问题 SKU"))

@@ -7,12 +7,21 @@ from __future__ import annotations
 import pathlib
 from unittest import mock
 
+import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from shared import nst_choices as NC
 
 PAGE = pathlib.Path(__file__).resolve().parents[1] / "pages" / "15_📝_商品登录.py"
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """文言は日文原文で検査する。session_state["lang"] ではなく get_lang を固定するのは、AppTest が radio / selectbox の
+    format_func（= t）をスクリプトの外で呼び、そこでは t() が既定 zh になるため（中文は test_page47_zh_ja_ui_text）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
 
 
 def test_page15_renders_all_tabs_without_exception(page15_offline):
@@ -33,7 +42,7 @@ def test_page15_renders_all_tabs_without_exception(page15_offline):
     assert any("定数を使用" in w.value for w in at.warning)          # choices.warnings を表示
     labels = [b.label for b in at.button]
     assert any("処理する" in x for x in labels)                     # 🆕 商品登録
-    assert any("查询 PG" in x for x in labels)                      # 📦 セット品登録
+    assert any("PG 検索" in x for x in labels)                      # 📦 セット品登録（「🔍 查询 PG 并预览」の日文）
     assert not any("JD" in x for x in labels)                       # JD UI は削除済み
     assert not any("ネットで調べる" in c.label for c in at.checkbox)  # 網調べは常に実行（切替なし）
 
@@ -365,3 +374,66 @@ def test_page15_hs_retry_button_fills_blank_hs(page15_offline):
     assert calls == [["4901234567894"], ["4901234567894"]]           # 食品は規則を使わず AI（1 回目 429）→ 再判定
     assert at.session_state["page15_result"]["extra"]["4901234567894"]["_hs"] == "190590"
     assert any("1 件中 1 件に HS が入りました" in i.value for i in at.info)
+
+
+def test_page15_edit_survives_language_switch(page15_offline):
+    """確認表を直してから言語を切り替えても、生成に使うのは直した値。生成後に切り替えるだけなら CSV は伏せない。
+
+    data_editor は表頭・🤖 列が言語で変わると別の表（element id）になり、フロントの編集を捨てる → shared/editor_state。"""
+    import csv
+    import io
+    import json
+
+    from streamlit.proto.WidgetStates_pb2 import WidgetStates
+
+    from shared import jan_web
+    lang = ["ja"]
+    ch = _choices()
+    up = mock.MagicMock()
+    up.getvalue.return_value = _filled_upload(ch)
+    meta = jan_web.JanMeta("4901234567894", "テスト クッキー 100g", "", "", "ok")
+    with mock.patch("shared.i18n.get_lang", side_effect=lambda: lang[0]):
+        at, stack, _, _ = _run_page(ch, up, meta=meta)
+        with stack:
+            eid = next(d.proto.id for d in at.dataframe if d.proto.id.endswith("-page15_editor"))
+            ws = at._tree.get_widget_states()
+            w = ws.widgets.add()
+            w.id, w.string_value = eid, json.dumps({"edited_rows": {"0": {"アイテム名": "編集した名前"}},
+                                                     "added_rows": [], "deleted_rows": []})
+            at._run(ws)                     # 表を直す
+            lang[0] = "zh"
+            at._run(ws)                     # ブラウザは前の表の編集を送ったまま、言語だけ切り替わる
+            assert not at.exception, [e.value for e in at.exception]
+            at.button(key="page15_gen").click().run()
+            assert not at.exception, [e.value for e in at.exception]
+            rec = next(csv.DictReader(io.StringIO(at.session_state["page15_csv_bytes"].decode("utf-8-sig"))))
+            assert rec["アイテム名"] == "編集した名前"
+            assert page15_offline.call_args[0][1]["アイテム名"] == "編集した名前"   # 斑马にも直した値
+            lang[0] = "ja"
+            at._run(WidgetStates())         # 生成後に言語を切り替えただけ → CSV は伏せない（🤖 列は訳が変わる）
+            assert not any("表を編集しました" in x.value for x in at.warning)
+            assert any("page15_csv_dl" in b.proto.id for b in at.get("download_button"))
+
+
+def test_table_hash_ignores_display_columns_that_follow_language():
+    """「表を編集しました」の判定（_table_hash）は CSV に効く列（直せる列 + 型番/JAN）だけを見る。
+    🤖 自動入力・重量メモ・HS 判定・画像の出典 などの表示列は描画時に t() するので、言語を切り替えただけで CSV を伏せない。"""
+    import ast
+    import hashlib
+
+    import pandas as pd
+
+    from shared import item_register as REG
+    tree = ast.parse(PAGE.read_text(encoding="utf-8"))
+    ns = {"pd": pd, "hashlib": hashlib, "REG": REG}
+    exec(compile(ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef)
+                             and n.name in ("_content_hash", "_table_hash")], []), str(PAGE), "exec"), ns)
+    base = {"型番": "4901234567894", "JANコード": "4901234567894", "アイテム名": "テスト", "パッケージ重量(g)": "80",
+            REG.COL_AUTO: "アイテム名(jancode)", REG.COL_WEIGHT_NOTE: "スーパーデリバリー", REG.COL_HS_CHECK: "一致",
+            REG.COL_IMAGE_SOURCE: "待上图", REG.COL_WEIGHT_SOURCES: "", REG.COL_URL: ""}
+    h = ns["_table_hash"](pd.DataFrame([base]))
+    zh = {**base, REG.COL_AUTO: "商品名(jancode)", REG.COL_WEIGHT_NOTE: "SuperDelivery", REG.COL_HS_CHECK: "一致(zh)",
+          REG.COL_IMAGE_SOURCE: "待上图(zh)"}
+    assert ns["_table_hash"](pd.DataFrame([zh])) == h
+    assert ns["_table_hash"](pd.DataFrame([{**base, "アイテム名": "直した"}])) != h
+    assert ns["_table_hash"](pd.DataFrame([{**base, "型番": "X-1"}])) != h

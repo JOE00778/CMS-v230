@@ -38,6 +38,15 @@ TEMPLATE_EXAMPLE = [
 _SUFFIX = re.compile(r"^\d{8,13}_(\d+)$")
 
 
+class Msg(str):
+    """问题说明: 值 = 中文成句（Excel・测试照旧）；tpl/kw 留给 page46 按 UI 语言 t(tpl).format(**kw) 重排。"""
+
+    def __new__(cls, tpl: str, **kw):
+        o = super().__new__(cls, tpl.format(**kw))
+        o.tpl, o.kw = tpl, kw
+        return o
+
+
 def real_weight(w) -> int | None:
     return None if w is None or w in W_PH else int(w)
 
@@ -96,12 +105,12 @@ def _single_weight(jdl_g, nst_g) -> tuple[int | None, str, str]:
     j = round(float(jdl_g)) if jdl_g else None
     n = round(float(nst_g)) if nst_g else None
     if j and n and max(j, n) / min(j, n) >= RATIO:
-        return None, "", f"JDL {j}g 与 NST {n}g 相差≥{RATIO}倍"
+        return None, "", Msg("JDL {j}g 与 NST {n}g 相差≥{r}倍", j=j, n=n, r=RATIO)
     v, src = (j, "JDL") if j else (n, "NST") if n else (None, "")
     if v is None:
         return None, "", ""
     if v > 5000 or v < 2 or (src == "JDL" and v < 6):
-        return None, "", f"{src} {v}g 数值异常（>5kg / <2g / JDL<6g）"
+        return None, "", Msg("{src} {v}g 数值异常（>5kg / <2g / JDL<6g）", src=src, v=v)
     return v, src, ""
 
 
@@ -166,7 +175,7 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
             if why:
                 issue(s, "重量待人工", why, JDL重量=jw, NST重量=nw)
             elif v is None:
-                issue(s, "重量缺失·无数据源", "JDL/NST 都没有")
+                issue(s, "重量缺失·无数据源", Msg("JDL/NST 都没有"))
             else:
                 fill_w[s["sku_id"]] = v
                 if v != s.get("weight"):
@@ -177,13 +186,13 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
         if real_dims(s) is None:
             d = to_cm(jmm)
             if d is None:
-                issue(s, "三边缺失·无数据源", "JDL 没有实测三边")
+                issue(s, "三边缺失·无数据源", Msg("JDL 没有实测三边"))
             elif d[0] > MAX_EDGE:
-                issue(s, "三边待人工", f"JDL 最长边 {d[0]}cm >{MAX_EDGE}", JDL三边="×".join(map(str, d)))
+                issue(s, "三边待人工", Msg("JDL 最长边 {d}cm >{m}", d=d[0], m=MAX_EDGE), JDL三边="×".join(map(str, d)))
             else:
                 refs = [x for i, x in sib.get(s["spu_id"], []) if i != s["sku_id"]]
                 if refs and not any(all(abs(a - b) <= SIB_TOL for a, b in zip(d, r)) for r in refs):
-                    issue(s, "三边待人工", f"JDL 三边与同款兄弟 SKU 相差>{SIB_TOL}cm（JDL 可能按整盒测）",
+                    issue(s, "三边待人工", Msg("JDL 三边与同款兄弟 SKU 相差>{tol}cm（JDL 可能按整盒测）", tol=SIB_TOL),
                           JDL三边="×".join(map(str, d)), 同款三边=" / ".join("×".join(map(str, r)) for r in refs[:3]))
                 else:
                     fill_d[s["sku_id"]] = d
@@ -197,7 +206,7 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
         n = sum(int(c.get("Quantity") or 0) for c in comb)
         m = _SUFFIX.match(s["code"])
         if m and len(comb) == 1 and int(m.group(1)) != n:
-            issue(s, "组合品·编码与明细件数不一致", f"编码后缀 {m.group(1)} / 明细 {n} 件")
+            issue(s, "组合品·编码与明细件数不一致", Msg("编码后缀 {s} / 明细 {n} 件", s=m.group(1), n=n))
             continue
         parts = []
         for c in comb:
@@ -208,7 +217,7 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
         miss_w = [p[0] for p in parts if p[2] is None]
         if miss_w:
             if real_weight(s.get("weight")) is None:
-                issue(s, "组合品·单品缺重量", "缺: " + ", ".join(map(str, miss_w)))
+                issue(s, "组合品·单品缺重量", Msg("缺: {x}", x=", ".join(map(str, miss_w))))
         else:
             exp = sum(q * w for _, q, w, _ in parts)
             if exp != s.get("weight"):
@@ -217,7 +226,7 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
         if real_dims(s) is None:
             miss_d = [p[0] for p in parts if p[3] is None]
             if miss_d:
-                issue(s, "组合品·单品缺三边", "缺: " + ", ".join(map(str, miss_d)))
+                issue(s, "组合品·单品缺三边", Msg("缺: {x}", x=", ".join(map(str, miss_d))))
             else:
                 box = grid(parts[0][3], parts[0][1]) if len(parts) == 1 else \
                     columns([d for _, q, _, d in parts for _ in range(q)])
@@ -227,7 +236,7 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
     for r in up.values():
         s = r["s"]
         if code_n.get(r["code"], 0) != 1:
-            issue(s, "SKU编码重复", f"有效 SKU 中同编码 {code_n.get(r['code'])} 个，模板按编码匹配无法导入")
+            issue(s, "SKU编码重复", Msg("有效 SKU 中同编码 {n} 个，模板按编码匹配无法导入", n=code_n.get(r["code"])))
             continue
         d = r["dims"] or (None, None, None)
         rows.append({"SKU编码": r["code"], "重量(g)": r["weight"], "长(cm)": d[0], "宽(cm)": d[1], "高(cm)": d[2],
@@ -266,7 +275,7 @@ def customs_issues(skus: list[dict], customs: dict, std: list[tuple], ranked: se
         hs = str(c.get("hs_code") or "").strip()
         en = str(c.get("name_en") or "").strip()
         if not _HS.fullmatch(hs):
-            add("HS编码缺失或格式错误", f"「{hs}」不是 6/8/10 位数字")
+            add("HS编码缺失或格式错误", Msg("「{hs}」不是 6/8/10 位数字", hs=hs))
         if en in ("", "-"):
             add("英文名为空或「-」")
             continue
@@ -275,12 +284,12 @@ def customs_issues(skus: list[dict], customs: dict, std: list[tuple], ranked: se
             n = int(comb[0].get("Quantity") or 0)
             m = _SET.search(en)
             if not m or int(m.group(1)) != n:
-                add("组合品英文名缺「Nset」", f"应以「 {n}set」结尾")
+                add("组合品英文名缺「Nset」", Msg("应以「 {n}set」结尾", n=n))
         core = _SPEC.sub("", _SET.sub("", en))
         if core not in hs_of:
-            add("英文名不是标准报关名", "含品牌/商品名，或不在标准品类名表里")
+            add("英文名不是标准报关名", Msg("含品牌/商品名，或不在标准品类名表里"))
         elif _HS.fullmatch(hs) and hs_of[core] and hs[:6] not in hs_of[core]:
-            add("英文名与HS不对应", f"「{core}」对应 HS {'/'.join(sorted(hs_of[core]))}")
+            add("英文名与HS不对应", Msg("「{core}」对应 HS {hs}", core=core, hs="/".join(sorted(hs_of[core]))))
     return out
 
 

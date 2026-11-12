@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-from shared.i18n import t, lang_selector
+from shared.i18n import get_lang, t, lang_selector
 
 from data_warehouse.templates.nst_item_master import (
     COL_COST,
@@ -47,9 +47,9 @@ conn = get_connection()
 
 st.title(t("💰 定義原価編集"))
 st.caption(
-    f"NetSuite Standard Cost（定義原価）統一編集口 · "
-    f"自動判定阈值 |Δ|≥{THRESHOLD_YEN:.0f}¥ 或 |Δ%|≥{THRESHOLD_PCT:.0%} · "
-    f"新值 = ⌈平均原価⌉ · 数据源 = NST 主档 nst.item_master_raw"
+    t("NetSuite Standard Cost（定义原价）统一编辑入口 · 自动判定阈值 |Δ|≥{yen}¥ 或 |Δ%|≥{pct} · "
+      "新值 = ⌈平均原价⌉ · 数据源 = NST 主档 nst.item_master_raw").format(
+        yen=f"{THRESHOLD_YEN:.0f}", pct=f"{THRESHOLD_PCT:.0%}")
 )
 
 # ============================================================
@@ -71,6 +71,29 @@ if "cs_decisions" not in st.session_state:
     st.session_state.cs_decisions = None
 if "cs_csv_bytes" not in st.session_state:
     st.session_state.cs_csv_bytes = None
+
+
+_NS_UPLOAD_STEPS = """
+### 📋 上传到 NetSuite 的步骤
+
+1. NetSuite → **Setup → Import/Export → Import CSV Records**
+2. **Import Type**: `Items` · **Record Type**: `Inventory Item` · **Import**: `Update`
+3. 上传刚下载的 CSV
+4. **Field Mapping**：CSV `Internal ID` → NetSuite `Internal ID` · CSV `商品原価` → NetSuite `Standard Cost`（定义原价）
+5. 第一次配完保存映射，下次秒上传
+"""
+
+
+def _skip_reason_label(s):
+    """rules.decide_action の skip_reason（中文・固定文 / 差异テンプレ）を表示言語へ。"""
+    if not isinstance(s, str):
+        return s
+    if s.startswith("差异 ") or s.startswith("item_master 中找不到"):
+        if get_lang() != "ja":
+            return s
+        return (s.replace("差异 ", "差異 ").replace(" 未达阈值 ", " しきい値未満 ")
+                .replace(" 或 ", " または ").replace("item_master 中找不到", "item_master に見つからない"))
+    return t(s)
 
 
 def _reset() -> None:
@@ -132,17 +155,16 @@ if step == 1:
     loc_choices = [LOC_BOTH] + loc_all
     c1, c2 = st.columns(2)
     with c1:
-        loc_pick = st.selectbox(t("場所（仓库）"), loc_choices, index=0)
+        loc_pick = st.selectbox(t("場所（仓库）"), loc_choices, index=0, format_func=t)
     with c2:
-        handle_pick = st.multiselect(t("取扱区分"), handle_all, placeholder=HANDLE_PRESET_ALL)
+        handle_pick = st.multiselect(t("取扱区分"), handle_all, placeholder=t(HANDLE_PRESET_ALL))
 
     sel_locs = loc_all if loc_pick == LOC_BOTH else [loc_pick]
     sel_handle = handle_pick  # 空選＝全部（下方 if sel_handle 空则不加筛选）
 
     st.caption(
-        f"📌 已选场所：{', '.join(sel_locs) or '（全部）'} ｜ "
-        f"取扱区分：{', '.join(sel_handle) or '（全部）'} ｜ "
-        f"部門：輸出（自动锁定）"
+        t("📌 已选场所：{locs} ｜ 取扱区分：{handles} ｜ 部门：輸出（自动锁定）").format(
+            locs=", ".join(sel_locs) or t("（全部）"), handles=", ".join(sel_handle) or t("（全部）"))
     )
 
     # 过滤 where（im=nst.item_master_raw · inv=nst.inventory_snapshot）· 部門锁定輸出
@@ -317,7 +339,7 @@ elif step == 2:
         df_full = df_full.rename(columns=_COL_RENAME_FULL)
         _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
         st.download_button(
-            t(f"📥 下载预览全量 CSV (上传用,{total} 行)"),
+            t("📥 下载预览全量 CSV (上传用,{total} 行)").format(total=total),
             data=df_full.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"cost_preview_{_ts}.csv",
             mime="text/csv",
@@ -328,10 +350,10 @@ elif step == 2:
     st.divider()
 
     tab_u, tab_s, tab_a, tab_o = st.tabs([
-        t(f"✅ 更新清单 ({n_update})"),
-        t(f"⏭️ 跳过清单 ({n_skip})"),
-        t(f"⚠️ 异常告警 ({n_red + n_yellow})"),
-        t(f"💢 原价=1 ({n_one})"),
+        t("✅ 更新清单 ({n})").format(n=n_update),
+        t("⏭️ 跳过清单 ({n})").format(n=n_skip),
+        t("⚠️ 异常告警 ({n})").format(n=n_red + n_yellow),
+        t("💢 原价=1 ({n})").format(n=n_one),
     ])
 
     # 列名 → 中文/日文 (走 t() 走 i18n)
@@ -371,6 +393,7 @@ elif step == 2:
         else:
             df_show = df_s[["internal_id", "item_code", "display_name", "maker", "total_qty",
                             "avg_cost", "std_cost_old", "action", "skip_reason"]].copy()
+            df_show["skip_reason"] = df_show["skip_reason"].map(_skip_reason_label)
             df_show = df_show.rename(columns=COL_RENAME)
             st.dataframe(df_show, use_container_width=True, hide_index=True)
 
@@ -400,13 +423,16 @@ elif step == 2:
             _ocols = ["internal_id", "item_code", "display_name", "maker", "total_qty",
                       "std_cost_old", "avg_cost", "std_cost_new", "action", "skip_reason"]
             _ocols = [c for c in _ocols if c in df_one.columns]
-            df_show = df_one[_ocols].rename(columns=COL_RENAME)
+            df_show = df_one[_ocols].copy()
+            if "skip_reason" in df_show.columns:
+                df_show["skip_reason"] = df_show["skip_reason"].map(_skip_reason_label)
+            df_show = df_show.rename(columns=COL_RENAME)
             st.dataframe(df_show, use_container_width=True, hide_index=True)
             n_one_upd = int((df_one["action"] == "UPDATE").sum())
             if update_cost1:
-                st.caption(t(f"✅ 已勾选「更改」：其中 {n_one_upd} 个触发更新的将写入上传 CSV"))
+                st.caption(t("✅ 已勾选「更改」：其中 {n} 个触发更新的将写入上传 CSV").format(n=n_one_upd))
             else:
-                st.caption(t(f"默认不更改：这 {n_one} 个 SKU 不写入 CSV（勾选上方「更改」开关可纳入）"))
+                st.caption(t("默认不更改：这 {n} 个 SKU 不写入 CSV（勾选上方「更改」开关可纳入）").format(n=n_one))
 
     # 写入 CSV 的 SKU = UPDATE 且 (非原价=1 或 已勾选更改原价=1)
     csv_decisions = [
@@ -430,7 +456,7 @@ elif step == 2:
             st.caption(t("没有需要更新的 SKU"))
         else:
             if st.button(
-                t(f"确认并生成 CSV ({n_csv} 行) →"), type="primary", use_container_width=True
+                t("确认并生成 CSV ({n} 行) →").format(n=n_csv), type="primary", use_container_width=True
             ):
                 # NST 上传模板格式 CSV：第一列 型番(商品编码) + 「商品原価」(= 定義原価)
                 # NST CSV Import 以「型番」做匹配键(Boss 2026-05-24)，非 Internal ID
@@ -494,17 +520,7 @@ elif step == 3:
             use_container_width=True,
         )
         st.divider()
-        st.markdown(
-            """
-            ### 📋 上传到 NetSuite 的步骤
-
-            1. NetSuite → **Setup → Import/Export → Import CSV Records**
-            2. **Import Type**: `Items` · **Record Type**: `Inventory Item` · **Import**: `Update`
-            3. 上传刚下载的 CSV
-            4. **Field Mapping**：CSV `Internal ID` → NetSuite `Internal ID` · CSV `商品原価` → NetSuite `Standard Cost`（定義原価）
-            5. 第一次配完保存映射，下次秒上传
-            """
-        )
+        st.markdown(t(_NS_UPLOAD_STEPS))
     else:
         st.error(t("⚠️ 输出内容丢失，重来一次"))
 

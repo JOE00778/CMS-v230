@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from shared.i18n import t
+
 DEFAULT_WINDOW_DAYS = 30
 
 BENTEN_EXPORT_STOCK_SQL = """
@@ -89,8 +91,8 @@ def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS,
     except Exception as e:
         if errors is not None:
             errors.append(
-                "弁天在庫（nst.inventory_bin_snapshot）が取得できません → "
-                f"在庫・可售天数・リスク分档はすべて 0 / 判定不能として表示されます: {e}")
+                t("弁天在庫（nst.inventory_bin_snapshot）が取得できません → "
+                  "在庫・可售天数・リスク分档はすべて 0 / 判定不能として表示されます") + f": {e}")
         _stk = pd.DataFrame(columns=["internal_id", "current_stock"])
     if not _stk.empty:
         df = df.merge(_stk, how="left", on="internal_id")
@@ -108,8 +110,8 @@ def fetch_sku360(conn, window_days: int = DEFAULT_WINDOW_DAYS,
     except Exception as e:
         if errors is not None:
             errors.append(
-                "在途残（nst.purchase_order_line）が取得できません → "
-                f"在途はすべて 0 として表示されます: {e}")
+                t("在途残（nst.purchase_order_line）が取得できません → "
+                  "在途はすべて 0 として表示されます") + f": {e}")
         _itx = pd.DataFrame(columns=["item_internal_id", "in_transit_qty"])
     if not _itx.empty:
         df = df.merge(_itx, how="left", left_on="internal_id",

@@ -330,3 +330,46 @@ def test_sellthrough_low_shrinks_order():
     r = df.iloc[0]
     assert r["sellthrough_factor"] == pytest.approx(0.5)
     assert r["rec_monthly"] == pytest.approx(50.0)               # 100 × 0.5
+
+
+def _seed_reason_branches(c):
+    """NEW / ケース・ロット欠落 / 最低受注未達 / 応急・前払い・弁天経由 を一度に通す。"""
+    _seed_sales(c, "4900000000901", [10, 10, 10])
+    seed_item(c, "4900000000901", display_name="商品X", maker="メーカーX", item_rank="Aランク", handling_cd="取扱中")
+    c.execute("INSERT INTO supplier_quote VALUES ('仕入先甲','4900000000901','商品X',100,NULL,NULL,999999,'掛','2週間','EMERGENCY',3,'NST1')")
+    c.execute("INSERT INTO supplier_quote VALUES ('仕入先乙','4900000000901','商品X',120,NULL,NULL,0,'掛','2週間','PREPAID',4,'NST2')")
+    _seed_sales(c, "4900000000902", [5, 5, 5])
+    seed_item(c, "4900000000902", display_name="商品Y", maker="メーカーY", item_rank="NEW", handling_cd="取扱中")
+    c.execute("INSERT INTO supplier_quote VALUES ('仕入先丙','4900000000902','商品Y',80,6,NULL,0,'掛','2週間','BENTEN_TRANSIT',2,'NST3')")
+
+
+def test_reason_text_default_japanese_unchanged():
+    """tr 未指定（CLI / tools）は従来の日文そのまま。"""
+    c = _conn()
+    _seed_reason_branches(c)
+    r = compute_recommendations(c, months=3).set_index("jan")
+    assert r.loc["4900000000901", "reason"] == (
+        "応急・単価100・flat×1.0｜推奨月販10.0×2.5=25−実質在庫0(弁天0+注文済0)＝必要25→25箱×1=25個"
+        "(発注後在庫2.5ヶ月)・⚠️ケース/ロット未設定・⚠️最低受注¥999,999未達(現¥2,500)")
+    assert r.loc["4900000000901", "pack_source"] == "未設定"
+    assert r.loc["4900000000901", "alt_suppliers"] == "仕入先甲(応急)·¥100 / 仕入先乙(前払い)·¥120"
+    assert r.loc["4900000000902", "reason"] == "🆕NEW (受動発注)・候補仕入先=仕入先丙・ケース6"
+    assert r.loc["4900000000902", "pack_source"] == "ロット(代替)"
+
+
+def test_reason_text_rendered_in_display_language():
+    """page25: 理由 / 単位種別 / 全候補 は日文で保存し、表示時に訳す（計算時の言語で定死しない）。"""
+    import re
+    from shared.i18n import TRANSLATIONS_ZH
+    from shared.purchase_engine import alt_suppliers_text, reason_text
+    zh = lambda s: TRANSLATIONS_ZH.get(s, s)  # noqa: E731
+    for cap in (None, 1.0):                                     # 1.0 → 発注後在庫上限の保留枝も通す
+        c = _conn()
+        _seed_reason_branches(c)
+        df = compute_recommendations(c, months=3, max_stock_months=cap)
+        assert df.attrs["max_stock_months"] == cap
+        for _, r in df.iterrows():
+            assert reason_text(r, cap) == r["reason"]          # 既定（日文）= 保存値
+            assert alt_suppliers_text(r["alt_suppliers"]) == r["alt_suppliers"]
+            for v in (reason_text(r, cap, zh), zh(r["pack_source"]), alt_suppliers_text(r["alt_suppliers"], zh)):
+                assert not re.search(r"[ぁ-ゖァ-ヺ]", v), v

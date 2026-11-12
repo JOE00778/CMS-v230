@@ -227,7 +227,7 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
     "updated_at":       {"ja": "更新",          "zh": "更新",       "en": "Updated"},
     "approved_by":      {"ja": "承認者",        "zh": "批准人",     "en": "Approved by"},
     "name_jp":          {"ja": "日本語名",      "zh": "日文名",     "en": "JP Name"},
-    "cost_jpy":         {"ja": "原価¥",         "zh": "原価¥",      "en": "Cost ¥"},
+    "cost_jpy":         {"ja": "原価¥",         "zh": "原价¥",      "en": "Cost ¥"},
     "weight_g":         {"ja": "毛重g",         "zh": "毛重g",      "en": "Gross g"},
     "image":            {"ja": "画像",          "zh": "图",         "en": "Image"},
     # ── page21 批量审核 / 店铺本地化 / 主图模板 2026-09-10 ──

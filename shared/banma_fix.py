@@ -20,6 +20,7 @@ import json
 import re
 
 from shared.banma_dims import D_PH, W_PH
+from shared.i18n import t
 from shared.item_register import PLACEHOLDER_IMAGE_URL
 
 SKU_PATH = "/v1/product/sku"
@@ -152,19 +153,21 @@ def write_customs(client, conn, sku_id: str, code: str, new: dict, *, name_cn: s
     expect = チェック時に見た値。書く直前の斑马の値が違えば書かない（写しが古い・別の人が直した → 上書きしない）。"""
     new = {k: str(v).strip() for k, v in new.items() if k in ("Code", "NameEn") and str(v or "").strip()}
     if not new:
-        return {"status": "skipped", "message": "変更なし"}
+        return {"status": "skipped", "message": t("変更なし")}
     try:
         cur = get_customs(client, sku_id)
     except Exception as e:  # noqa: BLE001
-        return {"status": "fail", "message": f"報関の照会に失敗（書いていません）: {type(e).__name__}: {e}"}
+        return {"status": "fail", "message": t("報関の照会に失敗（書いていません）: {err}").format(err=f"{type(e).__name__}: {e}")}
     if expect is not None:
-        moved = [f"{k}: 今 {(cur or {}).get(k) or '空'} / チェック時 {expect.get(k) or '空'}" for k in new
+        moved = [t("{k}: 今 {now} / チェック時 {was}").format(k=k, now=(cur or {}).get(k) or t("空"),
+                                                              was=expect.get(k) or t("空")) for k in new
                  if not _same((cur or {}).get(k), expect.get(k))]
         if moved:
-            return {"status": "skipped", "message": "斑马の値がチェック時と違うため書いていません（" + " · ".join(moved) + "）"}
+            return {"status": "skipped", "message": t("斑马の値がチェック時と違うため書いていません（{detail}）").format(
+                detail=" · ".join(moved))}
     if cur is None:
         if not (new.get("Code") and new.get("NameEn")):
-            return {"status": "skipped", "message": "斑马に報関情報が無い SKU は HS と英文名の両方が要ります（書いていません）"}
+            return {"status": "skipped", "message": t("斑马に報関情報が無い SKU は HS と英文名の両方が要ります（書いていません）")}
         method, body = "POST", {"SKUID": str(sku_id), "NameCn": name_cn or code, "NameEn": new["NameEn"],
                                 "Code": new["Code"], "Weight": int(weight or 0)}
     else:
@@ -172,7 +175,7 @@ def write_customs(client, conn, sku_id: str, code: str, new: dict, *, name_cn: s
     try:
         log_id = _log_start(conn, "customs", str(sku_id), code, new, cur)
     except Exception as e:  # noqa: BLE001 — 戻す材料が残せないなら書かない
-        return {"status": "fail", "message": f"台帳に記録できないため書いていません: {type(e).__name__}: {e}"}
+        return {"status": "fail", "message": t("台帳に記録できないため書いていません: {err}").format(err=f"{type(e).__name__}: {e}")}
     err = ""
     try:
         client.call(method, f"{SKU_PATH}/{sku_id}/customs", body=body)
@@ -182,15 +185,17 @@ def write_customs(client, conn, sku_id: str, code: str, new: dict, *, name_cn: s
         after = get_customs(client, sku_id)
     except Exception as e:  # noqa: BLE001
         _log_done(conn, log_id, "fail", None, f"書込後の照会に失敗: {e} {err}")
-        return {"status": "fail", "message": f"書込後の照会に失敗（斑马で確認してください）: {e}" + (f" / 書込: {err}" if err else "")}
+        return {"status": "fail", "message": t("書込後の照会に失敗（斑马で確認してください）: {err}").format(err=e)
+                + (t(" / 書込: {err}").format(err=err) if err else "")}
     a = after or {}
     bad = [k for k, v in new.items() if str(a.get(k) or "").strip() != v]
     if cur is not None:
         bad += [k for k in _CUSTOMS_KEEP if k in cur and a.get(k) != cur.get(k)]
         bad += [k for k in ("Code", "NameEn") if k not in new and (a.get(k) or "") != (cur.get(k) or "")]
     if not after or bad:
-        st, msg = ("fail", f"書けていません: {err}") if not after or a == (cur or {}) else (
-            "mismatch", f"回読が一致しません: {', '.join(bad)}" + (f" / 書込: {err}" if err else ""))
+        st, msg = ("fail", t("書けていません: {why}").format(why=err)) if not after or a == (cur or {}) else (
+            "mismatch", t("回読が一致しません: {fields}").format(fields=", ".join(bad))
+            + (t(" / 書込: {err}").format(err=err) if err else ""))
     else:
         st, msg = ("created" if cur is None else "ok"), ""
     _log_done(conn, log_id, st, after, msg)
@@ -216,9 +221,9 @@ def blocked(p: dict) -> str:
     """API で書かない理由（描述 / 包材がある）。空文字 = 書いてよい。"""
     d = p.get("Descriptions") or {}
     if any(str(v or "").strip() for v in (d.values() if isinstance(d, dict) else [d])):
-        return "描述あり（API で書くと描述が消える）"
+        return t("描述あり（API で書くと描述が消える）")
     if p.get("PackMaterials"):
-        return "包材あり（API の body に包材が無く消える恐れ）"
+        return t("包材あり（API の body に包材が無く消える恐れ）")
     return ""
 
 
@@ -286,14 +291,15 @@ def verify_product(before: dict, after: dict, changes: dict[str, dict]) -> str:
             if ch.get("Image"):
                 got = (asku.get(str(s.get("SKUID"))) or {}).get("Image")
                 if not got:
-                    return f"画像が入っていません（SKU {s.get('SKUID')}）"
+                    return t("画像が入っていません（SKU {sku}）").format(sku=s.get("SKUID"))
                 s["Image"] = got
         if not (before.get("Spu") or {}).get("Image") and (after.get("Spu") or {}).get("Image"):
             exp["Spu"]["Image"] = after["Spu"]["Image"]
         if not before.get("Images") and after.get("Images"):
             exp["Images"] = after["Images"]
     d = _diff(_canon(exp), _canon(after))
-    return "" if not d else "回読が一致しません: " + ", ".join(d[:8]) + (f" ほか {len(d) - 8}" if len(d) > 8 else "")
+    return "" if not d else t("回読が一致しません: {fields}").format(
+        fields=", ".join(d[:8]) + (" " + t("ほか {n}").format(n=len(d) - 8) if len(d) > 8 else ""))
 
 
 def write_product(client, conn, spu_id: str, changes: dict[str, dict], codes: str,
@@ -303,24 +309,27 @@ def write_product(client, conn, spu_id: str, changes: dict[str, dict], codes: st
     try:
         before = get_product(client, spu_id)
     except Exception as e:  # noqa: BLE001
-        return {"status": "fail", "message": f"SPU の照会に失敗（書いていません）: {type(e).__name__}: {e}"}
+        return {"status": "fail", "message": t("SPU の照会に失敗（書いていません）: {err}").format(err=f"{type(e).__name__}: {e}")}
     why = blocked(before)
     if why:
-        return {"status": "skipped", "message": f"{why} → 三辺・重量は Excel、画像は斑马の画面で"}
+        return {"status": "skipped", "message": t("{why} → 三辺・重量は Excel、画像は斑马の画面で").format(why=why)}
     want = {str(s.get("SKUID")) for s in before.get("Skus") or []}
     if expect:
         now = {str(s.get("SKUID")): s for s in before.get("Skus") or []}
-        moved = [f"{sid} {k}: 今 {(now.get(sid) or {}).get(k)} / チェック時 {expect.get(sid, {}).get(k)}"
+        moved = [f"{sid} " + t("{k}: 今 {now} / チェック時 {was}").format(k=k, now=(now.get(sid) or {}).get(k),
+                                                                         was=expect.get(sid, {}).get(k))
                  for sid, ch in changes.items() for k in ch if sid in expect and not _same((now.get(sid) or {}).get(k),
                                                                                           expect[sid].get(k))]
         if moved:
-            return {"status": "skipped", "message": "斑马の値がチェック時と違うため書いていません（" + " · ".join(moved[:4]) + "）"}
+            return {"status": "skipped", "message": t("斑马の値がチェック時と違うため書いていません（{detail}）").format(
+                detail=" · ".join(moved[:4]))}
     if not set(changes) <= want:
-        return {"status": "fail", "message": f"SPU {spu_id} に無い SKU: {sorted(set(changes) - want)}（書いていません）"}
+        return {"status": "fail", "message": t("SPU {spu} に無い SKU: {skus}（書いていません）").format(
+            spu=spu_id, skus=sorted(set(changes) - want))}
     try:
         log_id = _log_start(conn, "product", str(spu_id), codes, changes, before)
     except Exception as e:  # noqa: BLE001
-        return {"status": "fail", "message": f"台帳に記録できないため書いていません: {type(e).__name__}: {e}"}
+        return {"status": "fail", "message": t("台帳に記録できないため書いていません: {err}").format(err=f"{type(e).__name__}: {e}")}
     err = ""
     try:
         client.call("PUT", f"{PRODUCT_PATH}/{spu_id}", body=build_body(apply(before, changes)))
@@ -330,10 +339,10 @@ def write_product(client, conn, spu_id: str, changes: dict[str, dict], codes: st
         after = get_product(client, spu_id)
     except Exception as e:  # noqa: BLE001
         _log_done(conn, log_id, "fail", None, f"書込後の照会に失敗: {e} {err}")
-        return {"status": "mismatch", "message": f"書込後の照会に失敗（斑马で確認してください）: {e}"}
+        return {"status": "mismatch", "message": t("書込後の照会に失敗（斑马で確認してください）: {err}").format(err=e)}
     msg = verify_product(before, after, changes)
     if msg and not _diff(_canon(before), _canon(after)):
-        st, msg = "fail", f"書けていません: {err or msg}"
+        st, msg = "fail", t("書けていません: {why}").format(why=err or msg)
     else:
         st = "mismatch" if msg else "ok"
     _log_done(conn, log_id, st, after, msg + (f" / 書込: {err}" if err and st == "mismatch" else ""))

@@ -58,14 +58,14 @@ _LBL = {
     "unit_price":    ("单价", "単価"),
     "teigi_genka":   ("定义原价", "定義原価"),
     "arari":         ("毛利", "粗利"),
-    "arari_rate":    ("粗利率", "粗利率"),
+    "arari_rate":    ("毛利率", "粗利率"),
     "qty_on_hand":   ("库存数", "在庫数"),
     "qty_available": ("可用库存", "利用可能"),
     "stock_value":   ("库存金额", "在庫金額"),
     "turnover":      ("回转率", "回転率"),
     "avg_stock_days": ("平均库存天数", "平均在庫日数"),
     "cross_ratio":   ("交叉比率", "交差比率"),
-    "sku_status":    ("SKU稼働率", "SKU稼働率"),
+    "sku_status":    ("SKU动销率", "SKU稼働率"),
     "stock_sales_ratio": ("库存销售比", "在庫販売比"),
     "sellthrough":   ("月完売率", "月完売率"),
     "profit_contrib": ("利润贡献率", "利益貢献率"),
@@ -101,11 +101,11 @@ def _render_sales_delta(_period_kind, _key):
             "SELECT MAX(sale_date) AS mx FROM nst.sales_daily"
         ).fetchone()
     except Exception as _ew:
-        st.error(_L("売上日次データ未取得: ", "売上日次データ未取得: ") + str(_ew))
+        st.error(_L("销售日次数据未获取: ", "売上日次データ未取得: ") + str(_ew))
         _wconn.close()
         return
     if not _rng or not _rng["mx"]:
-        st.info(_L("売上日次データがありません（page 27 で sales を取得）",
+        st.info(_L("没有销售日次数据（请在 page 27 拉取 sales）",
                    "売上日次データがありません（page 27 で sales を取得）"))
         _wconn.close()
         return
@@ -396,7 +396,7 @@ def _render_sales_delta(_period_kind, _key):
                              key=_key + "_towner")
     _shop_opts_t = ([_s for _s in _all_shops if owner_of(_s, _omap_now) == _f_owner]
                     if _f_owner != _ALLO_T else _all_shops)
-    _f_market = _f1.multiselect(_L("市场", "市場"), _markets, key=_key + "_tmarket",
+    _f_market = _f1.multiselect(_L("市场", "市場"), _markets, format_func=t, key=_key + "_tmarket",
                                 placeholder=_L("全部", "全件"))  # 空選＝不限
     _f_shop = _f2.selectbox(_L("店铺", "店舗"), [_ALL] + _shop_opts_t, key=_key + "_tshop")
     _f_maker = _f3.multiselect(_L("品牌", "メーカー"), _all_makers, key=_key + "_tmaker",
@@ -418,7 +418,7 @@ def _render_sales_delta(_period_kind, _key):
         if _mshops:
             _wc.append("trim(s.shop) IN (" + ",".join(["?"] * len(_mshops)) + ")")
             _wp.extend(_mshops)
-            _caps.append("/".join(_f_market))
+            _caps.append("/".join(t(m) for m in _f_market))
     if _f_shop != _ALL:
         _wc.append("trim(s.shop) = ?"); _wp.append(_f_shop); _caps.append(_f_shop)
     if _f_maker:
@@ -474,7 +474,7 @@ with _q_tab:
         months_df["year_month"].tolist(), key="sales_q", label=t("対象月"),
         container=c1)
     ym = _ym_to
-    kw = c2.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
+    kw = c2.text_input(t("JAN / 商品名 検索"), placeholder=t("JAN コード or 表示名の一部"))
 
     # 当月売上商品の各次元 distinct → 絞り込み候補
     _opt_df, _ = _query(
@@ -496,14 +496,14 @@ with _q_tab:
     _month_shops = _opts("shop")
     _market_opts = sorted({classify_market(_s) for _s in _month_shops})
     f1, f2, f3, f4 = st.columns(4)
-    market_filter = f1.multiselect(t("市场"), _market_opts, placeholder=_ALL)  # 空選＝全部
+    market_filter = f1.multiselect(t("市场"), _market_opts, format_func=t, placeholder=_ALL)  # 空選＝全部
     rank_filter = f2.multiselect(t("商品ランク"), _opts("item_rank"), placeholder=_ALL)
     maker_filter = f3.multiselect(t("メーカー名"), _opts("maker"), placeholder=_ALL)
     handling_filter = f4.multiselect(t("取扱区分"), _opts("handling_cd"), placeholder=_ALL)
 
     with st.expander(t("📋 複数 JAN / 商品名 一括検索（改行・カンマ区切り）")):
         multi_kw = st.text_area(
-            t("複数 JAN / 商品名"), placeholder="1 行 1 件 or カンマ区切り",
+            t("複数 JAN / 商品名"), placeholder=t("1 行 1 件 or カンマ区切り"),
             height=120, label_visibility="collapsed",
         )
     _mk = multi_kw.replace(",", "\n").replace("，", "\n").replace("、", "\n")
@@ -761,7 +761,7 @@ with _q_tab:
                 y=alt.Y("gp:Q", title=None), color=alt.datum(_gp_l))
             _tr = _tb.mark_rule(color="#888").encode(
                 opacity=alt.condition(_tnear, alt.value(0.35), alt.value(0)),
-                tooltip=[alt.Tooltip("ym:N"),
+                tooltip=[alt.Tooltip("ym:N", title="月"),
                          alt.Tooltip("revenue:Q", title=_rev_l, format=",.0f"),
                          alt.Tooltip("gp:Q", title=_gp_l, format=",.0f")],
             ).add_params(_tnear)
@@ -770,5 +770,5 @@ with _q_tab:
                     .properties(height=320)
                     .configure_legend(orient="top", title=None))
             st.altair_chart(_tch, use_container_width=True)
-            st.caption("総収益合計 / 粗利合計 の月次推移（上の筛选に追従）" if _ja_t
+            st.caption("総収益合計 / 粗利合計 の月次推移（上の絞り込みに追従）" if _ja_t
                        else "总收益合计 / 毛利合计 月度趋势（跟随上方筛选变化）")

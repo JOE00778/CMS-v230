@@ -20,6 +20,7 @@ import streamlit as st
 
 from shared import banma_client, nst_suiteql
 from shared.db import get_connection
+from shared.editor_state import lang_stable_editor
 from shared.i18n import lang_selector, t
 
 st.set_page_config(page_title=t("物流费用上传"), page_icon="🚚", layout="wide")
@@ -533,11 +534,11 @@ with tab2:
     if not unknown.empty:
         st.warning(t("⚠️ 未分类 {n} 店铺（当前计入【不明】）").format(n=len(unknown)))
         unknown["dept"] = "輸出"
-        edited_new = st.data_editor(
-            unknown, hide_index=True, key="new_dept",
+        edited_new = lang_stable_editor(
+            unknown, hide_index=True, key="new_dept", reset=tuple(unknown["shop"]),
             column_config={
                 "shop": st.column_config.TextColumn(t("店铺"), disabled=True),
-                "dept": st.column_config.SelectboxColumn(t("部署"), options=["輸出", "EC"]),
+                "dept": st.column_config.SelectboxColumn(t("部署"), options=["輸出", "EC"], format_func=t),
             },
         )
         if st.button(t("➕ 登记 + 重算"), key="new_dept_btn", type="primary"):
@@ -561,11 +562,11 @@ with tab2:
     if cur_map.empty:
         st.info(t("还没有映射。请从上方未分类登记。"))
     else:
-        edited = st.data_editor(
+        edited = lang_stable_editor(
             cur_map, hide_index=True, num_rows="dynamic", key="edit_dept",
             column_config={
                 "shop": st.column_config.TextColumn(t("店铺")),
-                "dept": st.column_config.SelectboxColumn(t("部署"), options=["輸出", "EC"]),
+                "dept": st.column_config.SelectboxColumn(t("部署"), options=["輸出", "EC"], format_func=t),
             },
         )
         if st.button(t("💾 保存 + 重算"), key="edit_dept_btn"):
@@ -835,12 +836,12 @@ with tab_ecms:
             if _xlsx:
                 try:
                     _raw = pd.read_excel(_xlsx[0], sheet_name=_ei.XLSX_SHEET)
-                    _det_df, _det_warns = _ei.normalize_detail(_raw)
+                    _det_df, _det_warns = _ei.normalize_detail(_raw, tr=t)
                 except Exception as _e:  # noqa: BLE001
                     st.error(t("❌ xlsx 解析失败：") + f"{type(_e).__name__}: {_e}")
             if _pdf:
                 try:
-                    _hdr = _ei.parse_invoice_pdf(_pdf[0].getvalue())
+                    _hdr = _ei.parse_invoice_pdf(_pdf[0].getvalue(), tr=t)
                 except Exception as _e:  # noqa: BLE001
                     st.error(t("❌ PDF 解析失败：") + f"{type(_e).__name__}: {_e}")
 

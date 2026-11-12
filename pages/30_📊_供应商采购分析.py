@@ -16,6 +16,7 @@ import streamlit as st
 
 from shared.db import get_connection
 from shared import period
+from shared.editor_state import lang_stable_editor
 from shared.i18n import lang_selector, t
 from shared.inventory_risk import RANK_TARGET_KEYS  # NST 标准等级 A/B/C/NEW（复用·单一来源）
 
@@ -168,6 +169,7 @@ def _render_analysis():
     rk["is_prepay"] = rk.get("is_prepay", False).astype(bool)
 
     st.markdown("##### " + t("📦 各等级采购金额（{ym}）").format(ym=period.range_caption(_ym_from, _ym_to)))
+    _lbl_cr, _lbl_pp = t("挂账"), t("预付款")
     _rank_cards = st.columns(len(RANK_TARGET_KEYS))
     for _c, _rk in zip(_rank_cards, RANK_TARGET_KEYS):
         _cur = rk[(rk["rank"] == _rk) & (rk["year_month"] >= _ym_from)
@@ -189,8 +191,8 @@ def _render_analysis():
             f"<div class='rk-label'>{_rk}</div>"
             f"<div class='rk-value'>¥{_tot:,.0f}</div>"
             f"<div class='rk-mom'>{' · '.join(_parts)}</div>"
-            f"<div class='rk-sub'>{t('挂账')} ¥{_cr:,.0f}</div>"
-            f"<div class='rk-sub'>{t('预付款')} ¥{_pp:,.0f}</div>"
+            f"<div class='rk-sub'>{_lbl_cr} ¥{_cr:,.0f}</div>"
+            f"<div class='rk-sub'>{_lbl_pp} ¥{_pp:,.0f}</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -464,8 +466,8 @@ def _render_whitelist():
         st.write(t("候选 {n} 家 · 当前白名单 {w} 家 · 其中预付款 {p} 家")
                  .format(n=len(cand), w=n_wl, p=n_pp))
 
-        edited = st.data_editor(
-            cand, hide_index=True, use_container_width=True, height=520,
+        edited = lang_stable_editor(
+            cand, hide_index=True, use_container_width=True, height=520, reset=tuple(cand["vendor_id"]),
             column_config={
                 "vendor_id": st.column_config.TextColumn(t("供货商ID"), disabled=True),
                 "vendor_name": st.column_config.TextColumn(t("仕入先"), disabled=True),
@@ -628,17 +630,17 @@ def _render_in_transit():
     with c2:
         jfil = st.text_input(t("🔍 JAN（部分匹配）"), "", key="intransit_jfil")
     with c3:
-        pay_filter = st.selectbox(t("支付方式"), [t("全部"), t("挂账（掛け払い）"),
-                                                  t("预付款（現金払い）")], key="intransit_pay")
+        pay_filter = st.selectbox(t("支付方式"), ["全部", "挂账（掛け払い）", "预付款（現金払い）"],
+                                  format_func=t, key="intransit_pay")
 
     view = df.copy()
     if vfil:
         view = view[view["vendor_name"].astype(str).str.contains(vfil, na=False)]
     if jfil:
         view = view[view["jan"].astype(str).str.contains(jfil, na=False)]
-    if pay_filter == t("挂账（掛け払い）"):
+    if pay_filter == "挂账（掛け払い）":
         view = view[~view["is_prepay"]]
-    elif pay_filter == t("预付款（現金払い）"):
+    elif pay_filter == "预付款（現金払い）":
         view = view[view["is_prepay"]]
 
     view = view.copy()
@@ -668,8 +670,9 @@ def _render_in_transit():
         "status": view["status"],
     })
 
-    edited = st.data_editor(
+    edited = lang_stable_editor(
         ed, hide_index=True, use_container_width=True, height=480, key="intransit_editor",
+        reset=tuple(ed["line_id"]),   # 絞り込みで行が入れ替わる（行数は同じこともある）→ 保存キーで識別
         column_order=["trandate", "po_number", "vendor_name", "prepay_mark", "jan",
                       "qty_outstanding", "amt_outstanding",
                       "manual_eta", "eff_eta", "eta_note", "line_memo", "po_memo", "status"],
@@ -759,7 +762,7 @@ def _render_sku_detail():
         )
     with _tc2:
         lens = st.radio(
-            t("视图"), [t("全部采购"), t("仅在途（残>0）")], horizontal=True, key="sku_lens",
+            t("视图"), ["全部采购", "仅在途（残>0）"], format_func=t, horizontal=True, key="sku_lens",
         )
 
     wl = "JOIN nst.po_export_vendor ev3 ON ev3.vendor_id = pol.vendor_id" if only_export else ""
@@ -807,7 +810,7 @@ def _render_sku_detail():
     )
 
     # 视图镜头：在途 = 未 close 且 残>0
-    if lens == t("仅在途（残>0）"):
+    if lens == "仅在途（残>0）":
         base = base[(~base["closed"]) & (base["qty_outstanding"] > 0)]
         if base.empty:
             st.info(t("当前筛选下无在途明细（全部已入荷 / close）。"))
@@ -842,7 +845,7 @@ def _render_sku_detail():
         st.info(t("无匹配明细（调整 月份 / 等级 / 供货商 / PO番号 筛选）"))
         return
 
-    _is_transit = lens == t("仅在途（残>0）")
+    _is_transit = lens == "仅在途（残>0）"
 
     # ---- KPI（随镜头切换）----
     if _is_transit:
@@ -929,8 +932,8 @@ def _render_partial_receipt():
             help=t("勾选则只看「⚙️ 系统参数设定 → 🏢 输出供应商名单」里确认的输出供货商"))
     with _pc2:
         recv_lens = st.radio(
-            t("受領区分"), [t("一部受領のみ"), t("全未完了入荷（含未受領）")],
-            horizontal=True, key="pr_lens")
+            t("受領区分"), ["一部受領のみ", "全未完了入荷（含未受領）"],
+            format_func=t, horizontal=True, key="pr_lens")
 
     wl = "JOIN nst.po_export_vendor ev ON ev.vendor_id = pol.vendor_id" if only_export else ""
     try:
@@ -970,7 +973,7 @@ def _render_partial_receipt():
     df["overdue"] = df["expected_receipt_date"].map(
         lambda d: bool(pd.notna(d) and d < _today))
 
-    if recv_lens == t("一部受領のみ"):
+    if recv_lens == "一部受領のみ":
         df = df[df["qty_received"] > 0]
         if df.empty:
             st.info(t("一部受領（既入荷>0 かつ 入荷残>0）の明細はありません。"))

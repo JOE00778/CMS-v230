@@ -7,12 +7,21 @@ from __future__ import annotations
 import pathlib
 from unittest import mock
 
+import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from shared import nst_choices as NC
 
 PAGE = pathlib.Path(__file__).resolve().parents[1] / "pages" / "47_🦓_斑马NST整合检查.py"
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """文言は日文原文で検査する。session_state["lang"] ではなく get_lang を固定するのは、AppTest が radio / selectbox の
+    format_func（= t）をスクリプトの外で呼び、そこでは t() が既定 zh になるため（中文は test_page47_zh_ja_ui_text）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
 
 
 def test_page47_renders_and_nav_group():
@@ -176,3 +185,81 @@ def test_page47_content_check_and_write_20261112(page15_offline):
     assert prod[0][2]["expect"]["K1"]["Weight"] == 1 and cus[0][2]["expect"]["Code"] == ""   # 書く直前の照合用
     assert cus and cus[0][0] == "K1" and cus[0][1]["Code"] and cus[0][1]["NameEn"] and cus[0][2]["weight"] == 45
     assert any("ok=2" in s.value for s in at.success)
+
+
+def _ui_texts(at) -> list[str]:
+    """本文の表示文言（title・ボタン・caption・info 等・入力欄のラベル）。表の中身（商品名などのデータ）は見ない。"""
+    m = at.main
+    out = [x.value for kind in ("title", "header", "subheader", "caption", "info", "warning", "error", "success")
+           for x in getattr(m, kind)]
+    out += [b.label for b in m.button] + [d.proto.label for d in m.get("download_button")]
+    out += [w.label for kind in ("selectbox", "multiselect", "radio", "checkbox") for w in getattr(m, kind)]
+    return out
+
+
+def test_page47_zh_ja_ui_text_20261112(page15_offline):
+    """中文モードは仮名なし・日文モードは簡体字なし（Boss 2026-11-12「中文全部中文、日文全部日文」）。
+    初期画面 + 🔎 SKUID 空チェックの結果画面まで。斑马 / 待上图 は固有名詞なので字の判定から外す。"""
+    import re
+    from shared import banma_client, nst_suiteql
+    from shared import banma_register as BMR
+    kana = re.compile(r"[ぁ-ゖァ-ヺ]")
+    simplified = re.compile("[这们为对说时过还个么请询选择从结务设录删题无现击产员门间开关长检认让给级钮显库仓找须该败导]")
+    blank = [{"id": "1", "code": "X1", "jan": "4900000000011", "name": "名1", "dept": "輸出事業", "handling": "取扱中",
+              "inactive": "F", "item_rank": "NEW"},
+             {"id": "5", "code": "X5", "jan": "4900000000059", "name": "名5", "dept": "輸出事業", "handling": "取扱中",
+              "inactive": "F", "item_rank": None}]
+    texts = {}
+    for lang in ("zh", "ja"):
+        st.cache_data.clear()
+        # get_lang も固定: AppTest は format_func（= t）をスクリプト外で呼ぶ（_ui_ja の docstring）
+        with mock.patch("shared.i18n.get_lang", return_value=lang), \
+                mock.patch("shared.db.get_connection", mock.MagicMock()), \
+                mock.patch.object(nst_suiteql, "suiteql_all",
+                                  side_effect=lambda q: blank if "IS NULL" in q else [{"code": "OLD", "sku_id": "105"}]), \
+                mock.patch.object(banma_client.BanmaClient, "from_env", return_value=object()), \
+                mock.patch.object(banma_client, "ensure_token"), \
+                mock.patch.object(BMR, "find_skus", return_value={"X1": "101", "X5": "105"}):
+            at = AppTest.from_file(str(PAGE), default_timeout=60)
+            at.session_state["__auth_ok"] = True
+            at.session_state["lang"] = lang
+            at.run()
+            first = _ui_texts(at)
+            at.button(key="p47s_run").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        texts[lang] = first + _ui_texts(at)
+    assert any("SKUID 为空" in x for x in texts["zh"]) and any("SKUID 空をチェック" in x for x in texts["ja"])
+    assert not [x for x in texts["zh"] if kana.search(x)]
+    assert not [x for x in texts["ja"] if simplified.search(x.replace("斑马", "").replace("待上图", ""))]
+
+
+def test_page47_parallel_workers_see_session_language():
+    """_parallel の工作スレッドでも get_lang / t() がこのセッションの言語を読む（ScriptRunContext を渡す）。
+    渡さないと固定 zh になり、1 件ごとに missing ScriptRunContext の警告がログに出る。"""
+    import ast
+
+    src = PAGE.read_text(encoding="utf-8")
+    code = next(ast.get_source_segment(src, n) for n in ast.parse(src).body
+                if isinstance(n, ast.FunctionDef) and n.name == "_parallel")
+
+    def app():
+        import threading
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        import streamlit as st
+        from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+
+        from shared import i18n
+        ns = {"threading": threading, "time": time, "ThreadPoolExecutor": ThreadPoolExecutor,
+              "as_completed": as_completed, "st": st, "add_script_run_ctx": add_script_run_ctx,
+              "get_script_run_ctx": get_script_run_ctx}
+        exec(st.session_state["code"], ns)
+        st.session_state["res"] = ns["_parallel"](lambda k: i18n.get_lang(), [1, 2, 3], "x", workers=3)
+
+    with mock.patch("shared.i18n.get_lang", side_effect=lambda: st.session_state.get("lang", "zh")):
+        at = AppTest.from_function(app)
+        at.session_state["code"], at.session_state["lang"] = code, "ja"
+        at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["res"] == {1: "ja", 2: "ja", 3: "ja"}

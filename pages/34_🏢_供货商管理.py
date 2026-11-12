@@ -33,6 +33,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.db import get_connection
+from shared.editor_state import lang_stable_editor
 from shared.i18n import lang_selector, t, get_lang
 from shared import sourcing as sc
 
@@ -717,8 +718,9 @@ with tab_bs:
                     y=alt.Y("amount:Q", title=_dl("采购金额", "仕入金額")),
                     color=alt.Color("supplier_name:N", title=None,
                                     legend=alt.Legend(orient="top")),
-                    tooltip=["ym:N", "supplier_name:N",
-                             alt.Tooltip("amount:Q", format=",.0f")],
+                    tooltip=[alt.Tooltip("ym:N", title=t("月")),
+                             alt.Tooltip("supplier_name:N", title=t("供货商")),
+                             alt.Tooltip("amount:Q", title=_dl("采购金额", "仕入金額"), format=",.0f")],
                 ).properties(height=240).configure_axis(
                     labelFontSize=_CHART_LABEL_FS, titleFontSize=_CHART_TITLE_FS)
                 st.altair_chart(_c1, use_container_width=True)
@@ -730,14 +732,15 @@ with tab_bs:
                                 scale=alt.Scale(zero=False)),
                         color=alt.Color("supplier_name:N", title=None,
                                         legend=alt.Legend(orient="top")),
-                        tooltip=["ym:N", "supplier_name:N",
-                                 alt.Tooltip("wari_w:Q", format=".2f"),
-                                 alt.Tooltip("coverage:Q", format=".0%")],
+                        tooltip=[alt.Tooltip("ym:N", title=t("月")),
+                                 alt.Tooltip("supplier_name:N", title=t("供货商")),
+                                 alt.Tooltip("wari_w:Q", title=_dl("加权折扣率", "加重掛率"), format=".2f"),
+                                 alt.Tooltip("coverage:Q", title=_dl("MSRP覆盖率", "MSRP カバー率"), format=".0%")],
                     ).properties(height=240).configure_axis(
                         labelFontSize=_CHART_LABEL_FS, titleFontSize=_CHART_TITLE_FS)
                     st.altair_chart(_c2, use_container_width=True)
             st.caption(_dl(
-                f"最右月份为当月（截至今日）· 加权折扣率=Σ(单价×数量)÷Σ(MSRP税抜×数量)×10,仅MSRP完整PO行 · "
+                f"最右月份为当月（截至今日）· 加权折扣率=Σ(单价×数量)÷Σ(MSRP不含税×数量)×10,仅MSRP完整PO行 · "
                 f"覆盖率下降时不要把折扣率改善解读为价格改善",
                 "最右月は当月（本日まで）· 加重掛率=Σ(単価×数量)÷Σ(MSRP税抜×数量)×10（MSRP有りPO行のみ）· "
                 "カバー率低下時は掛率改善を価格改善と解釈しない"))
@@ -748,7 +751,7 @@ with tab_bs:
 with tab_wr:
     st.caption(_dl(
         "四层同口径：全体 / ABC等级 / 品牌×供应商 / SKU×供应商 · "
-        "金额加权折扣率=Σ(PO单价×数量)÷Σ(MSRP税抜×数量)×10（仅MSRP完整PO行）· "
+        "金额加权折扣率=Σ(PO单价×数量)÷Σ(MSRP不含税×数量)×10（仅MSRP完整PO行）· "
         "每层同时显示 MSRP 金额覆盖率——覆盖率下降时折扣率变化不能解读为价格改善。",
         "4 層同一口径：全体 / ABC ランク / ブランド×仕入先 / SKU×仕入先 · "
         "金額加重掛率=Σ(PO単価×数量)÷Σ(MSRP税抜×数量)×10（MSRP有りPO行のみ）· "
@@ -778,9 +781,10 @@ with tab_wr:
                 x=alt.X("ym:N", title=None, axis=alt.Axis(labelAngle=0)),
                 y=alt.Y("wari_w:Q", title=_dl("全体加权折扣率(折)", "全体加重掛率(掛)"),
                         scale=alt.Scale(zero=False)),
-                tooltip=["ym:N", alt.Tooltip("wari_w:Q", format=".2f"),
-                         alt.Tooltip("coverage:Q", format=".0%"),
-                         alt.Tooltip("amount:Q", format=",.0f")],
+                tooltip=[alt.Tooltip("ym:N", title=t("月")),
+                         alt.Tooltip("wari_w:Q", title=_dl("加权折扣率", "加重掛率"), format=".2f"),
+                         alt.Tooltip("coverage:Q", title=_dl("MSRP覆盖率", "MSRP カバー率"), format=".0%"),
+                         alt.Tooltip("amount:Q", title=_dl("采购金额", "仕入金額"), format=",.0f")],
             ).properties(height=240).configure_axis(
                 labelFontSize=_CHART_LABEL_FS, titleFontSize=_CHART_TITLE_FS)
             st.altair_chart(_l1, use_container_width=True)
@@ -798,8 +802,10 @@ with tab_wr:
                 y=alt.Y("wari_w:Q", title=_dl("加权折扣率(折)", "加重掛率(掛)"),
                         scale=alt.Scale(zero=False)),
                 color=alt.Color("item_rank:N", title=None, legend=alt.Legend(orient="top")),
-                tooltip=["ym:N", "item_rank:N", alt.Tooltip("wari_w:Q", format=".2f"),
-                         alt.Tooltip("coverage:Q", format=".0%")],
+                tooltip=[alt.Tooltip("ym:N", title=t("月")),
+                         alt.Tooltip("item_rank:N", title=t("RANK")),
+                         alt.Tooltip("wari_w:Q", title=_dl("加权折扣率", "加重掛率"), format=".2f"),
+                         alt.Tooltip("coverage:Q", title=_dl("MSRP覆盖率", "MSRP カバー率"), format=".0%")],
             ).properties(height=240).configure_axis(
                 labelFontSize=_CHART_LABEL_FS, titleFontSize=_CHART_TITLE_FS)
             st.altair_chart(_l2, use_container_width=True)
@@ -844,8 +850,11 @@ with tab_wr:
                                 scale=alt.Scale(zero=False)),
                         color=alt.Color("_lbl:N", title=None,
                                         legend=alt.Legend(orient="top")),
-                        tooltip=["ym:N", "supplier_name:N", "jan:N", "display_name:N",
-                                 alt.Tooltip("wari_w:Q", format=".2f")],
+                        tooltip=[alt.Tooltip("ym:N", title=t("月")),
+                                 alt.Tooltip("supplier_name:N", title=t("供货商")),
+                                 alt.Tooltip("jan:N", title="JAN"),
+                                 alt.Tooltip("display_name:N", title=t("商品名")),
+                                 alt.Tooltip("wari_w:Q", title=_dl("加权折扣率", "加重掛率"), format=".2f")],
                     ).properties(height=240).configure_axis(
                         labelFontSize=_CHART_LABEL_FS, titleFontSize=_CHART_TITLE_FS)
                     st.altair_chart(_l4, use_container_width=True)
@@ -973,8 +982,8 @@ with tab_sku:
                 "jan": "JAN", "item_name": _dl("商品名", "商品名"),
                 "supplier_name": _dl("供应商", "仕入先"), "price": _dl("价格", "価格"),
                 "moq": _dl("起订量(报价·空则NST箱规)", "最低発注数(見積·無ければNST箱規)"),
-                "order_lot": _dl("发注ロット(报价)", "発注ロット(見積)"),
-                "nst_order_lot": _dl("发注ロット(NST主档)", "発注ロット(NST主档)"),
+                "order_lot": _dl("订货批量(报价)", "発注ロット(見積)"),
+                "nst_order_lot": _dl("订货批量(NST主档)", "発注ロット(NSTマスタ)"),
                 "carton_qty": _dl("箱规(NST)", "ケース入数(NST)"),
                 "supplier_min_amount": _dl("供应商起订金额(¥)", "仕入先注文最低金額(¥)"),
                 "lead_days": _dl("交期(日)", "リード日数"), "quote_date": _dl("报价日期", "見積日")})
@@ -997,7 +1006,7 @@ with tab_sku:
 # ============================================================
 with tab_opp:
     st.caption(_dl(
-        "两类问题分开：①毛利问题=采购折扣率过高（当前价÷MSRP税抜×10 ≥ 阈值）"
+        "两类问题分开：①毛利问题=采购折扣率过高（当前价÷MSRP不含税×10 ≥ 阈值）"
         "②采购机会=现进货价（NST 实绩）高于供货商报价（可谈价/换报价）。",
         "2 種類を区別：①粗利問題=仕入掛率が高すぎ（現行価÷MSRP税抜×10 ≥ 閾値）"
         "②仕入機会=現仕入価（NST 実績）が仕入先見積より高い（交渉/見積切替余地）。"))
@@ -1153,7 +1162,7 @@ with tab_up:
         "valid_from": pd.Series(dtype="object"),
         "valid_to": pd.Series(dtype="object"),
     })
-    _hand = st.data_editor(
+    _hand = lang_stable_editor(
         _hand_seed, num_rows="dynamic", hide_index=True,
         use_container_width=True, key="sq_hand",
         column_config={
@@ -1412,7 +1421,7 @@ with tab_up:
         else:
             _vq = _vq[["id", "jan", "item_name", "price", "quote_date",
                        "valid_from", "valid_to"]].sort_values("jan")
-            _ved = st.data_editor(
+            _ved = lang_stable_editor(
                 _vq, hide_index=True, use_container_width=True, height=360,
                 key=f"vld_ed_{_vsup}",
                 column_config={
@@ -1589,7 +1598,7 @@ with tab_rule:
     else:
         _sup_df["is_prepay"] = _sup_df["is_prepay"].fillna(False).astype(bool)
         _sup_df["active"] = _sup_df["active"].fillna(True).astype(bool)
-        _ed = st.data_editor(
+        _ed = lang_stable_editor(
             _sup_df, hide_index=True, use_container_width=True, key="sup_editor",
             column_config={
                 "supplier_name": st.column_config.TextColumn(t("简称(改名自动同步报价/主供货商)")),
@@ -1683,7 +1692,7 @@ with tab_rule:
             "effective_to": pd.Series(dtype="object"),
             "note": pd.Series(dtype="object"),
         })
-    _bed = st.data_editor(
+    _bed = lang_stable_editor(
         _bre, num_rows="dynamic", hide_index=True, use_container_width=True,
         key="brand_rule_ed",
         column_config={

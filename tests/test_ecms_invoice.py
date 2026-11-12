@@ -167,6 +167,17 @@ def test_detail_warns_on_blank_order_no():
     assert any("Order No." in w for w in warns)
 
 
+def test_warnings_go_through_translator():
+    """画面は tr=t を渡す → 警告テンプレが翻訳されてから数値が埋まる。"""
+    zh = {"Order No. が空の行が {n} 件（店舗に配賦できません）": "Order No. 为空的行有 {n} 条"}
+    _, warns = ei.normalize_detail(_detail_df(**{"Order No.": [None]}), tr=lambda s: zh.get(s, s))
+    assert warns == ["Order No. 为空的行有 1 条"]
+    bad = TXT_202609.replace("¥769,333\n¥0\n¥769,333", "¥769,333\n¥0\n¥999,999")
+    h = ei.parse_invoice_text(bad, tr=lambda s: "ZH:" + s)
+    assert h.warnings and all(w.startswith("ZH:") for w in h.warnings)
+    assert "999,999" in h.warnings[0]
+
+
 def test_missing_required_column_raises():
     df = _detail_df().drop(columns=["Order No."])
     with pytest.raises(ValueError, match="Order No."):

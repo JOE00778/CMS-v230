@@ -27,6 +27,7 @@ from data_warehouse.templates.item_entry_form import (
     COL_JAN, COL_LARGE, COL_NAME_MANUAL, COL_MAKER_MANUAL, COL_OWNER, COL_PKG_DIMS, COL_PKG_WEIGHT, COL_CARTON_DIMS, INPUT_COLUMNS, ADDITIONAL_INPUT_COLUMNS,
     NUMERIC_COLUMNS, validate_fields, fix_banned_fields, _num, Issue,
 )
+from shared.i18n import t
 from shared.jan_web import INTERVAL, fetch_many
 from shared.nst_choices import FIXED, resolve_maker
 
@@ -116,7 +117,7 @@ def _default_package(row: dict) -> list[str]:
 
 
 def _default_note(fields: list[str]) -> str:
-    return " / ".join(fields) + " = 1 cm（既定の仮値・非実測）"
+    return t("{fields} = 1 cm（既定の仮値・非実測）").format(fields=" / ".join(t(f) for f in fields))
 
 
 def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_customs,
@@ -150,7 +151,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             time.sleep(interval)
             hits.update(fetch_many([jan], fetch_weight))
         if on_progress:
-            on_progress(i, len(jans), f"商品 {i}/{len(jans)} 件目（{jan}）")
+            on_progress(i, len(jans), t("商品 {i}/{n} 件目（{jan}）").format(i=i, n=len(jans), jan=jan))
         if i < len(jans):
             time.sleep(interval)
 
@@ -184,31 +185,33 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
         if jc_err and not manual:
             # 名前が取れなくても行は残す → 確認画面で アイテム名 を入れれば生成できる（Boss 2026-11-10「再アップロード不要」）
             stats["name_missing"] += 1
-            warns.append("商品名が取れません（jancode・楽天・Yahoo）→ 確認画面の「手入力が必要な項目」で アイテム名 を入力してください"
-                         f"（{jc_err.split('：', 1)[-1].split(': ', 1)[-1]}）")
+            warns.append(t("商品名が取れません（jancode・楽天・Yahoo）→ 確認画面の「手入力が必要な項目」で アイテム名 を入力してください"
+                           "（{why}）").format(why=t(jc_err.split('：', 1)[-1].split(': ', 1)[-1])))
         elif jc_err:
             # 手入力の名前があれば登録できる。メーカー名は手入力 → NST 同プレフィックスを使用
-            warns.append(jc_err.split("（")[0] + " → 手入力のアイテム名で登録")
+            warns.append(t("{head} → 手入力のアイテム名で登録").format(head=t(jc_err.split("（")[0])))
 
         name = manual or (meta.name.strip() if jc_ok else "")
         if manual:
             stats["name_manual"] += 1
         if len(name) > NAME_MAX:
             stats["name_cut"] += 1
-            warns.append(f"アイテム名が {len(name)} 字 → {NAME_MAX} 字で切りました")
+            warns.append(t("アイテム名が {n} 字 → {max} 字で切りました").format(n=len(name), max=NAME_MAX))
             name = name[:NAME_MAX]
         manual_maker = (r.get(COL_MAKER_MANUAL) or "").strip()
         maker, maker_src = ((manual_maker[:NAME_MAX], "manual") if manual_maker else
                             resolve_maker(jan, meta.maker if jc_ok else "", prefix_makers))
         stats[{"nst-prefix": "maker_nst", "jancode": "maker_jancode", "manual": "maker_manual"}.get(maker_src, "maker_none")] += 1
         if manual_maker and len(manual_maker) > NAME_MAX:
-            warns.append(f"メーカー名が {len(manual_maker)} 字 → {NAME_MAX} 字で切りました")
+            warns.append(t("メーカー名が {n} 字 → {max} 字で切りました").format(n=len(manual_maker), max=NAME_MAX))
         if maker_src == "jancode" and maker not in nst_makers:
-            warns.append(f"メーカー名「{maker}」は jancode 会社名で NST 既存メーカーに無い表記です（確認してください）")
+            warns.append(t("メーカー名「{maker}」は jancode 会社名で NST 既存メーカーに無い表記です（確認してください）")
+                         .format(maker=maker))
         src = {"rakuten": "楽天", "yahoo": "Yahoo"}.get(getattr(meta, "source", "jancode"), "")
         from_shop = jc_ok and bool(src) and not manual
         if from_shop:
-            warns.append(f"アイテム名は{src}の出品名を jancode 形式に整えたもの（jancode 未取得・内容を確認してください）")
+            warns.append(t("アイテム名は{src}の出品名を jancode 形式に整えたもの（jancode 未取得・内容を確認してください）")
+                         .format(src=t(src)))
         auto = ([] if manual else [f"アイテム名({src}・要確認)" if from_shop else "アイテム名(jancode)"]) + ([f"メーカー名({maker_src})"] if maker and maker_src != "manual" else [])
 
         row = {COL_ITEM_CODE: code, COL_NAME: name, **{c: r.get(c, "") for c in INPUT_COLUMNS},
@@ -225,10 +228,10 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             hit = hits[jan]
             if isinstance(hit, dict):
                 stats["weight_error"] += 1
-                warns.append(f"重量・寸法の網調べ失敗: {hit.get('error', '')}")
+                warns.append(t("重量・寸法の網調べ失敗: {err}").format(err=hit.get("error", "")))
             elif hit is None:
                 stats["weight_miss"] += 1
-                warns.append("重量・寸法: スーパーデリバリーに個装の記載なし")
+                warns.append(t("重量・寸法: スーパーデリバリーに個装の記載なし"))
             else:
                 filled = [c for c, a in _WEIGHT_FIELDS.items()
                           if not row.get(c) and getattr(hit, a) is not None]
@@ -236,13 +239,13 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
                     row[c] = _fmt(getattr(hit, _WEIGHT_FIELDS[c]))
                 if filled:
                     stats["weight_hit"] += 1
-                    auto.append(f"{'/'.join(filled)}({hit.source})")
+                    auto.append(f"{'/'.join(filled)}({hit.source})")      # 原文で保存 · 訳は to_frame
                     extra.update(weight_source=hit.source, weight_url=hit.url,
                                  weight_note=hit.note, weight_field_urls={_WEIGHT_FIELDS[c]: url
                                      for c in filled
                                      if (url := (getattr(hit, "field_urls", None) or {}).get(_WEIGHT_FIELDS[c]))})
                     if hit.note:
-                        warns.append("重量・寸法: " + hit.note)
+                        warns.append(t("重量・寸法: {note}").format(note=t(hit.note)))
                 else:  # 取れた値は手入力済みの列だけ（上書きしない）
                     stats["weight_miss"] += 1
         elif want_weight:
@@ -250,11 +253,10 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
 
         defaults = _default_package(row)
         if not str(row.get(COL_PKG_WEIGHT) or "").strip():
-            warns.append(WEIGHT_REQUIRED_MSG)
+            warns.append(t(WEIGHT_REQUIRED_MSG))
         extra["default_package_fields"] = defaults
         if defaults:
-            note = _default_note(defaults)
-            extra["weight_note"] = " · ".join(filter(None, [extra["weight_note"], note]))
+            note = _default_note(defaults)       # 取得メモ側は to_frame で default_package_fields から描画時に出す
             auto.append("包装の既定仮値（非実測）")
             warns.append(note)
 
@@ -267,11 +269,11 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
             hs = name_en = cat = None
             basis = "food-ai"
         elif hs and r.get(COL_LARGE) == "食品" and cat not in _FOOD_CATS:
-            warns.append(f"HS: 大分類=食品 なのに品類「{cat}」と判定 → 空にしました（手で記入可）")
+            warns.append(t("HS: 大分類=食品 なのに品類「{cat}」と判定 → 空にしました（手で記入可）").format(cat=cat))
             hs = name_en = cat = None
             basis = "food-veto"
         elif not hs:
-            warns.append("HS・通関英文名を判定できません（空のまま・手で記入可）")
+            warns.append(t("HS・通関英文名を判定できません（空のまま・手で記入可）"))
         stats["hs_ok" if hs else "hs_ng"] += 1
         extra.update({COL_HS: hs or "", COL_NAME_EN: name_en or "",
                       "hs_category": cat or "", "hs_basis": basis})
@@ -325,7 +327,7 @@ def unify_shop_brands(nst_rows: list[dict], bm_extra: dict) -> list[Issue]:
             new = " ".join([brand] + [t for i, t in enumerate(toks) if i not in drop])
         new = new[:NAME_MAX]
         if new != old:
-            issues.append(Issue(0, item_key(r), "warn", f"ブランド表記を揃えました: {old} → {new}"))
+            issues.append(Issue(0, item_key(r), "warn", t("ブランド表記を揃えました: {old} → {new}").format(old=old, new=new)))
             r[COL_NAME] = new
     return issues
 
@@ -378,12 +380,12 @@ def cross_check_hs(nst_rows: list[dict], bm_extra: dict[str, dict], stats: dict,
         rule, got = ex.get(COL_HS, ""), res.get(jan)
         if not hasattr(got, "hs"):
             stats["ai_error"] += 1
-            ex["hs_check"] = "AI 失敗"
-            issues.append(Issue(0, jan, "warn", f"HS: AI 判定に失敗（{got}）· 規則の値のまま（確認してください）"))
+            ex["hs_check"] = t("AI 失敗")
+            issues.append(Issue(0, jan, "warn", t("HS: AI 判定に失敗（{err}）· 規則の値のまま（確認してください）").format(err=got)))
             continue
         if got.hs == rule:
             stats["ai_agree"] += 1
-            ex["hs_check"] = "一致"
+            ex["hs_check"] = t("一致")
             continue
         stats["ai_changed"] += 1
         spec = extract_spec(r[COL_NAME])
@@ -391,12 +393,21 @@ def cross_check_hs(nst_rows: list[dict], bm_extra: dict[str, dict], stats: dict,
         # （AI の en は「Pokemon Moncolle figure Pikachu」のように商品名を訳してくる · 2026-11-12）
         en = NAME_EN_BY_HS.get(got.hs) or got.en
         ex.update({COL_HS: got.hs, "hs_rule": rule, "hs_basis": "ai",
-                   "hs_check": f"AI（規則={rule or 'なし'}）",
+                   "hs_check": t("AI（規則={rule}）").format(rule=rule or t("なし")),
                    COL_NAME_EN: _cut_words(f"{en}, {spec}" if spec else en, MAX_NAME_EN)})
         issues.append(Issue(0, jan, "warn",
-                            f"HS: 規則={rule or '判定なし'} / AI={got.hs}（{got.why}）→ AI の値を入れました。"
-                            "HS・通関英文名を確認してください"))
+                            t("HS: 規則={rule} / AI={hs}（{why}）→ AI の値を入れました。HS・通関英文名を確認してください")
+                            .format(rule=rule or t("判定なし"), hs=got.hs, why=got.why)))
     return issues
+
+
+def _auto_text(a: str) -> str:
+    """🤖 自動入力の 1 項目を UI 言語に（描画時）。重量条目「列/列(出典)」は列名ごとに訳す。"""
+    cols, _, src = a.rpartition("(")
+    names = cols.split("/")
+    if all(c in _WEIGHT_FIELDS for c in names):
+        return "/".join(map(t, names)) + "(" + src
+    return t(a)
 
 
 def to_frame(nst_rows: list[dict], bm_extra: dict[str, dict]) -> list[dict]:
@@ -405,12 +416,14 @@ def to_frame(nst_rows: list[dict], bm_extra: dict[str, dict]) -> list[dict]:
     for r in nst_rows:
         ex = bm_extra.get(item_key(r), {})
         rec = {disp: str({**r, **ex}.get(key, "") or "") for disp, key in FRAME_COLUMNS.items()}
-        rec[COL_AUTO] = " · ".join(ex.get("auto", []))
+        rec[COL_AUTO] = " · ".join(map(_auto_text, ex.get("auto", [])))
         rec[COL_URL] = ex.get("weight_url", "")
         rec[COL_HS_CHECK] = ex.get("hs_check", "")
-        rec[COL_WEIGHT_NOTE] = ex.get("weight_note", "")
+        defaults = ex.get("default_package_fields")
+        rec[COL_WEIGHT_NOTE] = " · ".join(filter(None, [t(ex.get("weight_note") or ""),
+                                                        _default_note(defaults) if defaults else ""]))
         urls = ex.get("weight_field_urls", {})
-        rec[COL_IMAGE_SOURCE] = ex.get("image_source", "")
+        rec[COL_IMAGE_SOURCE] = t(ex.get("image_source", ""))
         rec[COL_WEIGHT_SOURCES] = " · ".join(f"{col}: {urls[attr]}" for col, attr in _WEIGHT_FIELDS.items() if attr in urls)
         out.append(rec)
     return out
@@ -428,10 +441,10 @@ def manual_input_needs(records: list[dict]) -> list[dict]:
             continue
         locations = []
         if any(c in missing for c in (COL_ITEM_CODE, COL_NAME)):
-            locations.append("型番・商品名はテンプレに手入力し、再アップロード")
+            locations.append(t("型番・商品名はテンプレに手入力し、再アップロード"))
         if any(c not in (COL_ITEM_CODE, COL_NAME) for c in missing):
-            locations.append("上の「確認・修正」表の該当欄に手入力")
-        out.append({"型番": item_key(rec) or "未入力", "待手入力": " / ".join(missing),
+            locations.append(t("上の「確認・修正」表の該当欄に手入力"))
+        out.append({"型番": item_key(rec) or t("未入力"), "待手入力": " / ".join(t(c) for c in missing),
                     "入力場所": " / ".join(locations)})
     return out
 
@@ -463,14 +476,14 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
             except ValueError:
                 ok = False
             if not ok:
-                issues.append(Issue(0, jan, "warn", f"{c} が正の数ではないので空にしました（{v}）"))
+                issues.append(Issue(0, jan, "warn", t("{col} が正の数ではないので空にしました（{v}）").format(col=t(c), v=v)))
                 edited[c] = ""
         if not edited[COL_NAME]:
-            issues.append(Issue(0, jan, "error", "アイテム名が空です（NST 必須）"))
+            issues.append(Issue(0, jan, "error", t("アイテム名が空です（NST 必須）")))
             continue
         for c in (COL_NAME, COL_MAKER):
             if len(edited[c]) > NAME_MAX:
-                issues.append(Issue(0, jan, "warn", f"{c} を {NAME_MAX} 字で切りました"))
+                issues.append(Issue(0, jan, "warn", t("{col} を {max} 字で切りました").format(col=t(c), max=NAME_MAX)))
                 edited[c] = edited[c][:NAME_MAX]
         hs, name_en, image = edited.pop(COL_HS), edited.pop(COL_NAME_EN), edited.pop(COL_IMAGE)
         for c, v in edited.items():
@@ -486,14 +499,15 @@ def from_frame(records: list[dict], nst_rows: list[dict], bm_extra: dict[str, di
             issues.extend(Issue(0, jan, "error", message) for message in validation)
             continue
         if not str(row.get(COL_PKG_WEIGHT) or "").strip() and not ex.get("bm_sku_id"):   # 斑马済なら重量は使わない
-            issues.append(Issue(0, jan, "error", WEIGHT_REQUIRED_MSG))
+            issues.append(Issue(0, jan, "error", t(WEIGHT_REQUIRED_MSG)))
             continue
         # カートン 3 辺・入数は NST 取込で必須（空だと「必須フィールドがありません」）→ 空なら 1（Boss 2026-11-10）
         carton_default = [c for c in (*COL_CARTON_DIMS, "カートン入数") if not str(row.get(c) or "").strip()]
         for c in carton_default:
             row[c] = "1"
         if carton_default:
-            issues.append(Issue(0, jan, "warn", " / ".join(carton_default) + " = 1（既定の仮値・非実測）"))
+            issues.append(Issue(0, jan, "warn", t("{fields} = 1（既定の仮値・非実測）").format(
+                fields=" / ".join(t(c) for c in carton_default))))
         defaults = _default_package(row)
         defaults = [c for c in COL_PKG_DIMS if c in defaults or
                     (c in ex.get("default_package_fields", []) and row.get(c) == base[jan].get(c))]
@@ -537,16 +551,16 @@ def nst_field_rules() -> list[dict]:
         NST_MASTER_COLUMNS, NST_FIELD_HELP, NST_AUTOMATIC_COLUMNS, NST_REGISTRATION_FIXED)
     out = []
     for mark, col in NST_MASTER_COLUMNS:
-        mode = ("自動計算・固定値" if col in (*NST_AUTOMATIC_COLUMNS, *NST_REGISTRATION_FIXED) else
-                "型番 / 実 JAN（NST 出力時のみ型番代入）" if col in (COL_ITEM_CODE, COL_JAN) else
-                "取得値または手入力" if col in (COL_NAME, COL_MAKER) else "テンプレ / 確認表で入力")
-        condition = mark or "任意"
+        mode = (t("自動計算・固定値") if col in (*NST_AUTOMATIC_COLUMNS, *NST_REGISTRATION_FIXED) else
+                t("型番 / 実 JAN（NST 出力時のみ型番代入）") if col in (COL_ITEM_CODE, COL_JAN) else
+                t("取得値または手入力") if col in (COL_NAME, COL_MAKER) else t("テンプレ / 確認表で入力"))
+        condition = t(mark) if mark else t("任意")
         if col == COL_TAX:
-            condition = "軽減税率対象のみ ★、対象外は空欄"
+            condition = t("軽減税率対象のみ ★、対象外は空欄")
         elif col == COL_MAKER:
-            condition = "原本: ASEAN 必須 / Boss指定: 不明なら空欄"
+            condition = t("原本: ASEAN 必須 / Boss指定: 不明なら空欄")
         elif col == "商品ランク":
-            condition = "原本: ASEAN必須 / 該当が無ければ空欄"
+            condition = t("原本: ASEAN必須 / 該当が無ければ空欄")
         out.append({"項目": col, "条件": condition, "入力方法": mode,
                     "説明": NST_FIELD_HELP.get(col, "")})
     return out
@@ -566,13 +580,13 @@ def registration_issues(rows: list[dict], *, choices=None) -> list[Issue]:
             if col == COL_JAN:
                 required = not (row.get(COL_JAN) or code)
             if required and not value:
-                out.append(Issue(0, code, "warn", f"{col}: 必須項目が空です。確認済みの値を手入力してください"))
+                out.append(Issue(0, code, "warn", t("{col}: 必須項目が空です。確認済みの値を手入力してください").format(col=t(col))))
         name = str(row.get(COL_NAME) or "")
         tea = bool(re.search(r"玄米茶|煎茶|ほうじ茶|桜葉茶|抹茶(?:入り|スティック)", name))
         if tea and (row.get(COL_LARGE) != "食品" or row.get(COL_TAX) != "★"):
-            out.append(Issue(0, code, "warn", "茶商品の分類・税率を確認してください（食品 / 嗜好品（茶・コーヒー） / 軽減税率 ★ の適用を確認して手入力）"))
+            out.append(Issue(0, code, "warn", t("茶商品の分類・税率を確認してください（食品 / 嗜好品（茶・コーヒー） / 軽減税率 ★ の適用を確認して手入力）")))
         if row.get(COL_LARGE) == "食品" and row.get(COL_TAX) != "★" and not tea:
-            out.append(Issue(0, code, "warn", "食品の税率が空です。軽減税率対象なら ★ を手入力してください"))
+            out.append(Issue(0, code, "warn", t("食品の税率が空です。軽減税率対象なら ★ を手入力してください")))
         out.extend(Issue(0, code, "error", message) for message in validate_fields(row, choices=choices))
     return out
 

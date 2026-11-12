@@ -7,6 +7,15 @@ import io
 
 from shared import skuid_fill as SF
 from shared.hs_classify import Customs
+import pytest
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """メッセージは日文原文で検査する（中文モードの訳は shared/i18n.py の TRANSLATIONS_ZH。t() は既定 zh なので ja に固定）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
 
 
 def _item(code, jan="", **kw):

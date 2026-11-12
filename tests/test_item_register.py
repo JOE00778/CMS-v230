@@ -11,6 +11,16 @@ from shared import item_register as R
 from shared.hs_classify import Customs
 from shared.jan_web import JanMeta, WeightHit
 from shared.nst_choices import Choices, FIXED
+import pytest
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """メッセージは日文原文で検査する（中文モードの訳は shared/i18n.py の TRANSLATIONS_ZH。t() は既定 zh なので ja に固定）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
+
 
 CH = Choices(suppliers=("0001 ベストアンサ株式会社",),
              middle_by_large={"生活雑貨": ("日用品雑貨",), "食品": ("菓子",)})

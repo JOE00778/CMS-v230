@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import streamlit as st
 
-st.set_page_config(page_title="视频下载", page_icon="🎬", layout="wide")
+from shared.i18n import lang_selector, t  # noqa: E402
+
+st.set_page_config(page_title=t("视频下载"), page_icon="🎬", layout="wide")
 from shared.auth import require_admin  # noqa: E402
 require_admin()
 from shared.theme import inject_theme  # noqa: E402
 inject_theme()
-from shared.i18n import lang_selector, t  # noqa: E402
 lang_selector()
 
 from shared import video_dl_client as vdl  # noqa: E402

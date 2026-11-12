@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from shared.i18n import t
+
 # 商品担当者・大分類・中分類 = NST 原本テンプレ「20260000_NetSuite【アイテム】マスタ登録-V260326EX」
 # データベース シート（C2:C12 / R2:W2 / 各列の中分類 = INDIRECT 用の定義名）の写し（Boss 2026-11-09「按照模板」）。
 # 原本の版が変わったらここを差し替える。ASEAN / USA の定義名は原本で #REF!（大分類の選択肢に無い）ので入れない。
@@ -122,18 +124,18 @@ def _existing_values(jans: list[str], *, field: str, pg_field: str, conn=None, s
     except Exception as e:  # noqa: BLE001
         sq_err = str(e)
     if conn is None:
-        return set(), [f"NST 既存識別子 照合に失敗（SuiteQL: {sq_err}）。PG 代替も無いため"
-                       f"重複チェック未実施 {len(uniq)} 件"]
+        return set(), [t("NST 既存識別子 照合に失敗（SuiteQL: {sq}）。PG 代替も無いため重複チェック未実施 {n} 件")
+                       .format(sq=sq_err, n=len(uniq))]
     try:
         rows = conn.execute(
             f"SELECT DISTINCT {pg_field} FROM nst.item_master_raw WHERE {pg_field} IN ("
             + ",".join("?" for _ in uniq) + ")", tuple(uniq)).fetchall()
     except Exception as e:  # noqa: BLE001
-        return set(), [f"NST 既存識別子 照合に失敗（SuiteQL: {sq_err} / PG: {e}）。"
-                       f"重複チェック未実施 {len(uniq)} 件"]
+        return set(), [t("NST 既存識別子 照合に失敗（SuiteQL: {sq} / PG: {pg}）。重複チェック未実施 {n} 件")
+                       .format(sq=sq_err, pg=e, n=len(uniq))]
     found = {str(r[pg_field]).strip() for r in rows}
-    return found & set(uniq), [f"SuiteQL 失敗のため PG nst.item_master_raw で照合"
-                               f"（NST 全体ではなく輸出部門のみの照合）: {sq_err}"]
+    return found & set(uniq), [t("SuiteQL 失敗のため PG nst.item_master_raw で照合（NST 全体ではなく輸出部門のみの照合）: {sq}")
+                               .format(sq=sq_err)]
 
 
 _MAKER_NOISE = re.compile(r"株式会社|有限会社|合同会社|\(株\)|（株）|㈱|[\s・.,]")

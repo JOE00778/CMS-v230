@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 
+from shared.i18n import t
 from shared.item_register import COL_HS, COL_IMAGE, COL_NAME, COL_NAME_EN, PLACEHOLDER_IMAGE_URL, item_key
 
 SKU_PATH = "/v1/product/sku"
@@ -85,10 +86,10 @@ def register_one(client, row: dict) -> dict:
     try:
         hit = find_sku(client, code)
     except Exception as e:  # noqa: BLE001
-        return {"status": "fail", "message": f"斑马照会に失敗（登録していません）: {type(e).__name__}: {e}"}
+        return {"status": "fail", "message": t("斑马照会に失敗（登録していません）: {err}").format(err=f"{type(e).__name__}: {e}")}
     if hit:
         return {"status": "skipped", "sku_id": str(hit.get("SKUID") or ""), "spu_id": str(hit.get("SPUID") or ""),
-                "message": "斑马に同じ SKU コードが既にあります（登録していません）"}
+                "message": t("斑马に同じ SKU コードが既にあります（登録していません）")}
     body = product_body(row)
     post_err = ""
     try:
@@ -98,25 +99,26 @@ def register_one(client, row: dict) -> dict:
     try:
         hit = find_sku(client, code)
     except Exception as e:  # noqa: BLE001
-        return {"status": "fail", "message": f"登録後の照会に失敗（斑马で {code} を確認してください）: "
-                                             f"{type(e).__name__}: {e}" + (f" / 登録: {post_err}" if post_err else "")}
+        return {"status": "fail", "message": t("登録後の照会に失敗（斑马で {code} を確認してください）: {err}").format(
+            code=code, err=f"{type(e).__name__}: {e}") + (t(" / 登録: {err}").format(err=post_err) if post_err else "")}
     if not hit:
-        return {"status": "fail", "message": f"斑马に登録されていません: {post_err or '応答は成功・照会で見つからず'}"}
+        return {"status": "fail", "message": t("斑马に登録されていません: {why}").format(
+            why=post_err or t("応答は成功・照会で見つからず"))}
     out = {"status": "ok", "sku_id": str(hit.get("SKUID") or ""), "spu_id": str(hit.get("SPUID") or ""),
            "message": ""}
     notes = []
     sku = body["Skus"][0]
     for k in ("CostPrice", "Weight"):
         if float(hit.get(k) or 0) != float(sku[k]):
-            notes.append(f"回読 {k}={hit.get(k)}（送信 {sku[k]}）")
+            notes.append(t("回読 {k}={got}（送信 {sent}）").format(k=k, got=hit.get(k), sent=sku[k]))
     cb = customs_body(row)
     if cb is None:
-        notes.append("報関情報なし（HS か通関英文名が空）")
+        notes.append(t("報関情報なし（HS か通関英文名が空）"))
     else:
         try:
             client.call("POST", f"{SKU_PATH}/{out['sku_id']}/customs", body=cb)
         except Exception as e:  # noqa: BLE001
-            notes.append(f"報関情報の書込に失敗: {type(e).__name__}: {e}")
+            notes.append(t("報関情報の書込に失敗: {err}").format(err=f"{type(e).__name__}: {e}"))
     if notes:
         out.update(status="partial", message=" · ".join(notes))
     return out
@@ -131,7 +133,8 @@ def register_all(client, rows: list[dict], record=None, on_progress=None) -> lis
             try:
                 record(item_key(row), res)
             except Exception as e:  # noqa: BLE001 — 台帳失敗は画面に出す。登録結果は失わない
-                res["message"] = (res.get("message", "") + f" · 台帳更新失敗: {type(e).__name__}: {e}").strip(" ·")
+                res["message"] = (res.get("message", "") + " · "
+                                  + t("台帳更新失敗: {err}").format(err=f"{type(e).__name__}: {e}")).strip(" ·")
         out.append((item_key(row), res))
         if on_progress:
             on_progress(i + 1, len(rows), item_key(row))

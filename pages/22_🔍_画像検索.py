@@ -91,7 +91,7 @@ with col_opt:
 
 jans_all = _parse_jans(jan_text)
 if jans_all:
-    st.caption(t(f"解析到 {len(jans_all)} 个有效 JAN（去重后）"))
+    st.caption(t("解析到 {n} 个有效 JAN（去重后）").format(n=len(jans_all)))
 
 if btn_run:
     if not jans_all:
@@ -104,7 +104,7 @@ if btn_run:
 
     jans = jans_all[: int(max_items)]
     if len(jans_all) > len(jans):
-        st.info(t(f"超过单次上限，仅处理前 {len(jans)} 件，剩余 {len(jans_all) - len(jans)} 件请分批"))
+        st.info(t("超过单次上限，仅处理前 {n} 件，剩余 {rest} 件请分批").format(n=len(jans), rest=len(jans_all) - len(jans)))
 
     with get_connection() as conn:
         cache = {} if force_refetch else _load_cache(conn, jans)
@@ -148,15 +148,16 @@ if btn_run:
                 # kakaku 走 2 个 HTTP, rakuten fallback 走 +2 个，礼貌限速
                 time.sleep(0.4)
 
-            progress.progress(i / len(jans), text=t(f"抓取中 {i}/{len(jans)} · cache={n_cache} ok={n_new_ok} fail={n_new_fail}"))
+            progress.progress(i / len(jans), text=t("抓取中 {i}/{n} · cache={c} ok={ok} fail={ng}").format(
+                i=i, n=len(jans), c=n_cache, ok=n_new_ok, ng=n_new_fail))
             if i % 10 == 0:
                 conn.commit()
 
         conn.commit()
         progress.empty()
         status_box.success(t(
-            f"完成 · 总 {len(jans)} 件：cache={n_cache} · 新抓成功={n_new_ok} · 失败={n_new_fail}"
-        ))
+            "完成 · 总 {n} 件：cache={c} · 新抓成功={ok} · 失败={ng}"
+        ).format(n=len(jans), c=n_cache, ok=n_new_ok, ng=n_new_fail))
 
     st.session_state["_image_search_results"] = results
     st.session_state["_image_search_bytes"] = bytes_map
@@ -195,7 +196,7 @@ if results:
     )
 
     if df_fail.empty is False:
-        with st.expander(t(f"❌ 失败 {len(df_fail)} 件 · 后续可手动补 URL"), expanded=False):
+        with st.expander(t("❌ 失败 {n} 件 · 后续可手动补 URL").format(n=len(df_fail)), expanded=False):
             st.dataframe(df_fail[["jan", "status"]], use_container_width=True, height=200)
 
     bytes_map = st.session_state.get("_image_search_bytes") or {}
@@ -234,7 +235,7 @@ if results:
     zip_bytes = st.session_state.get("_image_search_zip")
     if zip_bytes:
         st.download_button(
-            t(f"⬇️ 下载 ZIP（{st.session_state.get('_image_search_zip_count', 0)} 张）"),
+            t("⬇️ 下载 ZIP（{n} 张）").format(n=st.session_state.get('_image_search_zip_count', 0)),
             data=zip_bytes,
             file_name=f"JAN画像_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
             mime="application/zip",

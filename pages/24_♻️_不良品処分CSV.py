@@ -93,7 +93,8 @@ def _load_disposal_list(file_bytes: bytes) -> pd.DataFrame:
     required = {"jan", "display_name", "bin", "status", "qty"}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"必須列が見つかりません: {missing}。実際の列: {list(df.columns)}")
+        raise ValueError(t("必須列が見つかりません: {missing}。実際の列: {cols}").format(
+            missing=missing, cols=list(df.columns)))
     df = df[["jan", "display_name", "bin", "status", "qty"]].dropna(subset=["jan"])
     df = df[df["jan"].astype(str).str.strip() != ""].reset_index(drop=True)
     df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0).astype(int)
@@ -225,7 +226,7 @@ with col_up:
         try:
             df_items = _load_disposal_list(uploaded.getvalue())
             st.session_state["disposal_items"] = df_items
-            st.success(t(f"✅ {len(df_items)} 件のアイテム読込完了"))
+            st.success(t("✅ {n} 件のアイテム読込完了").format(n=len(df_items)))
         except Exception as e:
             st.session_state.pop("disposal_items", None)
             st.error(f"❌ {e}")
@@ -302,9 +303,9 @@ with tab_order:
             )
         with c2:
             st.caption(t(
-                f"行数: {len(df_order)} · 数量合計: {df_order['数量'].astype(int).sum()}  ·  "
+                "行数: {n} · 数量合計: {q}  ·  "
                 "NetSuite 設定＞保存済 CSV インポート ID:164 にアップロード"
-            ))
+            ).format(n=len(df_order), q=df_order['数量'].astype(int).sum()))
 
 with tab_ship:
     if not ready:
@@ -335,6 +336,6 @@ with tab_ship:
                 )
             with c2:
                 st.caption(t(
-                    f"行数: {len(df_ship)} · 数量合計: {df_ship['数量'].astype(int).sum()}  ·  "
+                    "行数: {n} · 数量合計: {q}  ·  "
                     "NetSuite 設定＞保存済 CSV インポート ID:165 にアップロード"
-                ))
+                ).format(n=len(df_ship), q=df_ship['数量'].astype(int).sum()))

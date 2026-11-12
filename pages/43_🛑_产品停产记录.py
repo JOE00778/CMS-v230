@@ -93,15 +93,17 @@ def _rollback(conn) -> None:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def _load() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
-    """失败不 st.stop（会连侧边栏以外的内容一起停掉）· 把原因返回给页面显示。"""
-    errs: list[str] = []
+def _load() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[tuple[str, str]]]:
+    """失败不 st.stop（会连侧边栏以外的内容一起停掉）· 把原因返回给页面显示。
+
+    errs = (訳キー, 詳細)。cache 内で t() すると言語ごと固まるので訳は描画側で。"""
+    errs: list[tuple[str, str]] = []
     alerts, runs, watch = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     with get_readonly_connection() as conn:
         try:
             alerts = pd.DataFrame([dict(r) for r in conn.execute(_ALERT_SQL).fetchall()])
         except Exception as e:  # noqa: BLE001
-            errs.append(f"停产记录读取失败: {type(e).__name__}: {e}")
+            errs.append(("停产记录读取失败", f": {type(e).__name__}: {e}"))
             _rollback(conn)
         if not alerts.empty:
             ids = [str(i) for i in alerts["internal_id"].dropna().unique()]
@@ -112,23 +114,23 @@ def _load() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
                     qty = {str(r["item_internal_id"]): r["qty"] for r in rows}
                     alerts["qty"] = alerts["internal_id"].map(lambda i: qty.get(str(i)) if pd.notna(i) else None)
                 except Exception as e:  # noqa: BLE001
-                    errs.append(f"在库读取失败（其余照常显示）: {type(e).__name__}: {e}")
+                    errs.append(("在库读取失败（其余照常显示）", f": {type(e).__name__}: {e}"))
                     _rollback(conn)
         try:
             runs = pd.DataFrame([dict(r) for r in conn.execute(_RUN_SQL).fetchall()])
         except Exception as e:  # noqa: BLE001
-            errs.append(f"扫描记录读取失败: {type(e).__name__}: {e}")
+            errs.append(("扫描记录读取失败", f": {type(e).__name__}: {e}"))
             _rollback(conn)
         try:
             watch = pd.DataFrame([dict(r) for r in conn.execute(_WATCH_SQL).fetchall()])
         except Exception as e:  # noqa: BLE001
-            errs.append(f"监控范围读取失败: {type(e).__name__}: {e}")
+            errs.append(("监控范围读取失败", f": {type(e).__name__}: {e}"))
     return alerts, runs, watch, errs
 
 
 alerts, runs, watch, errs = _load()
-for e in errs:
-    st.error(e)
+for _ek, _ed in errs:
+    st.error(t(_ek) + _ed)
 
 # ── 监控是否在跑 ─────────────────────────────────────────────
 full_runs = runs[~runs["is_partial"].astype(bool)] if not runs.empty else runs
@@ -191,7 +193,7 @@ else:
             st.write(t("状态") + f": **{t(STATUS_LABEL.get(r['status'], r['status']))}**  ·  "
                      + t("最后检查") + f": {r['checked_at']}  ·  {r['note'] or ''}")
             if r["detail_url"]:
-                st.markdown(f"[{t('打开数据源')}]({r['detail_url']})")
+                st.markdown("[" + t("打开数据源") + f"]({r['detail_url']})")
 
 # ── 停产记录 ─────────────────────────────────────────────────
 st.subheader(t("📋 停产记录"))

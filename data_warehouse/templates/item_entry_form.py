@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from data_warehouse.templates.nst_item_master import (
     NST_MASTER_COLUMNS, NST_FIELD_HELP, NST_AUTOMATIC_COLUMNS, NST_REGISTRATION_FIXED, _norm,
 )
+from shared.i18n import t
 
 COL_JAN = "JANコード"
 COL_COST = "商品原価"
@@ -271,7 +272,7 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
     wb = _open(file)
     sheet_name = SHEET_INPUT if SHEET_INPUT in wb.sheetnames else "NetSuiteマスタ登録"
     if sheet_name not in wb.sheetnames:
-        return [], [Issue(0, "", "error", f"シート「{SHEET_INPUT}」がありません")]
+        return [], [Issue(0, "", "error", t("シート「{sheet}」がありません").format(sheet=SHEET_INPUT))]
     all_rows = list(wb[sheet_name].iter_rows(values_only=True))
     wb.close()
 
@@ -279,13 +280,13 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
     header_idx = next((i for i, r in enumerate(all_rows[:10])
                        if any(_norm(_s(v)) == COL_JAN for v in r)), None)
     if header_idx is None:
-        return [], [Issue(0, "", "error", f"見出し「{COL_JAN}」が見つかりません")]
+        return [], [Issue(0, "", "error", t("見出し「{col}」が見つかりません").format(col=COL_JAN))]
     pos = {}
     for j, v in enumerate(all_rows[header_idx]):
         pos.setdefault(_norm(_s(v)), j)
     missing = [c for c in REQUIRED_HEADERS if _norm(c) not in pos]
     if missing:
-        return [], [Issue(header_idx + 1, "", "error", "見出しが見つかりません: " + " / ".join(missing))]
+        return [], [Issue(header_idx + 1, "", "error", t("見出しが見つかりません: {cols}").format(cols=" / ".join(missing)))]
 
     suppliers, owners = set(choices.suppliers), set(choices.owners)
     mbl = choices.middle_by_large
@@ -321,60 +322,62 @@ def read_upload(file, choices) -> tuple[list[dict], list[Issue]]:
             idx = pos.get(_norm(col))
             value = _s(raw[idx]) if idx is not None and idx < len(raw) else ""
             if value and value != FIXED[col]:
-                errs.append(f"{col}={value} は現在の登録フロー対象外です（{FIXED[col]}専用）。固定値へ勝手に変更せず、別途確認してください")
+                errs.append(t("{col}={value} は現在の登録フロー対象外です（{fixed}専用）。固定値へ勝手に変更せず、別途確認してください")
+                            .format(col=t(col), value=value, fixed=FIXED[col]))
 
         # NST 原本では JAN なしのとき型番を JAN 欄に記入。内部は実 JAN を分離する。
         if rec[COL_ITEM_CODE] and jan == rec[COL_ITEM_CODE] and not (jan.isdigit() and len(jan) in (8, 13)):
             rec[COL_JAN] = jan = ""
         if jan in JAN_MODEL_ALIASES:
             if rec[COL_ITEM_CODE] and rec[COL_ITEM_CODE] != jan:
-                errs.append("JAN 欄の盆栽型番と型番欄の値が一致しません（同じ型番にしてください）")
+                errs.append(t("JAN 欄の盆栽型番と型番欄の値が一致しません（同じ型番にしてください）"))
             else:
                 rec[COL_ITEM_CODE] = jan
                 rec[COL_JAN] = ""
                 jan = ""
 
         if jan and not (jan.isdigit() and len(jan) in (8, 13)):
-            errs.append(f"JANコードが 8 桁 / 13 桁の数字ではありません（{jan or '空'}）")
+            errs.append(t("JANコードが 8 桁 / 13 桁の数字ではありません（{jan}）").format(jan=jan or t("空")))
         elif jan and not jan_check_ok(jan):
-            errs.append("JANコードのチェックディジットが合いません")
+            errs.append(t("JANコードのチェックディジットが合いません"))
         elif jan and jan in seen:
-            errs.append(f"JANコードがファイル内で重複しています（{seen[jan]} 行目と同じ）")
+            errs.append(t("JANコードがファイル内で重複しています（{row} 行目と同じ）").format(row=seen[jan]))
         elif jan:
             seen[jan] = i
 
         code = rec[COL_ITEM_CODE] or jan
         rec[COL_ITEM_CODE] = code
         if not code or len(code) > 250 or any(ord(c) < 32 for c in code):
-            errs.append("型番 / SKU は 1〜250 字で記入してください（制御文字不可）"
-                        + ("。JAN が無い商品はテンプレの型番欄に手入力必須" if not jan else ""))
+            errs.append(t("型番 / SKU は 1〜250 字で記入してください（制御文字不可）")
+                        + (t("。JAN が無い商品はテンプレの型番欄に手入力必須") if not jan else ""))
         elif code in seen_codes:
-            errs.append(f"型番 / SKU がファイル内で重複しています（{seen_codes[code]} 行目と同じ）")
+            errs.append(t("型番 / SKU がファイル内で重複しています（{row} 行目と同じ）").format(row=seen_codes[code]))
         else:
             seen_codes[code] = i
         if not jan and not rec[COL_NAME_MANUAL]:
-            errs.append("JAN が無い商品はテンプレのアイテム名（任意）に商品名を手入力してください（必須）")
+            errs.append(t("JAN が無い商品はテンプレのアイテム名（任意）に商品名を手入力してください（必須）"))
 
         cost = _num(rec[COL_COST])
         if cost is None or not cost > 0:
-            errs.append(f"商品原価が正の数ではありません（{rec[COL_COST] or '空'}）")
+            errs.append(t("商品原価が正の数ではありません（{v}）").format(v=rec[COL_COST] or t("空")))
         if rec[COL_SUPPLIER] not in suppliers:
-            errs.append(f"仕入先が選択肢にありません（{rec[COL_SUPPLIER] or '空'}）")
+            errs.append(t("仕入先が選択肢にありません（{v}）").format(v=rec[COL_SUPPLIER] or t("空")))
         if rec[COL_OWNER] not in owners:
-            errs.append(f"商品担当者が選択肢にありません（{rec[COL_OWNER] or '空'}）")
+            errs.append(t("商品担当者が選択肢にありません（{v}）").format(v=rec[COL_OWNER] or t("空")))
         if rec[COL_LARGE] not in mbl:
-            errs.append(f"大分類が選択肢にありません（{rec[COL_LARGE] or '空'}）")
+            errs.append(t("大分類が選択肢にありません（{v}）").format(v=rec[COL_LARGE] or t("空")))
         elif rec[COL_MIDDLE] not in mbl[rec[COL_LARGE]]:
-            errs.append(f"大分類「{rec[COL_LARGE]}」に中分類「{rec[COL_MIDDLE] or '空'}」はありません")
+            errs.append(t("大分類「{large}」に中分類「{middle}」はありません")
+                        .format(large=rec[COL_LARGE], middle=rec[COL_MIDDLE] or t("空")))
         if rec[COL_CARTON] == "":
-            warns.append(f"{COL_CARTON} が空です（生成時に 1 を入れます）")
+            warns.append(t("{col} が空です（生成時に 1 を入れます）").format(col=t(COL_CARTON)))
         elif not ((n := _num(rec[COL_CARTON])) is not None and n > 0):
-            errs.append(f"{COL_CARTON} が正の数ではありません（{rec[COL_CARTON]}）")
+            errs.append(t("{col} が正の数ではありません（{v}）").format(col=t(COL_CARTON), v=rec[COL_CARTON]))
         errs.extend(validate_fields({c: v for c, v in rec.items() if c not in (*COL_PKG_DIMS, COL_PKG_WEIGHT)}, choices=choices))
 
         for c in (*COL_PKG_DIMS, COL_PKG_WEIGHT):
             if rec[c] and not ((n := _num(rec[c])) is not None and n > 0):
-                warns.append(f"{c} が正の数ではないので空にしました（{rec[c]}）")
+                warns.append(t("{col} が正の数ではないので空にしました（{v}）").format(col=t(c), v=rec[c]))
                 rec[c] = ""
 
         if errs:
@@ -404,7 +407,7 @@ def fix_banned_fields(row: dict) -> list[str]:
             fixed = fix_banned(raw)
             if fixed != raw:
                 row[col] = fixed
-                notes.append(f"{col} の禁止文字を自動修正: {raw} → {fixed}")
+                notes.append(t("{col} の禁止文字を自動修正: {raw} → {fixed}").format(col=t(col), raw=raw, fixed=fixed))
     return notes
 
 
@@ -420,36 +423,38 @@ def validate_fields(row: dict, *, choices=None) -> list[str]:
             n = _num(_nfkc(value))
             positive = "(cm)" in col or "(g)" in col or col in (COL_CARTON, COL_COST)
             if n is None or (n <= 0 if positive else n < 0):
-                errors.append(f"{col} が{'正の' if positive else '0 以上の'}有限数ではありません（{value}）")
+                errors.append((t("{col} が正の有限数ではありません（{v}）") if positive
+                               else t("{col} が 0 以上の有限数ではありません（{v}）")).format(col=t(col), v=value))
         key = _norm(col)
         if key in values_by_key and value not in values_by_key[key]:
-            errors.append(f"{col} が選択肢にありません（{value}）")
+            errors.append(t("{col} が選択肢にありません（{v}）").format(col=t(col), v=value))
         hint = NST_FIELD_HELP.get(col, "")
         if "最大60文字" in hint and len(value) > 60:
-            errors.append(f"{col} は最大 60 字です")
+            errors.append(t("{col} は最大 60 字です").format(col=t(col)))
         if "最大999文字" in hint and len(value) > 999:
-            errors.append(f"{col} は最大 999 字です")
+            errors.append(t("{col} は最大 999 字です").format(col=t(col)))
         if "全角カッコ、カンマ禁止" in hint and any(c in value for c in "（）,，"):
-            errors.append(f"{col} に禁止文字（全角カッコ・カンマ）があります")
+            errors.append(t("{col} に禁止文字（全角カッコ・カンマ）があります").format(col=t(col)))
         if "ローマ数字禁止" in hint and re.search(r"[Ⅰ-ⅿ]", value):
-            errors.append(f"{col} に禁止文字（ローマ数字）があります")
+            errors.append(t("{col} に禁止文字（ローマ数字）があります").format(col=t(col)))
         if col == "生原価" and not re.fullmatch(r"(?:USD|RMB)\s*\d+(?:\.\d+)?", _nfkc(value)):
-            errors.append("生原価は USD または RMB を数字の前につけてください（例 RMB53）")
+            errors.append(t("生原価は USD または RMB を数字の前につけてください（例 RMB53）"))
         if col == "中国手数料" and not re.fullmatch(r"\d+(?:\.\d+)?%", _nfkc(value)):
-            errors.append("中国手数料は数字の後に % をつけてください（例 5.3%）")
+            errors.append(t("中国手数料は数字の後に % をつけてください（例 5.3%）"))
         if col == "発売日":
             try:
                 if datetime.datetime.strptime(value, "%Y/%m/%d").strftime("%Y/%m/%d") != value:
                     raise ValueError(value)
             except ValueError:
-                errors.append("発売日は YYYY/MM/DD で記入してください")
+                errors.append(t("発売日は YYYY/MM/DD で記入してください"))
     if choices is not None:
         if row.get(COL_LARGE) not in choices.middle_by_large:
-            errors.append("大分類が選択肢にありません")
+            errors.append(t("大分類が選択肢にありません"))
         elif row.get(COL_MIDDLE) not in choices.middle_by_large[row[COL_LARGE]]:
-            errors.append(f"大分類「{row[COL_LARGE]}」に中分類「{row.get(COL_MIDDLE, '')}」はありません")
+            errors.append(t("大分類「{large}」に中分類「{middle}」はありません")
+                          .format(large=row[COL_LARGE], middle=row.get(COL_MIDDLE, "")))
         if row.get(COL_SUPPLIER) not in choices.suppliers:
-            errors.append("仕入先が選択肢にありません")
+            errors.append(t("仕入先が選択肢にありません"))
         if row.get(COL_OWNER) not in choices.owners:
-            errors.append("商品担当者が選択肢にありません")
+            errors.append(t("商品担当者が選択肢にありません"))
     return errors

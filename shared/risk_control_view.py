@@ -42,7 +42,7 @@ def render(conn) -> None:
     # ⚙️ 风险阈值（可售天数·Boss 随时可调·独立持久化）
     # ============================================================
     _saved = load_risk_thresholds()
-    with st.expander(f"⚙️ {t('风险阈值设定 (可售天数·随时可调)')}", expanded=False):
+    with st.expander("⚙️ " + t("风险阈值设定 (可售天数·随时可调)"), expanded=False):
         _window_label = st.radio(
             t("销量统计窗口"), [t("前30天"), t("前60天"), t("前90天")],
             index=0, horizontal=True, key="page18_window",
@@ -59,7 +59,7 @@ def render(conn) -> None:
             key="risk_th_overstock",
             help=t("高于此线 = 压库存, 减少订货 / 优先消化"))
         # 各等级标准可售天数（A/B/C/NEW 独立·停售/其它走全局默认）
-        st.markdown(f"**🎯 {t('各等级标准可售天数')}**")
+        st.markdown("**🎯 " + t("各等级标准可售天数") + "**")
         st.caption(t("理想库存水位(天)·各等级独立。压库存中超出此水位的部分 = 可释放库存金额；"
                      "停售 / 其它等级走全局默认 {d} 天").format(d=f"{_saved['target_days']:g}"))
         _saved_by_rank = _saved.get("target_days_by_rank", {})
@@ -218,7 +218,7 @@ def render(conn) -> None:
     # ============================================================
     # 📋 SKU 360（决策上下文宽表·唯一视图）
     # ============================================================
-    st.markdown(f"### 📋 {t('SKU 360 · 决策上下文宽表')}")
+    st.markdown("### 📋 " + t("SKU 360 · 决策上下文宽表"))
     st.caption(t("当前筛选范围 · 销量 / 库存 / 在途PO / 采购价 / 等级一览"))
     if df.empty:
         st.info(t("当前筛选无数据"))

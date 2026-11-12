@@ -7,6 +7,15 @@ from data_warehouse.templates import item_entry_form as F, nst_item_master as N
 from shared import item_register as R
 from shared.nst_choices import Choices
 from tests.test_item_register import _enrich, _row
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """メッセージは日文原文で検査する（中文モードの訳は shared/i18n.py の TRANSLATIONS_ZH。t() は既定 zh なので ja に固定）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
+
 CH=Choices(suppliers=('0001 TEST',),middle_by_large={'生活雑貨':('日用品雑貨',),'食品':('嗜好品（茶・コーヒー）',)})
 
 

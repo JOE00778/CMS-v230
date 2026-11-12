@@ -123,12 +123,12 @@ def _guess_supplier(filename: str) -> int:
 # 全局唯一时间戳：用作文本模式外部 ID / 多文件外部 ID 前缀 / 下载文件名
 external_id = datetime.now().strftime("%Y%m%d%H%M%S")
 
-option = st.radio(t("输入方式"), [t("文本粘贴"), t("CSV / Excel 上传（多文件）")])
+option = st.radio(t("输入方式"), ["文本粘贴", "CSV / Excel 上传（多文件）"], format_func=t)
 # 多文件模式: list of {filename, df_order, supplier}; 文本模式: 单 df_order
 files_data: list[dict] = []
 df_order_text = None
 
-if option == t("文本粘贴"):
+if option == "文本粘贴":
     input_text = st.text_area(t("粘贴订货文本"), height=300)
     if st.button(t("✏️ 文本转换")):
         if not input_text.strip():
@@ -169,7 +169,7 @@ else:
 # 共通 meta
 col1, col2, col3 = st.columns(3)
 with col1:
-    if option == t("文本粘贴"):
+    if option == "文本粘贴":
         st.text_input(t("外部 ID"), value=external_id, disabled=True)
         supplier_text = st.selectbox(t("仕入先"), SUPPLIERS)
     else:
@@ -275,7 +275,7 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
         if len(missing) > 0:
             st.warning(t("⚠ {n} 件 JAN 在 nst.item_master_raw 找不到").format(n=len(missing)))
             st.dataframe(localize_df(missing[["jan"]]))
-        st.dataframe(df_out, use_container_width=True)
+        st.dataframe(df_out.rename(columns=t), use_container_width=True)
         st.download_button(
             t("📥 订货单 CSV 下载"),
             data=df_out.to_csv(index=False, encoding="utf-8-sig"),
@@ -290,14 +290,14 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
                                             ext_id=fd["external_id"],
                                             sup=fd["supplier"])
             with st.expander(
-                f"📄 {fd['filename']} → {fd['supplier']} "
-                f"({len(df_out)} {t('行')} · ¥{int(df_out['総額'].sum()):,})",
+                t("📄 {f} → {s} ({n} 行 · ¥{a:,})").format(
+                    f=fd["filename"], s=fd["supplier"], n=len(df_out), a=int(df_out["総額"].sum())),
                 expanded=(len(files_data) == 1),
             ):
                 if len(missing) > 0:
                     st.warning(t("⚠ {n} 件 JAN 在 nst.item_master_raw 找不到").format(n=len(missing)))
                     st.dataframe(localize_df(missing[["jan"]]))
-                st.dataframe(df_out, use_container_width=True)
+                st.dataframe(df_out.rename(columns=t), use_container_width=True)  # 表示のみ訳す（CSV は NetSuite 形式のまま）
             outputs.append(df_out)
 
         # 合并所有文件为单 CSV（各文件用 外部ID _NN 区分 → NetSuite 自动分单）

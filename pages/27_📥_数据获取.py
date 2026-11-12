@@ -101,9 +101,9 @@ _FREQ_LABEL = {"daily": "毎日", "monthly": "毎月"}
 
 
 def _job_title(category, frequency, run_time) -> str:
-    cat = _CAT_LABEL.get(category, category)
-    freq = _FREQ_LABEL.get(frequency, frequency)
-    return f"{cat}  ·  {freq} {str(run_time)[:5]} 自動取得"
+    cat = t(_CAT_LABEL.get(category, category))
+    freq = t(_FREQ_LABEL.get(frequency, frequency))
+    return t("{cat}  ·  {freq} {tm} 自動取得").format(cat=cat, freq=freq, tm=str(run_time)[:5])
 
 
 # ============================================================
@@ -162,7 +162,7 @@ with top_nst:
             rank_opts = ranks_df["item_rank"].tolist() if ranks_df is not None else []
             sel_maker = fc1.multiselect(t("メーカー名"), maker_opts, placeholder=t("（全て）"))
             sel_rank = fc2.multiselect(t("ランク評価"), rank_opts, placeholder=t("（全て）"))
-            kw = fc3.text_input(t("JAN / 商品名 検索"), placeholder="JAN コード or 表示名の一部")
+            kw = fc3.text_input(t("JAN / 商品名 検索"), placeholder=t("JAN コード or 表示名の一部"))
     
             where, params = [], []
             if sel_maker:
@@ -215,7 +215,7 @@ with top_nst:
             c2.metric(t("在庫行数"), f"{int(m['c']):,}")
     
             kw = st.text_input(t("JAN / 商品名 検索 "), key="inv_kw",
-                               placeholder="JAN コード or 表示名の一部")
+                               placeholder=t("JAN コード or 表示名の一部"))
             where, params = ["inv.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_snapshot)",
                              "inv.warehouse = '弁天倉庫'"], []
             if kw.strip():
@@ -257,10 +257,10 @@ with top_nst:
         else:
             c1, c2 = st.columns([1.5, 3])
             ym = c1.selectbox(t("対象月"), months_df["year_month"].tolist())
-            view = c2.radio(t("表示単位"), [t("店舗別"), t("アイテム別")],
-                            horizontal=True, key="sales_view")
+            view = c2.radio(t("表示単位"), ["店舗別", "アイテム別"],
+                            horizontal=True, key="sales_view", format_func=t)
     
-            if view == t("店舗別"):
+            if view == "店舗別":
                 df, e2 = _query(
                     "SELECT trim(s.shop) AS shop, im.jan, im.display_name, im.maker, im.item_rank, "
                     "s.qty_sold, s.revenue, "
@@ -412,7 +412,7 @@ with top_nst:
                     st.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
                     if r.get("description"):
                         st.caption("📋 " + str(r["description"]))
-                    st.caption(f"🆔 ジョブID: {jk}　|　取得対象(domains): {r['domains']}")
+                    st.caption(t("🆔 ジョブID: {jk}　|　取得対象(domains): {d}").format(jk=jk, d=r["domains"]))
                     c1, c2, c3, c4 = st.columns([1.2, 1.5, 2, 2])
                     en = c1.checkbox(t("有効"), value=bool(r["enabled"]), key=f"en_{jk}")
                     rt = c2.text_input(t("起動時刻 HH:MM"), value=str(r["run_time"])[:5], key=f"rt_{jk}")
@@ -464,7 +464,7 @@ with top_nst:
                 c1.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
                 if r.get("description"):
                     c1.caption("📋 " + str(r["description"]))
-                c2.caption(f"前回: {r['last_status'] or '-'}")
+                c2.caption(t("前回: {s}").format(s=r["last_status"] or "-"))
                 if r["run_now"]:
                     c3.info(t("⏳ 実行待ち…"))
                 elif c3.button(t("▶️ 今すぐ取得"), key=f"run_{jk}", type="primary"):
@@ -533,7 +533,7 @@ with top_jdl:
         else:
             for _, r in jdl_sched_df.iterrows():
                 jk = r["job_key"]
-                st.markdown(f"**🚚 {jk}**  ·  {r['frequency']} {str(r['run_time'])[:5]} 自動")
+                st.markdown(f"**🚚 {jk}**  ·  " + t("{f} {tm} 自動").format(f=r["frequency"], tm=str(r["run_time"])[:5]))
                 if r.get("description"):
                     st.caption("📋 " + str(r["description"]))
                 c1, c2, c3 = st.columns([2, 2, 1.5])
@@ -670,7 +670,7 @@ with top_cp:
         else:
             for _, r in cp_sched_df.iterrows():
                 jk = r["job_key"]
-                st.markdown(f"**🇰🇷 {jk}**  ·  {r['frequency']} {str(r['run_time'])[:5]} 自動")
+                st.markdown(f"**🇰🇷 {jk}**  ·  " + t("{f} {tm} 自動").format(f=r["frequency"], tm=str(r["run_time"])[:5]))
                 if r.get("description"):
                     st.caption("📋 " + str(r["description"]))
                 c1, c2, c3 = st.columns([2, 2, 1.5])

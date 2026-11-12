@@ -26,6 +26,8 @@ from typing import Callable, Literal
 
 import pymupdf as fitz
 
+from shared.i18n import t
+
 LABEL_NUMBER_REGION = (0.68, 0.34, 0.99, 0.41)
 # 平台注文番号: Shopee 13 桁 / Coupang 14 桁（2026-09-09 実測）。
 # 前後に数字が続くものは弾く（TEL/ZIP/運単号の数字部分は 3〜11 桁なので当たらない）
@@ -261,7 +263,8 @@ def split_label_pdf(
             try:
                 page_files.append((output_path, _single_page_pdf(doc, index)))
             except Exception as exc:
-                raise LabelPdfError(f"无法复制第 {page_number} 页") from exc
+                # 頁番号入りは page42 の t(str(exc)) で当たらないので、ここで UI 言語にして投げる
+                raise LabelPdfError(t("无法复制第 {page_number} 页").format(page_number=page_number)) from exc
 
         zip_buffer = io.BytesIO()
         try:

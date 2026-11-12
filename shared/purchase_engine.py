@@ -222,8 +222,53 @@ def _load_items(conn) -> dict[str, dict]:
     return out
 
 
+def _same(s: str) -> str:
+    return s
+
+
 def _supplier_label(q: dict) -> str:
     return f"{q['supplier_name']}({ZONE_LABEL_JA.get(q['zone'], q['zone'])})·¥{q['unit_price']}"
+
+
+_ALT_ZONE = re.compile(r"\((" + "|".join(map(re.escape, ZONE_LABEL_JA.values())) + r")\)·¥")
+
+
+def alt_suppliers_text(s: str, tr=_same) -> str:
+    """alt_suppliers（日文で保存）の zone 名だけ表示言語に。page25 が描画時に tr=t で呼ぶ。"""
+    return _ALT_ZONE.sub(lambda m: f"({tr(m[1])})·¥", s)
+
+
+def reason_text(r, max_stock_months: float | None = None, tr=_same) -> str:
+    """推奨行 → 理由。既定（tr 恒等）は compute_recommendations が保存する日文そのもの。
+
+    page25 は描画時に tr=t で呼ぶ（計算時の言語で定死しない · 訳は shared/i18n.py の TRANSLATIONS_ZH · 日文原文→中文）。
+    """
+    if r.get("rank") == "NEW":
+        return tr("🆕NEW (受動発注)・候補仕入先={s}・ケース{pk}").format(
+            s=r["supplier_primary"], pk=r["pack_size"])
+    rm = r["rec_monthly"]
+    base = tr("{z}・単価{p}・{trend}×{tf}"
+              "｜推奨月販{rm:.1f}×2.5={rm25:.0f}−実質在庫{es:.0f}(弁天{bn:.0f}+注文済{oo:.0f})"
+              "＝必要{sf:.0f}→{bx}箱×{pk}={q}個"
+              "(発注後在庫{sm:.1f}ヶ月)").format(
+        z=tr(ZONE_LABEL_JA.get(r["zone"], r["zone"])), p=r["unit_price"], trend=r["trend"],
+        tf=r["trend_factor"], rm=rm, rm25=rm * 2.5, es=r["eff_stock"], bn=r["bn_on_hand"],
+        oo=r["on_order"], sf=r["shortfall"], bx=r["boxes"], pk=r["pack_size"],
+        q=r["suggested_qty"], sm=r["stock_months_after"])
+    if r["consolidated"]:
+        base += tr("・🔗品牌集約")
+    if r["needs_review_pack"]:
+        base += tr("・⚠️ケース/ロット未設定")
+    if r["needs_review_oversize"]:
+        base += tr("・⚠️箱規{pk}/月販{rm:.0f}={x:.1f}≥2.5").format(
+            pk=r["pack_size"], rm=rm, x=r["pack_size"] / max(rm, 1e-6))
+    if r["overstock"]:
+        base += tr("・⚠️発注後在庫{sm:.1f}>上限{cap}→保留").format(
+            sm=r["stock_months_after"], cap=max_stock_months)
+    if not r["meets_min_order"]:
+        base += tr("・⚠️最低受注¥{moq:,}未達(現¥{tot:,.0f})").format(
+            moq=r["min_order_amount"], tot=r["supplier_total"])
+    return base
 
 
 # 集約のアンカーに使ってよい zone tier。応急(3)/前払い(4) は絶対にアンカーにしない
@@ -596,27 +641,7 @@ def compute_recommendations(
         return "recommended"
     df["status"] = df.apply(_status, axis=1)
 
-    def _reason(r):
-        if r.get("rank") == "NEW":
-            return f"🆕NEW (受動発注)・候補仕入先={r['supplier_primary']}・ケース{r['pack_size']}"
-        z = ZONE_LABEL_JA.get(r["zone"], r["zone"])
-        rm = r["rec_monthly"]
-        base = (f"{z}・単価{r['unit_price']}・{r['trend']}×{r['trend_factor']}"
-                f"｜推奨月販{rm:.1f}×2.5={rm*2.5:.0f}−実質在庫{r['eff_stock']:.0f}(弁天{r['bn_on_hand']:.0f}+注文済{r['on_order']:.0f})"
-                f"＝必要{r['shortfall']:.0f}→{r['boxes']}箱×{r['pack_size']}={r['suggested_qty']}個"
-                f"(発注後在庫{r['stock_months_after']:.1f}ヶ月)")
-        if r["consolidated"]:
-            base += "・🔗品牌集約"
-        if r["needs_review_pack"]:
-            base += "・⚠️ケース/ロット未設定"
-        if r["needs_review_oversize"]:
-            base += f"・⚠️箱規{r['pack_size']}/月販{rm:.0f}={r['pack_size']/max(rm,1e-6):.1f}≥2.5"
-        if r["overstock"]:
-            base += f"・⚠️発注後在庫{r['stock_months_after']:.1f}>上限{max_stock_months}→保留"
-        if not r["meets_min_order"]:
-            base += f"・⚠️最低受注¥{r['min_order_amount']:,}未達(現¥{r['supplier_total']:,.0f})"
-        return base
-    df["reason"] = df.apply(_reason, axis=1)
+    df["reason"] = df.apply(reason_text, axis=1, max_stock_months=max_stock_months)
 
     df = df.sort_values(["status", "zone_rank", "supplier_name", "maker", "line_cost"],
                         ascending=[True, True, True, True, False]).reset_index(drop=True)

@@ -33,6 +33,7 @@ import streamlit as st
 
 from shared.auth import require_admin
 from shared.db import get_readonly_connection, get_connection, DATA_DIR
+from shared.editor_state import lang_stable_editor
 from shared.i18n import get_lang, lang_selector, t
 from shared.i18n_columns import localize_df, label
 
@@ -61,7 +62,7 @@ IMAGE_PROCESSOR_URL = os.environ.get("IMAGE_PROCESSOR_URL", "").strip()
 # --------------------------------------------------------------------------- #
 # Page setup
 # --------------------------------------------------------------------------- #
-st.set_page_config(page_title="Shopee 上架", page_icon="🚀", layout="wide")
+st.set_page_config(page_title=t("Shopee 上架"), page_icon="🚀", layout="wide")
 require_admin()
 from shared.theme import inject_theme  # noqa: E402
 inject_theme()
@@ -458,9 +459,9 @@ with tab_auto:
                     "cost_jpy": r.cost_jpy if r else None,
                     "sellable": ("✅" if r.sellable else "⛔ " + (r.handling or "")) if r else tt("主档无此 JAN"),
                 })
-        edited = st.data_editor(
+        edited = lang_stable_editor(
             pd.DataFrame(rows), hide_index=True, use_container_width=True, num_rows="fixed",
-            key=f"gen_editor_{len(jans)}_{len(groups)}",
+            key=f"gen_editor_{len(jans)}_{len(groups)}", reset=tuple(r["jan"] for r in rows),
             column_config={
                 "spu_key": st.column_config.TextColumn(label("spu_key"), help=tt("同名 = 同一个 SPU；改名即改分组")),
                 "jan": st.column_config.TextColumn("JAN", disabled=True),
@@ -495,7 +496,7 @@ with tab_auto:
     except Exception as e:  # noqa: BLE001
         gen_shops = []
         st.error(str(e))
-    st.markdown(f"**{tt('出到哪些店铺（按国家分列）')}**")
+    st.markdown("**" + tt("出到哪些店铺（按国家分列）") + "**")
     gen_pick = _shop_grid(gen_shops, "gen_shop")
 
     if st.button(tt("🚀 生成母版"), type="primary", disabled=not (spus and PIPE_OK), use_container_width=True, key="gen_go"):
@@ -527,7 +528,7 @@ with tab_auto:
     def _run_panel():
         """8 秒ごとに自分だけ再実行して状態を更新（Boss 2026-09-10「完成后自动变已完成」）。
         ページ全体を rerun しないので、入力中の JAN やチェックが消えない。"""
-        st.markdown(f"**{tt('运行状态')}**")
+        st.markdown("**" + tt("运行状态") + "**")
         logs = sorted(JOB_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:5] if JOB_DIR.exists() else []
         if not logs:
             st.caption(tt("还没有运行记录"))
@@ -662,9 +663,9 @@ with tab_review:
                     try:
                         from dianxiaomi_zip import export_zip
                         JOB_DIR.mkdir(parents=True, exist_ok=True)
-                        label = batch_pick if batch_pick != _BATCH_ALL else time.strftime("%Y%m%d-%H%M")
-                        zp = JOB_DIR / f"dx_{label}.zip"
-                        rep = export_zip(conn, dx_keys, dx_pick, zp, stock=int(dx_stock), batch_label=str(label))
+                        dx_label = batch_pick if batch_pick != _BATCH_ALL else time.strftime("%Y%m%d-%H%M")
+                        zp = JOB_DIR / f"dx_{dx_label}.zip"
+                        rep = export_zip(conn, dx_keys, dx_pick, zp, stock=int(dx_stock), batch_label=str(dx_label))
                         st.session_state["dx_zip"] = str(zp)
                         st.success(tt("已生成：{s}").format(s=rep.summary()))
                         for m in rep.missing_images[:10]:
@@ -736,11 +737,13 @@ with tab_review:
                                             disabled=is_shop, key=f"rv_cat_{sel}_{view}")
                 with right:
                     if is_shop:
-                        st.markdown(f"**{tt('语言')}** {sd.get('lang')} · **{tt('模板')}** "
-                                    f"{sd.get('template_key') if sd.get('template_key') and sd.get('template_key') != 'default' else tt('⚠ 默认')} · "
-                                    f"**{tt('模型')}** {sd.get('model') or '-'}")
+                        _tpl = (sd.get('template_key') if sd.get('template_key') and sd.get('template_key') != 'default'
+                                else tt('⚠ 默认'))
+                        st.markdown("**" + tt("语言") + f"** {sd.get('lang')} · **" + tt("模板") + f"** {_tpl} · "
+                                    "**" + tt("模型") + f"** {sd.get('model') or '-'}")
                     else:
-                        st.markdown(f"**{tt('品牌')}** {d.get('brand') or '-'} · **Hook** {d.get('hook') or '-'} · **{tt('模型')}** {d.get('model') or '-'}")
+                        st.markdown("**" + tt("品牌") + f"** {d.get('brand') or '-'} · **Hook** {d.get('hook') or '-'} · "
+                                    "**" + tt("模型") + f"** {d.get('model') or '-'}")
                         if d.get("key_features"):
                             st.markdown(f"**{tt('卖点')}**\n" + "\n".join(f"- {x}" for x in d["key_features"]))
                         if d.get("dropped"):
@@ -795,13 +798,16 @@ with tab_review:
                         rows.append(row)
                     if multi_sku:
                         # 多 SKU は Shopee の規格オプション名が必須。ここで直せる（空欄だと送れない）
-                        sku_df = localize_df(pd.DataFrame(rows))
-                        sku_edit = st.data_editor(
+                        # 列名は固定キー（言語を切り替えても編集を保つ・shared/editor_state）。表示名は label()
+                        sku_df = pd.DataFrame(rows)
+                        sku_edit = lang_stable_editor(
                             sku_df, use_container_width=True, hide_index=True, num_rows="fixed", key=f"rv_sku_{sel}",
-                            column_config={label("option_name"): st.column_config.TextColumn(
+                            reset=tuple(sku_df["jan"]),
+                            column_config={**{c: label(c) for c in sku_df.columns},
+                                           "option_name": st.column_config.TextColumn(
                                 label("option_name"), help=tt("买家在 Shopee 看到的规格名（英文 · ≤20 字符）"), required=True)},
-                            disabled=[c for c in sku_df.columns if c != label("option_name")])
-                        new_opts = dict(zip([r["jan"] for r in rows], sku_edit[label("option_name")].tolist()))
+                            disabled=[c for c in sku_df.columns if c != "option_name"])
+                        new_opts = dict(zip([r["jan"] for r in rows], sku_edit["option_name"].tolist()))
                         changed_opts = {j: v.strip() for j, v in new_opts.items()
                                         if v and v.strip() != (next(r["option_name"] for r in rows if r["jan"] == j) or "")}
                         if st.button(tt("💾 保存规格名"), disabled=not changed_opts, key=f"rv_optsave_{sel}"):
@@ -847,7 +853,7 @@ with tab_review:
                                     st.error(tt("换图失败：") + str(e))
 
                 # ---- 上架到哪些店铺：勾选网格（唯一决定元）----
-                st.markdown(f"**{tt('上架到哪些店铺（按国家分列 · 只有生成过版本的店可选）')}**")
+                st.markdown("**" + tt("上架到哪些店铺（按国家分列 · 只有生成过版本的店可选）") + "**")
                 pub_pick = _shop_grid(shops, f"rv_pub_{sel}",
                                       on_keys={k for k, r in versions.items() if r["status"] != "rejected"},
                                       enabled_keys=set(versions)) if versions else []

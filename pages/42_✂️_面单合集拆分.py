@@ -7,11 +7,12 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="面单合集拆分", page_icon="✂️", layout="wide")
+from shared.i18n import lang_selector, t  # noqa: E402
+
+st.set_page_config(page_title=t("面单合集拆分"), page_icon="✂️", layout="wide")
 
 from shared.auth import require_admin  # noqa: E402
 from shared.ecms_label_splitter import LabelPdfError, split_label_pdf  # noqa: E402
-from shared.i18n import lang_selector, t  # noqa: E402
 from shared.theme import inject_theme  # noqa: E402
 
 require_admin()
@@ -49,7 +50,7 @@ if st.button(
     except LabelPdfError as exc:
         st.session_state.pop("ecms_label_split_result", None)
         st.session_state.pop("ecms_label_split_source", None)
-        st.error(str(exc))
+        st.error(t(str(exc)))  # 固定文の LabelPdfError だけ訳が当たる
     except Exception:
         st.session_state.pop("ecms_label_split_result", None)
         st.session_state.pop("ecms_label_split_source", None)
@@ -78,7 +79,7 @@ if result is not None and source_fingerprint and result_source == source_fingerp
                     t("页码"): [row.page_number for row in exceptions],
                     t("状态"): [status_labels[row.status] for row in exceptions],
                     t("单号"): [row.tracking_number for row in exceptions],
-                    t("原因"): [row.reason for row in exceptions],
+                    t("原因"): [t(row.reason) for row in exceptions],
                 }
             ),
             hide_index=True,

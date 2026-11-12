@@ -1,5 +1,15 @@
 """楽天の出品名 → jancode 形式（Boss 2026-11-10）。サンプルは 2026-11-10 楽天 API 実取得の出品名そのまま。"""
 from shared.jan_web import jancode_style_name, pick_jancode_style
+import pytest
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """メッセージは日文原文で検査する（中文モードの訳は shared/i18n.py の TRANSLATIONS_ZH。t() は既定 zh なので ja に固定）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
+
 
 KATAOKA = ["【24個】 片岡物産 辻利 さらっととける抹茶 30g×24個 【北海道・沖縄・離島配送不可】",
            "【マラソン限定クーポン配布中】片岡物産 辻利 さらっととける抹茶 30g", "辻利 さらっととける抹茶 (30g入)",

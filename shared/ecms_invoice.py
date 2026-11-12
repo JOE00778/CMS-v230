@@ -101,8 +101,10 @@ def _parse_jp_date(s: str) -> dt.date | None:
         return None
 
 
-def parse_invoice_text(txt: str) -> InvoiceHeader:
+def parse_invoice_text(txt: str, tr=str) -> InvoiceHeader:
     """請求書 PDF のテキスト → InvoiceHeader（純関数・PDF ライブラリ非依存）。
+
+    tr: 警告文の翻訳関数（画面からは shared.i18n.t を渡す。既定は原文のまま）。
 
     行単位ではなく token 列として走査するので、月によって改行位置が変わっても拾える。
     明細は `<連番> <費目> <金額> <課税区分>` の並びを探す。
@@ -139,24 +141,24 @@ def parse_invoice_text(txt: str) -> InvoiceHeader:
             h.total = _to_amount(m.group(1))
 
     if not h.lines:
-        h.warnings.append("明細行を 1 行も取れませんでした（PDF の書式が変わった可能性）")
+        h.warnings.append(tr("明細行を 1 行も取れませんでした（PDF の書式が変わった可能性）"))
     if h.total and abs(h.lines_total + h.tax - h.total) > 1:
-        h.warnings.append(
-            f"明細合計 {h.lines_total:,.0f} + 消費税 {h.tax:,.0f} が "
-            f"請求金額合計 {h.total:,.0f} と一致しません")
+        h.warnings.append(tr(
+            "明細合計 {a:,.0f} + 消費税 {x:,.0f} が 請求金額合計 {b:,.0f} と一致しません"
+        ).format(a=h.lines_total, x=h.tax, b=h.total))
     return h
 
 
-def parse_invoice_pdf(data: bytes) -> InvoiceHeader:
+def parse_invoice_pdf(data: bytes, tr=str) -> InvoiceHeader:
     """PDF バイト列 → InvoiceHeader。PyMuPDF（依存に既存）でテキスト化するだけ。"""
     import pymupdf
 
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         txt = "\n".join(p.get_text() for p in doc)
-    return parse_invoice_text(txt)
+    return parse_invoice_text(txt, tr)
 
 
-def normalize_detail(df):
+def normalize_detail(df, tr=str):
     """xlsx「運賃」の DataFrame → 取り込み用に正規化。
 
     返り値: (正規化済み DataFrame, warnings)
@@ -203,14 +205,14 @@ def normalize_detail(df):
     parts = out[list(XLSX_AMOUNT_COLS.values())].sum(axis=1)
     bad = (parts - out["total_jpy"]).abs() > 0.01
     if bad.any():
-        warns.append(f"内訳合計 ≠ Total の行が {int(bad.sum())} 件あります")
+        warns.append(tr("内訳合計 ≠ Total の行が {n} 件あります").format(n=int(bad.sum())))
 
     blank = out["order_no"].eq("")
     if blank.any():
-        warns.append(f"Order No. が空の行が {int(blank.sum())} 件（店舗に配賦できません）")
+        warns.append(tr("Order No. が空の行が {n} 件（店舗に配賦できません）").format(n=int(blank.sum())))
     dup = out["tracking_no"].duplicated() & out["tracking_no"].ne("")
     if dup.any():
-        warns.append(f"Tracking No. 重複が {int(dup.sum())} 件あります")
+        warns.append(tr("Tracking No. 重複が {n} 件あります").format(n=int(dup.sum())))
     return out, warns
 
 

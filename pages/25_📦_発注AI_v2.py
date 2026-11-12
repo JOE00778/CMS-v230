@@ -19,7 +19,8 @@ import streamlit as st
 
 from shared.db import get_readonly_connection
 from shared.i18n import get_lang, lang_selector, t
-from shared.purchase_engine import compute_recommendations, DEFAULT_TREND_FACTORS
+from shared.purchase_engine import (DEFAULT_TREND_FACTORS, alt_suppliers_text, compute_recommendations,
+                                    reason_text)
 
 st.set_page_config(page_title=t("発注AI"), page_icon="📦", layout="wide")
 from shared.auth import require_admin
@@ -43,6 +44,11 @@ ZONE_LABEL = {
     "EMERGENCY": "🟠 応急", "PREPAID": "🔴 前払い", "OTHER": "⚪ 他",
 }
 TREND_LABEL = {"up": "📈 上昇", "flat": "➡️ 横ばい", "down": "📉 下降"}
+
+
+def _zone(z) -> str:
+    """zone コード → 表示ラベル（UI 言語）。"""
+    return t(ZONE_LABEL.get(z, z))
 
 NST_SUPPLIERS = [
     "0020 エンパイヤ自動車株式会社（KONNGU'S）", "0025 株式会社オンダ", "0073 株式会社　エィチ・ケイ",
@@ -119,7 +125,7 @@ with top_v2:
         if _has_supplier_quotes():
             n = conn.execute("SELECT COUNT(*) FROM supplier_quote").fetchone()[0]
             ns = conn.execute("SELECT COUNT(DISTINCT supplier_name) FROM supplier_quote").fetchone()[0]
-            st.metric(t("登録済み報価"), f"{n:,}", f"{ns} 仕入先")
+            st.metric(t("登録済み報価"), f"{n:,}", t("{n} 仕入先").format(n=ns))
         else:
             st.warning(t(
                 "⚠️ supplier_quote 表为空。手动 Excel ingester 已于 2026-05-19 弃用，"
@@ -146,12 +152,12 @@ with top_v2:
     
         q0, q1, q2, q3 = st.columns([1.4, 1, 1, 1.3])
         with q0:
-            opt_label = st.radio(
-                t("発注先の選び方"),
-                [t("zone優先(JD直送>弁天>応急>前払い)"), t("発注金額(line_cost)が最小")],
+            # 値は固定キー（訳文の「金额/金額」で判定すると中文 UI で常に zone になっていた）
+            _opt_lbl = {"zone": "zone優先(JD直送>弁天>応急>前払い)", "line_cost": "発注金額(line_cost)が最小"}
+            optimize = st.radio(
+                t("発注先の選び方"), list(_opt_lbl), format_func=lambda k: t(_opt_lbl[k]),
                 help=t("『発注金額最小』はロット丸め・納期込みで一番安い仕入先を選ぶ。zone劣化(JD直送→応急/前払い)が起きる場合あり"),
             )
-            optimize = "line_cost" if "金額" in opt_label else "zone"
         with q1:
             consol = st.checkbox(t("メーカー単位で仕入先を集約"), value=True)
         with q2:
@@ -204,47 +210,57 @@ with top_v2:
             n_over = df.attrs.get("n_overstock", 0)
             cap = df.attrs.get("max_stock_months", None)
             st.caption(t(
-                f"📅 月販期間: {', '.join(periods) if periods else '(なし)'} ｜ "
-                f"在庫差引: {'✅ 適用' if inv_loaded else '⚠️ 在庫データなし(全量発注)'} ｜ "
-                f"取扱中止 除外: {n_disc_ex} SKU ｜ ランク対象外 除外: {n_rank_ex} SKU ｜ "
-                f"品牌集約で発注先変更: {n_consol} SKU ｜ 在庫過多で保留: {n_over} SKU"
-                + (f" (上限{cap}ヶ月)" if cap else "")
-            ))
+                "📅 月販期間: {p} ｜ 在庫差引: {inv} ｜ 取扱中止 除外: {d} SKU ｜ ランク対象外 除外: {r} SKU ｜ "
+                "品牌集約で発注先変更: {c} SKU ｜ 在庫過多で保留: {o} SKU"
+            ).format(p=", ".join(periods) if periods else t("(なし)"),
+                     inv=t("✅ 適用") if inv_loaded else t("⚠️ 在庫データなし(全量発注)"),
+                     d=n_disc_ex, r=n_rank_ex, c=n_consol, o=n_over)
+                + (t(" (上限{cap}ヶ月)").format(cap=cap) if cap else ""))
+            # 理由 / 単位種別 / 全候補 は描画のたびに UI 言語へ（po_reco と全件 CSV は日文のまま）
+            dfv = df.assign(
+                reason=df.apply(reason_text, axis=1, max_stock_months=cap, tr=t),
+                pack_source=df["pack_source"].map(t),
+                alt_suppliers=df["alt_suppliers"].map(lambda s: alt_suppliers_text(s, t)),
+            )
             # Boss 2026-05-14: needs_review は「出はするが人工確認」→ 発注リストに含める。
             # new_passive (NEW = 受動発注) と deferred_* は別枠。
-            df_rec = df[df["status"].isin(["recommended", "needs_review"])]
-            df_new = df[df["status"] == "new_passive"]
-            df_hold = df[df["status"].isin(["deferred_overstock", "deferred_min_order"])]
+            df_rec = dfv[dfv["status"].isin(["recommended", "needs_review"])]
+            df_new = dfv[dfv["status"] == "new_passive"]
+            df_hold = dfv[dfv["status"].isin(["deferred_overstock", "deferred_min_order"])]
             m1, m2, m3, m4 = st.columns(4)
             m1.metric(t("発注 SKU (推奨+要確認)"), f"{len(df_rec):,}",
-                      delta=f"うち要確認 {int((df_rec['status']=='needs_review').sum())}")
+                      delta=t("うち要確認 {n}").format(n=int((df_rec['status'] == 'needs_review').sum())))
             m2.metric(t("発注コスト"), f"¥{int(df_rec['line_cost'].sum()):,}")
             m3.metric(t("仕入先数"), f"{df_rec['supplier_name'].nunique()}")
             m4.metric(t("保留 SKU (在庫過多/最低受注未達)"), f"{len(df_hold)}", delta=None)
     
             if len(df_hold):
-                with st.expander(t(f"⚠️ 保留 SKU {len(df_hold)} 件 (発注しない — 在庫過多 / 最低受注額未達)"), expanded=False):
+                with st.expander(t("⚠️ 保留 SKU {n} 件 (発注しない — 在庫過多 / 最低受注額未達)").format(n=len(df_hold)),
+                                 expanded=False):
                     st.dataframe(
                         df_hold[["jan", "display_name", "maker", "rank", "status", "on_hand", "suggested_qty",
                                  "pack_size", "stock_months_after", "supplier_name", "zone", "unit_price",
                                  "line_cost", "reason"]]
+                        .sort_values("stock_months_after", ascending=False)
                         .rename(columns={"rank": "ランク", "status": "状態", "on_hand": "弁天在庫",
                                          "suggested_qty": "発注数(参考)", "pack_size": "ケース",
                                          "stock_months_after": "発注後在庫月数", "supplier_name": "仕入先",
                                          "unit_price": "単価", "line_cost": "金額(参考)", "reason": "理由"})
-                        .sort_values("発注後在庫月数", ascending=False),
+                        .rename(columns=t),
                         use_container_width=True, hide_index=True,
                     )
     
             # NEW = 受動発注 (Boss 2026-05-14: 引擎不下单, 但出在「待需求」列表)
             if len(df_new):
-                with st.expander(t(f"🆕 NEW 待需求 SKU {len(df_new)} 件 (受動発注 — 引擎不出単, 需要が来たら手動)"), expanded=False):
+                with st.expander(t("🆕 NEW 待需求 SKU {n} 件 (受動発注 — 引擎不出単, 需要が来たら手動)").format(n=len(df_new)),
+                                 expanded=False):
                     st.dataframe(
                         df_new[["jan", "display_name", "maker", "rank", "rec_monthly", "on_hand", "supplier_primary",
                                 "zone", "unit_price", "pack_size", "lead_time_text", "reason"]]
                         .rename(columns={"rank": "ランク", "rec_monthly": "推奨月販", "on_hand": "弁天在庫",
                                          "supplier_primary": "候補仕入先", "unit_price": "単価", "pack_size": "ケース",
-                                         "lead_time_text": "納期", "reason": "理由"}),
+                                         "lead_time_text": "納期", "reason": "理由"})
+                        .rename(columns=t),
                         use_container_width=True, hide_index=True,
                     )
     
@@ -256,10 +272,10 @@ with top_v2:
                 sup_total = int(sub["line_cost"].sum())
                 moq = int(sub["min_order_amount"].iloc[0])
                 ok = sub["meets_min_order"].iloc[0]
-                badge = "✅" if ok else f"⚠️ 最低¥{moq:,}未達"
-                nst_code = sub["nst_supplier_code"].iloc[0] or "(NST コード未設定)"
+                badge = "✅" if ok else t("⚠️ 最低¥{moq:,}未達").format(moq=moq)
+                nst_code = sub["nst_supplier_code"].iloc[0] or t("(NST コード未設定)")
                 with st.expander(
-                    f"{ZONE_LABEL.get(zone, zone)}  {sup}  —  ¥{sup_total:,}  {badge}  ({len(sub)} SKU)  · {nst_code}",
+                    f"{_zone(zone)}  {sup}  —  ¥{sup_total:,}  {badge}  ({len(sub)} SKU)  · {nst_code}",
                     expanded=False,
                 ):
                     by_maker = (
@@ -267,7 +283,7 @@ with top_v2:
                         .agg(SKU数=("jan", "count"), 発注数=("suggested_qty", "sum"), コスト=("line_cost", "sum"))
                         .reset_index().sort_values("コスト", ascending=False)
                     )
-                    st.dataframe(by_maker, use_container_width=True, hide_index=True)
+                    st.dataframe(by_maker.rename(columns=t), use_container_width=True, hide_index=True)
                     st.dataframe(
                         sub[["jan", "display_name", "maker", "rank", "status", "avg_monthly", "latest_monthly",
                              "trend", "sellthrough", "sellthrough_factor", "rec_monthly",
@@ -291,7 +307,7 @@ with top_v2:
                             "supplier_backup1": "備用①", "backup1_price": "備①単価",
                             "supplier_backup2": "備用②", "backup2_price": "備②単価",
                             "alt_suppliers": "全候補", "reason": "理由",
-                        }),
+                        }).rename(columns=t),
                         use_container_width=True, hide_index=True,
                     )
     
@@ -318,7 +334,7 @@ with top_v2:
                 df_csv = _build_nst_csv(sub_sel, nst_supplier=nst_sup, order_date=od, employee=emp, department=dept, memo=memo)
                 st.dataframe(df_csv, use_container_width=True, hide_index=True, height=300)
                 st.download_button(
-                    t(f"⬇️ {sel_sup} 発注 CSV ダウンロード"),
+                    t("⬇️ {s} 発注 CSV ダウンロード").format(s=sel_sup),
                     data=df_csv.to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"発注書_{sel_sup}_{datetime.now():%Y%m%d}.csv",
                     mime="text/csv", type="primary",
@@ -351,7 +367,7 @@ with top_v2:
             df_q = pd.DataFrame([dict(r) for r in rows])
             zone = df_q["zone"].iloc[0]
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric(t("zone"), ZONE_LABEL.get(zone, zone))
+            c1.metric(t("zone"), _zone(zone))
             c2.metric(t("取扱 SKU 数"), f"{len(df_q):,}")
             moq_vals = df_q["min_order_amount"].dropna()
             c3.metric(t("注文最低金額"), f"¥{int(moq_vals.max()):,}" if len(moq_vals) and moq_vals.max() else t("制限なし"))
@@ -359,31 +375,32 @@ with top_v2:
             # 発注条件の分布
             oc = df_q["order_condition"].dropna().value_counts()
             if len(oc):
-                st.caption(t("発注条件: " + " / ".join(f"{k}({v})" for k, v in oc.items())))
+                st.caption(t("発注条件: {v}").format(v=" / ".join(f"{k}({v})" for k, v in oc.items())))
             lt = df_q["lead_time_text"].dropna().value_counts()
             if len(lt):
-                st.caption(t("納期: " + " / ".join(f"{k}({v})" for k, v in lt.items())))
+                st.caption(t("納期: {v}").format(v=" / ".join(f"{k}({v})" for k, v in lt.items())))
     
             # 現在の発注金額 (発注計算済みなら)
             df_reco = st.session_state.get("po_reco")
             if df_reco is not None and not df_reco.empty:
                 cur = df_reco[df_reco["supplier_name"] == sel]
                 if not cur.empty:
-                    st.success(t(
-                        f"📦 現在の発注推奨: {len(cur)} SKU · ¥{int(cur['line_cost'].sum()):,}"
-                        + ("" if cur["meets_min_order"].iloc[0] else " · ⚠️ 最低受注額未達")
-                    ))
+                    st.success(
+                        t("📦 現在の発注推奨: {n} SKU · ¥{amt:,}").format(n=len(cur), amt=int(cur["line_cost"].sum()))
+                        + ("" if cur["meets_min_order"].iloc[0] else t(" · ⚠️ 最低受注額未達"))
+                    )
     
             st.dataframe(
                 df_q[["jan", "display_name", "unit_price", "lot_size", "case_qty",
                       "min_order_amount", "order_condition", "lead_time_text"]]
                 .rename(columns={"unit_price": "単価", "lot_size": "ロット", "case_qty": "入数",
                                  "min_order_amount": "注文最低金額", "order_condition": "発注条件",
-                                 "lead_time_text": "納期"}),
+                                 "lead_time_text": "納期"})
+                .rename(columns=t),
                 use_container_width=True, hide_index=True, height=480,
             )
             st.download_button(
-                t(f"⬇️ {sel} 報価単 CSV"),
+                t("⬇️ {s} 報価単 CSV").format(s=sel),
                 data=df_q.to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"報価単_{sel}.csv", mime="text/csv",
             )
@@ -404,14 +421,14 @@ with top_v2:
                     "FROM supplier_quote WHERE jan = ? ORDER BY zone_rank, unit_price", (jan,)
                 ).fetchall()
                 if not rows:
-                    st.warning(t(f"❌ JAN {jan} はどの仕入先 sheet にもありません (新商品 or SD/ハリマ に询价が必要)"))
+                    st.warning(t("❌ JAN {jan} はどの仕入先 sheet にもありません (新商品 or SD/ハリマ に询价が必要)").format(jan=jan))
                 else:
                     from shared.purchase_engine import ZONE_MARKUP
                     df_c = pd.DataFrame([dict(r) for r in rows])
                     df_c["実質単価(比価)"] = df_c.apply(lambda r: round(r["unit_price"] * ZONE_MARKUP.get(r["zone"], 1.0)), axis=1)
-                    df_c["zone"] = df_c["zone"].map(lambda z: ZONE_LABEL.get(z, z))
-                    name = df_c["display_name"].dropna().iloc[0] if df_c["display_name"].notna().any() else "(名称不明)"
-                    st.markdown(f"**{name}** — {len(df_c)} 仕入先で取扱")
+                    df_c["zone"] = df_c["zone"].map(_zone)
+                    name = df_c["display_name"].dropna().iloc[0] if df_c["display_name"].notna().any() else t("(名称不明)")
+                    st.markdown(f"**{name}** — " + t("{n} 仕入先で取扱").format(n=len(df_c)))
                     # 月販 (輸出概要)
                     # nst.sales_monthly（輸出月次）へ置換。旧 shop_sales は 0 行で
                     # 月販が常に出ていなかった（2026-08-18）。JAN → internal_id は主档経由。
@@ -421,16 +438,18 @@ with top_v2:
                         "WHERE im.jan = ? GROUP BY sm.year_month ORDER BY sm.year_month", (jan,)
                     ).fetchall()
                     if ms:
-                        st.caption(t("月販 (輸出概要): " + " / ".join(f"{r[0]}:{int(r[1] or 0)}" for r in ms)))
+                        st.caption(t("月販 (輸出概要): {v}").format(v=" / ".join(f"{r[0]}:{int(r[1] or 0)}" for r in ms)))
                     # 推奨先 highlight
                     best = df_c.sort_values(["zone_rank", "実質単価(比価)"]).iloc[0]
-                    st.success(t(f"→ 推奨仕入先: {best['supplier_name']} ({best['zone']}) · 単価 ¥{int(best['unit_price'])} · ロット {int(best['lot_size'] or 1)}"))
+                    st.success(t("→ 推奨仕入先: {s} ({z}) · 単価 ¥{p} · ロット {lot}").format(
+                        s=best["supplier_name"], z=best["zone"], p=int(best["unit_price"]), lot=int(best["lot_size"] or 1)))
                     st.dataframe(
                         df_c[["supplier_name", "zone", "unit_price", "実質単価(比価)", "lot_size",
                               "min_order_amount", "order_condition", "lead_time_text"]]
                         .rename(columns={"supplier_name": "仕入先", "unit_price": "単価", "lot_size": "ロット",
                                          "min_order_amount": "注文最低金額", "order_condition": "発注条件",
-                                         "lead_time_text": "納期"}),
+                                         "lead_time_text": "納期"})
+                        .rename(columns=t),
                         use_container_width=True, hide_index=True,
                     )
     
@@ -458,7 +477,7 @@ with top_v2:
                     "WHERE i.maker = ? ORDER BY i.jan, q.zone_rank, q.unit_price", (sel_mk,)
                 ).fetchall()
                 if not rows:
-                    st.info(t(f"{sel_mk} の SKU は仕入先 sheet に見つかりません"))
+                    st.info(t("{m} の SKU は仕入先 sheet に見つかりません").format(m=sel_mk))
                 else:
                     df_m = pd.DataFrame([dict(r) for r in rows])
                     n_sku = df_m["jan"].nunique()
@@ -471,18 +490,20 @@ with top_v2:
                         df_m.sort_values(["jan", "zone_rank", "unit_price"])
                         .groupby("jan").first().reset_index()
                     )
-                    best_per_sku["zone"] = best_per_sku["zone"].map(lambda z: ZONE_LABEL.get(z, z))
+                    best_per_sku["zone"] = best_per_sku["zone"].map(_zone)
                     st.markdown(t("#### SKU 別 推奨仕入先 (zone 優先 → 単価最安)"))
                     st.dataframe(
                         best_per_sku[["jan", "display_name", "supplier_name", "zone", "unit_price", "lot_size"]]
-                        .rename(columns={"supplier_name": "推奨仕入先", "unit_price": "単価", "lot_size": "ロット"}),
+                        .rename(columns={"supplier_name": "推奨仕入先", "unit_price": "単価", "lot_size": "ロット"})
+                        .rename(columns=t),
                         use_container_width=True, hide_index=True, height=400,
                     )
                     # 仕入先別 SKU 数
                     st.markdown(t("#### 仕入先別カバレッジ"))
                     cov = df_m.groupby(["zone", "supplier_name"])["jan"].nunique().reset_index().rename(columns={"jan": "SKU数"})
-                    cov["zone"] = cov["zone"].map(lambda z: ZONE_LABEL.get(z, z))
-                    st.dataframe(cov.sort_values("SKU数", ascending=False), use_container_width=True, hide_index=True)
+                    cov["zone"] = cov["zone"].map(_zone)
+                    st.dataframe(cov.sort_values("SKU数", ascending=False).rename(columns=t),
+                                 use_container_width=True, hide_index=True)
 
 
 # ============================================================
@@ -571,6 +592,38 @@ def render_purchase_v3() -> None:
         st.info(_v3l("请先上传固定进货规则 CSV。", "先に固定仕入規則 CSV をアップロードしてください。"))
         return
 
+    _ORDER_COLS = {
+        "vendor_name": _v3l("固定进货商", "固定仕入先"), "jan": "JAN",
+        "display_name": _v3l("商品名", "商品名"), "maker": _v3l("厂家", "メーカー"),
+        "item_rank": _v3l("商品等级", "商品ランク"),
+        "stock": _v3l("当前库存", "現在庫"),
+        "current_days": _v3l("现有可售天数", "現可售日数"),
+        "sold_30d": _v3l("前30天销量", "前30日販売"),
+        "transit": _v3l("在途", "在途"), "pack": _v3l("起订量", "起訂量"),
+        "boxes": _v3l("订货箱数", "発注箱数"), "order_units": _v3l("订货数量", "発注数量"),
+        "price": _v3l("采购单价", "仕入単価"), "amount": _v3l("预计金额", "予定金額"),
+        "order_days": _v3l("订货后可售天数", "発注後可售日数"),
+        "status": _v3l("状态", "状態"),
+    }
+    # purchase_v3 が返す _issue 値（判定・CSV 用の原値）→ 表示だけ言語別に
+    _ISSUE_LBL = {
+        "JAN 空": ("JAN 为空", "JAN 空"),
+        "JAN 重複（先勝ち · 原典 §16 で一意が前提）": ("JAN 重复（保留第一条 · 原典 §16 要求唯一）",
+                                                 "JAN 重複（先勝ち · 原典 §16 で一意が前提）"),
+        "起订量 欠落 → 整箱数が出せず発注建议に出ない": ("缺起订量 → 算不出整箱数，不会出现在订货建议里",
+                                               "起訂量 欠落 → 整箱数が出せず発注提案に出ない"),
+        "起订量 欠落": ("缺起订量", "起訂量 欠落"),
+    }
+
+    def _v3_show(df: pd.DataFrame) -> pd.DataFrame:
+        """画面表示用（列名・_issue を UI 言語に）。ダウンロード CSV は原列名のまま（規則に補って再アップロードするため）。"""
+        d = df.copy()
+        if "_issue" in d:
+            d["_issue"] = d["_issue"].map(lambda s: _v3l(*_ISSUE_LBL[s]) if s in _ISSUE_LBL else s)
+        return d.rename(columns={**_ORDER_COLS, "handling_cd": _v3l("取扱区分", "取扱区分"),
+                                 "起订量": _v3l("起订量", "起訂量"), "价格": _v3l("价格", "価格"),
+                                 "_issue": _v3l("问题", "問題")})
+
     _issues = st.session_state.get("v3_rule_issues") or []
     c1, c2, c3 = st.columns(3)
     c1.metric(_v3l("规则条数", "規則件数"), f"{len(rules):,}")
@@ -580,14 +633,14 @@ def render_purchase_v3() -> None:
               delta_color="inverse")
     if _issues:
         with st.expander(_v3l(f"⚠️ 规则异常 {len(_issues)} 行（这些 JAN 不会出现在订货建议里）",
-                              f"⚠️ 規則の不備 {len(_issues)} 行（この JAN は発注建议に出ません）"),
+                              f"⚠️ 規則の不備 {len(_issues)} 行（この JAN は発注提案に出ません）"),
                          expanded=False):
-            st.dataframe(pd.DataFrame(_issues), use_container_width=True, hide_index=True)
+            st.dataframe(_v3_show(pd.DataFrame(_issues)), use_container_width=True, hide_index=True)
 
     # ── ② 計算 ────────────────────────────────────────
     st.divider()
-    st.subheader(_v3l("② 生成订货建议", "② 発注建议を生成"))
-    if st.button(_v3l("🚀 生成订货建议", "🚀 発注建议を生成"), type="primary", key="v3_run"):
+    st.subheader(_v3l("② 生成订货建议", "② 発注提案を生成"))
+    if st.button(_v3l("🚀 生成订货建议", "🚀 発注提案を生成"), type="primary", key="v3_run"):
         with st.spinner(_v3l("从 PG 取数中…", "PG から取得中…")):
             skus, win_d, n_sku = _v3_fetch_skus()
         if not skus:
@@ -604,12 +657,12 @@ def render_purchase_v3() -> None:
     st.caption(_v3l(
         f"SKU {n_sku:,} 件（有等级商品）· 口径与「库存监控 → 库存风控 → SKU 360」完全一致 · "
         f"销量窗口 = 今天往前 {win_d} 天 · 库存 = 弁天输出棚在库 · 在途 = 未关闭 PO 的入荷残",
-        f"SKU {n_sku:,} 件（等級あり）· 口径は「库存监控 → 库存风控 → SKU 360」と完全一致 · "
-        f"販売ウィンドウ = 本日から {win_d} 日 · 在庫 = 弁天输出棚在庫 · 在途 = 未クローズ PO の入荷残"))
+        f"SKU {n_sku:,} 件（等級あり）· 口径は「在庫モニター → 在庫リスク管理 → SKU 360」と完全一致 · "
+        f"販売ウィンドウ = 本日から {win_d} 日 · 在庫 = 弁天輸出棚在庫 · 在途 = 未クローズ PO の入荷残"))
 
     orders = pd.DataFrame(res["orders"])
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric(_v3l("建议订货 SKU", "発注建议 SKU"), f"{len(orders):,}")
+    k1.metric(_v3l("建议订货 SKU", "発注提案 SKU"), f"{len(orders):,}")
     k2.metric(_v3l("预计金额", "予定金額"),
               f"¥{orders['amount'].fillna(0).sum():,.0f}" if not orders.empty else "¥0")
     k3.metric(_v3l("未匹配供应商", "未照合 仕入先"), f"{len(res['unmatched']):,}",
@@ -618,28 +671,15 @@ def render_purchase_v3() -> None:
               delta_color="inverse")
     k5.metric(_v3l("取扱中止 排除", "取扱中止 除外"), f"{res['skipped_discontinued']:,}")
     st.caption(_v3l(
-        f"不需要订货（在途込みで目标已满足）: {res['no_need']:,} 件",
+        f"不需要订货（含在途已满足目标）: {res['no_need']:,} 件",
         f"発注不要（在途込みで目標達成）: {res['no_need']:,} 件"))
 
     p1, p2, p3 = st.tabs([
-        _v3l("📋 第1页 订货建议", "📋 第1頁 発注建议"),
+        _v3l("📋 第1页 订货建议", "📋 第1頁 発注提案"),
         _v3l("❓ 第2页 未匹配供应商", "❓ 第2頁 未照合 仕入先"),
         _v3l("⚠️ 规则不全", "⚠️ 規則不備"),
     ])
 
-    _ORDER_COLS = {
-        "vendor_name": _v3l("固定进货商", "固定仕入先"), "jan": "JAN",
-        "display_name": _v3l("商品名", "商品名"), "maker": _v3l("厂家", "メーカー"),
-        "item_rank": _v3l("商品等级", "商品ランク"),
-        "stock": _v3l("当前库存", "現在庫"),
-        "current_days": _v3l("现有可售天数", "現可售日数"),
-        "sold_30d": _v3l("前30天销量", "前30日販売"),
-        "transit": _v3l("在途", "在途"), "pack": _v3l("起订量", "起訂量"),
-        "boxes": _v3l("订货箱数", "発注箱数"), "order_units": _v3l("订货数量", "発注数量"),
-        "price": _v3l("采购单价", "仕入単価"), "amount": _v3l("预计金额", "予定金額"),
-        "order_days": _v3l("订货后可售天数", "発注後可售日数"),
-        "status": _v3l("状态", "状態"),
-    }
     with p1:
         if orders.empty:
             st.info(_v3l("没有需要订货的商品。", "発注が必要な商品はありません。"))
@@ -647,9 +687,13 @@ def render_purchase_v3() -> None:
             d = orders[list(_ORDER_COLS)].copy()
             for c in ("current_days", "order_days"):
                 d[c] = d[c].round(1)
+            if get_lang() == "ja":
+                d["status"] = d["status"].replace({
+                    PV3.STATUS_SUGGEST: "発注推奨", PV3.STATUS_PACK_EXCEPTION: "箱規例外",
+                    PV3.STATUS_OVER_75: "発注後75日超", PV3.STATUS_NO_PRICE: "単価欠落"})
             d = d.rename(columns=_ORDER_COLS)
             st.dataframe(d, use_container_width=True, hide_index=True, height=520)
-            _v3_download(d, _v3l("⬇️ 订货建议 CSV", "⬇️ 発注建议 CSV"),
+            _v3_download(d, _v3l("⬇️ 订货建议 CSV", "⬇️ 発注提案 CSV"),
                          f"v3_订货建议_{date.today():%Y%m%d}.csv", "v3_dl_1")
     with p2:
         _u = pd.DataFrame(res["unmatched"])
@@ -659,7 +703,7 @@ def render_purchase_v3() -> None:
             st.caption(_v3l(
                 "这些 JAN 在规则表里找不到进货商。补进规则 CSV 后重跑即可。",
                 "これらの JAN は規則表に仕入先がありません。規則 CSV に追加して再実行してください。"))
-            st.dataframe(_u, use_container_width=True, hide_index=True, height=420)
+            st.dataframe(_v3_show(_u), use_container_width=True, hide_index=True, height=420)
             _v3_download(_u, _v3l("⬇️ 未匹配商品 CSV", "⬇️ 未照合商品 CSV"),
                          f"v3_未匹配供应商_{date.today():%Y%m%d}.csv", "v3_dl_2")
     with p3:
@@ -670,7 +714,7 @@ def render_purchase_v3() -> None:
             st.warning(_v3l(
                 "规则里有进货商但缺起订量 → 算不出整箱数，既不在第1页也不在第2页。补起订量后重跑。",
                 "仕入先はあるが起訂量が無い → 整箱数が出せず、第1頁にも第2頁にも出ません。"))
-            st.dataframe(_ri, use_container_width=True, hide_index=True, height=300)
+            st.dataframe(_v3_show(_ri), use_container_width=True, hide_index=True, height=300)
             _v3_download(_ri, _v3l("⬇️ 规则不全 CSV", "⬇️ 規則不備 CSV"),
                          f"v3_规则不全_{date.today():%Y%m%d}.csv", "v3_dl_3")
 

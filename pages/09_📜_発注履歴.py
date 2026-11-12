@@ -120,11 +120,11 @@ if _ym_from:
     k3.metric(t("仕入先 数"), f"{df['仕入先'].nunique():,}")
     k4.metric(t("金額 合计 (¥)"), f"¥{amt:,.0f}")
 
-msg = t(f"✅ 命中 {n} 件")
+msg = t("✅ 命中 {n} 件").format(n=n)
 if n >= LIMIT:
-    msg += t(f"（已达上限 {LIMIT}，请缩小条件）")
+    msg += t("（已达上限 {n}，请缩小条件）").format(n=LIMIT)
 st.success(msg)
-st.dataframe(df, use_container_width=True, hide_index=True)
+st.dataframe(df.rename(columns=t), use_container_width=True, hide_index=True)  # 列名は表示だけ訳す（CSV は原列名）
 
 csv = df.to_csv(index=False).encode("utf-8-sig")
 st.download_button(t("📥 CSV 下载"), data=csv, file_name="po_lines.csv", mime="text/csv")

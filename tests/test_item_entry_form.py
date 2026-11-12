@@ -7,6 +7,15 @@ import openpyxl
 import pytest
 
 from data_warehouse.templates import item_entry_form as F
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """メッセージは日文原文で検査する（中文モードの訳は shared/i18n.py の TRANSLATIONS_ZH。t() は既定 zh なので ja に固定）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
+
 
 try:
     from shared.nst_choices import Choices

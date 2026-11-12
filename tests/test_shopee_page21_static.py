@@ -239,3 +239,15 @@ def test_placeholder_image_url_is_offered_and_passed_to_fill():
     assert "placeholder_url=dx_ph" in SRC, "回填時に渡していること"
     assert "_ph_url_write(dx_ph)" in SRC and "_ph_url_read()" in SRC, "URL は次回も使うので覚える"
     assert "rep2.no_image_rows" in SRC, "画像も URL も無い行は黙って出さない"
+
+
+def test_i18n_helpers_not_shadowed():
+    """label = batch_pick … がモジュール変数として import した label() を潰すと、「📦 生成导出包」を押した run の
+    後半（多 SKU 母版の label(c)）が TypeError。i18n から import した名前には代入しない。"""
+    tree = ast.parse(SRC)
+    imported = {a.asname or a.name for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("shared.i18n") for a in n.names}
+    assert "label" in imported
+    hits = [(n.lineno, n.id) for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id in imported]
+    assert not hits, hits

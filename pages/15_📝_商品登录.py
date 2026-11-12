@@ -41,6 +41,7 @@ from shared import item_register as REG
 from shared import nst_choices as NC
 from shared.auth import require_password
 from shared.db import get_connection
+from shared.editor_state import lang_stable_editor
 from shared.i18n import t, lang_selector
 from shared.theme import inject_theme
 
@@ -93,8 +94,15 @@ def _content_hash(records) -> str:
                                      default=str).encode()).hexdigest()
 
 
+def _table_hash(edited: pd.DataFrame) -> str:
+    """CSV が今の表から作られたか。CSV に効くのは 直せる列（REG.EDITABLE）と 型番/JAN だけ（REG.from_frame）。
+    🤖 自動入力・重量メモ・HS 判定・画像の出典 などの表示列は描画時に t() する（言語で変わる）ので見ない。"""
+    keep = [c for c in edited.columns if c in REG.EDITABLE or c in (REG.COL_ITEM_CODE, REG.COL_JAN)]
+    return _content_hash(edited[keep].to_dict("records"))
+
+
 def _issues_df(issues) -> pd.DataFrame:
-    return pd.DataFrame([{t("行"): i.row or "", "型番 / JAN": i.jan,
+    return pd.DataFrame([{t("行"): i.row or "", t("型番 / JAN"): i.jan,
                           t("区分"): "❌ error" if i.level == "error" else "⚠️ warn",
                           t("内容"): i.message} for i in issues])
 
@@ -102,10 +110,10 @@ def _issues_df(issues) -> pd.DataFrame:
 def _issue_table(issues, key: str) -> None:
     """error を先頭に並べ、error / warn / すべて で絞れる表（Boss 2026-11-10「warn の中から error を探すのが大変」）。"""
     n_err = sum(i.level == "error" for i in issues)
-    labels = {"error": f"❌ error のみ（{n_err}）", "warn": f"⚠️ warn のみ（{len(issues) - n_err}）",
-              "all": f"すべて（{len(issues)}）"}
+    counts = {"error": n_err, "warn": len(issues) - n_err, "all": len(issues)}
+    labels = {"error": "❌ error のみ（{n}）", "warn": "⚠️ warn のみ（{n}）", "all": "すべて（{n}）"}
     pick = st.radio(t("表示"), list(labels), index=0 if n_err else 2, horizontal=True, key=key,
-                    format_func=lambda k: t(labels[k]), label_visibility="collapsed")
+                    format_func=lambda k: t(labels[k]).format(n=counts[k]), label_visibility="collapsed")
     shown = sorted((i for i in issues if pick == "all" or i.level == pick), key=lambda i: i.level != "error")
     st.dataframe(_issues_df(shown), use_container_width=True, hide_index=True)
 
@@ -138,10 +146,11 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
                 bm_has = BMR.find_skus(client, [REG.item_key(r) for r in rows])
             except Exception as e:  # noqa: BLE001 — 照会できなくても続行。登録時に 1 件ずつ再照会する
                 bm_has = {}
-                notes.append(t(f"斑马の既存照会に失敗（生成時に 1 件ずつ再確認します）: {type(e).__name__}: {e}"))
+                notes.append(t("斑马の既存照会に失敗（生成時に 1 件ずつ再確認します）: {err}").format(
+                    err=f"{type(e).__name__}: {e}"))
         both = [r for r in rows if REG.item_key(r) in nst_has and REG.item_key(r) in bm_has]
         for r in both:
-            issues.append(FORM.Issue(0, REG.item_key(r), "warn", "NST・斑马とも登録済みのためスキップ（何もしません）"))
+            issues.append(FORM.Issue(0, REG.item_key(r), "warn", t("NST・斑马とも登録済みのためスキップ（何もしません）")))
         skipped_both = len(both)
         rows = [r for r in rows if r not in both]
     if rows:
@@ -149,7 +158,7 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
             prefix_makers = _cached_prefix_makers()
         except Exception as e:  # noqa: BLE001 — メーカーは jancode 会社名で続行
             prefix_makers = {}
-            notes.append(f"NST メーカー（JAN プレフィックス）の読込に失敗・jancode 会社名だけで判定: {e}")
+            notes.append(t("NST メーカー（JAN プレフィックス）の読込に失敗・jancode 会社名だけで判定: {err}").format(err=e))
         meta_fetch = jan_web.make_meta_fetcher()   # jancode（403 で即停止・上限 40）→ 楽天（jancode 形式に整形）
         bar = st.progress(0.0, text=t("処理中…"))
         nst_rows, extra, more, stats = REG.enrich(
@@ -190,7 +199,8 @@ def _register_banma(out_bm: list[dict], log_ok: bool) -> list:
         with get_connection() as conn:
             banma_client.ensure_token(conn, client)
     except Exception as e:  # noqa: BLE001
-        st.session_state["page15_bm_result"] = {"error": f"斑马に接続できません（登録していません）: {type(e).__name__}: {e}"}
+        st.session_state["page15_bm_result"] = {"error": t("斑马に接続できません（登録していません）: {err}").format(
+            err=f"{type(e).__name__}: {e}")}
         return []
     bar = st.progress(0.0, text=t("斑马に登録中…"))
     with get_connection() as conn:
@@ -240,8 +250,8 @@ def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
         except Exception as e:  # noqa: BLE001 — 接続自体の失敗
             n_log, err = 0, f"{type(e).__name__}: {e}"
         st.session_state["page15_log_msg"] = (
-            ("error", t(f"台帳への記録に失敗: {err}")) if err
-            else ("ok", t(f"台帳 nst.item_register_log に {n_log} 件記録")))
+            ("error", t("台帳への記録に失敗: {err}").format(err=err)) if err
+            else ("ok", t("台帳 nst.item_register_log に {n} 件記録").format(n=n_log)))
         log_ok = not err
         if log_ok:
             st.session_state["page15_logged"] = log_key
@@ -263,7 +273,7 @@ def _generate(edited: pd.DataFrame, res: dict, to_banma: bool = True) -> None:
         owners = dict.fromkeys(re.sub(r"^\d+\s*", "", str(r.get("商品担当者") or "")).strip() for r in csv_rows)
         st.session_state["page15_csv_bytes"] = REG.build_nst_registration_csv(csv_rows)
         st.session_state["page15_csv_name"] = TPL.dated_filename(registrant="・".join(o for o in owners if o))
-    st.session_state["page15_csv_src"] = _content_hash(edited.to_dict("records"))
+    st.session_state["page15_csv_src"] = _table_hash(edited)
 
 
 def _missing_fix(edited: pd.DataFrame) -> pd.DataFrame:
@@ -276,14 +286,17 @@ def _missing_fix(edited: pd.DataFrame) -> pd.DataFrame:
     miss = blank(name) | blank(wt)
     if not miss.any():
         return edited
-    st.subheader(t(f"✍️ 手入力が必要な項目（{int(miss.sum())} 件：アイテム名 {int(blank(name).sum())} · 重量 {int(blank(wt).sum())}）"))
+    st.subheader(t("✍️ 手入力が必要な項目（{n} 件：アイテム名 {n_name} · 重量 {n_wt}）").format(
+        n=int(miss.sum()), n_name=int(blank(name).sum()), n_wt=int(blank(wt).sum())))
     st.caption(t("ここに入れれば再アップロード不要です。アイテム名 = jancode・楽天・Yahoo のどこにも無かった品（最大 60 字）。"
                  "重量 = 単位 g・不明なら 1 も可（斑马の重量に使います）"))
-    fixed = st.data_editor(
+    fixed = lang_stable_editor(
         edited.loc[miss, ["型番", name, wt]], key="page15_weight_fix", hide_index=True,
+        reset=tuple(edited.loc[miss, "型番"]),
         num_rows="fixed", use_container_width=True, disabled=["型番"],
-        column_config={name: st.column_config.TextColumn(f"{name} ✍️", max_chars=REG.NAME_MAX),
-                       wt: st.column_config.TextColumn(f"{wt} ✍️", help=t("g（整数または小数）。不明なら 1"))})
+        column_config={"型番": st.column_config.TextColumn(t("型番")),
+                       name: st.column_config.TextColumn(t(name) + " ✍️", max_chars=REG.NAME_MAX),
+                       wt: st.column_config.TextColumn(t(wt) + " ✍️", help=t("g（整数または小数）。不明なら 1"))})
     out = edited.copy()
     out.loc[fixed.index, [name, wt]] = fixed[[name, wt]]
     return out
@@ -302,13 +315,14 @@ def _hs_retry(res: dict, records: list[dict]) -> None:
              and (names.get(REG.item_key(r)) or r.get("アイテム名"))]
     if not blank:
         return
-    if st.button(t(f"🤖 HS を AI で再判定（HS が空の {len(blank)} 件だけ）"), key="page15_hs_retry"):
+    if st.button(t("🤖 HS を AI で再判定（HS が空の {n} 件だけ）").format(n=len(blank)), key="page15_hs_retry"):
         with st.spinner(t("HS を AI で判定中…")):
             more = REG.cross_check_hs(blank, res["extra"], res["stats"], hs_ai.judge)
         res["issues"] += more
         left = sum(not res["extra"].get(REG.item_key(r), {}).get(REG.COL_HS) for r in blank)
-        st.session_state["page15_hs_retry_msg"] = t(f"再判定: {len(blank)} 件中 {len(blank) - left} 件に HS が入りました"
-                                                     + (f"（{left} 件はまだ空・時間をおいて再度）" if left else ""))
+        st.session_state["page15_hs_retry_msg"] = (
+            t("再判定: {n} 件中 {k} 件に HS が入りました").format(n=len(blank), k=len(blank) - left)
+            + (t("（{n} 件はまだ空・時間をおいて再度）").format(n=left) if left else ""))
         st.rerun()
 
 
@@ -320,27 +334,30 @@ def _render_result(res: dict) -> None:
     s = res["stats"]
     if s:
         st.caption(
-            f"jancode ok={s['jancode_ok']} 楽天={s.get('name_rakuten', 0)} not_found={s['jancode_not_found']} "
-            f"error={s['jancode_error']} · メーカー NST={s['maker_nst']} "
-            f"jancode={s['maker_jancode']} 手入力={s.get('maker_manual', 0)} 空={s['maker_none']} · アイテム名切詰め={s['name_cut']} 手入力={s['name_manual']} · "
-            f"HS ok={s['hs_ok']} 判定不可={s['hs_ng']} AI一致={s.get('ai_agree', '-')} "
-            f"AI採用={s.get('ai_changed', '-')} AI失敗={s.get('ai_error', '-')} · 重量 取得={s['weight_hit']} "
-            f"なし={s['weight_miss']} 失敗={s['weight_error']} 調べず={s['weight_skipped']}"
-            + (" · 画像 " + " ".join(f"{k}={v}" for k, v in s["images"].items()) if s.get("images") else ""))
+            t("jancode ok={jancode_ok} 楽天={name_rakuten} not_found={jancode_not_found} error={jancode_error} · "
+              "メーカー NST={maker_nst} jancode={maker_jancode} 手入力={maker_manual} 空={maker_none} · "
+              "アイテム名切詰め={name_cut} 手入力={name_manual} · HS ok={hs_ok} 判定不可={hs_ng} AI一致={ai_agree} "
+              "AI採用={ai_changed} AI失敗={ai_error} · 重量 取得={weight_hit} なし={weight_miss} 失敗={weight_error} "
+              "調べず={weight_skipped}").format(**{"name_rakuten": 0, "maker_manual": 0, "ai_agree": "-",
+                                                 "ai_changed": "-", "ai_error": "-", **s})
+            + (" · " + t("画像") + " " + " ".join(f"{t(k)}={v}" for k, v in s["images"].items())
+               if s.get("images") else ""))
     for n in res["notes"]:
-        st.warning(n)
+        st.warning(n)   # notes は生成時に t() 済み
     ex = res["extra"]
     only_nst = [k for k, v in ex.items() if v.get("nst_exists")]
     only_bm = [k for k, v in ex.items() if v.get("bm_sku_id") and not v.get("nst_exists")]
     if res.get("skipped_both") or only_nst or only_bm:
-        st.info(t(f"登録済みの扱い（同じ型番 / JAN）: NST・斑马とも済 → スキップ {res.get('skipped_both', 0)} 件 / "
-                  f"NST だけ済 → 斑马にだけ登録 {len(only_nst)} 件 / 斑马だけ済 → NST CSV にだけ出す {len(only_bm)} 件"
-                  "（斑马 SKUID は既存のものを入れる）"))
+        st.info(t("登録済みの扱い（同じ型番 / JAN）: NST・斑马とも済 → スキップ {both} 件 / "
+                  "NST だけ済 → 斑马にだけ登録 {nst} 件 / 斑马だけ済 → NST CSV にだけ出す {bm} 件"
+                  "（斑马 SKUID は既存のものを入れる）").format(both=res.get("skipped_both", 0), nst=len(only_nst),
+                                                          bm=len(only_bm)))
     if res["issues"]:
         n_err = sum(i.level == "error" for i in res["issues"])
         if n_err:
-            st.error(t(f"❌ error {n_err} 件の行は出力しません（下の「処理時の問題」を開いて確認）"))
-        with st.expander(t(f"⚠️ 処理時の問題 {len(res['issues'])} 件（error {n_err} 件の行は出力しません）"),
+            st.error(t("❌ error {n} 件の行は出力しません（下の「処理時の問題」を開いて確認）").format(n=n_err))
+        with st.expander(t("⚠️ 処理時の問題 {n} 件（error {n_err} 件の行は出力しません）").format(
+                n=len(res["issues"]), n_err=n_err),
                          expanded=False):
             _issue_table(res["issues"], "page15_flt_process")
     if not res["nst"]:
@@ -349,31 +366,32 @@ def _render_result(res: dict) -> None:
 
     st.subheader(t("📋 確認・修正（🤖 = 自動で埋めた値。白い列だけ直せます）"))
     df = pd.DataFrame(REG.to_frame(res["nst"], res["extra"]))
-    auto_label = {"アイテム名": "アイテム名 🤖", "メーカー名": "メーカー名 🤖",
-                  "通関英文名": "通関英文名 🤖", "HS": "HS 🤖"}
-    col_config = {c: st.column_config.TextColumn(lbl) for c, lbl in auto_label.items()}
+    # 列名は NST の原文のまま（編集結果を列名で読み戻す）。表示名だけ t()（label）
+    col_config = {c: st.column_config.TextColumn(t(c) + " 🤖") for c in ("メーカー名", "HS")}
     col_config["通関英文名"] = st.column_config.TextColumn(
-        "通関英文名 🤖", max_chars=hs_classify.MAX_NAME_EN, help=t("斑马 英文名称（最大 76 字）"))
+        t("通関英文名") + " 🤖", max_chars=hs_classify.MAX_NAME_EN, help=t("斑马 英文名称（最大 76 字）"))
     col_config["アイテム名"] = st.column_config.TextColumn(
-        "アイテム名 🤖", max_chars=REG.NAME_MAX, help=t("NST アイテム名 = 斑马 中文名称（最大 60 字）"))
-    col_config[REG.COL_URL] = st.column_config.LinkColumn(REG.COL_URL)
+        t("アイテム名") + " 🤖", max_chars=REG.NAME_MAX, help=t("NST アイテム名 = 斑马 中文名称（最大 60 字）"))
+    col_config[REG.COL_URL] = st.column_config.LinkColumn(t(REG.COL_URL))
     col_config["画像URL"] = st.column_config.TextColumn(
-        "画像URL 🤖", help=t("斑马の商品画像（https）。jancode → 画像検索 → 待上图 の順で自動。差し替えるなら https の URL を貼る"))
+        t("画像URL") + " 🤖", help=t("斑马の商品画像（https）。jancode → 画像検索 → 待上图 の順で自動。差し替えるなら https の URL を貼る"))
     for col in FORM.COL_CARTON_DIMS:
-        col_config[col] = st.column_config.TextColumn(col, help=t("整箱の実測値。空なら NST 取込用に 1 を入れます（仮値・非実測）"))
+        col_config[col] = st.column_config.TextColumn(t(col), help=t("整箱の実測値。空なら NST 取込用に 1 を入れます（仮値・非実測）"))
     for col, values in FORM.FIELD_CHOICES.items():
         if col in df.columns:
-            col_config[col] = st.column_config.SelectboxColumn(col, options=["", *values])
+            col_config[col] = st.column_config.SelectboxColumn(t(col), options=["", *values])
     choices = res.get("choices")
     if choices:
         for col, values in (("大分類", choices.large),
                             ("中分類", tuple(dict.fromkeys(m for ms in choices.middle_by_large.values() for m in ms))),
                             ("仕入先1：仕入先", choices.suppliers), ("商品担当者", choices.owners)):
-            col_config[col] = st.column_config.SelectboxColumn(col, options=["", *values])
-    edited = st.data_editor(
+            col_config[col] = st.column_config.SelectboxColumn(t(col), options=["", *values])
+    for col in df.columns:
+        col_config.setdefault(col, st.column_config.Column(t(col)))
+    edited = lang_stable_editor(   # 表頭・🤖 列が言語で変わっても編集を保つ
         df, use_container_width=True, hide_index=True, num_rows="fixed",
         disabled=[c for c in df.columns if c not in REG.EDITABLE],
-        column_config=col_config, key="page15_editor")
+        column_config=col_config, key="page15_editor", reset=tuple(df["型番"]))
 
     st.info(t("ブランド・メーカーは不明なら空欄。包装 3 辺の不足分は 1 cm の既定仮値（非実測）です。パッケージ重量(g) がネットで見つからない品は手入力必須（不明なら 1 も可）。取得・手入力済みの値は保持します。"
               "画像の出典が「待上图」の品は、斑马に待上图の画像で登録されます。"))
@@ -385,22 +403,23 @@ def _render_result(res: dict) -> None:
     if current_issues:
         n_cur_err = sum(i.level == "error" for i in current_issues)
         if n_cur_err:
-            st.error(t(f"❌ error {n_cur_err} 件があり、このままでは生成できません（下を開いて確認）"))
-        with st.expander(t(f"✍️ 全商品の必須・条件項目チェック（{len(current_issues)} 件・error {n_cur_err} 件）"),
+            st.error(t("❌ error {n} 件があり、このままでは生成できません（下を開いて確認）").format(n=n_cur_err))
+        with st.expander(t("✍️ 全商品の必須・条件項目チェック（{n} 件・error {n_err} 件）").format(
+                n=len(current_issues), n_err=n_cur_err),
                          expanded=False):
             st.warning(t("要確認項目があります。空のカートン 3 辺・入数は 1 の仮値で出します。分類・税率は適用と値を確認してください。未解決のまま生成したファイルは確認用です。"))
             _issue_table(current_issues, "page15_flt_check")
     else:
         st.success(t("NST テンプレ項目チェックで未入力・要確認項目はありません"))
     with st.expander(t("📑 原本の全 71 項目・入力条件")):
-        st.dataframe(pd.DataFrame(REG.nst_field_rules()), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(REG.nst_field_rules()).rename(columns=t), use_container_width=True, hide_index=True)
     if any(not str(r.get(JAN_COL_NAME) or "").strip() for r in records):
         st.subheader(t("✍️ JAN なし商品の待手入力"))
         needs = REG.manual_input_needs(records)
         if needs:
             st.info(t("不足している欄だけを表示しています。確認済みの値を手入力してください。"
                       "ブランド・メーカーは不明なら空欄のまま。包装 3 辺の空欄は 1 cm の仮値で出力します（非実測）。パッケージ重量(g) は手入力必須（不明なら 1 も可）。入力後、この一覧は更新されます。"))
-            st.dataframe(pd.DataFrame(needs), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(needs).rename(columns=t), use_container_width=True, hide_index=True)
         else:
             st.success(t("JAN なし商品の待手入力項目はありません（入力済みの内容は確認してください）"))
 
@@ -418,19 +437,21 @@ def _render_result(res: dict) -> None:
     csv_bytes = st.session_state.get("page15_csv_bytes")
     if st.session_state.get("page15_csv_src") and not csv_bytes and st.session_state.get("page15_csv_n") == 0:
         st.info(t("NST CSV に出す品はありません（すべて NST に登録済み）"))
-    if csv_bytes and st.session_state.get("page15_csv_src") != _content_hash(edited.to_dict("records")):
+    if csv_bytes and st.session_state.get("page15_csv_src") != _table_hash(edited):
         # 画面は編集後の値なのに CSV は編集前 → 気づけないので伏せる（セット品タブと同じ対策）
         st.warning(t("⚠️ 表を編集しました。もう一度「📦 生成」を押してください（前回の CSV は隠しています）"))
         csv_bytes = None
     if csv_bytes:
         if st.session_state.get("page15_pending_n"):
-            st.warning(t(f"⚠️ {st.session_state['page15_pending_n']} 件に登録前の要確認項目があります。上の「全商品の必須・条件項目チェック」を確認してください。"))
+            st.warning(t("⚠️ {n} 件に登録前の要確認項目があります。上の「全商品の必須・条件項目チェック」を確認してください。")
+                       .format(n=st.session_state["page15_pending_n"]))
         n = st.session_state.get("page15_csv_n", 0)
         if st.session_state.get("page15_skuid_blank"):
-            st.error(t(f"❌ SKUID（斑马）が空の品 {st.session_state['page15_skuid_blank']} 件。斑马に登録できていないため在庫同期されません。"
-                       "原因を直して「📦 生成」を押し直してください（登録済みの品は SKUID だけ取り直します）"))
+            st.error(t("❌ SKUID（斑马）が空の品 {n} 件。斑马に登録できていないため在庫同期されません。"
+                       "原因を直して「📦 生成」を押し直してください（登録済みの品は SKUID だけ取り直します）")
+                     .format(n=st.session_state["page15_skuid_blank"]))
         st.download_button(
-            t(f"⬇️ NST CSV をダウンロード（{n} 件）"), data=csv_bytes,
+            t("⬇️ NST CSV をダウンロード（{n} 件）").format(n=n), data=csv_bytes,
             file_name=st.session_state.get("page15_csv_name") or TPL.dated_filename(),
             mime="text/csv", type="primary", key="page15_csv_dl")
         level, msg = st.session_state.get("page15_log_msg") or ("ok", "")
@@ -443,12 +464,12 @@ def _render_result(res: dict) -> None:
         else:
             rows = bm["rows"]
             cnt = {k: sum(r["status"] == k for _, r in rows) for k in ("ok", "partial", "skipped", "fail")}
-            msg = (f"ok={cnt['ok']} 要確認={cnt['partial']} 既存のため未登録={cnt['skipped']} 失敗={cnt['fail']}"
-                   f"（計 {len(rows)} 件）")
+            msg = t("ok={ok} 要確認={partial} 既存のため未登録={skipped} 失敗={fail}（計 {n} 件）").format(
+                **cnt, n=len(rows))
             (st.error if cnt["fail"] else st.warning if cnt["partial"] or cnt["skipped"] else st.success)(msg)
             if not bm.get("logged"):
                 st.warning(t("台帳に記録できなかったため、斑马の登録結果は台帳に残っていません（下の表を保存してください）"))
-            st.dataframe(pd.DataFrame([{"型番": c, t("結果"): r["status"], "SKUID": r.get("sku_id", ""),
+            st.dataframe(pd.DataFrame([{t("型番"): c, t("結果"): r["status"], "SKUID": r.get("sku_id", ""),
                                         "SPUID": r.get("spu_id", ""), t("内容"): r.get("message", "")}
                                        for c, r in rows]), use_container_width=True, hide_index=True)
             if cnt["fail"]:
@@ -458,11 +479,11 @@ def _render_result(res: dict) -> None:
             nst_only = [(c, r.get("sku_id", "")) for c, r in rows
                         if res["extra"].get(c, {}).get("nst_exists") and r.get("sku_id")]
             if nst_only:
-                st.warning(t(f"⚠️ NST 登録済みの {len(nst_only)} 件は斑马 SKUID が NST に入っていません。"
-                             "下の SKUID 更新 CSV を NST に取り込んでください（在庫同期用）"))
-                st.dataframe(pd.DataFrame(nst_only, columns=["型番", "斑马 SKUID"]),
+                st.warning(t("⚠️ NST 登録済みの {n} 件は斑马 SKUID が NST に入っていません。"
+                             "下の SKUID 更新 CSV を NST に取り込んでください（在庫同期用）").format(n=len(nst_only)))
+                st.dataframe(pd.DataFrame(nst_only, columns=[t("型番"), t("斑马 SKUID")]),
                              use_container_width=True, hide_index=True)
-                st.download_button(t(f"⬇️ NST SKUID 更新 CSV（{len(nst_only)} 件）"), data=SF.update_csv(nst_only),
+                st.download_button(t("⬇️ NST SKUID 更新 CSV（{n} 件）").format(n=len(nst_only)), data=SF.update_csv(nst_only),
                                    file_name=TPL.dated_filename(registrant="SKUID更新"), mime="text/csv",
                                    key="page15_skuid_update_dl")
 
@@ -490,10 +511,10 @@ def _render_item_tab() -> None:
         choices = _cached_choices()
         template = _cached_template()
     except Exception as e:  # noqa: BLE001
-        st.error(t(f"❌ 選択肢（仕入先・分類）の読込に失敗: {type(e).__name__}: {e}"))
+        st.error(t("❌ 選択肢（仕入先・分類）の読込に失敗: {err}").format(err=f"{type(e).__name__}: {e}"))
         return
-    for w in choices.warnings:
-        st.warning(w)
+    for w in choices.warnings:   # load_choices はキャッシュ → 表示時に訳す
+        st.warning(t(w))
     st.download_button(t("📥 テンプレートをダウンロード"), data=template,
                        file_name=FORM.template_filename(), mime=_XLSX_MIME,
                        key="page15_tpl_dl")
@@ -524,7 +545,7 @@ def _render_item_tab() -> None:
         try:
             res = _process(data, choices, want_weight)
         except Exception as e:  # noqa: BLE001 — 壊れた xlsx・PG 接続失敗でも他タブを描画する
-            st.error(t(f"❌ 処理に失敗: {type(e).__name__}: {e}"))
+            st.error(t("❌ 処理に失敗: {err}").format(err=f"{type(e).__name__}: {e}"))
             return
         res["key"] = (h, want_weight)
         st.session_state["page15_result"] = res
@@ -554,11 +575,11 @@ def _parse_bundle_lines(raw: str) -> tuple[list[dict], list[str]]:
             continue
         m = _BUNDLE_LINE_RE.match(line)
         if not m:
-            errors.append(f"第 {i} 行格式错误：「{line}」(期望 JAN_数量)")
+            errors.append(t("第 {i} 行格式错误：「{line}」(期望 JAN_数量)").format(i=i, line=line))
             continue
         jan, qty = m.group(1), int(m.group(2))
         if qty < 1:
-            errors.append(f"第 {i} 行数量必须 ≥1：「{line}」")
+            errors.append(t("第 {i} 行数量必须 ≥1：「{line}」").format(i=i, line=line))
             continue
         items.append({"line": i, "jan": jan, "qty": qty, "bundle_sku": f"{jan}_{qty}"})
     return items, errors
@@ -650,7 +671,7 @@ with tab_bundle:
         items, parse_errors, pg_map = [], [], {}
 
     if parse_errors:
-        with st.expander(t(f"⚠️ 解析错误 {len(parse_errors)} 条（这些行不进 CSV）"),
+        with st.expander(t("⚠️ 解析错误 {n} 条（这些行不进 CSV）").format(n=len(parse_errors)),
                           expanded=True):
             for e in parse_errors:
                 st.text(f"• {e}")
@@ -665,7 +686,7 @@ with tab_bundle:
                 "bundle_sku": it["bundle_sku"],
                 "Internal ID": pg.get("internal_id") or "",
                 "日文品名": pg.get("display_name") or "",
-                "状态": "✅ 命中" if pg.get("internal_id") else "❌ PG 未命中",
+                "状态": t("✅ 命中") if pg.get("internal_id") else t("❌ PG 未命中"),
             })
         df_bundle = pd.DataFrame(rows)
 
@@ -679,7 +700,7 @@ with tab_bundle:
         c4.metric(t("子记录行数"), int(df_bundle["数量"].sum()))
 
         st.subheader(t("📋 セット品预览（命中行才进 CSV）"))
-        st.dataframe(df_bundle, use_container_width=True, height=300)
+        st.dataframe(df_bundle.rename(columns=t), use_container_width=True, height=300)
 
         st.divider()
         st.subheader(t("📦 生成 NST 父/子 CSV"))
@@ -726,13 +747,13 @@ with tab_bundle:
         if zip_bytes:
             n_parent, n_child = st.session_state.get("page15_bundle_zip_n", (0, 0))
             st.download_button(
-                t(f"⬇️ 下载 ZIP（父 {n_parent} 行 + 子 {n_child} 行）"),
+                t("⬇️ 下载 ZIP（父 {p} 行 + 子 {c} 行）").format(p=n_parent, c=n_child),
                 data=zip_bytes,
                 file_name=f"セット品登録_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                 mime="application/zip",
                 type="primary",
             )
-            st.success(t(f"✅ 已生成 · 解压含 2 份 CSV，直传 NetSuite"))
+            st.success(t("✅ 已生成 · 解压含 2 份 CSV，直传 NetSuite"))
 
 
 # ───────────────────────── tab 📜 旧 HTML 版 ─────────────────────────
@@ -748,4 +769,4 @@ with tab_legacy:
     if html_path.exists():
         components.html(html_path.read_text(encoding="utf-8"), height=1500, scrolling=True)
     else:
-        st.error(t(f"❌ 找不到 HTML 文件：{html_path}"))
+        st.error(t("❌ 找不到 HTML 文件：{path}").format(path=html_path))

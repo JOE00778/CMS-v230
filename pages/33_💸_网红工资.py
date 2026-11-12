@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from shared.editor_state import lang_stable_editor
 from shared.i18n import lang_selector, t
 from shared import influencer_wage as iw
 
@@ -62,29 +63,33 @@ def _save_roster(roster: list[dict]) -> None:
 
 roster = _load_roster()
 
-_K_NAME, _K_WAGE = t("名前"), t("時給($/h)")
-_K_PAYEE, _K_KW = t("振込先"), t("匹配关键词(逗号分隔)")
 with st.expander(t("👥 网红名册（人 / 时薪 / 收款人 / 匹配关键词）· 可编辑后保存"), expanded=False):
     st.caption(t("匹配关键词：不区分大小写、按直播名称部分匹配（如 Bella 用 bella,bell,bel）。改完点保存。"))
+    # 列名は固定キー（data_editor は編集を列名で持つ）· 表示名だけ column_config で言語追従
     _redf = pd.DataFrame([{
-        _K_NAME: r.get("name", ""), _K_WAGE: float(r.get("wage", 0) or 0),
-        _K_PAYEE: r.get("payee", ""), _K_KW: ",".join(r.get("keywords", [])),
-    } for r in roster])
-    _edited = st.data_editor(_redf, num_rows="dynamic", use_container_width=True,
-                             key="roster_editor")
+        "name": r.get("name", ""), "wage": float(r.get("wage", 0) or 0),
+        "payee": r.get("payee", ""), "kw": ",".join(r.get("keywords", [])),
+    } for r in roster], columns=["name", "wage", "payee", "kw"])
+    _edited = lang_stable_editor(_redf, num_rows="dynamic", use_container_width=True,
+                                 key="roster_editor", column_config={
+                                     "name": st.column_config.TextColumn(t("名前")),
+                                     "wage": st.column_config.NumberColumn(t("時給($/h)")),
+                                     "payee": st.column_config.TextColumn(t("振込先")),
+                                     "kw": st.column_config.TextColumn(t("匹配关键词(逗号分隔)")),
+                                 })
     if st.button(t("💾 保存名册"), key="save_roster"):
         _new = []
         for _, _row in _edited.iterrows():
-            _nm = str(_row[_K_NAME]).strip()
+            _nm = str(_row["name"]).strip()
             if not _nm or _nm == "nan":
                 continue
-            _kws = [k.strip().lower() for k in str(_row[_K_KW]).split(",") if k.strip()]
+            _kws = [k.strip().lower() for k in str(_row["kw"]).split(",") if k.strip()]
             try:
-                _wg = float(_row[_K_WAGE])
+                _wg = float(_row["wage"])
             except (ValueError, TypeError):
                 _wg = 0.0
             _new.append({"name": _nm, "wage": _wg,
-                         "payee": str(_row[_K_PAYEE]).strip(), "keywords": _kws})
+                         "payee": str(_row["payee"]).strip(), "keywords": _kws})
         if _new:
             _save_roster(_new)
             roster = _new
@@ -179,7 +184,6 @@ raw["_sales"] = raw["销售金额(已确认订单)"].map(iw.parse_peso)
 # ============================================================
 # 未匹配 → 下拉手动指派（失败要显式）
 # ============================================================
-_SKIP = t("（跳过·不计入）")
 _unmatched = sorted(raw.loc[raw["_who"].isna(), "直播名称"].astype(str).unique().tolist())
 _assign: dict[str, str] = {}
 if _unmatched:
@@ -189,10 +193,12 @@ if _unmatched:
                              "销售金额(已确认订单)"] if c in raw.columns]
     for _i, _nm in enumerate(_unmatched):
         _sub = raw[raw["直播名称"].astype(str) == _nm]
-        st.markdown(f"**{_nm}**　({len(_sub)} 场)")
-        st.dataframe(_sub[_det_cols], hide_index=True, use_container_width=True)
-        _sel = st.selectbox(t("↑ 指派给"), [_SKIP] + _names, key=f"assign_{_i}")
-        if _sel != _SKIP:
+        st.markdown(f"**{_nm}**　" + t("({n} 场)").format(n=len(_sub)))
+        st.dataframe(_sub[_det_cols].rename(columns=t), hide_index=True, use_container_width=True)
+        # 選択肢の値は名前のまま（""=跳过）· 表示だけ言語追従
+        _sel = st.selectbox(t("↑ 指派给"), [""] + _names, key=f"assign_{_i}",
+                            format_func=lambda x: x or t("（跳过·不计入）"))
+        if _sel:
             _assign[_nm] = _sel
     if _assign:
         raw["_who"] = [
@@ -272,7 +278,7 @@ html_table(_disp)
 st.markdown("##### " + t("🧾 各人明细"))
 for _, _r in _rdf.iterrows():
     with st.expander(f"💸 {_r['who']} — ¥{_r['total_fee_jpy']:,.0f}（{_r['payee']}）"):
-        st.markdown(
+        _detail = (  # 日本語固定（コピー転送用 · Boss 2026-07-07）→ UI 言語では切り替えない
             f"- 総ライブ時間: **{_r['hours']:.2f} h** × 時給 ${_wage_map.get(_r['who'], 0):g}/h "
             f"→ 給与: **${_r['salary_usd']:,.0f}**\n"
             f"- 確定売上: **₱{_r['sales']:,.0f}** → 段階インセンティブ: "
@@ -284,3 +290,4 @@ for _, _r in _rdf.iterrows():
             f"- 配信回数: {int(_r['sessions'])} 回 ・ 1回あたり売上: "
             f"₱{(_r['sales'] / _r['sessions'] if _r['sessions'] else 0):,.0f}"
         )
+        st.markdown(_detail)

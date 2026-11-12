@@ -1,5 +1,14 @@
 from shared import item_register as R
 from tests.test_item_register import _enrich, _row
+import pytest
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """メッセージは日文原文で検査する（中文モードの訳は shared/i18n.py の TRANSLATIONS_ZH。t() は既定 zh なので ja に固定）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
 
 
 def test_missing_defaults_preserve_known_values_and_optional_maker():
@@ -47,3 +56,27 @@ def test_user_supplied_one_is_not_a_placeholder():
 def test_no_jan_checklist_does_not_require_optional_or_default_fields():
     needs = R.manual_input_needs([{'型番': 'SKU', 'アイテム名': '盆栽'}])
     assert needs[0]['待手入力'] == 'HS / 通関英文名'
+
+
+def test_auto_and_weight_note_rendered_in_display_language():
+    """🤖 自動入力の重量条目・重量・寸法の取得メモは extra に原文で持ち、to_frame（描画）時の言語で出す。"""
+    import re
+    from shared.jan_web import WeightHit
+    hit = WeightHit("4901234567894", 120.0, 10.0, 5.0, None, "netde", "https://x",
+                    "卸の単品出荷単位（本体・ケース・内容量は不採用）")
+    extras = {}
+    for lang in ("zh", "ja"):                                    # enrich 時の言語
+        with mock.patch("shared.i18n.get_lang", return_value=lang):
+            nst, extra, _, _ = _enrich([_row("4901234567894")], want_weight=True, fw=lambda jan, **k: hit)
+        extras[lang] = extra
+        rec = R.to_frame(nst, extra)[0]                          # 描画は ja（autouse）
+        assert rec[R.COL_AUTO] == ("アイテム名(jancode) · メーカー名(nst-prefix) · "
+                                   "パッケージ高さ(cm)/パッケージ幅(cm)(netde) · 包装の既定仮値（非実測）")
+        assert rec[R.COL_WEIGHT_NOTE] == ("卸の単品出荷単位（本体・ケース・内容量は不採用） · "
+                                          "パッケージ奥行(cm) = 1 cm（既定の仮値・非実測）")
+        with mock.patch("shared.i18n.get_lang", return_value="zh"):
+            rec = R.to_frame(nst, extra)[0]
+        assert not re.search(r"[ぁ-ゖァ-ヺ]", rec[R.COL_AUTO] + rec[R.COL_WEIGHT_NOTE]), rec
+    k = "4901234567894"
+    assert extras["zh"][k]["auto"] == extras["ja"][k]["auto"]
+    assert extras["zh"][k]["weight_note"] == extras["ja"][k]["weight_note"]

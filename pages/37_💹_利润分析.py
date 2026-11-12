@@ -170,12 +170,12 @@ cdf, cerr = _cq(
     (str(ym),),
 )
 if cerr:
-    _fee_note = _dl("⚠️ coupang.settlement 未接続（支付手续费按空计）: ",
+    _fee_note = _dl("⚠️ coupang.settlement 未连接（支付手续费按空计）: ",
                     "⚠️ coupang.settlement 未接続（決済手数料は空欄扱い）: ") + cerr
 elif cdf is None or cdf.empty:
     _fee_note = _dl(
         f"ℹ️ {ym} 的 Coupang 结算单尚未生成（认知月结束后出单）· 支付手续费暂无",
-        f"ℹ️ {ym} の Coupang 結算単は未生成（認識月終了後に出単）· 決済手数料は未計上")
+        f"ℹ️ {ym} の Coupang 精算書は未生成（認識月の終了後に発行）· 決済手数料は未計上")
 else:
     for _c in _DED_COLS:
         cdf[_c] = pd.to_numeric(cdf[_c], errors="coerce").fillna(0.0)
@@ -185,7 +185,7 @@ else:
     fee[MARKET_KOREA] = _rhu(_krw_sum * _rate)
     _fee_note = _dl(
         f"支付手续费 = Coupang 结算单扣减合计 ₩{_krw_sum:,.0f} × {_rate:g}（{ym} 三金汇率换算 JPY）",
-        f"決済手数料 = Coupang 結算控除合計 ₩{_krw_sum:,.0f} × {_rate:g}（{ym} 三金レートで円換算）")
+        f"決済手数料 = Coupang 精算控除合計 ₩{_krw_sum:,.0f} × {_rate:g}（{ym} 三金レートで円換算）")
 
 # ============================================================
 # 固定費（Boss 手入力 · 月別 単一金額 · finance.fixed_cost · 全社口径 → 合計のみ計上）
@@ -336,7 +336,7 @@ def _pnl_rows(mkts: list, total_label: str | None):
     ]
     cols = [_item_lbl]
     for m in mkts:
-        cols += [m, _pct_lbl]
+        cols += [t(m), _pct_lbl]
     if total_label is not None:
         cols += [total_label, _pct_lbl]
     return rows, cols, s_net, s_rev
@@ -411,7 +411,7 @@ with tab_all:
 # ============================================================
 with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
     if _fx_err:
-        st.warning(_dl("finance.fixed_cost 初始化失败（PG 未接続？）: ",
+        st.warning(_dl("finance.fixed_cost 初始化失败（PG 未连接？）: ",
                        "finance.fixed_cost 初期化失敗（PG 未接続？）: ") + _fx_err)
     else:
         st.caption(_dl(
@@ -421,23 +421,23 @@ with st.expander(_dl("✏️ 固定费用输入", "✏️ 固定費入力")):
             "市場別人数も同時保存 · 月単位で保存（対象月ごとに独立）"))
         _fc1, _fc2 = st.columns(2)
         _amt = _fc1.number_input(
-            _dl("固定费用（円）", "固定費（円）"), min_value=0.0,
+            _dl("固定费用（日元）", "固定費（円）"), min_value=0.0,
             value=(fx_total or 0.0), step=10000.0, format="%.0f",
             key=f"fx_amt_{ym}")
         _lg = _fc2.number_input(
-            _dl("物流费（円）", "物流費（円）"), min_value=0.0,
+            _dl("物流费（日元）", "物流費（円）"), min_value=0.0,
             value=(lg_total or 0.0), step=10000.0, format="%.0f",
             key=f"fx_lg_{ym}")
         # 人数は未保存月＝直近保存月を自動沿用（Boss 2026-07-14: 毎月入力不要）
         if _hc_src_ym and _hc_src_ym != str(ym):
             st.caption(_dl(
                 f"人数沿用最近记录月 {_hc_src_ym} · 有变动改完点保存即写入 {ym}",
-                f"人数は直近記録月 {_hc_src_ym} を沿用 · 変更があれば保存で {ym} に書込"))
+                f"人数は直近記録月 {_hc_src_ym} の値を引き継ぎ · 変更があれば保存で {ym} に書き込み"))
         _hcols = st.columns(len(ALL_MARKETS))
         _hc_in: dict[str, float] = {}
         for _hcol, _m in zip(_hcols, ALL_MARKETS):
             _hc_in[_m] = _hcol.number_input(
-                f"{_m} " + _dl("人数", "人数"), min_value=0.0,
+                t(_m) + " " + _dl("人数", "人数"), min_value=0.0,
                 value=_hc.get(_m, 0.0), step=0.5, format="%.1f",
                 key=f"fx_hc_{_m}_{ym}")
         if st.button(_dl("💾 保存", "💾 保存"), key=f"fx_save_{ym}"):

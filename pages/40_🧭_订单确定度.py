@@ -148,6 +148,25 @@ def _pct(v) -> str:
     return f"{v:.1f}%"
 
 
+_RAW_COLS = {  # 明細 st.dataframe の列名（表示だけ・CSV は DB 列名のまま）
+    "ym": _u("月", "月"), "ship_date": _u("发货日", "出荷日"), "platform": _u("平台", "プラットフォーム"),
+    "shop": _u("店铺", "店舗"), "order_no": _u("订单号", "注文番号"),
+    "nst_amount_jpy": _u("NST 金额(¥)", "NST 金額(¥)"), "order_status": _u("订单状态", "注文状態"),
+    "logistics_status": _u("物流状态", "配送状態"), "is_paid_out": _u("已入金", "入金済"),
+    "refund_status": _u("退款状态", "返金状態"), "credit_memos": _u("赤伝", "赤伝"),
+    "open_reasons": _u("未关闭的条件", "開いている条件"),
+}
+
+
+def _reasons(s):
+    """open_reasons（ビューの日本語コードを ' + ' 連結）→ 表示言語。"""
+    return " + ".join(t(x) for x in s.split(" + ")) if isinstance(s, str) else s
+
+
+def _raw(df: pd.DataFrame) -> pd.DataFrame:
+    return df.assign(open_reasons=df["open_reasons"].map(_reasons)).rename(columns=_RAW_COLS)
+
+
 def _dl(df: pd.DataFrame, name: str, key: str) -> None:
     st.download_button(_u("⬇ 下载 CSV", "⬇ CSV ダウンロード"),
                        df.to_csv(index=False).encode("utf-8-sig"),
@@ -171,7 +190,7 @@ _ACTIONS = [
     ("未入金", _u("运营", "運用"),
      _u("查平台后台这笔钱到底来没来", "プラットフォーム後台で入金の有無を確認する"),
      _u("过了正常拨款周期还没入金 → 可能漏拨或有争议",
-        "通常の入金サイクルを過ぎている → 未拨款 or 係争の可能性")),
+        "通常の入金サイクルを過ぎている → 入金漏れ or 係争の可能性")),
     ("賠償請求中", _u("运营", "運用"),
      _u("提交/跟进平台赔偿申请", "賠償申請を出す / 進捗を追う"),
      _u("丢件・破损等可向平台索赔，逾期不申请就拿不回来",
@@ -297,10 +316,10 @@ with tab0:
                 # 判断に要る列だけ。実収の有無と物流ステータスで「金が来ないのか
                 # 伝票が無いだけなのか」が分かる
                 st.dataframe(
-                    _sub[["ym", "ship_date", "shop", "order_no", "nst_amount_jpy",
-                          "order_status", "logistics_status", "is_paid_out",
-                          "refund_status", "credit_memos", "open_reasons"]]
-                    .sort_values("nst_amount_jpy", ascending=False),
+                    _raw(_sub[["ym", "ship_date", "shop", "order_no", "nst_amount_jpy",
+                               "order_status", "logistics_status", "is_paid_out",
+                               "refund_status", "credit_memos", "open_reasons"]]
+                         .sort_values("nst_amount_jpy", ascending=False)),
                     use_container_width=True, height=300)
                 _dl(_sub, f"todo_{_reason}.csv", f"dl_todo_{_reason}")
 
@@ -343,7 +362,7 @@ with tab2:
         _r = _ex.groupby("r").agg(orders=("order_no", "size"),
                                   amt=("nst_amount_jpy", "sum")).sort_values("orders", ascending=False)
         html_table(pd.DataFrame([{
-            _u("条件", "条件"): k,
+            _u("条件", "条件"): t(k),
             _u("订单", "注文"): f"{int(v['orders']):,}",
             _u("金额", "金額"): _yen(v["amt"]),
         } for k, v in _r.iterrows()]))
@@ -358,7 +377,7 @@ with tab2:
             _d_cred = _d[_d["open_reasons"].str.contains("赤伝未起票", regex=False)]
             if not _d_cred.empty:
                 st.error(_u(
-                    f"🧾 **赤伝が {_LAG_OK_YM[0]} より前から未起票**: "
+                    f"🧾 **{_LAG_OK_YM[0]} 之前的单仍未起赤伝**: "
                     f"{len(_d_cred):,} 单 {_yen(_d_cred['nst_amount_jpy'].sum())} · "
                     "多为「已送达 + 买家部分退款、Shopee 侧已扣款」但 NST 没开冲销票 · "
                     "**这批不会自己消解，要财务起票**（滞后 1~2 月内的在 C 类，不用管）",
@@ -386,9 +405,9 @@ with tab2:
         _bk = st.multiselect(_u("分类筛选", "分類フィルタ"), ["A", "B", "C", "D"],
                              default=["D"], format_func=lambda k: _BK_LBL[k])
         _v = _OPEN[_OPEN["bucket"].isin(_bk)] if _bk else _OPEN
-        st.dataframe(_v[["ym", "ship_date", "platform", "shop", "order_no",
-                         "nst_amount_jpy", "open_reasons", "order_status",
-                         "logistics_status", "is_paid_out"]],
+        st.dataframe(_raw(_v[["ym", "ship_date", "platform", "shop", "order_no",
+                              "nst_amount_jpy", "open_reasons", "order_status",
+                              "logistics_status", "is_paid_out"]]),
                      use_container_width=True, height=380)
         _dl(_v, "open_orders.csv", "dl_open")
 
@@ -426,7 +445,9 @@ with tab3:
                 y=alt.Y("gm_pct:Q", title=_u("毛利率 %", "粗利率 %"),
                         scale=alt.Scale(zero=False)),
                 color=alt.Color("platform:N", title=_u("平台", "プラットフォーム")),
-                tooltip=["ym", "platform", alt.Tooltip("gm_pct:Q", format=".1f")],
+                tooltip=[alt.Tooltip("ym:N", title=_u("月", "月")),
+                         alt.Tooltip("platform:N", title=_u("平台", "プラットフォーム")),
+                         alt.Tooltip("gm_pct:Q", title=_u("毛利率 %", "粗利率 %"), format=".1f")],
             ).properties(height=280), use_container_width=True)
 
         st.subheader(_u("店铺别波动度（月次毛利率的变动系数 CV）",

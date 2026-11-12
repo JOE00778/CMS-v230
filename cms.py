@@ -64,16 +64,15 @@ now = datetime.now()
 month_label = f"{now.year}-{now.month:02d}"
 st.title(t("📊 仪表盘"))
 st.caption(
-    f"{t('最近更新')} {now.strftime('%Y-%m-%d %H:%M')} · "
-    f"{month_label} {t('月数据')} · "
-    f"build `{APP_VERSION}`"
+    t("最近更新") + f" {now.strftime('%Y-%m-%d %H:%M')} · {month_label} " + t("月数据")
+    + f" · build `{APP_VERSION}`"
 )
 
 # Supabase 连接状态（保留, 但折叠到一行 caption）
 if is_configured():
-    st.caption(f"🟢 {t('Supabase 已连接')}")
+    st.caption("🟢 " + t("Supabase 已连接"))
 else:
-    st.caption(f"🟡 {t('Supabase 未配置 —— 部分模块降级为本地数据')}")
+    st.caption("🟡 " + t("Supabase 未配置 —— 部分模块降级为本地数据"))
 
 
 # ============================================================
@@ -143,7 +142,7 @@ def _kpi_failed() -> bool:
 # 业务大盘 4 KPI
 # ============================================================
 # PPVI P1 · 去 emoji 装饰前缀（结构主义：颜色/装饰仅用于编码信息）
-st.markdown(f"##### {t('业务大盘')}")
+st.markdown("##### " + t("业务大盘"))
 
 # 1) 商品 SKU 数（nst.item_master_raw · 旧 item_v2 置換）
 sku_total = _safe_scalar(
@@ -282,7 +281,7 @@ with k4:
 # 风险预警 5 KPI
 # ============================================================
 # PPVI P1 · 去 emoji 装饰前缀
-st.markdown(f"##### {t('风险预警')}")
+st.markdown("##### " + t("风险预警"))
 
 # 当月 latest year_month 优先，找不到就用全部
 latest_ym_row = _safe_df(
@@ -318,12 +317,12 @@ hard_get_n = _safe_scalar(
 
 # PPVI P2 · 不对称分栏（断货风险作为主告警占 2 列，4 个次告警各 1 列）
 r1, r2, r3, r4, r5 = st.columns([2, 1, 1, 1, 1])
-# PPVI P1 · KPI 标签去 emoji（中文硬编码绕过 i18n.py 未提交改动）
-r1.metric("断货风险", int(risk_map.get("断货风险", 0)))
-r2.metric("正常", int(risk_map.get("正常", 0)))
-r3.metric("压库存", int(risk_map.get("压库存", 0)))
-r4.metric("数据不足", int(risk_map.get("数据不足", 0) + risk_map.get("无数据", 0)))
-r5.metric("入荷困難", int(hard_get_n))
+# PPVI P1 · KPI 标签去 emoji
+r1.metric(t("断货风险"), int(risk_map.get("断货风险", 0)))
+r2.metric(t("正常"), int(risk_map.get("正常", 0)))
+r3.metric(t("压库存"), int(risk_map.get("压库存", 0)))
+r4.metric(t("数据不足"), int(risk_map.get("数据不足", 0) + risk_map.get("无数据", 0)))
+r5.metric(t("入荷困難"), int(hard_get_n))
 
 st.divider()
 
@@ -334,10 +333,7 @@ st.divider()
 # ⚠️ 取得に失敗して 0 になっている場合、この案内は**誤り**（同期は関係ない）。
 #    失敗時に出すと「NST 同期を回せば直る」と誤解させるので出さない。
 if int(sku_total) == 0 and not _kpi_broken:
-    st.info(
-        f"📭 {t('商品主档暂无数据。请到')} **📥 数据获取** "
-        f"{t('执行 NST 商品主档同步（nst.item_master_raw）。')}"
-    )
+    st.info(t("📭 商品主档暂无数据。请到 **📥 数据获取** 执行 NST 商品主档同步（nst.item_master_raw）。"))
 
 # ============================================================
 # 2 列布局图表（mockup T7 视图 / T11 图表）
@@ -345,7 +341,7 @@ if int(sku_total) == 0 and not _kpi_broken:
 chart_l, chart_r = st.columns(2)
 
 with chart_l:
-    st.markdown(f"##### 📈 {t('月度销售趋势 (近 6 个月)')}")
+    st.markdown("##### 📈 " + t("月度销售趋势 (近 6 个月)"))
     trend_df = _safe_df(
         """
         SELECT year_month, COALESCE(SUM(revenue), 0) AS revenue
@@ -364,7 +360,7 @@ with chart_l:
         st.info(t("暂无销售数据"))
 
 with chart_r:
-    st.markdown(f"##### 🏪 {t('市场分布 (按店铺)')}")
+    st.markdown("##### 🏪 " + t("市场分布 (按店铺)"))
     # 店舗名は NetSuite 由来で末尾に空白が混じる（3 店）ので trim して集約する
     market_df = _safe_df(
         f"""
@@ -390,7 +386,7 @@ st.divider()
 # ============================================================
 # TOP 10 当月销售（nst.sales_monthly JOIN nst.item_master_raw 取 maker / rank）
 # ============================================================
-st.markdown(f"##### 🏆 {t('TOP 10 当月销售')}")
+st.markdown("##### 🏆 " + t("TOP 10 当月销售"))
 
 top10 = _safe_df(
     f"""
@@ -429,7 +425,7 @@ st.divider()
 # うち sales は既に存在せず他も更新が止まっており、実態と無関係な数字が出ていた。
 # 単一事実源である nst.* の行数に差し替え（2026-08-18）。
 # ============================================================
-with st.expander(f"📦 {t('底层数据量 (raw counts)')}"):
+with st.expander("📦 " + t("底层数据量 (raw counts)")):
     def _count(table: str) -> int:
         try:
             row = conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
@@ -449,7 +445,7 @@ with st.expander(f"📦 {t('底层数据量 (raw counts)')}"):
 # ============================================================
 # 模块导航（保留, 给新用户当索引）
 # ============================================================
-with st.expander(f"🗂️ {t('功能模块速查')}"):
+with st.expander("🗂️ " + t("功能模块速查")):
     modules = [
         ("🔍 商品情报检索", "Phase 1", "按多维度筛选 SKU，看完整商品信息"),
         ("💰 定義原価編集", "Phase 1", "NetSuite Standard Cost 统一编辑"),
@@ -498,7 +494,7 @@ with st.expander(t("💱 公司对日元固定汇率（仅 Shopee 财务模块�
 # ============================================================
 # 最近导入（保留, 折叠）
 # ============================================================
-with st.expander(f"📥 {t('最近数据导入')}"):
+with st.expander("📥 " + t("最近数据导入")):
     try:
         runs = conn.execute(
             """
@@ -517,4 +513,4 @@ with st.expander(f"📥 {t('最近数据导入')}"):
         else:
             st.info(t("还没有任何导入记录。请到「⚙️ 数据导入与设置」上传 CSV"))
     except Exception as e:
-        st.error(f"{t('读取导入记录失败')}: {e}")
+        st.error(t("读取导入记录失败") + f": {e}")

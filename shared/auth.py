@@ -25,6 +25,8 @@ import time
 
 import streamlit as st
 
+from shared.i18n import t
+
 # 每次重要修复 push 时 bump，Cloud 部署后一眼能看出是不是新版
 APP_VERSION = "2.7.0 · inventory-risk-i18n"
 
@@ -63,20 +65,20 @@ def _login_form() -> None:
         return
 
     st.markdown(_LOGIN_NARROW_CSS, unsafe_allow_html=True)  # 登录页收窄居中
-    st.title("🔒 一元管理系统V2.7")
+    st.title(t("🔒 一元管理系统V2.7"))
     st.caption(f"build {APP_VERSION}")
 
     with st.form("login", clear_on_submit=False):
-        p = st.text_input("密码", type="password", key="__login_pwd",
-                          placeholder="请输入访问密码")
-        if st.form_submit_button("登录", type="primary", use_container_width=True):
+        p = st.text_input(t("密码"), type="password", key="__login_pwd",
+                          placeholder=t("请输入访问密码"))
+        if st.form_submit_button(t("登录"), type="primary", use_container_width=True):
             if _check(p, admin_pwd) or _check(p, guest_pwd):
                 st.session_state["__auth_ok"] = True
                 st.session_state["__role"] = "admin"  # 统一 admin（CF Access 已过滤）
                 st.session_state.pop("__login_pwd", None)
                 st.rerun()
             else:
-                st.error("密码错误")
+                st.error(t("密码错误"))
 
     st.stop()
 
@@ -327,7 +329,7 @@ def _lark_login_gate(dev_mock: bool = False) -> None:
     # 「失败→自动跳→又失败」死循环），显示手动重试。
     code_failed = bool(st.query_params.get("code"))
     if code_failed:
-        st.error("飞书登录未成功（授权码可能已过期），请点下方手动重试。")
+        st.error(t("飞书登录未成功（授权码可能已过期），请点下方手动重试。"))
         try:
             st.query_params.clear()
         except Exception:
@@ -342,12 +344,10 @@ def _lark_login_gate(dev_mock: bool = False) -> None:
         from shared import lark_auth
         import streamlit.components.v1 as components
         login_url = lark_auth.build_login_url()
-        st.markdown(
-            '<div class="lark-card"><h1>🔒 CMS 登录</h1>'
-            '<p>正在跳转飞书登录…<br>没有自动跳转的话，点下方按钮。</p>'
-            f'<a class="lark-btn" href="{login_url}" target="_top">用飞书登录</a></div>',
-            unsafe_allow_html=True,
-        )
+        _card = ('<div class="lark-card"><h1>' + t("🔒 CMS 登录") + '</h1>'
+                 '<p>' + t("正在跳转飞书登录…<br>没有自动跳转的话，点下方按钮。") + '</p>'
+                 f'<a class="lark-btn" href="{login_url}" target="_top">' + t("用飞书登录") + '</a></div>')
+        st.markdown(_card, unsafe_allow_html=True)
         # Streamlit components iframe 的 sandbox 含 allow-top-navigation → 可跳顶层窗口
         components.html(
             f'<script>window.top.location.href = "{login_url}";</script>',
@@ -359,23 +359,21 @@ def _lark_login_gate(dev_mock: bool = False) -> None:
     if lark_on:
         from shared import lark_auth
         action = (f'<a class="lark-btn" href="{lark_auth.build_login_url()}" '
-                  f'target="_top">用飞书登录</a>')
+                  'target="_top">' + t("用飞书登录") + '</a>')
     else:
-        action = '<div class="lark-note">飞书未配置（开发模式）</div>'
-    st.markdown(
-        '<div class="lark-card"><h1>🔒 CMS 登录</h1>'
-        '<p>本系统通过<b>飞书账号</b>登录，仅授权成员可访问。</p>'
-        f'{action}</div>',
-        unsafe_allow_html=True,
-    )
+        action = '<div class="lark-note">' + t("飞书未配置（开发模式）") + '</div>'
+    _card = ('<div class="lark-card"><h1>' + t("🔒 CMS 登录") + '</h1>'
+             '<p>' + t("本系统通过<b>飞书账号</b>登录，仅授权成员可访问。") + '</p>'
+             f'{action}</div>')
+    st.markdown(_card, unsafe_allow_html=True)
 
     if dev_mock:
-        st.markdown('<div class="lark-dev-label">开发用：模拟登录（仅本地，生产关闭）</div>',
-                    unsafe_allow_html=True)
+        _dev = '<div class="lark-dev-label">' + t("开发用：模拟登录（仅本地，生产关闭）") + '</div>'
+        st.markdown(_dev, unsafe_allow_html=True)
         c1, c2 = st.columns(2)
-        if c1.button("以管理员进入", use_container_width=True):
+        if c1.button(t("以管理员进入"), use_container_width=True):
             _mock_login("admin")
-        if c2.button("以普通成员进入", use_container_width=True):
+        if c2.button(t("以普通成员进入"), use_container_width=True):
             _mock_login("guest")
     st.stop()
 

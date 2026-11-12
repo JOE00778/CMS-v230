@@ -21,6 +21,7 @@ import pandas as pd
 import streamlit as st
 
 from shared.db import get_readonly_connection
+from shared.editor_state import lang_stable_editor
 from shared.i18n import lang_selector, t, get_lang
 from shared.markets import ALL_MARKETS, add_market_column
 from shared.owners import (OWNER_NONE, add_owner_column, has_owner,
@@ -216,6 +217,8 @@ def _disp(g: pd.DataFrame, cols: tuple, *, mom_prev=None, dim: str = None) -> pd
     """
     d = g[list(cols)].copy()
     keys = list(g[dim]) if (mom_prev is not None and dim) else None
+    if "market" in d.columns:  # 市場名（shared.markets の中文定数）は表示だけ訳す
+        d["market"] = d["market"].map(t)
     for c in cols:
         if c in _MONEY:
             if keys is not None and c in _MOM_VALUE_COLS:
@@ -249,7 +252,7 @@ def _hbar(g: pd.DataFrame, dim: str):
     gp_lbl = _col("gross_profit")
     h = max(160, len(g) * 24)
     return (
-        alt.Chart(g)
+        alt.Chart(g.assign(market=g["market"].map(t)) if dim == "market" else g)
         .mark_bar(color="#4F46E5")
         .encode(
             x=alt.X("gross_profit:Q", title=None, axis=None),  # 底部数值刻度删除(表格/tooltip 已有精确值)
@@ -369,7 +372,7 @@ if months_df is None or months_df.empty:
 # ============================================================
 c1, c2, c3 = st.columns([1, 1.5, 1.5])
 ym = c1.selectbox(t("対象月"), months_df["ym"].tolist())
-mk = c2.multiselect(t("市場"), ALL_MARKETS, placeholder=t("全部市场"))  # 空選＝全部市场
+mk = c2.multiselect(t("市場"), ALL_MARKETS, placeholder=t("全部市场"), format_func=t)  # 空選＝全部市场
 pf = c3.multiselect("プラットフォーム" if get_lang() == "ja" else "平台",
                     ALL_PLATFORMS,
                     placeholder="全プラットフォーム" if get_lang() == "ja" else "全部平台")  # 空選＝全部
@@ -750,9 +753,9 @@ if _bud:
     b1.metric("月次予算" if _ja_kpi else "月度预算", f"¥{_bud:,.0f}")
     b2.metric("実績(NST)" if _ja_kpi else "实绩(NST)", f"¥{_act:,.0f}")
     b3.metric("予算達成率" if _ja_kpi else "预算达成率", f"{_act / _bud * 100:.2f}%")
-    st.caption("予算=輸出事業 予実表の予算（系统参数设定で編集）· 実績=当月 NST 総収益（NST「売上予算vs実績_FB」"
+    st.caption("予算=輸出事業 予実表の予算（システムパラメータ設定で編集）· 実績=当月 NST 総収益（NST「売上予算vs実績_FB」"
                "輸出事業と同口径・フィルタ非連動）" if _ja_kpi else
-               "预算=输出事业 予实表的预算（在「系统参数设定」修改）· 实绩=当月 NST 总收益（与 NST「売上予算vs実績_FB」"
+               "预算=输出事业 预实表的预算（在「系统参数设定」修改）· 实绩=当月 NST 总收益（与 NST「売上予算vs実績_FB」"
                "输出事业同口径·不跟随上方筛选）")
 
 st.divider()
@@ -820,7 +823,8 @@ with tab_day:
     _prev = _src.iloc[-2] if len(_src) >= 2 else None
     _ld = _last["sale_date"]
     _hdr = "前日データ" if get_lang() == "ja" else "前日数据"
-    st.markdown(f"**{_hdr}** · {_ld.month}月{_ld.day}日")
+    _ld_md = f"{_ld.month}月{_ld.day}日"
+    st.markdown(f"**{_hdr}** · {_ld_md}")
     if _prev is not None:
         _pdt = _prev["sale_date"]
         st.caption(
@@ -1040,18 +1044,18 @@ with tab_owner:
             _C_SHOP = _col("shop")
             _C_OWNER = _col("owner")
             _C_EFF = "発効開始月" if get_lang() == "ja" else "生效起始月"
-            _cur_tbl.columns = [_C_SHOP, _C_OWNER, _C_EFF]
+            # 列名は固定キー（言語を切り替えても編集を保つ・shared/editor_state）。表示名は column_config の label
 
-            _edited = st.data_editor(
+            _edited = lang_stable_editor(
                 _cur_tbl, hide_index=True, use_container_width=True,
-                num_rows="fixed", key="owner_editor",
+                num_rows="fixed", key="owner_editor", reset=tuple(_cur_tbl["shop"]),   # 行の識別（言語で変わらない）
                 column_config={
-                    _C_SHOP: st.column_config.TextColumn(_C_SHOP, disabled=True),
-                    _C_OWNER: st.column_config.TextColumn(
+                    "shop": st.column_config.TextColumn(_C_SHOP, disabled=True),
+                    "owner": st.column_config.TextColumn(
                         _C_OWNER,
                         help=("空欄 = 担当者なし（集計対象外）" if get_lang() == "ja"
                               else "留空 = 无负责人（不计入任何计算）")),
-                    _C_EFF: st.column_config.TextColumn(_C_EFF, disabled=True),
+                    "eff": st.column_config.TextColumn(_C_EFF, disabled=True),
                 },
             )
 
@@ -1060,10 +1064,10 @@ with tab_owner:
                 return "" if v is None or pd.isna(v) else str(v).strip()
 
             _diff = [
-                (_cell(r[_C_SHOP]), _cell(r[_C_OWNER]))
+                (_cell(r["shop"]), _cell(r["owner"]))
                 for _, r in _edited.iterrows()
-                if _cell(r[_C_OWNER])
-                != str(_omap_now.get(_cell(r[_C_SHOP]), OWNER_NONE)).strip()
+                if _cell(r["owner"])
+                != str(_omap_now.get(_cell(r["shop"]), OWNER_NONE)).strip()
             ]
             if _diff:
                 st.warning(
@@ -1516,7 +1520,7 @@ with tab_deduct:
                       _pct(_tot["ded_total"], _tot["sales_jpy"]), delta_color="inverse")
             k3.metric(_u("粗利率", "粗利率"),
                       f"{_gm:.2f}%" if _gm is not None else "—",
-                      _u("分母=NST 日次売上", "分母=NST 日次売上"), delta_color="off")
+                      _u("分母=NST 日次销售额", "分母=NST 日次売上"), delta_color="off")
             # 净利估 = 粗利率 − 控除率。それぞれ自分の分母で出した率を引き算する
             k4.metric(_u("净利估", "純利益(推定)"),
                       f"{_gm - _dr:.1f}%" if (_gm is not None and _dr is not None) else "—")
@@ -1596,7 +1600,7 @@ with tab_deduct:
                         _u("扣减率", "控除率"): _pct(r["ded_total"], r["sales_jpy"]),
                         # 卖家券は 2026-08-03 に控除へ算入（JO 決定）。
                         # 控除率が 4〜5pp 上がった理由が表から分かるように内訳を出す
-                        _u("其中卖家券", "うち卖家券"): _y(r["voucher_jpy"]),
+                        _u("其中卖家券", "うちセラークーポン"): _y(r["voucher_jpy"]),
                         # 分子(sales_daily)と分母(sales_daily)を揃える
                         _u("粗利率", "粗利率"): _pct(r["gross_profit_jpy"],
                                                    r["revenue_jpy"]),
@@ -2390,7 +2394,7 @@ with tab_ads:
             _k2.metric("クリック" if _ja_ad else "点击", f"{_tc:,.0f}")
             _k3.metric("表示" if _ja_ad else "曝光", f"{_ti:,.0f}")
             _k4.metric("広告注文" if _ja_ad else "广告订单", f"{_to:,.0f}")
-            _k5.metric("広告GMV", f"{_tg:,.0f}")
+            _k5.metric(t("広告GMV"), f"{_tg:,.0f}")
             _k6.metric("ROAS", f"{(_tg / _te):,.2f}" if _te else "—")
             _ADL_COLS = (("日期", "消耗", "点击", "曝光", "CTR", "广告订单",
                           "广告GMV", "ROAS") if not _ja_ad else
@@ -2522,7 +2526,7 @@ with tab_ads:
             _C_AMT = "金額（現地通貨）" if get_lang() == "ja" else "金额（本币）"
             _C_CUR = "通貨" if get_lang() == "ja" else "币种"
             _C_NOTE = "備考" if get_lang() == "ja" else "备注"
-            _ad_edit = st.data_editor(
+            _ad_edit = lang_stable_editor(
                 _ad_cur_rows,
                 num_rows="dynamic",
                 use_container_width=True,
@@ -2601,10 +2605,10 @@ with tab_perf:
                 "返金額と線下調整（NST「入金調整分」）は引かずに別掲 · "
                 "線下調整は売上/粗利からも外してある")
                if _ja_pf else
-               "运营绩效金额 = 粗利 − 扣减合计 − 京东费用 − ECMS运费 − 广告费 · "
+               "运营绩效金额 = 毛利 − 扣减合计 − 京东费用 − ECMS运费 − 广告费 · "
                "扣减按 statement 同名费目逐项列出（买家支付运费、Shopee 运费回扣是减少扣减的项）· "
                "退款金额与线下调整（NST「入金調整分」）不扣、单列对照 · "
-               "线下调整已从销售额/粗利中剔出")
+               "线下调整已从销售额/毛利中剔出")
 
     # --- 控除明細（月×店舗 · 円）---
     _pf_raw, _pf_err = _query(

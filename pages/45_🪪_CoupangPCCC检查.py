@@ -8,14 +8,15 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Coupang PCCC检查", page_icon="🪪", layout="wide")
+from shared.i18n import lang_selector, t  # noqa: E402
+
+st.set_page_config(page_title=t("Coupang PCCC检查"), page_icon="🪪", layout="wide")
 
 from shared import banma_client  # noqa: E402
 from shared import coupang_client  # noqa: E402
 from shared import coupang_pccc_audit as A  # noqa: E402
 from shared.auth import require_admin  # noqa: E402
 from shared.db import get_connection  # noqa: E402
-from shared.i18n import lang_selector, t  # noqa: E402
 from shared.theme import inject_theme  # noqa: E402
 
 require_admin()
@@ -38,7 +39,7 @@ if st.button(t("🔍 一键检查"), type="primary", use_container_width=True):
             banma_client.ensure_token(conn, client)
         bar = st.progress(0.0, text=t("拉取斑马订单…"))
         targets, missing, n_paused = A.fetch_pending(
-            client, on_progress=lambda n, tot: bar.progress(n / tot, text=f"{t('拉取斑马订单…')} {n}/{tot}"))
+            client, on_progress=lambda n, tot: bar.progress(n / tot, text=t("拉取斑马订单…") + f" {n}/{tot}"))
         n_real = 0
         if coupang_client.is_configured():
             bar.progress(1.0, text=t("从 Coupang 取真实手机号…"))
@@ -83,6 +84,9 @@ if res:
             "display_id": t("Coupang 订单号"), "order_id": t("斑马订单ID"), "verdict": t("结果"),
             "reason": t("原因"), "message": t("关税厅原文"), "name_masked": t("收件人"),
             "pccc_masked": "PCCC"})
+        # 判定・理由は表示だけ訳す（CSV は元の値のまま）
+        show[t("结果")] = show[t("结果")].map(t)
+        show[t("原因")] = show[t("原因")].map(t)
         st.subheader(t("需要处理的订单"))
         st.dataframe(show, use_container_width=True, hide_index=True)
         csv = bad[["display_id", "order_id", "verdict", "reason", "message"]].to_csv(index=False).encode("utf-8-sig")

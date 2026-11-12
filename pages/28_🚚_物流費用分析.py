@@ -128,15 +128,15 @@ f1, f2 = st.columns([1.2, 3])
 with f1:
     sel_month = st.selectbox(t("月份"), months, index=0)
 with f2:
-    dept_opts = [t("輸出"), t("EC"), t("合計（全部）")]
-    sel_dept_label = st.radio(
-        t("部署"), options=dept_opts, index=0, horizontal=True,
-        help=t("默认仅输出（Boss 指示）。不明区在最下方单独列出供检查。"),
+    sel_dept = st.radio(
+        t("部署"), options=["輸出", "EC", "合計（全部）"], index=0, horizontal=True,
+        format_func=t, help=t("默认仅输出（Boss 指示）。不明区在最下方单独列出供检查。"),
     )
+sel_dept_label = t(sel_dept)   # 表示・CSV ファイル名用（判定は sel_dept の生値で）
 
-if sel_dept_label == t("輸出"):
+if sel_dept == "輸出":
     base = df[df["dept"] == "輸出"].copy()
-elif sel_dept_label == t("EC"):
+elif sel_dept == "EC":
     base = df[df["dept"] == "EC"].copy()
 else:
     base = df[df["dept"] != "不明"].copy()   # 合計 = 輸出+EC（不明は除外）
@@ -378,9 +378,9 @@ with st.expander(t("🧊 店铺别 包材使用（{ym}）").format(ym=sel_month)
     #    pk["dept"] が KeyError でページごと落ちる。先に空判定する。
     #    （2026-09 は JD 請求書が未取込で ECMS だけがある月。そこで実際に踏んだ）
     if not pk.empty:
-        if sel_dept_label == t("輸出"):
+        if sel_dept == "輸出":
             pk = pk[pk["dept"] == "輸出"]
-        elif sel_dept_label == t("EC"):
+        elif sel_dept == "EC":
             pk = pk[pk["dept"] == "EC"]
         else:
             pk = pk[pk["dept"] != "不明"]
@@ -392,7 +392,7 @@ with st.expander(t("🧊 店铺别 包材使用（{ym}）").format(ym=sel_month)
                                aggfunc="sum", fill_value=0)
         extra = [c for c in pkpiv.columns if c not in MATERIAL_ORDER]
         pkpiv = pkpiv.reindex(columns=MATERIAL_ORDER + extra, fill_value=0)
-        pkpiv = pkpiv.rename(columns=lambda c: MATERIAL_NAMES.get(c, c))
+        pkpiv = pkpiv.rename(columns=lambda c: t(MATERIAL_NAMES.get(c, c)))
         pkpiv[t("合计")] = pkpiv.sum(axis=1)
         pkpiv = pkpiv.sort_values(t("合计"), ascending=False).reset_index()
         pkpiv = pkpiv.rename(columns={"shop": t("店铺")})

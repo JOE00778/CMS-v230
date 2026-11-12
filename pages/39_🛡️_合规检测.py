@@ -169,11 +169,11 @@ def resolve_by_jan(jan: str) -> dict:
         out["name_ja"] = sh[0][0] or ""
         out["maker"] = sh[0][3] or ""
         out["l1"], out["l2"] = sh[0][4] or "", sh[0][5] or ""
-        out["sources"].append(_dl(f"飞书内容表({sh[0][2] or '-'})·名称/分类のみ",
+        out["sources"].append(_dl(f"飞书内容表({sh[0][2] or '-'})·仅名称/分类",
                                   f"飛書コンテンツ表({sh[0][2] or '-'})·名称/分類のみ"))
     if sp:
         out["name_en"] = sp[0][0] or ""
-        out["sources"].append(_dl("Shopify 已上架·名称のみ", "Shopify 出品済·名称のみ"))
+        out["sources"].append(_dl("Shopify 已上架·仅名称", "Shopify 出品済·名称のみ"))
     if ns:
         out["name_ja"] = out["name_ja"] or (ns[0][0] or "")
         out["maker"] = out["maker"] or (ns[0][1] or "")
@@ -294,7 +294,7 @@ def _render_result(res: dict):
         st.warning(_dl("⚪ 判定未完成——名称/宣称无问题,但**成分未取得**,成分维度未判定",
                        "⚪ 判定未完了——名称/表現は問題なし,ただし**成分未取得**のため成分は未判定"))
         st.caption(_dl("→ 粘贴成分表(商品包装/厂商页的全成分)后可完成判定",
-                       "→ 成分表(パッケージ/メーカー页の全成分)を貼れば判定を完了できます"))
+                       "→ 成分表(パッケージ/メーカーページの全成分)を貼れば判定を完了できます"))
         return
     fn, label = VERDICT_UI[res["verdict"]]
     getattr(st, fn)(label)
@@ -311,6 +311,8 @@ def _render_result(res: dict):
     if res["hits"]:
         df = pd.DataFrame(res["hits"])
         df["severity"] = df["severity"].map({"red": "🔴", "yellow": "🟡", "info": "ℹ️"})
+        df["kind"] = df["kind"].map(t)      # compliance_engine の区分・対象（中文固定値）は表示だけ訳す
+        df["field"] = df["field"].map(t)
         df = df[["severity", "kind", "field", "note", "matched"]]
         df.columns = [_dl("级别", "レベル"), _dl("维度", "区分"), _dl("命中字段", "対象"),
                       _dl("注意事项", "注意事項"), _dl("命中文本", "該当箇所")]
@@ -353,7 +355,7 @@ def _country_tab(country: str, rules):
                 item["name_ja"] = item["name_ja"] or ext["name"]
                 item["ingredient"] = item["ingredient"] or ext["ingredient"]
                 item["sources"].append(
-                    ext["source"] + ("" if ext["ingredient"] else _dl("(名称のみ)", "(名称のみ)")))
+                    ext["source"] + ("" if ext["ingredient"] else _dl("(仅名称)", "(名称のみ)")))
 
         if item.get("sources"):
             st.caption(_dl(f"数据来源:{' + '.join(item['sources'])}"
@@ -391,7 +393,7 @@ def _country_tab(country: str, rules):
             _render_ca_registration(name, item.get("maker", ""))
 
     with st.expander(_dl(f"📌 {country} 通用注意事项", f"📌 {country} 共通注意事項"), expanded=False):
-        st.markdown(COUNTRY_NOTES[country])
+        st.markdown(t(COUNTRY_NOTES[country]))
 
 
 BATCH_CAP = 150          # 1 件あたり外部取得 ~1.3 秒 → 上限を超える分は次回に回す
@@ -516,7 +518,7 @@ def _manual_screen(kw_rules, ing_rules, cat_rules):
         row = {"JAN": jan,
                _dl("商品名", "商品名"): (item["name_ja"] or item["name_en"])[:60],
                _dl("来源", "データ元"): " + ".join(item["sources"]) or "-",
-               _dl("成分", "成分"): _dl("有", "有") if item["ingredient"] else _dl("無", "無")}
+               _dl("成分", "成分"): _dl("有", "有") if item["ingredient"] else _dl("无", "無")}
         # 理由は country ごとに溜め、同文は国をまとめて 1 行に(医薬品等は三国同文)
         reasons: dict[str, list[str]] = {}
         for c in countries:
@@ -533,8 +535,8 @@ def _manual_screen(kw_rules, ing_rules, cat_rules):
                 for h in res["hits"]:
                     if h["severity"] not in ("red", "yellow"):
                         continue
-                    body = (f"{mark}〔{h['kind']}〕{h['note']}"
-                            + (f"(命中:{h['matched'][:24]})" if h.get("matched") else ""))
+                    body = (f"{mark}〔{t(h['kind'])}〕{h['note']}"
+                            + (_dl("(命中:", "(該当:") + f"{h['matched'][:24]})" if h.get("matched") else ""))
                     reasons.setdefault(body, []).append(c)
             elif not res["ingredient_checked"]:
                 body = _dl("⚪ 成分未取得,成分维度未判定——需人工补成分表",
@@ -550,7 +552,7 @@ def _manual_screen(kw_rules, ing_rules, cat_rules):
 
     df = pd.DataFrame(out)
     n_red = int(df[countries].apply(lambda s: s.str.startswith("🔴")).any(axis=1).sum()) if countries else 0
-    n_gray = int(df[_dl("成分", "成分")].eq(_dl("無", "無")).sum())
+    n_gray = int(df[_dl("成分", "成分")].eq(_dl("无", "無")).sum())
     st.success(_dl(
         f"完成 {len(df)} 件:🔴 不可录入 {n_red} 件 · ⚪ 判定未完成(成分未取得) {n_gray} 件"
         + (f" · 超出上限未处理 {over} 件" if over else ""),
@@ -608,8 +610,8 @@ with tab0:
                 meta = SOURCE_META.get(r.source_key, (r.source_key, "", ""))
                 # 変化内容は長くなり得る:見出しは 1 行に固定し、本文は畳んで出す
                 # (2026-07-29:ページ全文が赤枠に流れ込む不具合の再発防止)
-                st.error(_dl(f"🔔 数据源有更新,规则表待人工核对:{meta[0]}",
-                             f"🔔 ソース更新あり(ルール表の要確認):{meta[0]}"))
+                st.error(_dl("🔔 数据源有更新,规则表待人工核对:", "🔔 ソース更新あり(ルール表の要確認):")
+                         + t(meta[0]))
                 note = (r.diff_note or "").strip()
                 if note:
                     with st.expander(_dl("变化内容(前 8 项)", "変更内容(先頭 8 件)")):
@@ -619,8 +621,8 @@ with tab0:
         for key, (label, url, mode) in SOURCE_META.items():
             s = snap_by_key.get(key)
             rows.append({
-                _dl("数据源", "ソース"): label,
-                _dl("抓取方式", "取得方式"): mode,
+                _dl("数据源", "ソース"): t(label),
+                _dl("抓取方式", "取得方式"): t(mode),
                 _dl("最近检查", "最終チェック"): pd.to_datetime(s.fetched_at).strftime("%Y-%m-%d %H:%M") if s is not None else "—",
                 "HTTP": int(s.http_status) if s is not None and pd.notna(s.http_status) else None,
                 _dl("有变化", "変化"): ("🔴" if s is not None and s.changed else "—"),

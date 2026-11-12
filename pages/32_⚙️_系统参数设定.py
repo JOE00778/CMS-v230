@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from shared.editor_state import lang_stable_editor
 from shared.i18n import t, lang_selector
 
 st.set_page_config(page_title=t("系统参数设定"), page_icon="⚙️", layout="wide")
@@ -86,11 +87,9 @@ with tab2:
             st.success(t("✅ 已保存。到「📦 发注AI v2」点【执行发注计算】生效。"))
 
     st.divider()
-    st.caption(
-        t("当前生效") + f"：完売率 ≥{_sp['high']:.2f}→×{_sp['factor_high']:.1f}（加大） · "
-        f"≥{_sp['low']:.2f}→×{_sp['factor_mid']:.1f}（正常） · "
-        f"<{_sp['low']:.2f}→×{_sp['factor_low']:.1f}（减少）"
-    )
+    st.caption(t(
+        "当前生效：完売率 ≥{h:.2f}→×{fh:.1f}（加大） · ≥{l:.2f}→×{fm:.1f}（正常） · <{l:.2f}→×{fl:.1f}（减少）"
+    ).format(h=_sp["high"], l=_sp["low"], fh=_sp["factor_high"], fm=_sp["factor_mid"], fl=_sp["factor_low"]))
 
 # ============================================================
 # tab_bud · 输出事业 月度营业额预算（店铺毛利页「预算达成率」用 · Boss 2026-11-09）
@@ -109,7 +108,7 @@ with tab_bud:
         _bud = None
     if _bud is not None:
         _bdf = pd.DataFrame({"ym": list(_bud), "budget_jpy": list(_bud.values())})
-        _ed = st.data_editor(
+        _ed = lang_stable_editor(
             _bdf, num_rows="dynamic", hide_index=True, key="sales_budget_ed",
             column_config={
                 "ym": st.column_config.TextColumn(t("月 (YYYY-MM)"), required=True, max_chars=7,
@@ -162,11 +161,10 @@ with tab3:
         st.success(t("✅ 已保存。到「📦 库存监控 → 库存构成分析 → 📊 弁天 vs 斑马 库存对账」tab 刷新即生效。"))
 
     st.divider()
-    st.caption(
-        t("当前生效") + f"：绝对值 ≤ {_rp['minor_abs_threshold']} 件 · "
-        + (t("百分比 ≤ {:.1f}%").format(_rp["minor_pct_threshold"])
-           if _rp["minor_pct_threshold"] > 0 else t("百分比未启用"))
-    )
+    st.caption(t("当前生效：绝对值 ≤ {n} 件 · {pct}").format(
+        n=_rp["minor_abs_threshold"],
+        pct=(t("百分比 ≤ {p:.1f}%").format(p=_rp["minor_pct_threshold"])
+             if _rp["minor_pct_threshold"] > 0 else t("百分比未启用"))))
 
 # ============================================================
 # tab4 · 货架用途指定（弁天棚号 → 输出中国 / 返品 / 不良品 标签）
@@ -217,8 +215,9 @@ with tab4:
         st.write(t("候选 {n} 棚 · 已指定 输出中国 {c} · 返品 {r} · 不良品 {d}")
                  .format(n=n_total, c=n_cb, r=n_ret, d=n_def))
 
-        edited = st.data_editor(
+        edited = lang_stable_editor(
             cand_bins, hide_index=True, use_container_width=True, height=560,
+            reset=tuple(cand_bins["bin_number"]),
             column_config={
                 "bin_number": st.column_config.TextColumn(t("棚番号"), disabled=True),
                 "is_cb": st.column_config.CheckboxColumn(t("输出中国"), default=False),
@@ -321,8 +320,8 @@ with tab5:
         st.write(t("候选 {n} 家 · 当前白名单 {w} 家 · 其中预付款 {p} 家")
                  .format(n=len(cand), w=n_wl, p=n_pp))
 
-        edited_v = st.data_editor(
-            cand, hide_index=True, use_container_width=True, height=520,
+        edited_v = lang_stable_editor(
+            cand, hide_index=True, use_container_width=True, height=520, reset=tuple(cand["vendor_id"]),
             column_config={
                 "vendor_id": st.column_config.TextColumn(t("供货商ID"), disabled=True),
                 "vendor_name": st.column_config.TextColumn(t("仕入先"), disabled=True),
@@ -421,7 +420,7 @@ with tab6:
             if r.frequency == "monthly" and r.run_day:
                 when += t(" {d} 日").format(d=int(r.run_day))
             elif r.frequency == "weekly" and r.run_weekday is not None:
-                when += t("週{w}").format(w="一二三四五六日"[int(r.run_weekday)])
+                when += " " + t(("周一", "周二", "周三", "周四", "周五", "周六", "周日")[int(r.run_weekday)])
             when += f" {r.run_time}"
             last = r.last_run_at.strftime("%m-%d %H:%M") if pd.notna(r.last_run_at) else "—"
             mark = {"ok": "🟢", "partial": "🟡", "error": "🔴"}.get(r.last_status, "⚪")

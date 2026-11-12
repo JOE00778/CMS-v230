@@ -9,6 +9,15 @@ from data_warehouse.templates import item_entry_form as F, jd_bm_item_master as 
 from shared import item_register as R, nst_choices as NC
 from shared.hs_classify import Customs
 from shared.jan_web import JanMeta
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """メッセージは日文原文で検査する（中文モードの訳は shared/i18n.py の TRANSLATIONS_ZH。t() は既定 zh なので ja に固定）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
+
 
 SKUS = ['ETERNAL-BONSAI-' + c for c in ('REDN', 'NV', 'GR', 'WH', 'BK', 'LGR')]
 JAN = '4936201110209'

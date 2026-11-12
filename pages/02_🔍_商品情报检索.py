@@ -40,7 +40,7 @@ def _L(zh: str, ja: str) -> str:
 
 st.title(t("🔍 商品情报检索"))
 st.caption(_L(
-    "NST 商品主档 + 库存快照 + 累计销售 整合检索 · 多维筛选 · CSV 导出（仅輸出事业商品）",
+    "NST 商品主档 + 库存快照 + 累计销售 整合检索 · 多维筛选 · CSV 导出（仅输出事业商品）",
     "NST 商品マスタ + 在庫スナップショット + 売上累計 を統合検索 · 多軸フィルタ · "
     "CSV 出力（輸出事業の商品のみ）",
 ))
@@ -93,7 +93,7 @@ def _query(sql: str, params: tuple = ()):
 # ============================================================
 chk, err = _query("SELECT COUNT(*) AS c FROM nst.item_master_raw")
 if err:
-    st.error(_L("商品マスタ未取得 or 接続エラー: ", "商品マスタ未取得 or 接続エラー: ") + err)
+    st.error(_L("商品主档未获取或连接错误: ", "商品マスタ未取得 or 接続エラー: ") + err)
     st.info(_L("请到 page 27「📥 NST 取得数据」执行 items 任务。",
                "page 27「📥 NST 取得データ」で items ジョブを実行してください。"))
     st.stop()
@@ -228,7 +228,7 @@ with _tab_search:
     hl, hr = st.columns([1, 0.25])
     hl.subheader(_L("商品一览", "商品一覧"))
     hr.markdown(
-        f"<h4 style='text-align:right;margin-top:.6em;'>{len(v):,} / {total_skus:,} 件</h4>",
+        "<h4 style='text-align:right;margin-top:.6em;'>" + f"{len(v):,} / {total_skus:,} " + t("件") + "</h4>",
         unsafe_allow_html=True,
     )
 
@@ -272,7 +272,7 @@ with _tab_search:
         st.divider()
         st.subheader(_L("🔎 SKU 详情", "🔎 SKU 詳細"))
 
-        choices = v.apply(lambda r: f"{r['item_code']} · {r['display_name'] or '(无名)'}", axis=1).tolist()
+        choices = v.apply(lambda r: f"{r['item_code']} · {r['display_name'] or _L('(无名)', '(名称なし)')}", axis=1).tolist()
         pick = st.selectbox(_L("选择 SKU", "SKU を選択"), choices)
         row = v.iloc[choices.index(pick)]
 
@@ -333,7 +333,7 @@ with _tab_search:
         )
         if dim_df is not None and not dim_df.empty:
             d = dim_df.iloc[0]
-            st.markdown(f"**{_L('📦 物流尺寸（JDL 仓库实测）', '📦 物流寸法（JDL 倉庫実測）')}**")
+            st.markdown("**" + _L("📦 物流尺寸（JDL 仓库实测）", "📦 物流寸法（JDL 倉庫実測）") + "**")
             w1, w2, w3, w4 = st.columns(4)
             w1.metric(
                 _L("毛重", "総重量"),
@@ -353,7 +353,7 @@ with _tab_search:
                 f"{float(d['wms_volume_cm3']) / 6000 * 1000:.0f} g"
                 if d["wms_volume_cm3"] is not None else "—",
                 help=_L("抛重 = 体积 cm³ ÷ 6000 = 容积重 kg，与实重取大计费",
-                        "抛重 = 体積 cm³ ÷ 6000 = 容積重量 kg、実重と比較し大きい方で課金"),
+                        "容積重量 kg = 体積 cm³ ÷ 6000、実重と比較し大きい方で課金"),
             )
         else:
             st.caption(_L(
@@ -362,7 +362,7 @@ with _tab_search:
             ))
 
         # 店舗×月 売上明細
-        st.markdown(f"**{_L('店铺×月 销售明细', '店舗×月 売上明細')}**")
+        st.markdown("**" + _L("店铺×月 销售明细", "店舗×月 売上明細") + "**")
         sd, _ = _query(
             "SELECT trim(shop) AS shop, year_month, qty_sold, revenue FROM nst.sales_monthly "
             "WHERE item_internal_id = ? ORDER BY year_month DESC, revenue DESC",
@@ -425,7 +425,7 @@ with _tab_compare:
 
         if n_cmp > 0:
             st.divider()
-            st.markdown(f"**{_L('📋 明细（按差异降序）', '📋 明細（差異降順）')}**")
+            st.markdown("**" + _L("📋 明细（按差异降序）", "📋 明細（差異降順）") + "**")
             show_cols = ["jan", "display_name", "maker", "item_rank",
                          "nst_package_g", "jdl_wms_g", "diff_g", "diff_pct"]
             st.dataframe(

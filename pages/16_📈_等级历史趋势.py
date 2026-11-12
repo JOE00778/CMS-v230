@@ -143,7 +143,7 @@ st.dataframe(
     height=400,
     hide_index=True
 )
-st.caption(t(f"显示前 500 / 共 {len(df)} 条记录"))
+st.caption(t("显示前 500 / 共 {n} 条记录").format(n=len(df)))
 
 st.divider()
 
@@ -163,6 +163,7 @@ if unique_skus:
 
     # 统计信息
     score_changes = sku_history['new_score'].iloc[0] - sku_history['old_score'].iloc[-1] if len(sku_history) > 1 else 0
-    st.caption(t(f"总体变化：{score_changes:+.1f} 等级分（{sku_history['old_rank'].iloc[-1]} → {sku_history['new_rank'].iloc[0]}）"))
+    st.caption(t("总体变化：{d:+.1f} 等级分（{old} → {new}）").format(
+        d=score_changes, old=sku_history['old_rank'].iloc[-1], new=sku_history['new_rank'].iloc[0]))
 
 conn.close()

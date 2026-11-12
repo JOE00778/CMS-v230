@@ -8,6 +8,15 @@ from openpyxl import load_workbook
 
 from shared import banma_fix as BF
 from shared.item_register import PLACEHOLDER_IMAGE_URL
+import pytest
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def _ui_ja():
+    """メッセージは日文原文で検査する（中文モードの訳は shared/i18n.py の TRANSLATIONS_ZH。t() は既定 zh なので ja に固定）。"""
+    with mock.patch("shared.i18n.get_lang", return_value="ja"):
+        yield
 
 
 class _Conn:

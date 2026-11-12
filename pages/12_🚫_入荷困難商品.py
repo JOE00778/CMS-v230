@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
+from shared.editor_state import lang_stable_editor
 from shared.i18n import t, lang_selector
 from shared.i18n_columns import localize_records
 
@@ -58,7 +59,7 @@ with st.expander(t("➕ 新规录入"), expanded=False):
                     (new_id, item_key.strip(), reason.strip(), (note or "").strip() or None, now),
                 )
                 conn.commit()
-                st.success(t(f"✅ 已登录 #{new_id}"))
+                st.success(t("✅ 已登记 #{id}").format(id=new_id))
                 st.rerun()
 
 
@@ -79,14 +80,14 @@ if not rows:
     st.info(t("还没有任何记录。点上面「➕ 新规录入」开始。"))
 else:
     df = pd.DataFrame([dict(r) for r in rows])
-    df.insert(0, t("选择"), False)
+    df.insert(0, "sel", False)   # 列名は固定キー（言語を切り替えても選択を保つ）。表示名は label
 
-    edited = st.data_editor(
+    edited = lang_stable_editor(
         df,
         use_container_width=True,
         hide_index=True,
         column_config={
-            t("选择"): st.column_config.CheckboxColumn(t("选择")),
+            "sel": st.column_config.CheckboxColumn(t("选择")),
             "id": st.column_config.NumberColumn("ID", disabled=True),
             "item_key": st.column_config.TextColumn(t("ブランド/商品"), disabled=True),
             "reason": st.column_config.TextColumn(t("理由"), disabled=True),
@@ -95,16 +96,16 @@ else:
             "updated_at": st.column_config.TextColumn(t("更新"), disabled=True),
         },
         disabled=["id", "item_key", "reason", "note", "created_at", "updated_at"],
-        key="diff_items_table",
+        key="diff_items_table", reset=tuple(df["id"]),
     )
 
-    selected_ids = edited[edited[t("选择")]]["id"].tolist()
+    selected_ids = edited[edited["sel"]]["id"].tolist()
     c1, c2 = st.columns([1, 1])
     with c1:
         st.metric(t("已选行数"), f"{len(selected_ids)}")
     with c2:
         if st.button(
-            t(f"🗑 删除选中 {len(selected_ids)} 条"),
+            t("🗑 删除选中 {n} 条").format(n=len(selected_ids)),
             type="primary" if selected_ids else "secondary",
             disabled=not selected_ids,
             use_container_width=True,
@@ -124,7 +125,7 @@ else:
                     )
                     conn.execute("DELETE FROM difficult_items WHERE id = ?", (_id,))
             conn.commit()
-            st.success(t(f"✅ 已删除 {len(selected_ids)} 条"))
+            st.success(t("✅ 已删除 {n} 条").format(n=len(selected_ids)))
             st.rerun()
 
 

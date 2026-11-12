@@ -16,6 +16,7 @@ import json
 
 from data_warehouse.templates import nst_item_master as TPL
 from data_warehouse.templates.item_entry_form import COL_JAN, COL_PKG_DIMS, COL_PKG_WEIGHT
+from shared.i18n import t
 from shared.item_register import COL_HS, COL_IMAGE, COL_ITEM_CODE, COL_MAKER, COL_NAME, COL_NAME_EN, NAME_MAX
 
 BLANK = "（空）"
@@ -110,8 +111,9 @@ def match(items: list[dict], bm: dict[str, str], *, by_jan: bool,
         same = [_v(x.get("code")) for x in found if x["sku_id"] == f["sku_id"] and x is not f]
         others = [c for c in in_use.get(f["sku_id"], []) if c != _v(f.get("code"))]
         if same or others:
-            conflicts.append({**f, "note": "同じ斑马 SKUID: " + " / ".join(
-                x for x in (same and "今回の対象 " + "・".join(same), others and "NST で設定済み " + "・".join(others)) if x)})
+            conflicts.append({**f, "note": t("同じ斑马 SKUID: {detail}").format(detail=" / ".join(
+                x for x in (same and t("今回の対象 {codes}").format(codes="・".join(same)),
+                            others and t("NST で設定済み {codes}").format(codes="・".join(others))) if x))})
         else:
             hits.append(f)
     return hits, conflicts, misses

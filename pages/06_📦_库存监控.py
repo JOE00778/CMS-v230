@@ -335,7 +335,7 @@ def _render_composition():
             piv[c] = 0.0
     piv = piv[list(CATEGORIES)]
     piv["合計"] = piv.sum(axis=1)
-    piv.loc["合計"] = piv.sum(axis=0)
+    piv.loc[t("合計")] = piv.sum(axis=0)
     piv = piv.reset_index()
     piv.columns = [t("仓库")] + [_labels.get(c, c) for c in CATEGORIES] + [t("合計")]
     st.dataframe(
@@ -435,7 +435,8 @@ def _render_composition():
             k4.metric(t("金额合計 (¥)"), f"¥{sub['amt'].sum():,.0f}")
 
             disp = sub[["bin_number", "category", "item_code", "jan", "display_name",
-                        "maker", "item_rank", "qty_on_hand", "amt"]].rename(columns={
+                        "maker", "item_rank", "qty_on_hand", "amt"]].replace(
+                {"category": _labels}).rename(columns={
                 "bin_number": t("棚番号"), "category": t("用途"),
                 "item_code": t("商品コード"), "jan": t("JAN"),
                 "display_name": t("商品名"), "maker": t("メーカー"),
@@ -489,7 +490,8 @@ def _render_composition():
             if not sku_in.strip():
                 st.caption(t("提示：输入商品コード / JAN 可精确定位 · 当前展示弁天筛选后明细"))
             disp2 = sub2[["item_code", "jan", "display_name", "warehouse",
-                          "bin_number", "category", "qty_on_hand", "amt"]].rename(columns={
+                          "bin_number", "category", "qty_on_hand", "amt"]].replace(
+                {"category": _labels}).rename(columns={
                 "item_code": t("商品コード"), "jan": t("JAN"),
                 "display_name": t("商品名"), "warehouse": t("仓库"),
                 "bin_number": t("棚番号"), "category": t("用途"),
