@@ -132,3 +132,28 @@ def test_dims_xlsx_template():
                                                   "宽(cm)": 8, "高(cm)": 3}])))
     rows = list(wb.active.values)
     assert rows[0][0] == "SKU编码" and rows[1] == ("4900000000011", None, 80, 12, 8, 3)
+
+
+def test_expect_guard_skips_when_banma_changed_since_check_20261112():
+    """写し（04:00）やチェック後に斑马の値が変わっていたら書かない（上書きしない）。"""
+    c, conn = _Client(_product()), _Conn()
+    r = BF.write_product(c, conn, "S1", {"K1": {"Weight": 80}}, "x", expect={"K1": {"Weight": 0}})
+    assert r["status"] == "skipped" and "チェック時" in r["message"] and not conn.sql
+    r = BF.write_product(c, _Conn(), "S1", {"K1": {"Weight": 80}}, "x", expect={"K1": {"Weight": 1}})
+    assert r["status"] == "ok"
+    c = _Client(_product(), customs={"SKUID": "K1", "NameEn": "Real name", "Code": "330510"})
+    r = BF.write_customs(c, _Conn(), "K1", "x", {"Code": "999999", "NameEn": "X"}, expect={"Code": "", "NameEn": ""})
+    assert r["status"] == "skipped" and not any(m in ("PUT", "POST") for m, *_ in c.calls)
+
+
+def test_mirror_customs_scope_none_only_for_ranked_export():
+    class C(_Conn):
+        def execute(self, sql, params=()):
+            self.last = sql
+            return self
+
+        def fetchall(self):
+            return ([{"sku_id": "K1", "name_cn": "名", "name_en": "Toy", "hs_code": "950300"}]
+                    if "sku_customs" in self.last else [{"sku_id": "K2"}, {"sku_id": "K3"}])
+    got = BF.mirror_customs(C(), ["K1", "K2", "K3", "K4"], ranked={"K1", "K2"})
+    assert got == {"K1": {"Code": "950300", "NameEn": "Toy", "NameCn": "名"}, "K2": None}   # K3 範囲外・K4 写しに無し → API へ

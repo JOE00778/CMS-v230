@@ -70,17 +70,28 @@ def get_customs(client, sku_id: str) -> dict | None:
         raise
 
 
-def mirror_customs(conn, sku_ids: list[str]) -> dict[str, dict]:
-    """PG banma.sku_customs（毎日 04:00・NST 等級 A/B/C/NEW の Export だけ）→ {SKUID: {Code, NameEn, NameCn}}。
-    ここに無い SKU は「無い」とは限らない（範囲外）→ 呼び出し側が API で見る。"""
-    out: dict[str, dict] = {}
+def mirror_customs(conn, sku_ids: list[str], ranked: set[str] | None = None) -> dict[str, dict | None]:
+    """PG banma.sku_customs（pull_sku_health 毎日 04:00）→ {SKUID: {Code, NameEn, NameCn} | None}。
+    写しの範囲 = 斑马 Export 類目の有効 SKU で NST 等級 A/B/C/NEW（ranked = その SKUID）。範囲内で行が無い = 報関なし（None）。
+    範囲外で行が無い SKU は返さない（「無い」とは限らない → 呼び出し側が API で見る）。"""
+    out: dict[str, dict | None] = {}
     for i in range(0, len(sku_ids), 200):
         chunk = sku_ids[i:i + 200]
-        rows = conn.execute("SELECT sku_id, name_cn, name_en, hs_code FROM banma.sku_customs WHERE sku_id IN ("
-                            + ",".join("?" for _ in chunk) + ")", tuple(chunk)).fetchall()
+        ph = ",".join("?" for _ in chunk)
+        rows = conn.execute(f"SELECT sku_id, name_cn, name_en, hs_code FROM banma.sku_customs WHERE sku_id IN ({ph})",
+                            tuple(chunk)).fetchall()
         out.update({str(r["sku_id"]): {"Code": r["hs_code"], "NameEn": r["name_en"], "NameCn": r["name_cn"]}
                     for r in rows})
+        if ranked:
+            for r in conn.execute(f"SELECT sku_id FROM banma.sku_dims WHERE sku_id IN ({ph}) AND is_valid "
+                                  "AND category_top = 'Export'", tuple(chunk)).fetchall():
+                if str(r["sku_id"]) in ranked:
+                    out.setdefault(str(r["sku_id"]), None)
     return out
+
+
+def _same(a, b) -> bool:
+    return ("" if a is None else str(a).strip()) == ("" if b is None else str(b).strip())
 
 
 def spu_ids(conn, sku_ids: list[str]) -> dict[str, str]:
@@ -135,8 +146,10 @@ def customs_body(cur: dict, sku_id: str) -> dict:
             "Purpose": cur.get("Purpose") or ""}
 
 
-def write_customs(client, conn, sku_id: str, code: str, new: dict, *, name_cn: str = "", weight=0) -> dict:
-    """new = {"Code": HS, "NameEn": 英文名} の変える分だけ。→ {"status": ok/created/skipped/fail/mismatch, "message"}。"""
+def write_customs(client, conn, sku_id: str, code: str, new: dict, *, name_cn: str = "", weight=0,
+                  expect: dict | None = None) -> dict:
+    """new = {"Code": HS, "NameEn": 英文名} の変える分だけ。→ {"status": ok/created/skipped/fail/mismatch, "message"}。
+    expect = チェック時に見た値。書く直前の斑马の値が違えば書かない（写しが古い・別の人が直した → 上書きしない）。"""
     new = {k: str(v).strip() for k, v in new.items() if k in ("Code", "NameEn") and str(v or "").strip()}
     if not new:
         return {"status": "skipped", "message": "変更なし"}
@@ -144,6 +157,11 @@ def write_customs(client, conn, sku_id: str, code: str, new: dict, *, name_cn: s
         cur = get_customs(client, sku_id)
     except Exception as e:  # noqa: BLE001
         return {"status": "fail", "message": f"報関の照会に失敗（書いていません）: {type(e).__name__}: {e}"}
+    if expect is not None:
+        moved = [f"{k}: 今 {(cur or {}).get(k) or '空'} / チェック時 {expect.get(k) or '空'}" for k in new
+                 if not _same((cur or {}).get(k), expect.get(k))]
+        if moved:
+            return {"status": "skipped", "message": "斑马の値がチェック時と違うため書いていません（" + " · ".join(moved) + "）"}
     if cur is None:
         if not (new.get("Code") and new.get("NameEn")):
             return {"status": "skipped", "message": "斑马に報関情報が無い SKU は HS と英文名の両方が要ります（書いていません）"}
@@ -278,8 +296,10 @@ def verify_product(before: dict, after: dict, changes: dict[str, dict]) -> str:
     return "" if not d else "回読が一致しません: " + ", ".join(d[:8]) + (f" ほか {len(d) - 8}" if len(d) > 8 else "")
 
 
-def write_product(client, conn, spu_id: str, changes: dict[str, dict], codes: str) -> dict:
-    """1 SPU を書く。→ {"status": ok/skipped/fail/mismatch, "message"}。mismatch なら呼び出し側は以降を止める。"""
+def write_product(client, conn, spu_id: str, changes: dict[str, dict], codes: str,
+                  expect: dict[str, dict] | None = None) -> dict:
+    """1 SPU を書く。→ {"status": ok/skipped/fail/mismatch, "message"}。mismatch なら呼び出し側は以降を止める。
+    expect = {SKUID: チェック時の値}。書く直前の値が違えば書かない。"""
     try:
         before = get_product(client, spu_id)
     except Exception as e:  # noqa: BLE001
@@ -288,6 +308,13 @@ def write_product(client, conn, spu_id: str, changes: dict[str, dict], codes: st
     if why:
         return {"status": "skipped", "message": f"{why} → 三辺・重量は Excel、画像は斑马の画面で"}
     want = {str(s.get("SKUID")) for s in before.get("Skus") or []}
+    if expect:
+        now = {str(s.get("SKUID")): s for s in before.get("Skus") or []}
+        moved = [f"{sid} {k}: 今 {(now.get(sid) or {}).get(k)} / チェック時 {expect.get(sid, {}).get(k)}"
+                 for sid, ch in changes.items() for k in ch if sid in expect and not _same((now.get(sid) or {}).get(k),
+                                                                                          expect[sid].get(k))]
+        if moved:
+            return {"status": "skipped", "message": "斑马の値がチェック時と違うため書いていません（" + " · ".join(moved[:4]) + "）"}
     if not set(changes) <= want:
         return {"status": "fail", "message": f"SPU {spu_id} に無い SKU: {sorted(set(changes) - want)}（書いていません）"}
     try:

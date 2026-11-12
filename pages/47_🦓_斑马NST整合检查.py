@@ -10,6 +10,8 @@ page15 の「🔎 SKUID 空チェック」tab をそのまま独立させたも�
 from __future__ import annotations
 
 import math
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -44,19 +46,30 @@ def _cached_prefix_makers() -> dict[str, str]:
         return NC.load_prefix_makers(conn)
 
 
-# 斑马の報関照会・画像検索は 1 件ずつだと数百件で数十分（2026-11-12 Boss「加速跑」）→ 同時 4 本。
-# 斑马は名目 5 QPS・0.25s 間隔で 429（memory 2026-10-07）→ 1 本 1〜2 秒なら 4 本で 2〜4 QPS。429 は client が待って再試行
-_WORKERS = 4
+# 1 件ずつだと数百件で数十分（2026-11-12 Boss「加速跑」・斑马網関は 1 回数十秒の日がある）→ 並列。
+# 斑马は名目 5 QPS・0.25s 間隔で 429（memory 2026-10-07）→ 同時 8 本・開始間隔 0.3s（≤3.3 QPS）。429 は client が待って再試行
+# 画像検索（楽天 API ほか）は 4 本・間隔なし（page22 と同じ源）。
+_BM = {"workers": 8, "gap": 0.3}
 
 
-def _parallel(fn, keys: list[str], text: str) -> dict:
-    """keys を fn で同時 _WORKERS 本 → {key: 結果 or 例外}。進捗バーはメインスレッドだけで触る。"""
+def _parallel(fn, keys: list, text: str, *, workers: int = 4, gap: float = 0.0) -> dict:
+    """keys を fn で同時 workers 本・開始は gap 秒以上あける → {key: 結果 or 例外}。進捗バーはメインスレッドだけで触る。"""
     out: dict = {}
     if not keys:
         return out
+    lock, nxt = threading.Lock(), [0.0]
+
+    def run(k):
+        if gap:
+            with lock:
+                now = time.monotonic()
+                start = max(now, nxt[0])
+                nxt[0] = start + gap
+            time.sleep(start - now)
+        return fn(k)
     bar = st.progress(0.0, text=text)
-    with ThreadPoolExecutor(_WORKERS) as ex:
-        futs = {ex.submit(fn, k): k for k in keys}
+    with ThreadPoolExecutor(workers) as ex:
+        futs = {ex.submit(run, k): k for k in keys}
         for i, f in enumerate(as_completed(futs), 1):
             try:
                 out[futs[f]] = f.result()
@@ -200,8 +213,16 @@ def _content_check(opts: dict, checks: tuple, placeholder: bool) -> dict:
     with get_connection() as conn:
         banma_client.ensure_token(conn, client)
     keys = SF.lookup_keys(picked, by_jan=opts["by_jan"])
-    with st.spinner(t(f"斑马の SKU を照会中（{len(keys)} コード）…")):
-        skus = BMR.get_skus(client, keys) if keys else {}
+    lap = {}
+    t0 = time.monotonic()
+    chunks = [tuple(keys[i:i + 50]) for i in range(0, len(keys), 50)]
+    skus: dict = {}
+    for ch, v in _parallel(lambda ch: BMR.get_skus(client, list(ch)), chunks,
+                           t(f"斑马の SKU を照会中（{len(keys)} コード）…"), **_BM).items():
+        if isinstance(v, Exception):
+            raise v          # SKU が取れないと空の判定ができない → チェック失敗として出す
+        skus.update(v)
+    lap["斑马 SKU"] = time.monotonic() - t0
     found, not_found, combos = [], [], 0
     for r in picked:
         s = skus.get(str(r.get("code") or "")) or (opts["by_jan"] and skus.get(str(r.get("jan") or ""))) or None
@@ -214,15 +235,19 @@ def _content_check(opts: dict, checks: tuple, placeholder: bool) -> dict:
     customs: dict = {}
     cus_err: dict[str, str] = {}
     need = [str(s["SKUID"]) for _, s in found] if {"英文名", "HS"} & set(checks) else []
-    if need and opts["source"] == "pg":
+    t0 = time.monotonic()
+    if need and opts["source"] == "pg":   # 写しの範囲（Export・NST 等級 A/B/C/NEW）は写しで決める。範囲外だけ API
+        ranked = {str(s["SKUID"]) for r, s in found if r.get("item_rank") in ("Aランク", "Bランク", "Cランク", "NEW")}
         with get_connection() as conn:
-            customs = BF.mirror_customs(conn, need)
+            customs = BF.mirror_customs(conn, need, ranked)
     rest = [x for x in need if x not in customs]
-    for sid, v in _parallel(lambda sid: BF.get_customs(client, sid), rest, t("斑马の報関情報を照会中…")).items():
+    for sid, v in _parallel(lambda sid: BF.get_customs(client, sid), rest,
+                            t(f"斑马の報関情報を照会中（API {len(rest)} 件）…"), **_BM).items():
         if isinstance(v, Exception):   # その品は報関を判定しない（件数は画面に出す）
             cus_err[sid] = f"{type(v).__name__}: {v}"
         else:
             customs[sid] = v
+    lap["報関"] = time.monotonic() - t0
     rows = []
     for r, s in found:
         sid = str(s["SKUID"])
@@ -236,16 +261,17 @@ def _content_check(opts: dict, checks: tuple, placeholder: bool) -> dict:
                          "note": ("NST の SKUID " + str(r.get("sku_id")) + " ≠ 斑马 " + sid) if str(r.get("sku_id")) != sid
                          else ("報関の照会に失敗: " + cus_err[sid]) if sid in cus_err else ""})
     if rows:
-        _cc_fill_suggestions(rows)
+        lap.update(_cc_fill_suggestions(rows))
         with get_connection() as conn:
             spu = BF.spu_ids(conn, [x["sku_id"] for x in rows])
         for x in rows:
             x["spu_id"] = spu.get(x["sku_id"], "")
     return {"key": (opts, checks, placeholder), "total": len(items), "picked": len(picked), "found": len(found),
-            "not_found": not_found, "combos": combos, "cus_err": len(cus_err), "rows": rows}
+            "not_found": not_found, "combos": combos, "cus_err": len(cus_err), "rows": rows,
+            "n_api_customs": len(rest), "lap": lap}
 
 
-def _cc_fill_suggestions(rows: list[dict]) -> None:
+def _cc_fill_suggestions(rows: list[dict]) -> dict:
     """空の項目に提案を入れる（重量・三辺 = JDL > NST / 画像 = 画像検索 / HS・英文名 = 規則 + AI）。new = 書く候補。"""
     jans = [str(x["item"].get("jan") or "") for x in rows if {"重量", "三辺"} & set(x["probs"])]
     jdl = {}
@@ -257,8 +283,11 @@ def _cc_fill_suggestions(rows: list[dict]) -> None:
         prefix = _cached_prefix_makers()
     except Exception:  # noqa: BLE001
         prefix = {}
+    lap = {}
+    t0 = time.monotonic()
     img_jans = sorted({str(x["item"]["jan"]) for x in rows if "画像" in x["probs"] and x["item"].get("jan")})
-    images = _parallel(image_search.search_jan, img_jans, t("画像を検索中…"))
+    images = _parallel(image_search.search_jan, img_jans, t(f"画像を検索中（{len(img_jans)} 件）…"))
+    lap["画像検索"] = time.monotonic() - t0
     ai_rows, extra = [], {}
     for x in rows:
         it, new, src = x["item"], dict(x["cur"]), []
@@ -281,9 +310,12 @@ def _cc_fill_suggestions(rows: list[dict]) -> None:
             extra[code] = {REG.COL_HS: cus.hs or "", REG.COL_NAME_EN: cus.name_en or ""}
             ai_rows.append(({"型番": code, "アイテム名": str(it["name"]), "メーカー名": str(it.get("maker") or "")}, x))
         x["new"], x["src"] = new, src
-    if ai_rows and hs_ai.is_configured():
-        with st.spinner(t(f"HS を AI でも判定中（{len(ai_rows)} 件）…")):
-            REG.cross_check_hs([r for r, _ in ai_rows], extra, {}, hs_ai.judge)
+    t0 = time.monotonic()
+    if ai_rows and hs_ai.is_configured():   # 25 件ずつの AI 呼び出しを同時 4 本（extra は品ごとに別キー）
+        parts = [tuple(range(i, min(i + hs_ai.BATCH, len(ai_rows)))) for i in range(0, len(ai_rows), hs_ai.BATCH)]
+        _parallel(lambda ix: REG.cross_check_hs([ai_rows[i][0] for i in ix], extra, {}, hs_ai.judge), parts,
+                  t(f"HS を AI でも判定中（{len(ai_rows)} 件）…"))
+    lap["AI 判定"] = time.monotonic() - t0
     for r, x in ai_rows:
         ex = extra[r["型番"]]
         if "HS" in x["probs"] and ex.get(REG.COL_HS):
@@ -292,6 +324,7 @@ def _cc_fill_suggestions(rows: list[dict]) -> None:
         if "英文名" in x["probs"] and ex.get(REG.COL_NAME_EN):
             x["new"]["NameEn"] = ex[REG.COL_NAME_EN]
             x["src"].append("英文名=" + ("AI" if ex.get("hs_basis") == "ai" else "規則"))
+    return lap
 
 
 def _cc_value(col: str, v):
@@ -318,12 +351,14 @@ def _cc_changes(rows: list[dict], recs: list[dict]) -> tuple[list[dict], list[tu
     for x, rec in zip(rows, recs):
         prod, cus = {}, {}
         for col, key in _CC_COLS.items():
+            cur = x["cur"].get(key)
+            if BF._same(rec.get(col), cur):    # 触っていない値（斑马の現値 0 など）は検査も送信もしない
+                continue
             v, err = _cc_value(key, rec.get(col))
             if err:
                 errs.append((str(x["item"]["code"]), err))
                 continue
-            cur = x["cur"].get(key)
-            if v is None or str(v) == str(cur if cur is not None else "").strip():
+            if v is None or BF._same(v, cur):
                 continue
             (cus if key in ("Code", "NameEn") else prod)[key] = v
         if prod or cus:
@@ -353,7 +388,8 @@ def _cc_write(changes: list[dict]) -> list[dict]:
             if stop:
                 r = {"status": "skipped", "message": f"中止（{stop} で回読が一致しなかったため）"}
             else:
-                r = BF.write_product(client, conn, spu, {c["sku_id"]: c["prod"] for c in cs}, codes)
+                r = BF.write_product(client, conn, spu, {c["sku_id"]: c["prod"] for c in cs}, codes,
+                                     expect={c["sku_id"]: c["cur"] for c in cs})
                 if r["status"] == "mismatch":
                     stop = f"SPU {spu}"
             for c in cs:
@@ -366,7 +402,7 @@ def _cc_write(changes: list[dict]) -> list[dict]:
                 continue
             r = BF.write_customs(client, conn, c["sku_id"], str(c["item"]["code"]), c["cus"],
                                  name_cn=str(c["item"].get("name") or ""),
-                                 weight=c["prod"].get("Weight") or c["cur"].get("Weight") or 0)
+                                 weight=c["prod"].get("Weight") or c["cur"].get("Weight") or 0, expect=c["cur"])
             out.append({"型番": c["item"]["code"], "対象": "報関", "結果": r["status"], "内容": r.get("message", "")})
             done += 1
             bar.progress(done / n, text=f"{done}/{n} {c['item']['code']}")
@@ -381,6 +417,11 @@ def _render_content_result(res: dict) -> None:
               f"斑马で照合 {res['found']} 件（見つからない {len(res['not_found'])} · 組合せ品は対象外 {res['combos']}）→ "
               f"空あり {len(rows)} 件（" + " · ".join(f"{k} {v}" for k, v in cnt.items() if k in res["key"][1]) + "）"
               + (f" · 報関の照会失敗 {res['cus_err']} 件（その品は報関を判定していません）" if res["cus_err"] else "")))
+    lap = res.get("lap") or {}
+    st.caption(t("所要: " + " · ".join(f"{k} {v:.0f} 秒" for k, v in lap.items())
+                 + f" · 報関の API 照会 {res.get('n_api_customs', 0)} 件"
+                 + ("（PG 写し 04:00 時点を優先・書く前に斑马の現値を確かめ、チェック時と違えば書きません）"
+                    if res["key"][0]["source"] == "pg" else "")))
     if res["not_found"]:
         with st.expander(t(f"斑马で見つからない {len(res['not_found'])} 件（型番 / JAN）")):
             st.write("・".join(map(str, res["not_found"])))

@@ -132,11 +132,15 @@ def test_page47_content_check_and_write_20261112(page15_offline):
               "dept": "輸出事業", "handling": "取扱中", "inactive": "F", "item_rank": "NEW", "sku_id": "K1",
               "pkg_weight": "45", "pkg_height": "15", "pkg_width": "4", "pkg_depth": "3"},
              {"id": "2", "code": "X2", "jan": "4900000000028", "name": "完全な品", "dept": "輸出事業", "handling": "取扱中",
-              "inactive": "F", "item_rank": "NEW", "sku_id": "K2"}]
+              "inactive": "F", "item_rank": "NEW", "sku_id": "K2"},
+             {"id": "3", "code": "X3", "jan": "", "name": "", "dept": "輸出事業", "handling": "取扱中",
+              "inactive": "F", "item_rank": "NEW", "sku_id": "K3"}]
     skus = {"X1": {"SKUID": "K1", "Code": "X1", "Weight": 1, "Length": 1, "Width": 1, "Height": 1, "Image": "", "Type": "普通"},
             "X2": {"SKUID": "K2", "Code": "X2", "Weight": 80, "Length": 9, "Width": 5, "Height": 3,
-                   "Image": "https://a/2.jpg", "Type": "普通"}}
-    customs = {"K1": None, "K2": {"Code": "330610", "NameEn": "Toothpaste"}}
+                   "Image": "https://a/2.jpg", "Type": "普通"},
+            "X3": {"SKUID": "K3", "Code": "X3", "Weight": 0, "Length": 9, "Width": 5, "Height": 3,
+                   "Image": "https://a/3.jpg", "Type": "普通"}}
+    customs = {"K1": None, "K2": {"Code": "330610", "NameEn": "Toothpaste"}, "K3": {"Code": "330610", "NameEn": "Toothpaste"}}
     prod, cus, queries = [], [], []
     with mock.patch("shared.db.get_connection", mock.MagicMock()), \
             mock.patch.object(NC, "load_choices", return_value=NC.Choices(suppliers=(), middle_by_large={})), \
@@ -151,7 +155,7 @@ def test_page47_content_check_and_write_20261112(page15_offline):
                               return_value={"4900000000011": {"status": "ok", "image_url": "https://img/x1.jpg"}}), \
             mock.patch.object(hs_ai, "is_configured", return_value=False), \
             mock.patch.object(banma_fix, "write_product",
-                              side_effect=lambda c, conn, spu, ch, codes: prod.append((spu, ch)) or {"status": "ok"}), \
+                              side_effect=lambda c, conn, spu, ch, codes, **kw: prod.append((spu, ch, kw)) or {"status": "ok"}), \
             mock.patch.object(banma_fix, "write_customs",
                               side_effect=lambda c, conn, sid, code, new, **kw: cus.append((sid, new, kw))
                               or {"status": "created"}):
@@ -161,11 +165,14 @@ def test_page47_content_check_and_write_20261112(page15_offline):
         at.button(key="p47c_run").click().run()
         assert not at.exception, [e.value for e in at.exception]
         info = " ".join(i.value for i in at.info)
-        assert "条件に合う 2 件" in info and "空あり 1 件" in info and "重量 1" in info and "画像 1" in info
+        assert "条件に合う 3 件" in info and "空あり 2 件" in info and "重量 2" in info and "画像 1" in info
+        assert not at.error                                          # 重量 0（提案なし）は入力エラーにしない
         assert "IS NOT NULL" in queries[0]
         at.button(key="p47c_write").click().run()
     assert not at.exception, [e.value for e in at.exception]
     # 重量 = NST 包装 45g（JDL なし）· 三辺 = NST 15×4×3 · 画像 = 画像検索 · HS・英文名 = 規則（歯磨き）
-    assert prod == [("S1", {"K1": {"Weight": 45, "Length": 15, "Width": 4, "Height": 3, "Image": "https://img/x1.jpg"}})]
+    assert [(spu, ch) for spu, ch, _ in prod] == [
+        ("S1", {"K1": {"Weight": 45, "Length": 15, "Width": 4, "Height": 3, "Image": "https://img/x1.jpg"}})]
+    assert prod[0][2]["expect"]["K1"]["Weight"] == 1 and cus[0][2]["expect"]["Code"] == ""   # 書く直前の照合用
     assert cus and cus[0][0] == "K1" and cus[0][1]["Code"] and cus[0][1]["NameEn"] and cus[0][2]["weight"] == 45
     assert any("ok=2" in s.value for s in at.success)
