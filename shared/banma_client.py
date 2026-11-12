@@ -39,6 +39,13 @@ RETRY_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
 _MARGIN = dt.timedelta(hours=24)    # token 期限先読み更新（TZ ずれ吸収）
 
 
+# 元川→斑马 gateway（華為雲北京）は越境経路のロスで接続・握手が 20〜60 秒張り付く時間帯がある（2026-11-12 実測:
+# 失敗の大半は TCP 段・成功する接続/握手は ≤11 秒）→ GET は 20 秒で切って回数を増やす。書込は非冪等なので 60 秒・再試行なし
+GET_TIMEOUT = 20
+WRITE_TIMEOUT = 60
+GET_RETRIES = 8
+BACKOFF_CAP = 8.0
+
 class BanmaError(RuntimeError):
     def __init__(self, status: int, body: str):
         super().__init__(f"Banma HTTP {status}: {body[:300]}")
@@ -146,7 +153,7 @@ class BanmaClient:
             return self._call(method, path, *args, **kwargs)
 
     def _call(self, method: str, path: str, params: dict | None = None,
-             max_retries: int = 5, body=None):
+             max_retries: int = GET_RETRIES, body=None):
         """→ 応答 envelope の Data。再試行判据は 2026-08-28 全 ingester 統一形。
 
         body（dict/list）は JSON で送り、署名にも同じ文字列を入れる。**GET 以外は再試行しない**
@@ -155,6 +162,7 @@ class BanmaClient:
         payload = json.dumps(body, ensure_ascii=False) if body is not None else ""
         if method.upper() != "GET":
             max_retries = 1
+        timeout = GET_TIMEOUT if method.upper() == "GET" else WRITE_TIMEOUT
         query = urllib.parse.urlencode(params, doseq=True, safe=":,-T") \
             if params else ""
         url = GATEWAY + path + (("?" + query) if query else "")
@@ -175,14 +183,14 @@ class BanmaClient:
             req = urllib.request.Request(url, method=method.upper(), headers=headers,
                                          data=payload.encode("utf-8") if payload else None)
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     data = json.loads(resp.read())
             except urllib.error.HTTPError as e:
                 # ⚠️ HTTPError ⊂ URLError ⊂ OSError なのでこの branch が必ず先
                 text = e.read().decode("utf-8", "replace")
                 if e.code in RETRY_HTTP_STATUS:
                     last_err = e
-                    time.sleep(float(2 ** attempt))
+                    time.sleep(min(BACKOFF_CAP, float(2 ** attempt)))
                     continue
                 if e.code == 401:
                     raise BanmaAuthError(e.code, text) from e
@@ -193,7 +201,7 @@ class BanmaClient:
                 last_err = e
                 if attempt + 1 >= max_retries:
                     break
-                time.sleep(float(2 ** attempt))
+                time.sleep(min(BACKOFF_CAP, float(2 ** attempt)))
                 continue
             if not data.get("Success"):
                 code = int(data.get("Code") or 0)

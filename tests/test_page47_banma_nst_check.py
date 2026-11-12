@@ -65,8 +65,9 @@ def test_page47_skuid_check_and_csv_20261112(page15_offline):
             mock.patch.object(nst_suiteql, "suiteql_all", side_effect=fake_all), \
             mock.patch.object(banma_client.BanmaClient, "from_env", return_value=object()), \
             mock.patch.object(banma_client, "ensure_token"), \
-            mock.patch.object(BMR, "find_skus", side_effect=lambda c, keys: asked.append(keys)
-                              or {"X1": "101", "4900000000042": "104", "X5": "105"}):
+            mock.patch.object(BMR, "get_skus", side_effect=lambda c, keys: asked.append(keys)
+                              or {k: {"SKUID": v} for k, v in {"X1": "101", "4900000000042": "104", "X5": "105"}.items()
+                                  if k in keys}):
         at = AppTest.from_file(str(PAGE), default_timeout=60)
         at.session_state["__auth_ok"] = True
         at.run()
@@ -108,7 +109,7 @@ def test_page47_skuid_register_misses_20261112(page15_offline):
             mock.patch.object(nst_suiteql, "suiteql_all", side_effect=lambda q: blank if "IS NULL" in q else []), \
             mock.patch.object(banma_client.BanmaClient, "from_env", return_value=object()), \
             mock.patch.object(banma_client, "ensure_token"), \
-            mock.patch.object(BMR, "find_skus", return_value={}), \
+            mock.patch.object(BMR, "get_skus", return_value={}), \
             mock.patch.object(SF, "load_ledger", return_value=ledger), \
             mock.patch.object(REG, "fill_images", return_value={"待上图": 1}), \
             mock.patch.object(hs_ai, "is_configured", return_value=True), \
@@ -219,7 +220,7 @@ def test_page47_zh_ja_ui_text_20261112(page15_offline):
                                   side_effect=lambda q: blank if "IS NULL" in q else [{"code": "OLD", "sku_id": "105"}]), \
                 mock.patch.object(banma_client.BanmaClient, "from_env", return_value=object()), \
                 mock.patch.object(banma_client, "ensure_token"), \
-                mock.patch.object(BMR, "find_skus", return_value={"X1": "101", "X5": "105"}):
+                mock.patch.object(BMR, "get_skus", return_value={"X1": {"SKUID": "101"}, "X5": {"SKUID": "105"}}):
             at = AppTest.from_file(str(PAGE), default_timeout=60)
             at.session_state["__auth_ok"] = True
             at.session_state["lang"] = lang
@@ -263,3 +264,42 @@ def test_page47_parallel_workers_see_session_language():
         at.run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["res"] == {1: "ja", 2: "ja", 3: "ja"}
+
+
+def test_page47_failed_banma_chunk_is_unchecked_and_retryable_20261112(page15_offline):
+    """元川→斑马の越境経路ロス（2026-11-12）: 照会が落ちた品は「未チェック」（斑马に無し にしない＝重複登録を防ぐ）。
+    チェック全体は止めず、「未チェックだけ再照会」で結果に足す。"""
+    from shared import banma_client, nst_suiteql
+    from shared import banma_register as BMR
+    st.cache_data.clear()
+    items = [{"id": str(i), "code": f"X{i}", "jan": "", "name": f"名{i}", "dept": "輸出事業", "handling": "取扱中",
+              "inactive": "F", "item_rank": None} for i in range(1, 4)]
+    state = {"down": True}
+
+    def get_skus(c, keys):
+        if state["down"] and "X2" in keys:
+            raise banma_client.BanmaError(0, "retries exhausted: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING]>")
+        return {k: {"SKUID": {"X1": "101", "X2": "102"}[k]} for k in keys if k in ("X1", "X2")}
+    with mock.patch("shared.db.get_connection", mock.MagicMock()), \
+            mock.patch.object(NC, "load_choices", return_value=NC.Choices(suppliers=(), middle_by_large={})), \
+            mock.patch.object(nst_suiteql, "suiteql_all", side_effect=lambda q: items if "IS NULL" in q else []), \
+            mock.patch.object(banma_client.BanmaClient, "from_env", return_value=object()), \
+            mock.patch.object(banma_client, "ensure_token"), \
+            mock.patch.object(BMR, "get_skus", side_effect=get_skus):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.session_state["lang"] = "ja"
+        at.run()
+        at.button(key="p47s_run").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        assert not any("チェックに失敗" in e.value for e in at.error)          # 全体は止まらない
+        warn = " ".join(w.value for w in at.warning)
+        assert "照会できなかった" in warn
+        res = at.session_state["p47s_result"]
+        assert [r["code"] for r in res["unchecked"]] and not any(m["code"] in [r["code"] for r in res["unchecked"]]
+                                                                  for m in res["misses"])   # 未チェックは「無し」に入れない
+        state["down"] = False
+        at.button(key="p47s_retry").click().run()
+        res = at.session_state["p47s_result"]
+        assert res["unchecked"] == []
+        assert sorted(h["code"] for h in res["hits"]) == ["X1", "X2"] and [m["code"] for m in res["misses"]] == ["X3"]

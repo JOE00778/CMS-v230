@@ -84,6 +84,28 @@ def _parallel(fn, keys: list, text: str, *, workers: int = 4, gap: float = 0.0) 
     return out
 
 
+def _bm_skus(client, keys: list[str], label: str) -> tuple[dict, set[str]]:
+    """斑马 SKU を 50 件ずつ並列照会 → (コード→SKU, 照会できなかったコード)。
+    元川→斑马は越境経路のロスで塊ごと落ちることがある（2026-11-12 実測）→ 1 塊の失敗でチェック全体を止めない。"""
+    chunks = [tuple(keys[i:i + 50]) for i in range(0, len(keys), 50)]
+    got: dict = {}
+    failed: set[str] = set()
+    for ch, v in _parallel(lambda ch: BMR.get_skus(client, list(ch)), chunks, label, **_BM).items():
+        if isinstance(v, Exception):
+            failed.update(ch)
+        else:
+            got.update(v)
+    return got, failed
+
+
+def _unchecked(r: dict, got: dict, failed: set[str], by_jan: bool) -> bool:
+    """照会できなかった品（斑马に無いとは言えない → 「無し」にも「有り」にも入れない）。"""
+    code, jan = str(r.get("code") or ""), str(r.get("jan") or "")
+    if code in failed:
+        return True
+    return bool(by_jan and jan and jan in failed and not got.get(code))
+
+
 def _issues_df(issues) -> pd.DataFrame:
     return pd.DataFrame([{t("行"): i.row or "", t("型番 / JAN"): i.jan,
                           t("区分"): "❌ error" if i.level == "error" else "⚠️ warn",
@@ -97,30 +119,38 @@ _SK_SOURCES = {"api": "斑马 API（実時間・遅いと 50 件で 1 分ほど�
 _SK_PKG = ["パッケージ重量(g)", "パッケージ高さ(cm)", "パッケージ幅(cm)", "パッケージ奥行(cm)"]
 
 
-def _skuid_check(opts: dict) -> dict:
-    """NST の SKUID 空 → 条件で絞る → 斑马に照会 → (hits, conflicts, misses)。照会の失敗は例外のまま（全件「無し」にしない）。"""
+def _skuid_check(opts: dict, only: set[str] | None = None) -> dict:
+    """NST の SKUID 空 → 条件で絞る → 斑马に照会 → (hits, conflicts, misses, unchecked)。
+    照会できなかった品は unchecked（「斑马に無し」にしない＝重複登録を防ぐ）。only = その型番だけ再照会。"""
     with st.spinner(t("NST で SKUID が空の品を取得中…")):
         items = SF.blank_items(nst_suiteql.suiteql_all, days=SF.PERIODS[opts["period"]])
     picked = SF.pick(items, depts=opts["depts"], handlings=opts["handlings"], states=opts["states"],
                      ranks=opts["ranks"])
+    n_picked = len(picked)
+    if only is not None:
+        picked = [r for r in picked if str(r.get("code") or "") in only]
     keys = SF.lookup_keys(picked, by_jan=opts["by_jan"])
     bm: dict[str, str] = {}
+    failed: set[str] = set()
     if keys:
-        with st.spinner(t("斑马に {n} コードを照会中（{src}）…").format(n=len(keys), src=t(_SK_SOURCES[opts["source"]]))):
-            if opts["source"] == "api":
-                client = banma_client.BanmaClient.from_env()
-                with get_connection() as conn:
-                    banma_client.ensure_token(conn, client)
-                bm = BMR.find_skus(client, keys)
-            else:
-                with get_connection() as conn:
-                    bm = SF.mirror_skus(conn, keys)
+        label = t("斑马に {n} コードを照会中（{src}）…").format(n=len(keys), src=t(_SK_SOURCES[opts["source"]]))
+        if opts["source"] == "api":
+            client = banma_client.BanmaClient.from_env()
+            with get_connection() as conn:
+                banma_client.ensure_token(conn, client)
+            got, failed = _bm_skus(client, keys, label)
+            bm = {c: str(x.get("SKUID") or "") for c, x in got.items()}
+        else:
+            with st.spinner(label), get_connection() as conn:
+                bm = SF.mirror_skus(conn, keys)
+    unchecked = [r for r in picked if _unchecked(r, bm, failed, opts["by_jan"])]
+    picked = [r for r in picked if r not in unchecked]
     found = sorted({v for v in bm.values() if v})
     with st.spinner(t("同じ SKUID を持つ NST の品を確認中…")):
         in_use = SF.skuids_in_use(nst_suiteql.suiteql_all, found) if found else {}
     hits, conflicts, misses = SF.match(picked, bm, by_jan=opts["by_jan"], in_use=in_use)
-    return {"opts": opts, "total": len(items), "picked": len(picked), "hits": hits, "conflicts": conflicts,
-            "misses": misses}
+    return {"opts": opts, "total": len(items), "picked": n_picked, "hits": hits, "conflicts": conflicts,
+            "misses": misses, "unchecked": unchecked}
 
 
 def _skuid_prepare(misses: list[dict]) -> dict:
@@ -208,28 +238,29 @@ def _cc_suggest(item: dict, jdl: dict | None) -> dict:
     return out
 
 
-def _content_check(opts: dict, checks: tuple, placeholder: bool) -> dict:
-    """NST で SKUID がある品（条件で絞る）→ 斑马 SKU（型番 / JAN）→ 報関 → 空の品だけ・提案を入れた行。"""
+def _content_check(opts: dict, checks: tuple, placeholder: bool, only: set[str] | None = None) -> dict:
+    """NST で SKUID がある品（条件で絞る）→ 斑马 SKU（型番 / JAN）→ 報関 → 空の品だけ・提案を入れた行。
+    斑马に照会できなかった品は unchecked（チェック全体は止めない）。only = その型番だけ再照会。"""
     with st.spinner(t("NST で SKUID がある品を取得中…")):
         items = SF.blank_items(nst_suiteql.suiteql_all, days=SF.PERIODS[opts["period"]], has_skuid=True)
     picked = SF.pick(items, depts=opts["depts"], handlings=opts["handlings"], states=opts["states"],
                      ranks=opts["ranks"])
+    n_picked = len(picked)
+    if only is not None:
+        picked = [r for r in picked if str(r.get("code") or "") in only]
     client = banma_client.BanmaClient.from_env()
     with get_connection() as conn:
         banma_client.ensure_token(conn, client)
     keys = SF.lookup_keys(picked, by_jan=opts["by_jan"])
     lap = {}
     t0 = time.monotonic()
-    chunks = [tuple(keys[i:i + 50]) for i in range(0, len(keys), 50)]
-    skus: dict = {}
-    for ch, v in _parallel(lambda ch: BMR.get_skus(client, list(ch)), chunks,
-                           t("斑马の SKU を照会中（{n} コード）…").format(n=len(keys)), **_BM).items():
-        if isinstance(v, Exception):
-            raise v          # SKU が取れないと空の判定ができない → チェック失敗として出す
-        skus.update(v)
+    skus, failed = _bm_skus(client, keys, t("斑马の SKU を照会中（{n} コード）…").format(n=len(keys)))
     lap["斑马 SKU"] = time.monotonic() - t0
+    unchecked = [r["code"] for r in picked if _unchecked(r, skus, failed, opts["by_jan"])]
     found, not_found, combos = [], [], 0
     for r in picked:
+        if r["code"] in unchecked:
+            continue
         s = skus.get(str(r.get("code") or "")) or (opts["by_jan"] and skus.get(str(r.get("jan") or ""))) or None
         if not s:
             not_found.append(r["code"])
@@ -272,9 +303,9 @@ def _content_check(opts: dict, checks: tuple, placeholder: bool) -> dict:
             spu = BF.spu_ids(conn, [x["sku_id"] for x in rows])
         for x in rows:
             x["spu_id"] = spu.get(x["sku_id"], "")
-    return {"key": (opts, checks, placeholder), "total": len(items), "picked": len(picked), "found": len(found),
+    return {"key": (opts, checks, placeholder), "total": len(items), "picked": n_picked, "found": len(found),
             "not_found": not_found, "combos": combos, "cus_err": len(cus_err), "rows": rows,
-            "n_api_customs": len(rest), "lap": lap}
+            "n_api_customs": len(rest), "lap": lap, "unchecked": unchecked}
 
 
 def _cc_fill_suggestions(rows: list[dict]) -> dict:
@@ -431,6 +462,9 @@ def _render_content_result(res: dict) -> None:
                + " · " + t("報関の API 照会 {n} 件").format(n=res.get("n_api_customs", 0))
                + (t("（PG 写し 04:00 時点を優先・書く前に斑马の現値を確かめ、チェック時と違えば書きません）")
                   if res["key"][0]["source"] == "pg" else ""))
+    if res.get("unchecked"):
+        _retry_block(res["unchecked"], "p47c_retry", lambda codes: _merge_content(
+            res, _content_check(*res["key"], only=set(codes))), "p47c_result", ("p47c_reg",))
     if res["not_found"]:
         with st.expander(t("斑马で見つからない {n} 件（型番 / JAN）").format(n=len(res["not_found"]))):
             st.write("・".join(map(str, res["not_found"])))
@@ -483,6 +517,35 @@ def _render_content_result(res: dict) -> None:
                                mime=_XLSX_MIME, key="p47c_xlsx")
         if any(r.get("excel") and "Image" in r["excel"]["prod"] for r in reg):
             st.info(t("画像を API で書かなかった品は斑马の画面で入れてください（上の表の skipped）"))
+
+
+def _retry_block(codes: list[str], key: str, rerun, state_key: str, drop: tuple = ()) -> None:
+    """斑马に照会できなかった品の件数・型番と「未チェックだけ再照会」ボタン。再照会の結果は今の結果に足す。"""
+    st.warning(t("⚠️ 斑马に照会できなかった {n} 件は未チェック（斑马との通信エラー・時間をおいて再照会）: {codes}").format(
+        n=len(codes), codes="・".join(map(str, codes[:30])) + (" …" if len(codes) > 30 else "")))
+    if st.button(t("🔁 未チェックの {n} 件だけ再照会").format(n=len(codes)), key=key):
+        try:
+            st.session_state[state_key] = rerun(codes)
+        except Exception as e:  # noqa: BLE001
+            st.error(t("❌ チェックに失敗（何も出力していません）: {err}").format(err=f"{type(e).__name__}: {e}"))
+            return
+        for k in drop:   # 斑马に無し の品が増えたら登録準備は作り直し
+            st.session_state.pop(k, None)
+        st.rerun()
+
+
+def _merge_skuid(res: dict, new: dict) -> dict:
+    return {**res, **{k: res[k] + new[k] for k in ("hits", "conflicts", "misses")}, "unchecked": new["unchecked"]}
+
+
+def _merge_content(res: dict, new: dict) -> dict:
+    lap = dict(res.get("lap") or {})
+    for k, v in (new.get("lap") or {}).items():
+        lap[k] = lap.get(k, 0) + v
+    return {**res, "rows": res["rows"] + new["rows"], "found": res["found"] + new["found"],
+            "not_found": res["not_found"] + new["not_found"], "combos": res["combos"] + new["combos"],
+            "cus_err": res["cus_err"] + new["cus_err"], "n_api_customs": res.get("n_api_customs", 0)
+            + new.get("n_api_customs", 0), "lap": lap, "unchecked": new["unchecked"]}
 
 
 def _render_skuid_tab() -> None:
@@ -558,6 +621,9 @@ def _render_skuid_result(res: dict) -> None:
                 period=t(res["opts"]["period"]), total=res["total"], picked=res["picked"],
                 found=len(hits) + len(conflicts), n_code=n_code, n_jan=len(hits) + len(conflicts) - n_code,
                 dup=len(conflicts), miss=len(misses)))
+    if res.get("unchecked"):
+        _retry_block([r["code"] for r in res["unchecked"]], "p47s_retry", lambda codes: _merge_skuid(
+            res, _skuid_check(res["opts"], only=set(codes))), "p47s_result", ("p47s_prep", "p47s_editor"))
     if hits:
         st.subheader(t("✅ 斑马に有り（{n} 件・CSV に出す）").format(n=len(hits)))
         st.dataframe(pd.DataFrame([{t("型番"): h["code"], t("JANコード"): h["jan"], t("アイテム名"): h["name"],

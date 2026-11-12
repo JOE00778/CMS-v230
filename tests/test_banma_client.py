@@ -384,3 +384,24 @@ def test_post_body_is_signed_and_sent_without_retry(monkeypatch):
     assert req.data == payload.encode("utf-8") and req.get_method() == "POST"
     ts = req.get_header("X-banma-timestamp")
     assert req.get_header("X-banma-sign") == c.sign_params("POST", "/v1/product/", {}, ts, payload)
+
+
+def test_get_short_timeout_more_retries_capped_backoff_20261112(monkeypatch):
+    """元川→斑马は越境経路のロスで接続/握手が 20〜60 秒張り付く（成功分は ≤11 秒・2026-11-12 実測）
+    → GET は 20 秒で切って 8 回まで・待ちは最大 8 秒。書込（POST/PUT）は 60 秒・再試行なし（非冪等）。"""
+    import urllib.error
+    seen, sleeps = [], []
+    def fake_urlopen(req, timeout=None):
+        seen.append((req.get_method(), timeout))
+        raise urllib.error.URLError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+    monkeypatch.setattr(B.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(B.time, "sleep", lambda s: sleeps.append(s))
+    c = _client()
+    with pytest.raises(B.BanmaError, match="retries exhausted"):
+        c.call("GET", "/v1/product/sku", {"Code": "X"})
+    assert seen == [("GET", 20)] * 8
+    assert max(sleeps) <= 8 and len([s for s in sleeps if s >= 1]) >= 7
+    seen.clear()
+    with pytest.raises(B.BanmaError):
+        c.call("POST", "/v1/product/", body={"a": 1})
+    assert seen == [("POST", 60)]
