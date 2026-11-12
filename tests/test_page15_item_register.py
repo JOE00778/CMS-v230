@@ -420,10 +420,13 @@ def test_page15_skuid_tab_register_misses_20261112(page15_offline):
     blank = [{"id": "1", "code": "X1", "jan": "4900000000011", "name": "NST の名前", "dept": "輸出事業",
               "handling": "取扱中", "inactive": "F", "item_rank": None, "cost": "120", "pkg_weight": "45"},
              {"id": "2", "code": "X2", "jan": "4900000000028", "name": "名2", "dept": "輸出事業",
-              "handling": "取扱中", "inactive": "F", "item_rank": None, "cost": "300"}]
+              "handling": "取扱中", "inactive": "F", "item_rank": None, "cost": "300"},
+             {"id": "3", "code": "X3", "jan": "4900000000035", "name": "名3", "dept": "輸出事業",
+              "handling": "取扱中", "inactive": "F", "item_rank": None}]
     ledger = {"X2": {"payload": {"アイテム名": "台帳の名前", "商品原価": "377"},
-                     "bm": {"海关编码": "950300", "英文名称": "Toy", "图片URL": "https://img/x2.jpg"}}}
-    sent = []
+                     "bm": {"海关编码": "950300", "英文名称": "Toy", "图片URL": "https://img/x2.jpg"}},
+              "X3": {"payload": {"アイテム名": "台帳 HS なし"}, "bm": {"海关编码": ""}}}
+    sent, ai = [], []
 
     def fake_register(client, rows, record=None, on_progress=None):
         sent.extend(rows)
@@ -437,7 +440,9 @@ def test_page15_skuid_tab_register_misses_20261112(page15_offline):
             mock.patch.object(BMR, "find_skus", return_value={}), \
             mock.patch.object(SF, "load_ledger", return_value=ledger), \
             mock.patch.object(REG, "fill_images", return_value={"待上图": 1}), \
-            mock.patch.object(hs_ai, "is_configured", return_value=False), \
+            mock.patch.object(hs_ai, "is_configured", return_value=True), \
+            mock.patch.object(REG, "cross_check_hs", side_effect=lambda rows, *a: ai.extend(REG.item_key(r) for r in rows)
+                              or []), \
             mock.patch.object(BMR, "register_all", side_effect=fake_register):
         at = AppTest.from_file(str(PAGE), default_timeout=60)
         at.session_state["__auth_ok"] = True
@@ -450,5 +455,7 @@ def test_page15_skuid_tab_register_misses_20261112(page15_offline):
     by = {r["型番"]: r for r in sent}
     assert by["X2"]["アイテム名"] == "台帳の名前" and by["X2"]["_hs"] == "950300" and by["X2"]["_image_url"] == "https://img/x2.jpg"
     assert by["X1"]["アイテム名"] == "NST の名前" and by["X1"]["商品原価"] == "120" and by["X1"]["パッケージ重量(g)"] == "45"
+    assert sorted(ai) == ["X1", "X3"]                 # AI = NST の品 + 台帳でも HS 空の品（台帳の HS は触らない）
+    assert any("1 g で登録" in w.value for w in at.warning)        # X2・X3 は重量なし
     dl = [d for d in at.get("download_button") if "SKUID 更新 CSV" in d.proto.label]
-    assert dl and "（2 件）" in dl[0].proto.label
+    assert dl and "（3 件）" in dl[0].proto.label

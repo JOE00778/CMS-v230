@@ -605,12 +605,14 @@ def _skuid_prepare(misses: list[dict]) -> dict:
     if need_img:
         with st.spinner(t(f"画像を探しています（{len(need_img)} 件）…")):
             stats["images"] = REG.fill_images(need_img, extra, _search_image)
-    nst_src = [r for r in rows if extra[REG.item_key(r)]["source"] == "NST"]
-    if nst_src and hs_ai.is_configured():
-        with st.spinner(t(f"HS を AI でも判定中（{len(nst_src)} 件）…")):
-            issues = REG.cross_check_hs(nst_src, extra, stats, hs_ai.judge)
+    # AI 突合 = NST の値で作った品 + 台帳でも HS が空の品（台帳の HS は人が確認済みなので触らない）
+    need_ai = [r for r in rows if extra[REG.item_key(r)]["source"] == "NST" or not extra[REG.item_key(r)].get(REG.COL_HS)]
+    if need_ai and hs_ai.is_configured():
+        with st.spinner(t(f"HS を AI でも判定中（{len(need_ai)} 件）…")):
+            issues = REG.cross_check_hs(need_ai, extra, stats, hs_ai.judge)
+    n_nst = sum(e["source"] == "NST" for e in extra.values())
     return {"rows": rows, "extra": extra, "issues": issues, "stats": stats,
-            "n_ledger": len(rows) - len(nst_src), "n_nst": len(nst_src)}
+            "n_ledger": len(rows) - n_nst, "n_nst": n_nst}
 
 
 def _skuid_frame(prep: dict) -> pd.DataFrame:
@@ -736,6 +738,9 @@ def _render_skuid_tab() -> None:
                     for r in recs]
             no_name = [r["型番"] for r in rows if not r["アイテム名"]]
             no_cus = sum(not r[REG.COL_HS] or not r[REG.COL_NAME_EN] for r in rows)
+            no_wt = sum(not str(r["パッケージ重量(g)"] or "").strip() for r in rows)
+            if no_wt:
+                st.warning(t(f"⚠️ パッケージ重量(g) が空の {no_wt} 件は 1 g で登録されます（分かれば表に入れてください）"))
             if no_name:
                 st.error(t(f"❌ アイテム名が空の {len(no_name)} 件は登録しません: {'・'.join(no_name[:20])}"))
             if no_cus:
