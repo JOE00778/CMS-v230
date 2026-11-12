@@ -1,0 +1,134 @@
+"""shared/banma_fix（page15 斑马登録内容チェック・書き戻し）の単体テスト — 網・凭証不要。"""
+from __future__ import annotations
+
+import copy
+import io
+
+from openpyxl import load_workbook
+
+from shared import banma_fix as BF
+from shared.item_register import PLACEHOLDER_IMAGE_URL
+
+
+class _Conn:
+    def __init__(self, fail_insert=False):
+        self.sql, self.fail_insert = [], fail_insert
+
+    def execute(self, sql, params=()):
+        if self.fail_insert and sql.startswith("INSERT"):
+            raise RuntimeError("relation banma.cms_write_log does not exist")
+        self.sql.append((sql, params))
+        return self
+
+    def fetchone(self):
+        return {"id": 7}
+
+    def fetchall(self):
+        return []
+
+    def commit(self):
+        pass
+
+
+def _product(desc="", pack=None):
+    return {"SPU": {"SPUID": "S1", "Code": "4900000000011", "Title": "名", "Image": "", "DeveloperID": 5},
+            "Descriptions": {"Html": desc, "Text": "", "Short": ""}, "Seo": None, "PackMaterials": pack or [],
+            "SKUs": [{"SKUID": "K1", "Code": "4900000000011", "Image": "", "Weight": 1, "Length": 1, "Width": 1,
+                      "Height": 1, "CostPrice": 377, "UpdateTime": "t0"},
+                     {"SKUID": "K2", "Code": "4900000000011_2", "Image": "https://a/2.jpg", "Weight": 300,
+                      "Length": 10, "Width": 8, "Height": 6, "CostPrice": 754, "UpdateTime": "t0"}],
+            "Options": [], "Images": [], "Requirements": [], "Sources": [], "Tags": [], "Suppliers": []}
+
+
+class _Client:
+    """斑马の振る舞いを真似る: PUT body の SKU 項目を保存（server_hook で暗黙の変更も再現）。"""
+
+    def __init__(self, product, customs=None, server_hook=None):
+        self.p, self.customs, self.hook, self.calls = product, customs, server_hook, []
+
+    def call(self, method, path, params=None, body=None):
+        self.calls.append((method, path, copy.deepcopy(body)))
+        if path.endswith("/customs"):
+            if method == "GET":
+                if self.customs is None:
+                    raise RuntimeError("Banma HTTP 404: NotFound")
+                return {"Customs": copy.deepcopy(self.customs)}
+            self.customs = {**(self.customs or {}), **body, "UpdateTime": "t1"}
+            return {}
+        if method == "GET":
+            return {"Product": copy.deepcopy(self.p)}
+        skus = {s["SKUID"]: s for s in body["Skus"]}
+        for s in self.p["SKUs"]:
+            s.update(skus[s["SKUID"]])
+            s["UpdateTime"] = "t1"
+        self.p["SPU"]["Image"] = body["Spu"].get("Image")
+        self.p["Images"] = [{"ID": 99, **i} for i in body["Images"]]
+        if self.hook:
+            self.hook(self.p)
+        return {}
+
+
+def test_problems_blank_and_placeholder_20261112():
+    sku = {"Weight": 1, "Length": 1, "Width": 1, "Height": 1, "Image": PLACEHOLDER_IMAGE_URL}
+    assert BF.problems(sku, None, checks=BF.CHECKS, placeholder=True) == ["重量", "三辺", "画像", "英文名", "HS"]
+    assert BF.problems(sku, {"Code": "330510", "NameEn": "Shampoo"}, checks=BF.CHECKS, placeholder=False) == []
+    sku = {"Weight": 0, "Length": 12, "Width": 0, "Height": 3, "Image": ""}
+    assert BF.problems(sku, {"Code": "33051", "NameEn": "-"}, checks=("重量", "画像", "HS"), placeholder=False) \
+        == ["重量", "画像", "HS"]
+
+
+def test_write_product_skips_when_description_or_pack():
+    for p in (_product(desc="<p>説明</p>"), _product(pack=[{"ID": 1}])):
+        c, conn = _Client(p), _Conn()
+        r = BF.write_product(c, conn, "S1", {"K1": {"Weight": 80}}, "4900000000011")
+        assert r["status"] == "skipped" and not any(m == "PUT" for m, *_ in c.calls) and not conn.sql
+
+
+def test_write_product_ok_keeps_other_sku_and_spu_fields():
+    c, conn = _Client(_product()), _Conn()
+    r = BF.write_product(c, conn, "S1", {"K1": {"Weight": 80, "Length": 12, "Width": 8, "Height": 3,
+                                                 "Image": "https://img/x.jpg"}}, "4900000000011")
+    assert r == {"status": "ok", "message": ""}
+    put = next(b for m, _, b in c.calls if m == "PUT")
+    assert put["Spu"]["DeveloperID"] == 5                               # 回送しないと 0 にされる（10/07）
+    assert put["Skus"][1]["Weight"] == 300 and put["Skus"][1]["CostPrice"] == 754   # 同 SPU の他 SKU も回送
+    assert put["Spu"]["Image"] == "https://img/x.jpg" and put["Images"] == [{"Src": "https://img/x.jpg", "Sort": 0}]
+    assert conn.sql[0][0].startswith("INSERT") and "ok" in conn.sql[-1][1]     # 書く前に台帳 → 結果
+
+
+def test_write_product_mismatch_when_server_changes_other_fields():
+    def hook(p):
+        p["SPU"]["DeveloperID"] = 0
+        p["SKUs"][1]["CostPrice"] = 0
+    c, conn = _Client(_product(), server_hook=hook), _Conn()
+    r = BF.write_product(c, conn, "S1", {"K1": {"Weight": 80}}, "x")
+    assert r["status"] == "mismatch" and "DeveloperID" in r["message"] and "CostPrice" in r["message"]
+
+
+def test_write_product_no_log_no_write_and_unknown_sku():
+    c = _Client(_product())
+    assert BF.write_product(c, _Conn(fail_insert=True), "S1", {"K1": {"Weight": 80}}, "x")["status"] == "fail"
+    assert BF.write_product(c, _Conn(), "S1", {"K9": {"Weight": 80}}, "x")["status"] == "fail"
+    assert not any(m == "PUT" for m, *_ in c.calls)
+
+
+def test_write_customs_put_keeps_fields_and_post_needs_both():
+    cur = {"SKUID": "K1", "NameCn": "名", "NameEn": "-", "Code": "", "Weight": 80, "Material": "m", "Purpose": "p"}
+    c = _Client(_product(), customs=dict(cur))
+    r = BF.write_customs(c, _Conn(), "K1", "4900000000011", {"Code": "330510", "NameEn": "Shampoo"})
+    assert r["status"] == "ok"
+    body = next(b for m, _, b in c.calls if m == "PUT")
+    assert body["Weight"] == 80 and body["Material"] == "m" and body["NameCn"] == "名" and body["Code"] == "330510"
+    c = _Client(_product(), customs=None)
+    r = BF.write_customs(c, _Conn(), "K1", "4900000000011", {"Code": "330510"})
+    assert r["status"] == "skipped" and not any(m in ("PUT", "POST") for m, *_ in c.calls)
+    r = BF.write_customs(c, _Conn(), "K1", "4900000000011", {"Code": "330510", "NameEn": "Shampoo"},
+                         name_cn="名", weight=80)
+    assert r["status"] == "created" and next(m for m, *_ in c.calls if m in ("PUT", "POST")) == "POST"
+
+
+def test_dims_xlsx_template():
+    wb = load_workbook(io.BytesIO(BF.dims_xlsx([{"SKU编码": "4900000000011", "重量(g)": 80, "长(cm)": 12,
+                                                  "宽(cm)": 8, "高(cm)": 3}])))
+    rows = list(wb.active.values)
+    assert rows[0][0] == "SKU编码" and rows[1] == ("4900000000011", None, 80, 12, 8, 3)

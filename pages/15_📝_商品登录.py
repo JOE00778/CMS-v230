@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 import re
 import zipfile
 from datetime import datetime
@@ -35,6 +36,7 @@ from data_warehouse.templates import item_entry_form as FORM
 from data_warehouse.templates import nst_item_master as TPL
 from data_warehouse.templates import jd_bm_item_master as JBM
 from shared import banma_client, hs_ai, hs_classify, image_search, jan_web, nst_suiteql
+from shared import banma_fix as BF
 from shared import banma_register as BMR
 from shared import skuid_fill as SF
 from shared import item_register as REG
@@ -641,10 +643,287 @@ def _skuid_register(rows: list[dict]) -> None:
     st.session_state["p15s_reg"] = {"rows": results}
 
 
+# ── 🩺 斑马登録内容チェック（Boss 2026-11-12「三边・重量・清关英文・HScode・图片 为空的也检查，CMS 上修改后回传到斑马」）
+# 書き戻しは shared/banma_fix（報関 = SKU 単位 API / 三辺・重量・画像 = SPU 丸ごと PUT・描述/包材ありの SPU は書かない）
+
+_CC_KEYS = ["p15c_result", "p15c_reg", "p15c_editor"]
+_CC_COLS = {"重量(g)": "Weight", "長(cm)": "Length", "幅(cm)": "Width", "高(cm)": "Height", "画像URL": "Image",
+            "HS": "Code", "英文名": "NameEn"}
+_CC_INT = ("Weight", "Length", "Width", "Height")
+_JDL_SQL = ("SELECT jan, wms_gross_weight_g, wms_length_mm, wms_width_mm, wms_height_mm FROM jdl.v_goods_dimensions "
+            "WHERE jan IN ({})")
+
+
+def _cc_suggest(item: dict, jdl: dict | None) -> dict:
+    """重量・三辺の提案（page46 と同じ: 重量 JDL 実測 > NST 包装重量・倍率と異常値の閘門 / 三辺 JDL 実測 > NST 包装寸法）。"""
+    from shared.banma_dims import _single_weight, to_cm
+    out = {}
+    w, src, _ = _single_weight((jdl or {}).get("wms_gross_weight_g"), item.get("pkg_weight"))
+    if w:
+        out["Weight"] = (w, src)
+    d = to_cm(tuple((jdl or {}).get(k) for k in ("wms_length_mm", "wms_width_mm", "wms_height_mm")))
+    if d:
+        out["dims"] = (d, "JDL")
+    else:
+        try:
+            n = tuple(sorted((math.ceil(float(item.get(k) or 0)) for k in ("pkg_height", "pkg_width", "pkg_depth")),
+                             reverse=True))
+        except ValueError:
+            n = ()
+        if n and all(x > 0 for x in n) and n not in BF.D_PH:
+            out["dims"] = (n, "NST")
+    return out
+
+
+def _content_check(opts: dict, checks: tuple, placeholder: bool) -> dict:
+    """NST で SKUID がある品（条件で絞る）→ 斑马 SKU（型番 / JAN）→ 報関 → 空の品だけ・提案を入れた行。"""
+    with st.spinner(t("NST で SKUID がある品を取得中…")):
+        items = SF.blank_items(nst_suiteql.suiteql_all, days=SF.PERIODS[opts["period"]], has_skuid=True)
+    picked = SF.pick(items, depts=opts["depts"], handlings=opts["handlings"], states=opts["states"],
+                     ranks=opts["ranks"])
+    client = banma_client.BanmaClient.from_env()
+    with get_connection() as conn:
+        banma_client.ensure_token(conn, client)
+    keys = SF.lookup_keys(picked, by_jan=opts["by_jan"])
+    with st.spinner(t(f"斑马の SKU を照会中（{len(keys)} コード）…")):
+        skus = BMR.get_skus(client, keys) if keys else {}
+    found, not_found, combos = [], [], 0
+    for r in picked:
+        s = skus.get(str(r.get("code") or "")) or (opts["by_jan"] and skus.get(str(r.get("jan") or ""))) or None
+        if not s:
+            not_found.append(r["code"])
+        elif s.get("Type") == "组合":
+            combos += 1          # 組合品の重量・三辺は page46 の規則（単品 × 件数）で扱う
+        else:
+            found.append((r, s))
+    customs: dict = {}
+    cus_err: dict[str, str] = {}
+    need = [str(s["SKUID"]) for _, s in found] if {"英文名", "HS"} & set(checks) else []
+    if need and opts["source"] == "pg":
+        with get_connection() as conn:
+            customs = BF.mirror_customs(conn, need)
+    rest = [x for x in need if x not in customs]
+    if rest:
+        bar = st.progress(0.0, text=t("斑马の報関情報を照会中…"))
+        for i, sid in enumerate(rest, 1):
+            try:
+                customs[sid] = BF.get_customs(client, sid)
+            except Exception as e:  # noqa: BLE001 — 1 件の失敗で全体を止めない。その品は報関を判定しない
+                cus_err[sid] = f"{type(e).__name__}: {e}"
+            bar.progress(i / len(rest), text=f"{i}/{len(rest)}")
+        bar.empty()
+    rows = []
+    for r, s in found:
+        sid = str(s["SKUID"])
+        chk = tuple(c for c in checks if not (sid in cus_err and c in ("英文名", "HS")))
+        probs = BF.problems(s, customs.get(sid), checks=chk, placeholder=placeholder)
+        if probs:
+            c = customs.get(sid) or {}
+            rows.append({"item": r, "sku_id": sid, "sku_code": s.get("Code") or r["code"], "probs": probs,
+                         "cur": {**{k: s.get(k) for k in BF.PRODUCT_FIELDS}, "Code": c.get("Code") or "",
+                                 "NameEn": c.get("NameEn") or ""},
+                         "note": ("NST の SKUID " + str(r.get("sku_id")) + " ≠ 斑马 " + sid) if str(r.get("sku_id")) != sid
+                         else ("報関の照会に失敗: " + cus_err[sid]) if sid in cus_err else ""})
+    if rows:
+        _cc_fill_suggestions(rows)
+        with get_connection() as conn:
+            spu = BF.spu_ids(conn, [x["sku_id"] for x in rows])
+        for x in rows:
+            x["spu_id"] = spu.get(x["sku_id"], "")
+    return {"key": (opts, checks, placeholder), "total": len(items), "picked": len(picked), "found": len(found),
+            "not_found": not_found, "combos": combos, "cus_err": len(cus_err), "rows": rows}
+
+
+def _cc_fill_suggestions(rows: list[dict]) -> None:
+    """空の項目に提案を入れる（重量・三辺 = JDL > NST / 画像 = 画像検索 / HS・英文名 = 規則 + AI）。new = 書く候補。"""
+    jans = [str(x["item"].get("jan") or "") for x in rows if {"重量", "三辺"} & set(x["probs"])]
+    jdl = {}
+    if jans:
+        with get_connection() as conn:
+            jdl = {r["jan"]: dict(r) for r in conn.execute(_JDL_SQL.format(",".join("?" for _ in jans)),
+                                                           tuple(jans)).fetchall()}
+    try:
+        prefix = _cached_prefix_makers()
+    except Exception:  # noqa: BLE001
+        prefix = {}
+    ai_rows, extra = [], {}
+    for x in rows:
+        it, new, src = x["item"], dict(x["cur"]), []
+        sug = _cc_suggest(it, jdl.get(str(it.get("jan") or "")))
+        if "重量" in x["probs"] and "Weight" in sug:
+            new["Weight"] = sug["Weight"][0]
+            src.append(f"重量={sug['Weight'][1]}")
+        if "三辺" in x["probs"] and "dims" in sug:
+            new.update(zip(("Length", "Width", "Height"), sug["dims"][0]))
+            src.append(f"三辺={sug['dims'][1]}")
+        if "画像" in x["probs"] and it.get("jan"):
+            try:
+                url = _search_image(str(it["jan"]))
+            except Exception:  # noqa: BLE001
+                url = ""
+            if url.startswith("https://"):
+                new["Image"] = url
+                src.append("画像=画像検索")
+        if {"英文名", "HS"} & set(x["probs"]) and it.get("name"):
+            cus = hs_classify.classify_customs(str(it["name"]), str(it.get("maker") or ""), str(it.get("jan") or ""),
+                                               prefix_map=prefix)
+            code = str(it["code"])
+            extra[code] = {REG.COL_HS: cus.hs or "", REG.COL_NAME_EN: cus.name_en or ""}
+            ai_rows.append(({"型番": code, "アイテム名": str(it["name"]), "メーカー名": str(it.get("maker") or "")}, x))
+        x["new"], x["src"] = new, src
+    if ai_rows and hs_ai.is_configured():
+        with st.spinner(t(f"HS を AI でも判定中（{len(ai_rows)} 件）…")):
+            REG.cross_check_hs([r for r, _ in ai_rows], extra, {}, hs_ai.judge)
+    for r, x in ai_rows:
+        ex = extra[r["型番"]]
+        if "HS" in x["probs"] and ex.get(REG.COL_HS):
+            x["new"]["Code"] = ex[REG.COL_HS]
+            x["src"].append("HS=" + ("AI" if ex.get("hs_basis") == "ai" else "規則"))
+        if "英文名" in x["probs"] and ex.get(REG.COL_NAME_EN):
+            x["new"]["NameEn"] = ex[REG.COL_NAME_EN]
+            x["src"].append("英文名=" + ("AI" if ex.get("hs_basis") == "ai" else "規則"))
+
+
+def _cc_value(col: str, v):
+    """表の値 → 斑马に送る値。(値, エラー)。空 = 変えない。"""
+    s = "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v).strip()
+    if not s:
+        return None, ""
+    if col in _CC_INT:
+        try:
+            n = math.ceil(float(s))
+        except ValueError:
+            return None, f"{col} が数値ではありません「{s}」"
+        return (n, "") if n > 0 else (None, f"{col} は 1 以上")
+    if col == "Image" and not s.startswith("https://"):
+        return None, "画像URL は https:// で始まる URL"
+    if col == "Code" and not BF._HS.fullmatch(s):
+        return None, f"HS は 6/8/10 桁の数字「{s}」"
+    return s, ""
+
+
+def _cc_changes(rows: list[dict], recs: list[dict]) -> tuple[list[dict], list[tuple[str, str]]]:
+    """表 → 各行の変更（product / customs）と入力エラー。現値と同じ値は送らない。"""
+    out, errs = [], []
+    for x, rec in zip(rows, recs):
+        prod, cus = {}, {}
+        for col, key in _CC_COLS.items():
+            v, err = _cc_value(key, rec.get(col))
+            if err:
+                errs.append((str(x["item"]["code"]), err))
+                continue
+            cur = x["cur"].get(key)
+            if v is None or str(v) == str(cur if cur is not None else "").strip():
+                continue
+            (cus if key in ("Code", "NameEn") else prod)[key] = v
+        if prod or cus:
+            out.append({**x, "prod": prod, "cus": cus})
+    return out, errs
+
+
+def _cc_write(changes: list[dict]) -> list[dict]:
+    """斑马へ書く。SPU ごと（描述/包材ありは skip → Excel）→ mismatch が出たら以降の SPU は止める。報関は SKU ごと。"""
+    client = banma_client.BanmaClient.from_env()
+    out = []
+    by_spu: dict[str, list[dict]] = {}
+    for c in changes:
+        if c["prod"]:
+            if c["spu_id"]:
+                by_spu.setdefault(c["spu_id"], []).append(c)
+            else:
+                out.append({"型番": c["item"]["code"], "対象": "三辺・重量・画像", "結果": "skipped", "excel": c,
+                            "内容": "SPUID 不明（斑马の写しは毎日 04:00 更新・翌日もう一度）→ 三辺・重量は Excel"})
+    n = len(by_spu) + sum(bool(c["cus"]) for c in changes)
+    bar = st.progress(0.0, text=t("斑马に書込中…"))
+    done, stop = 0, ""
+    with get_connection() as conn:
+        banma_client.ensure_token(conn, client)
+        for spu, cs in by_spu.items():
+            codes = ",".join(str(c["item"]["code"]) for c in cs)
+            if stop:
+                r = {"status": "skipped", "message": f"中止（{stop} で回読が一致しなかったため）"}
+            else:
+                r = BF.write_product(client, conn, spu, {c["sku_id"]: c["prod"] for c in cs}, codes)
+                if r["status"] == "mismatch":
+                    stop = f"SPU {spu}"
+            for c in cs:
+                out.append({"型番": c["item"]["code"], "対象": "三辺・重量・画像", "結果": r["status"],
+                            "内容": r.get("message", ""), "excel": c if r["status"] == "skipped" else None})
+            done += 1
+            bar.progress(done / n, text=f"{done}/{n} SPU {spu}")
+        for c in changes:
+            if not c["cus"]:
+                continue
+            r = BF.write_customs(client, conn, c["sku_id"], str(c["item"]["code"]), c["cus"],
+                                 name_cn=str(c["item"].get("name") or ""),
+                                 weight=c["prod"].get("Weight") or c["cur"].get("Weight") or 0)
+            out.append({"型番": c["item"]["code"], "対象": "報関", "結果": r["status"], "内容": r.get("message", "")})
+            done += 1
+            bar.progress(done / n, text=f"{done}/{n} {c['item']['code']}")
+    bar.empty()
+    return out
+
+
+def _render_content_result(res: dict) -> None:
+    rows = res["rows"]
+    cnt = {p: sum(p in x["probs"] for x in rows) for p in BF.CHECKS}
+    st.info(t(f"SKUID あり（{res['key'][0]['period']}・部門 輸出）{res['total']} 件 → 条件に合う {res['picked']} 件 → "
+              f"斑马で照合 {res['found']} 件（見つからない {len(res['not_found'])} · 組合せ品は対象外 {res['combos']}）→ "
+              f"空あり {len(rows)} 件（" + " · ".join(f"{k} {v}" for k, v in cnt.items() if k in res["key"][1]) + "）"
+              + (f" · 報関の照会失敗 {res['cus_err']} 件（その品は報関を判定していません）" if res["cus_err"] else "")))
+    if res["not_found"]:
+        with st.expander(t(f"斑马で見つからない {len(res['not_found'])} 件（型番 / JAN）")):
+            st.write("・".join(map(str, res["not_found"])))
+    if not rows:
+        st.success(t("空の項目はありません"))
+        return
+    st.caption(t("白い列を直して「🦓 斑马に反映」。提案の列 = 自動で入れた値の出典（重量・三辺 = JDL 実測 > NST 包装 / 画像 = 画像検索 / "
+                 "HS・英文名 = 規則 + AI）。空欄・現値と同じ値は送りません。三辺・重量・画像は SPU 丸ごとの書込のため、"
+                 "描述・包材がある SPU には書かず Excel（三辺・重量）か斑马の画面（画像）に回します"))
+    df = pd.DataFrame([{"型番": x["item"]["code"], t("アイテム名"): x["item"].get("name") or "",
+                        t("空の項目"): "・".join(x["probs"]),
+                        **{col: ("" if x["new"].get(key) is None else str(x["new"].get(key))) for col, key in _CC_COLS.items()},
+                        t("提案"): " · ".join(x["src"]), t("備考"): x["note"]} for x in rows])
+    edited = st.data_editor(df, key="p15c_editor", hide_index=True, num_rows="fixed", use_container_width=True,
+                            disabled=["型番", t("アイテム名"), t("空の項目"), t("提案"), t("備考")],
+                            column_config={"英文名": st.column_config.TextColumn(max_chars=hs_classify.MAX_NAME_EN),
+                                           "画像URL": st.column_config.LinkColumn("画像URL")})
+    changes, errs = _cc_changes(rows, edited.to_dict("records"))
+    for code, e in errs[:20]:
+        st.error(f"❌ {code}: {e}")
+    n_p = sum(bool(c["prod"]) for c in changes)
+    n_c = sum(bool(c["cus"]) for c in changes)
+    if changes and not errs and st.button(t(f"🦓 斑马に反映（三辺・重量・画像 {n_p} 件 · 報関 {n_c} 件）"), type="primary",
+                                          key="p15c_write"):
+        st.session_state["p15c_reg"] = _cc_write(changes)
+    reg = st.session_state.get("p15c_reg")
+    if reg:
+        c = {k: sum(r["結果"] == k for r in reg) for k in ("ok", "created", "skipped", "fail", "mismatch")}
+        msg = (f"ok={c['ok'] + c['created']}（報関の新規作成 {c['created']}）skipped={c['skipped']} fail={c['fail']} "
+               f"回読不一致={c['mismatch']}（計 {len(reg)} 件）")
+        (st.error if c["fail"] or c["mismatch"] else st.warning if c["skipped"] else st.success)(msg)
+        if c["mismatch"]:
+            st.error(t("❌ 回読が一致しない SPU があったため、以降の SPU は書いていません。斑马で該当 SPU を確認してください"
+                       "（書く前の値は台帳 banma.cms_write_log にあります）"))
+        st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if k != "excel"} for r in reg]),
+                     use_container_width=True, hide_index=True)
+        xl = [{"SKU编码": r["excel"]["sku_code"],
+               **{h: r["excel"]["prod"].get(k) for h, k in (("重量(g)", "Weight"), ("长(cm)", "Length"),
+                                                         ("宽(cm)", "Width"), ("高(cm)", "Height"))}}
+              for r in reg if r.get("excel") and {"Weight", "Length", "Width", "Height"} & set(r["excel"]["prod"])]
+        if xl:
+            st.download_button(t(f"⬇️ 斑马「批量修改SKU信息」Excel（API で書かなかった三辺・重量 {len(xl)} 件）"),
+                               data=BF.dims_xlsx(xl), file_name=f"斑马_批量修改SKU信息_{datetime.now():%Y%m%d}.xlsx",
+                               mime=_XLSX_MIME, key="p15c_xlsx")
+        if any(r.get("excel") and "Image" in r["excel"]["prod"] for r in reg):
+            st.info(t("画像を API で書かなかった品は斑马の画面で入れてください（上の表の skipped）"))
+
+
 def _render_skuid_tab() -> None:
     """⚠️ st.stop() 禁止（他タブが消える）。抜けるときは return。"""
-    st.caption(t("NST で SKUID（斑马 SKUID・在庫同期用）が空の品を探し、斑马の同じ型番 / JAN の SKUID を取る。"
-                 "斑马に無ければ斑马に登録してから取る → NST 更新 CSV（型番 + SKUID）を手で NST に取り込む"))
+    st.caption(t("🔎 NST で SKUID（斑马 SKUID・在庫同期用）が空の品を探し、斑马の同じ型番 / JAN の SKUID を取る。"
+                 "斑马に無ければ斑马に登録してから取る → NST 更新 CSV（型番 + SKUID）を手で NST に取り込む。"
+                 "🩺 SKUID がある品は斑马の三辺・重量・画像・HS・英文名の空を探し、CMS で直して斑马へ書き戻す"))
     d = SF.DEFAULTS
     c1, c2, c3 = st.columns(3)
     period = c1.selectbox(t("作成日"), list(SF.PERIODS), index=list(SF.PERIODS).index(d["period"]), key="p15s_period")
@@ -664,27 +943,47 @@ def _render_skuid_tab() -> None:
                                    "入れると「重複で保留」の品も CSV に出します"))
     opts = {"period": period, "depts": tuple(depts), "handlings": tuple(handlings), "states": tuple(states),
             "ranks": tuple(ranks), "by_jan": by_jan, "source": source}
-    b1, b2 = st.columns(2)
-    if b1.button(t("🔍 チェックする"), type="primary", key="p15s_run", use_container_width=True):
+    c9, c10 = st.columns(2)
+    checks = c9.multiselect(t("🩺 斑马の検査項目"), BF.CHECKS, default=list(BF.CHECKS), key="p15c_checks")
+    placeholder = c10.checkbox(t("仮値も空とみなす（重量 0/1/10/100/200/300/500g・三辺 1×1×1/10×10×10・待上图の画像）"),
+                               value=True, key="p15c_placeholder", help=t("page46 と同じ口径（Boss 2026-10-07〜09）"))
+    b1, b2, b3 = st.columns(3)
+    if b1.button(t("🔍 SKUID 空をチェックする"), type="primary", key="p15s_run", use_container_width=True):
         for k in _SK_KEYS:
             st.session_state.pop(k, None)
         try:
             st.session_state["p15s_result"] = _skuid_check(opts)
         except Exception as e:  # noqa: BLE001 — 照会失敗は「斑马に無し」にしない
             st.error(t(f"❌ チェックに失敗（何も出力していません）: {type(e).__name__}: {e}"))
-            return
-    if b2.button(t("🗑️ 清除结果"), key="p15s_clear", use_container_width=True):
-        for k in _SK_KEYS:
+    if b2.button(t("🩺 斑马の登録内容をチェックする"), type="primary", key="p15c_run", use_container_width=True):
+        for k in _CC_KEYS:
+            st.session_state.pop(k, None)
+        try:
+            st.session_state["p15c_result"] = _content_check(opts, tuple(checks), placeholder)
+        except Exception as e:  # noqa: BLE001
+            st.error(t(f"❌ チェックに失敗（何も書いていません）: {type(e).__name__}: {e}"))
+    if b3.button(t("🗑️ 清除结果"), key="p15s_clear", use_container_width=True):
+        for k in _SK_KEYS + _CC_KEYS:
             st.session_state.pop(k, None)
         st.rerun()
-    res = st.session_state.get("p15s_result")
-    if not res:
-        st.info(t("条件を選んで「🔍 チェックする」"))
-        return
-    if res["opts"] != opts:
-        st.warning(t("条件が変わりました。「🔍 チェックする」を押してください（前回の結果は隠しています）"))
-        return
+    res, cres = st.session_state.get("p15s_result"), st.session_state.get("p15c_result")
+    if not res and not cres:
+        st.info(t("条件を選んで「🔍 SKUID 空をチェックする」か「🩺 斑马の登録内容をチェックする」"))
+    if res:
+        st.subheader(t("🔎 SKUID 空"))
+        if res["opts"] != opts:
+            st.warning(t("条件が変わりました。「🔍 SKUID 空をチェックする」を押してください（前回の結果は隠しています）"))
+        else:
+            _render_skuid_result(res, allow_dup)
+    if cres:
+        st.subheader(t("🩺 斑马の登録内容"))
+        if cres["key"] != (opts, tuple(checks), placeholder):
+            st.warning(t("条件が変わりました。「🩺 斑马の登録内容をチェックする」を押してください（前回の結果は隠しています）"))
+        else:
+            _render_content_result(cres)
 
+
+def _render_skuid_result(res: dict, allow_dup: bool) -> None:
     hits, conflicts, misses = res["hits"], res["conflicts"], res["misses"]
     n_code = sum(h["key"] == "型番" for h in hits + conflicts)
     st.info(t(f"SKUID 空（{res['opts']['period']}・部門 輸出）{res['total']} 件 → 条件に合う {res['picked']} 件 → "

@@ -33,8 +33,9 @@ _SQL = (
     "item.isinactive AS inactive, BUILTIN.DF(item.custitem_fb_item_rank) AS item_rank, item.createddate AS created, "
     "item.custitem_fb_madein AS maker, item.custitem_fb_item_cost AS cost, "
     "item.custitem_fb_package_weight AS pkg_weight, item.custitem_fb_package_height AS pkg_height, "
-    "item.custitem_fb_package_width AS pkg_width, item.custitem_fb_package_depth AS pkg_depth "
-    "FROM item WHERE item.department IN (4, 9) AND item.custitem_item_skuid IS NULL{since} ORDER BY item.id")
+    "item.custitem_fb_package_width AS pkg_width, item.custitem_fb_package_depth AS pkg_depth, "
+    "item.custitem_item_skuid AS sku_id "
+    "FROM item WHERE item.department IN (4, 9) AND item.custitem_item_skuid IS {null}{since} ORDER BY item.id")
 _CHUNK = 200
 
 
@@ -42,13 +43,14 @@ def _v(x) -> str:
     return str(x or "").strip()
 
 
-def blank_items(suiteql_all, *, days: int | None, today: dt.date | None = None) -> list[dict]:
-    """NST の SKUID 空の品（部門 輸出 2 つ・作成日 days 日以内。None = 全期間）。他の条件は pick で絞る。"""
+def blank_items(suiteql_all, *, days: int | None, today: dt.date | None = None, has_skuid: bool = False) -> list[dict]:
+    """NST の SKUID 空の品（has_skuid=True なら SKUID がある品＝斑马に在る品）。部門 輸出 2 つ・作成日 days 日以内
+    （None = 全期間）。他の条件は pick で絞る。"""
     since = ""
     if days:
         d = (today or dt.date.today()) - dt.timedelta(days=days)
         since = f" AND item.createddate >= TO_DATE('{d:%Y-%m-%d}', 'YYYY-MM-DD')"
-    return suiteql_all(_SQL.format(since=since))
+    return suiteql_all(_SQL.format(since=since, null="NOT NULL" if has_skuid else "NULL"))
 
 
 def pick(items: list[dict], *, depts, handlings, states, ranks) -> list[dict]:

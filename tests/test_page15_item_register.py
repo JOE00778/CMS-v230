@@ -459,3 +459,51 @@ def test_page15_skuid_tab_register_misses_20261112(page15_offline):
     assert any("1 g で登録" in w.value for w in at.warning)        # X2・X3 は重量なし
     dl = [d for d in at.get("download_button") if "SKUID 更新 CSV" in d.proto.label]
     assert dl and "（3 件）" in dl[0].proto.label
+
+
+def test_page15_content_check_and_write_20261112(page15_offline):
+    """🩺 斑马登録内容: SKUID ありの品 → 斑马 SKU の空（重量 1g・画像なし・報関なし）→ 提案を入れて「反映」→ 書込関数へ。"""
+    from shared import banma_client, banma_fix, hs_ai, image_search, nst_suiteql
+    from shared import banma_register as BMR
+    st.cache_data.clear()
+    items = [{"id": "1", "code": "X1", "jan": "4900000000011", "name": "ライオン クリニカ ハミガキ 30g", "maker": "ライオン",
+              "dept": "輸出事業", "handling": "取扱中", "inactive": "F", "item_rank": "NEW", "sku_id": "K1",
+              "pkg_weight": "45", "pkg_height": "15", "pkg_width": "4", "pkg_depth": "3"},
+             {"id": "2", "code": "X2", "jan": "4900000000028", "name": "完全な品", "dept": "輸出事業", "handling": "取扱中",
+              "inactive": "F", "item_rank": "NEW", "sku_id": "K2"}]
+    skus = {"X1": {"SKUID": "K1", "Code": "X1", "Weight": 1, "Length": 1, "Width": 1, "Height": 1, "Image": "", "Type": "普通"},
+            "X2": {"SKUID": "K2", "Code": "X2", "Weight": 80, "Length": 9, "Width": 5, "Height": 3,
+                   "Image": "https://a/2.jpg", "Type": "普通"}}
+    customs = {"K1": None, "K2": {"Code": "330610", "NameEn": "Toothpaste"}}
+    prod, cus, queries = [], [], []
+    with mock.patch("shared.db.get_connection", mock.MagicMock()), \
+            mock.patch.object(NC, "load_choices", return_value=NC.Choices(suppliers=(), middle_by_large={})), \
+            mock.patch.object(NC, "load_prefix_makers", return_value={}), \
+            mock.patch.object(nst_suiteql, "suiteql_all", side_effect=lambda q: queries.append(q) or items), \
+            mock.patch.object(banma_client.BanmaClient, "from_env", return_value=object()), \
+            mock.patch.object(banma_client, "ensure_token"), \
+            mock.patch.object(BMR, "get_skus", return_value=skus), \
+            mock.patch.object(banma_fix, "get_customs", side_effect=lambda c, sid: customs[sid]), \
+            mock.patch.object(banma_fix, "spu_ids", return_value={"K1": "S1"}), \
+            mock.patch.object(image_search, "_load_cache",
+                              return_value={"4900000000011": {"status": "ok", "image_url": "https://img/x1.jpg"}}), \
+            mock.patch.object(hs_ai, "is_configured", return_value=False), \
+            mock.patch.object(banma_fix, "write_product",
+                              side_effect=lambda c, conn, spu, ch, codes: prod.append((spu, ch)) or {"status": "ok"}), \
+            mock.patch.object(banma_fix, "write_customs",
+                              side_effect=lambda c, conn, sid, code, new, **kw: cus.append((sid, new, kw))
+                              or {"status": "created"}):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.run()
+        at.button(key="p15c_run").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        info = " ".join(i.value for i in at.info)
+        assert "条件に合う 2 件" in info and "空あり 1 件" in info and "重量 1" in info and "画像 1" in info
+        assert "IS NOT NULL" in queries[0]
+        at.button(key="p15c_write").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    # 重量 = NST 包装 45g（JDL なし）· 三辺 = NST 15×4×3 · 画像 = 画像検索 · HS・英文名 = 規則（歯磨き）
+    assert prod == [("S1", {"K1": {"Weight": 45, "Length": 15, "Width": 4, "Height": 3, "Image": "https://img/x1.jpg"}})]
+    assert cus and cus[0][0] == "K1" and cus[0][1]["Code"] and cus[0][1]["NameEn"] and cus[0][2]["weight"] == 45
+    assert any("ok=2" in s.value for s in at.success)
