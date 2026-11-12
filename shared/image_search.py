@@ -396,3 +396,16 @@ def _upsert_cache(conn, jan: str, url: str | None, source: str | None,
     )
 
 
+def search_jan(jan: str) -> str:
+    """JAN 1 件の画像 URL（page15 の斑马登録・page47 の斑马登録内容で共用）: PG キャッシュ → 楽天 API → kakaku。
+    取れたらキャッシュへ。取れなければ空文字。"""
+    from shared.db import get_connection
+    with get_connection() as conn:
+        hit = _load_cache(conn, [jan]).get(jan)
+        if hit and hit.get("status") == "ok" and hit.get("image_url"):
+            return hit["image_url"]
+        status, _, size, err, url, source = _fetch_image_for_jan(jan)
+        _upsert_cache(conn, jan, url, source if status == "ok" else None,
+                      status, size if status == "ok" else 0, None if status == "ok" else err)
+        conn.commit()
+    return url if status == "ok" else ""

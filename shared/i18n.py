@@ -685,6 +685,9 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
         ("pages/03_💰_定義原価編集.py", "💰 定义原价编辑"),
         ("pages/36_💱_三金汇率.py", "💱 三金汇率"),
     ]),
+    ("🦓 斑马・NST", [   # Boss 2026-11-12「单独做为一个独立的板块」
+        ("pages/47_🦓_斑马NST整合检查.py", "🦓 斑马・NST 整合检查"),
+    ]),
     ("🛠️ 工具", [
         ("pages/15_📝_商品登录.py", "📝 商品登录"),
         ("pages/21_🚀_Shopee上架.py", "🚀 Shopee 上架"),
@@ -704,6 +707,8 @@ _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
 
 # Sidebar nav 中文 label → 日文（补 TRANSLATIONS_JA 缺失条目）
 for _zh, _ja in [
+    ("🦓 斑马・NST 整合检查", "🦓 斑马・NST 整合チェック"),
+    ("斑马・NST 整合检查", "斑马・NST 整合チェック"),
     ("隐藏无变化 SKU（仅看有波动）", "無変化 SKU を非表示（変動ありのみ）"),
     ("忽略 当前定义原价 / 平均原价 / 新定义原价 = 1 的 SKU", "現在の定義原価 / 平均原価 / 新定義原価 が 1 の SKU を除外"),
     ("这三个原价中任一 = 1 多为占位 / 异常值；开启后从更新 / 跳过 / 异常清单移到「原价=1」tab",
