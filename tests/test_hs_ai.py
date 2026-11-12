@@ -94,3 +94,17 @@ def test_permanent_http_error_is_not_retried_and_secret_is_redacted(monkeypatch)
     out=hs_ai.judge([('sku','name','')],post=post,sleep=sleeps.append)
     assert len(calls)==1 and sleeps==[] and 'sensitive-test-key' not in out['sku']
     assert '[REDACTED]' in out['sku']
+
+
+def test_ai_name_en_uses_category_phrase_not_product_name_20261112():
+    """AI が HS を変えたとき、表で 1 句に決まる HS は品類の句（9/19 口径・ブランドを入れない）。表に無い HS は AI の en。"""
+    from shared.hs_classify import NAME_EN_BY_HS
+    rows = [{"JANコード": "4904810075257", "アイテム名": "ポケットモンスター モンコレ MS-27 ライチュウ"},
+            {"JANコード": "9", "アイテム名": "謎 50g"}]
+    extra = {"4904810075257": {"_hs": "", "_name_en": ""}, "9": {"_hs": "", "_name_en": ""}}
+    ai = {"4904810075257": hs_ai.AiHs("950300", "Pokemon Moncolle figure Raichu", "玩具", 0.9),
+          "9": hs_ai.AiHs("999999", "Mystery powder", "x", 0.5)}
+    R.cross_check_hs(rows, extra, {}, lambda items: ai)
+    assert extra["4904810075257"]["_name_en"] == NAME_EN_BY_HS["950300"] == "Toy (die-cast model / figure / plush), for play"
+    assert "999999" not in NAME_EN_BY_HS and extra["9"]["_name_en"] == "Mystery powder, 50g"
+    assert "ブランド名" in hs_ai.SYSTEM

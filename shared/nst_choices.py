@@ -4,12 +4,13 @@
 - 仕入先: PG `nst.vendor_master`（NST Vendor の毎日 06:50 全件鏡像）· page10 と共有
 - 商品担当者・大分類・中分類: NST 原本テンプレ V260326EX のデータベース シートの写し（定数）
 - 既存 JAN: SuiteQL item.upccode（NST 全体）。失敗時は PG `nst.item_master_raw`（輸出部門のみ）
-- メーカー名: JAN 先頭 7 桁が NST 既存品で 1 種類に決まればそれ → jancode 会社名 → 空
+- メーカー名: JAN 先頭 7 桁が NST 既存品で 1 社に決まればその NST 表記 → jancode 会社名 → 空
 
 DB/Streamlit 非依存（conn と suiteql は引数で受ける）。キャッシュは呼び出し側（page）で。
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # 商品担当者・大分類・中分類 = NST 原本テンプレ「20260000_NetSuite【アイテム】マスタ登録-V260326EX」
@@ -135,16 +136,24 @@ def _existing_values(jans: list[str], *, field: str, pg_field: str, conn=None, s
                                f"（NST 全体ではなく輸出部門のみの照合）: {sq_err}"]
 
 
+_MAKER_NOISE = re.compile(r"株式会社|有限会社|合同会社|\(株\)|（株）|㈱|[\s・.,]")
+
+
 def load_prefix_makers(conn) -> dict[str, str]:
-    """13 桁 JAN の先頭 7 桁 → NST 既存 maker（そのプレフィックスで maker が 1 種類のものだけ）。"""
+    """13 桁 JAN の先頭 7 桁 → NST 既存 maker（そのプレフィックスで maker が 1 社に決まるものだけ）。
+
+    大小文字・空白・法人格だけの違い（TAKARA TOMY 272 件 / TAKARATOMY 7 件）は同じ 1 社とみなし、件数最多の NST 表記を採る
+    （Boss 2026-11-12「用 NST 的写法」）。表記そのものが違う（白元アース㈱ / Hakugen Earth（白元アース））は採らない＝確認表で人が埋める。"""
     rows = conn.execute(
-        "SELECT SUBSTR(jan, 1, 7) AS prefix, MIN(TRIM(maker)) AS maker "
+        "SELECT SUBSTR(jan, 1, 7) AS prefix, TRIM(maker) AS maker, COUNT(*) AS n "
         "FROM nst.item_master_raw "
         "WHERE LENGTH(jan) = 13 AND maker IS NOT NULL AND TRIM(maker) <> '' "
-        "GROUP BY SUBSTR(jan, 1, 7) "
-        "HAVING COUNT(DISTINCT TRIM(maker)) = 1"
+        "GROUP BY SUBSTR(jan, 1, 7), TRIM(maker) ORDER BY 1, 3 DESC, 2"
     ).fetchall()
-    return {r["prefix"]: r["maker"] for r in rows}
+    by: dict[str, list[str]] = {}
+    for r in rows:   # プレフィックスごとに件数の多い順
+        by.setdefault(r["prefix"], []).append(r["maker"])
+    return {p: ms[0] for p, ms in by.items() if len({_MAKER_NOISE.sub("", m).upper() for m in ms}) == 1}
 
 
 def resolve_maker(jan: str, jancode_company: str,

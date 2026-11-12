@@ -33,7 +33,10 @@ def conn():
         ("4901234000011", "花王"), ("4901234000028", "花王"),
         ("4909999000011", "A社"), ("4909999000028", "B社"),     # 2 種類 → 採らない
         ("4905555000011", ""), ("12345678", "短JAN"),
-        ("4987000000011", " ライオン ")])
+        ("4987000000011", " ライオン "),
+        ("4904810000011", "TAKARA TOMY"), ("4904810000028", "TAKARA TOMY"),
+        ("4904810000035", "TAKARATOMY"),                          # 空白・大小文字だけの違い → 多い方の NST 表記
+        ("4902407000011", "白元アース㈱"), ("4902407000028", "Hakugen Earth（白元アース）")])   # 表記違い → 採らない
     return c
 
 
@@ -98,7 +101,7 @@ def test_existing_jans_empty_input_no_call():
 
 def test_load_prefix_makers_only_unique(conn):
     m = C.load_prefix_makers(conn)
-    assert m == {"4901234": "花王", "4987000": "ライオン"}
+    assert m == {"4901234": "花王", "4987000": "ライオン", "4904810": "TAKARA TOMY"}
 
 
 def test_resolve_maker_order_and_truncate():

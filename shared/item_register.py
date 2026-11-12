@@ -291,6 +291,7 @@ def enrich(rows, *, choices, prefix_makers, fetch_meta, fetch_weight, classify_c
 _CORP_RE = re.compile(r"株式会社|有限会社|合同会社|\(株\)|（株）|㈱|\s")
 _KANA_RE = re.compile(r"[ァ-ヴー・]{3,}")
 _LATIN_RE = re.compile(r"[A-Za-z][A-Za-z.&'-]*")
+_JA_RE = re.compile(r"[ぁ-ゖァ-ヺ一-鿿]")
 
 
 def _drop_latin_dupe(name: str) -> str:
@@ -307,7 +308,8 @@ def unify_shop_brands(nst_rows: list[dict], bm_extra: dict) -> list[Issue]:
     ① 全ての名前: 先頭の「英字 片仮名」の重複表記は英字を外す。
     ② 楽天・Yahoo 由来の名前: メーカー名（NST 同プレフィックス / jancode 会社名・法人格を除く）が分かっていれば先頭に 1 回だけ付ける。
     メーカー不明なら付けない。同じ JAN 先頭 7 桁でも商品ラインは別（ポケモン と カーズ はどちらもタカラトミー）なので、
-    名前の多数派の語をブランドとして他の品に付けてはいけない（2026-11-11 カーズ・KOKUYO に「ポケットモンスター」が付いた事故）。"""
+    名前の多数派の語をブランドとして他の品に付けてはいけない（2026-11-11 カーズ・KOKUYO に「ポケットモンスター」が付いた事故）。
+    メーカー名が英字だけ（NST 表記の TAKARA TOMY / LION）は付けない＝日本語で統一（2026-11-12「LION ライオン クリニカ…」）。"""
     shop = lambda r: any(("楽天" in a or "Yahoo" in a) for a in bm_extra.get(item_key(r), {}).get("auto", []))  # noqa: E731
     issues: list[Issue] = []
     for r in nst_rows:
@@ -316,7 +318,7 @@ def unify_shop_brands(nst_rows: list[dict], bm_extra: dict) -> list[Issue]:
             continue
         new = _drop_latin_dupe(old)
         brand = _CORP_RE.sub("", r.get(COL_MAKER) or "")
-        if brand and shop(r):
+        if brand and shop(r) and _JA_RE.search(brand):
             toks = new.split()
             drop = {i for i, t in enumerate(toks) if t == brand}
             drop |= {j for i in drop for j in (i - 1, i + 1) if 0 <= j < len(toks) and _LATIN_RE.fullmatch(toks[j])}
@@ -363,7 +365,7 @@ def cross_check_hs(nst_rows: list[dict], bm_extra: dict[str, dict], stats: dict,
     一致 → そのまま（HS 判定=一致）。不一致・規則判定なし → **AI の値を入れて**警告
     （実測: 不一致 35 件で AI 正解 23・規則正解 2 · hs_ai の docstring）。AI 失敗 → 規則の値のまま警告。
     """
-    from shared.hs_classify import MAX_NAME_EN, _cut_words, extract_spec
+    from shared.hs_classify import MAX_NAME_EN, NAME_EN_BY_HS, _cut_words, extract_spec
 
     for k in ("ai_agree", "ai_changed", "ai_error"):
         stats.setdefault(k, 0)
@@ -385,9 +387,12 @@ def cross_check_hs(nst_rows: list[dict], bm_extra: dict[str, dict], stats: dict,
             continue
         stats["ai_changed"] += 1
         spec = extract_spec(r[COL_NAME])
+        # 通関英文名 = 品類 1 句 + 容量・重量・ブランドは入れない（Boss 2026-09-19）。表で 1 句に決まる HS は表の句
+        # （AI の en は「Pokemon Moncolle figure Pikachu」のように商品名を訳してくる · 2026-11-12）
+        en = NAME_EN_BY_HS.get(got.hs) or got.en
         ex.update({COL_HS: got.hs, "hs_rule": rule, "hs_basis": "ai",
                    "hs_check": f"AI（規則={rule or 'なし'}）",
-                   COL_NAME_EN: _cut_words(f"{got.en}, {spec}" if spec else got.en, MAX_NAME_EN)})
+                   COL_NAME_EN: _cut_words(f"{en}, {spec}" if spec else en, MAX_NAME_EN)})
         issues.append(Issue(0, jan, "warn",
                             f"HS: 規則={rule or '判定なし'} / AI={got.hs}（{got.why}）→ AI の値を入れました。"
                             "HS・通関英文名を確認してください"))

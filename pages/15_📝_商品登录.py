@@ -133,21 +133,23 @@ def _process(data: bytes, choices: NC.Choices, want_weight: bool) -> dict:
     bm_has: dict[str, str] = {}
     skipped_both = 0
     if rows:
-        with get_connection() as conn:
-            exist, warns = NC.existing_jans([r[JAN_COL_NAME] for r in rows if r[JAN_COL_NAME]], conn=conn)
-            codes_exist, code_warns = NC.existing_item_codes([REG.item_key(r) for r in rows], conn=conn)
-        notes += code_warns
-        notes += warns
-        nst_has = {REG.item_key(r) for r in rows if r[JAN_COL_NAME] in exist or REG.item_key(r) in codes_exist}
-        # 斑马の既存も先に見る（Boss 2026-11-10: 両方にあれば skip・片方だけなら無い方へ）
-        try:
-            client = banma_client.BanmaClient.from_env()
+        # 進捗バーの前の照会。斑马 API が遅いと数分かかり、表示が無いと「押しても反応しない」に見える（2026-11-11）
+        with st.spinner(t("NST・斑马の登録済みを確認中…（斑马の応答が遅いと数分かかります。押し直すと最初からやり直しになります）")):
             with get_connection() as conn:
-                banma_client.ensure_token(conn, client)
-            bm_has = BMR.find_skus(client, [REG.item_key(r) for r in rows])
-        except Exception as e:  # noqa: BLE001 — 照会できなくても続行。登録時に 1 件ずつ再照会する
-            bm_has = {}
-            notes.append(t(f"斑马の既存照会に失敗（生成時に 1 件ずつ再確認します）: {type(e).__name__}: {e}"))
+                exist, warns = NC.existing_jans([r[JAN_COL_NAME] for r in rows if r[JAN_COL_NAME]], conn=conn)
+                codes_exist, code_warns = NC.existing_item_codes([REG.item_key(r) for r in rows], conn=conn)
+            notes += code_warns
+            notes += warns
+            nst_has = {REG.item_key(r) for r in rows if r[JAN_COL_NAME] in exist or REG.item_key(r) in codes_exist}
+            # 斑马の既存も先に見る（Boss 2026-11-10: 両方にあれば skip・片方だけなら無い方へ）
+            try:
+                client = banma_client.BanmaClient.from_env()
+                with get_connection() as conn:
+                    banma_client.ensure_token(conn, client)
+                bm_has = BMR.find_skus(client, [REG.item_key(r) for r in rows])
+            except Exception as e:  # noqa: BLE001 — 照会できなくても続行。登録時に 1 件ずつ再照会する
+                bm_has = {}
+                notes.append(t(f"斑马の既存照会に失敗（生成時に 1 件ずつ再確認します）: {type(e).__name__}: {e}"))
         both = [r for r in rows if REG.item_key(r) in nst_has and REG.item_key(r) in bm_has]
         for r in both:
             issues.append(FORM.Issue(0, REG.item_key(r), "warn", "NST・斑马とも登録済みのためスキップ（何もしません）"))

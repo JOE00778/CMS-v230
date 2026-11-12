@@ -150,3 +150,15 @@ def test_rakuten_repeated_words_and_brand_first_20261111():
         "4901480233048": "コクヨ キャンパスルーズリーフ さらさら書ける B罫ドット B5 100枚 ノ-836BTN",
         "4904810227984": "タカラトミー カーズ トミカ C-24 ライトニング・マックィーン(アイスレーシングタイプ)",
         "4904810166412": "タカラトミー カーズ トミカ C-26 ラモーン(スタンダードタイプ)"}
+
+
+def test_latin_only_maker_not_prepended_20261112():
+    """NST 表記の英字メーカー（TAKARA TOMY / LION）は名前の先頭に付けない＝日本語で統一（「LION ライオン クリニカ…」の事故）。"""
+    from shared import item_register as R
+    rows = [{"型番": "4903301182900", "JANコード": "4903301182900", "アイテム名": "ライオン クリニカ ハミガキ マイルドミント 30g",
+             "メーカー名": "LION"},
+            {"型番": "4904810990109", "JANコード": "4904810990109", "アイテム名": "タカラトミー ポケットモンスター モンコレ",
+             "メーカー名": "TAKARA TOMY"}]
+    before = [r["アイテム名"] for r in rows]
+    R.unify_shop_brands(rows, {r["型番"]: {"auto": ["アイテム名(楽天・要確認)"]} for r in rows})
+    assert [r["アイテム名"] for r in rows] == before

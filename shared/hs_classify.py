@@ -498,6 +498,11 @@ MAX_NAME_EN = 76
 with open(Path(__file__).parent / "data" / "cat_to_hs.csv", encoding="utf-8") as _f:
     CAT_TO_HS: dict[str, tuple[str, str]] = {
         r["category"]: (r["hs"], r["name_en"]) for r in csv.DictReader(_f)}
+# HS → 品類の英文 1 句（その HS の英文が表で 1 句に決まるものだけ）。AI が HS を変えた時の通関英文名に使う
+_EN_BY_HS: dict[str, set[str]] = {}
+for _hs, _en in CAT_TO_HS.values():
+    _EN_BY_HS.setdefault(_hs, set()).add(_en)
+NAME_EN_BY_HS: dict[str, str] = {h: next(iter(s)) for h, s in _EN_BY_HS.items() if len(s) == 1}
 
 
 def _cut_words(s: str, n: int) -> str:
