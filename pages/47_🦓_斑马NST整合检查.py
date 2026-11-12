@@ -10,6 +10,7 @@ page15 の「🔎 SKUID 空チェック」tab をそのまま独立させたも�
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import pandas as pd
@@ -41,6 +42,29 @@ _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 def _cached_prefix_makers() -> dict[str, str]:
     with get_connection() as conn:
         return NC.load_prefix_makers(conn)
+
+
+# 斑马の報関照会・画像検索は 1 件ずつだと数百件で数十分（2026-11-12 Boss「加速跑」）→ 同時 4 本。
+# 斑马は名目 5 QPS・0.25s 間隔で 429（memory 2026-10-07）→ 1 本 1〜2 秒なら 4 本で 2〜4 QPS。429 は client が待って再試行
+_WORKERS = 4
+
+
+def _parallel(fn, keys: list[str], text: str) -> dict:
+    """keys を fn で同時 _WORKERS 本 → {key: 結果 or 例外}。進捗バーはメインスレッドだけで触る。"""
+    out: dict = {}
+    if not keys:
+        return out
+    bar = st.progress(0.0, text=text)
+    with ThreadPoolExecutor(_WORKERS) as ex:
+        futs = {ex.submit(fn, k): k for k in keys}
+        for i, f in enumerate(as_completed(futs), 1):
+            try:
+                out[futs[f]] = f.result()
+            except Exception as e:  # noqa: BLE001 — 1 件の失敗で全体を止めない（呼び出し側が件数を出す）
+                out[futs[f]] = e
+            bar.progress(i / len(keys), text=f"{text} {i}/{len(keys)}")
+    bar.empty()
+    return out
 
 
 def _issues_df(issues) -> pd.DataFrame:
@@ -194,15 +218,11 @@ def _content_check(opts: dict, checks: tuple, placeholder: bool) -> dict:
         with get_connection() as conn:
             customs = BF.mirror_customs(conn, need)
     rest = [x for x in need if x not in customs]
-    if rest:
-        bar = st.progress(0.0, text=t("斑马の報関情報を照会中…"))
-        for i, sid in enumerate(rest, 1):
-            try:
-                customs[sid] = BF.get_customs(client, sid)
-            except Exception as e:  # noqa: BLE001 — 1 件の失敗で全体を止めない。その品は報関を判定しない
-                cus_err[sid] = f"{type(e).__name__}: {e}"
-            bar.progress(i / len(rest), text=f"{i}/{len(rest)}")
-        bar.empty()
+    for sid, v in _parallel(lambda sid: BF.get_customs(client, sid), rest, t("斑马の報関情報を照会中…")).items():
+        if isinstance(v, Exception):   # その品は報関を判定しない（件数は画面に出す）
+            cus_err[sid] = f"{type(v).__name__}: {v}"
+        else:
+            customs[sid] = v
     rows = []
     for r, s in found:
         sid = str(s["SKUID"])
@@ -237,6 +257,8 @@ def _cc_fill_suggestions(rows: list[dict]) -> None:
         prefix = _cached_prefix_makers()
     except Exception:  # noqa: BLE001
         prefix = {}
+    img_jans = sorted({str(x["item"]["jan"]) for x in rows if "画像" in x["probs"] and x["item"].get("jan")})
+    images = _parallel(image_search.search_jan, img_jans, t("画像を検索中…"))
     ai_rows, extra = [], {}
     for x in rows:
         it, new, src = x["item"], dict(x["cur"]), []
@@ -248,11 +270,8 @@ def _cc_fill_suggestions(rows: list[dict]) -> None:
             new.update(zip(("Length", "Width", "Height"), sug["dims"][0]))
             src.append(f"三辺={sug['dims'][1]}")
         if "画像" in x["probs"] and it.get("jan"):
-            try:
-                url = image_search.search_jan(str(it["jan"]))
-            except Exception:  # noqa: BLE001
-                url = ""
-            if url.startswith("https://"):
+            url = images.get(str(it["jan"]))
+            if isinstance(url, str) and url.startswith("https://"):
                 new["Image"] = url
                 src.append("画像=画像検索")
         if {"英文名", "HS"} & set(x["probs"]) and it.get("name"):
