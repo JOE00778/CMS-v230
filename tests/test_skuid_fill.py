@@ -107,3 +107,13 @@ def test_register_rows_ledger_first_then_nst():
 def test_update_csv_template_header():
     got = list(csv.reader(io.StringIO(SF.update_csv([("X1", "101"), ("X2", ""), ("", "9")]).decode("utf-8-sig"))))
     assert got[0] == ["型番", "SKUID", "サポート提供 "] and got[1:] == [["X1", "101", "T"]]
+
+
+def test_shared_skuid_never_goes_to_csv_20261112():
+    """1 つの斑马 SKUID を複数の型番に入れない（Boss 2026-11-12「这个功能本身就是错误的」）。"""
+    import pytest
+    ok, dup = SF.drop_shared_skuids([("X1", "101"), ("X2", "102"), ("X3", "102"), ("X1", "101"), ("X4", "")])
+    assert ok == [("X1", "101")] and dup == {"102": ["X2", "X3"]}
+    with pytest.raises(ValueError):
+        SF.update_csv([("X2", "102"), ("X3", "102")])
+    assert "allow_dup" not in SF.DEFAULTS

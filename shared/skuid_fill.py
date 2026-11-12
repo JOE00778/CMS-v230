@@ -4,7 +4,7 @@ NST で SKUID（custitem_item_skuid＝斑马 SKUID・在庫同期用）が空の
 斑马に同じ型番 / JAN の SKU があればその SKUID、無ければ斑马に登録して取った SKUID で
 NST 更新 CSV（型番 + SKUID）を作る。CMS は NST に書かない（CSV は人が取り込む）。
 条件はすべて画面で選べる。既定 = 部門 輸出 2 つ・取扱中・有効・直近 30 日・全ランク・型番+JAN 照合・斑马 API・
-1 SKUID↔複数品は CSV に出さない（Boss「你的方式为默认选项」）。
+1 SKUID↔複数品は CSV に出さない（選択肢なし・Boss 2026-11-12「同一斑马 SKUID 填给多个商品 这个功能本身就是错误的」）。
 
 2026-11-12 実測: 輸出・取扱中・有効で SKUID 空 2,159 件、うち斑马に型番 / JAN で在るのは 7 件。
 その 7 件中 2 組は 1 つの斑马 SKU を NST の 2 品が指していた（soel-064 と 4571502021054）→ 重複は人が判断。
@@ -26,7 +26,7 @@ STATES = ("有効", "非アクティブ")
 RANKS = ("NEW", "Aランク", "Bランク", "Cランク", "取扱中止", BLANK)
 PERIODS: dict[str, int | None] = {"直近 7 日": 7, "直近 30 日": 30, "直近 90 日": 90, "直近 1 年": 365, "全期間": None}
 DEFAULTS = {"period": "直近 30 日", "depts": DEPTS, "handlings": ("取扱中",), "states": ("有効",), "ranks": RANKS,
-            "by_jan": True, "source": "api", "allow_dup": False}
+            "by_jan": True, "source": "api"}
 
 _SQL = (
     "SELECT item.id AS id, item.itemid AS code, item.upccode AS jan, item.displayname AS name, "
@@ -164,7 +164,20 @@ def register_rows(misses: list[dict], ledger: dict[str, dict], classify) -> tupl
     return rows, extra
 
 
+def drop_shared_skuids(pairs: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], dict[str, list[str]]]:
+    """1 つの斑马 SKUID に 2 つ以上の型番 → その SKUID の行はすべて外す（在庫同期が崩れる・Boss 2026-11-12）。
+    戻り (残す行, {SKUID: [型番…]})。同じ (型番, SKUID) の重複は 1 行にまとめる。"""
+    uniq = list(dict.fromkeys((c, s) for c, s in pairs if c and s))
+    by: dict[str, list[str]] = {}
+    for c, s in uniq:
+        by.setdefault(s, []).append(c)
+    dup = {s: cs for s, cs in by.items() if len(cs) > 1}
+    return [(c, s) for c, s in uniq if s not in dup], dup
+
+
 def update_csv(pairs: list[tuple[str, str]]) -> bytes:
     """[(型番, SKUID)] → NST 更新 CSV（型番で照合・page03/07 と同じ原本テンプレ書式。サポート提供=T は原本の既定列）。"""
+    if drop_shared_skuids(pairs)[1]:   # 呼び出し側が drop_shared_skuids で外してから渡す（1 SKUID↔複数品は作らない）
+        raise ValueError("同じ斑马 SKUID が複数の型番に当たっています（CSV を作りません）")
     return TPL.build_nst_master_csv([{"型番": c, "SKUID": s} for c, s in pairs if c and s], ["SKUID"],
                                     id_label="型番")

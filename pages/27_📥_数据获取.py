@@ -411,7 +411,7 @@ with top_nst:
                     jk = r["job_key"]
                     st.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
                     if r.get("description"):
-                        st.caption("📋 " + str(r["description"]))
+                        st.caption("📋 " + t(str(r["description"])))
                     st.caption(t("🆔 ジョブID: {jk}　|　取得対象(domains): {d}").format(jk=jk, d=r["domains"]))
                     c1, c2, c3, c4 = st.columns([1.2, 1.5, 2, 2])
                     en = c1.checkbox(t("有効"), value=bool(r["enabled"]), key=f"en_{jk}")
@@ -463,7 +463,7 @@ with top_nst:
                 c1, c2, c3 = st.columns([3.5, 1.5, 2])
                 c1.markdown("**" + _job_title(r["category"], r["frequency"], r["run_time"]) + "**")
                 if r.get("description"):
-                    c1.caption("📋 " + str(r["description"]))
+                    c1.caption("📋 " + t(str(r["description"])))
                 c2.caption(t("前回: {s}").format(s=r["last_status"] or "-"))
                 if r["run_now"]:
                     c3.info(t("⏳ 実行待ち…"))
@@ -535,7 +535,7 @@ with top_jdl:
                 jk = r["job_key"]
                 st.markdown(f"**🚚 {jk}**  ·  " + t("{f} {tm} 自動").format(f=r["frequency"], tm=str(r["run_time"])[:5]))
                 if r.get("description"):
-                    st.caption("📋 " + str(r["description"]))
+                    st.caption("📋 " + t(str(r["description"])))
                 c1, c2, c3 = st.columns([2, 2, 1.5])
                 c1.caption(t("上次同步") + ": " +
                            (str(r["last_run_at"])[:16] if r["last_run_at"] is not None else "-"))
@@ -672,7 +672,7 @@ with top_cp:
                 jk = r["job_key"]
                 st.markdown(f"**🇰🇷 {jk}**  ·  " + t("{f} {tm} 自動").format(f=r["frequency"], tm=str(r["run_time"])[:5]))
                 if r.get("description"):
-                    st.caption("📋 " + str(r["description"]))
+                    st.caption("📋 " + t(str(r["description"])))
                 c1, c2, c3 = st.columns([2, 2, 1.5])
                 c1.caption(t("上次同步") + ": " +
                            (str(r["last_run_at"])[:16] if r["last_run_at"] is not None else "-"))

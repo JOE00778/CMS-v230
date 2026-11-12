@@ -476,8 +476,11 @@ def _render_result(res: dict) -> None:
                 st.info(t("失敗分は原因を直してもう一度「📦 生成」を押せば、未登録の品だけ登録されます"))
             # NST 済・今回斑马に登録した品は SKUID が NST に入らない（新規登録 CSV の対象外）
             # → 型番 + SKUID の NST 更新 CSV を出す（2026-11-10 は手入力の提示だけ → Boss 2026-11-12 CSV に）
-            nst_only = [(c, r.get("sku_id", "")) for c, r in rows
-                        if res["extra"].get(c, {}).get("nst_exists") and r.get("sku_id")]
+            nst_only, dup = SF.drop_shared_skuids([(c, r.get("sku_id", "")) for c, r in rows
+                                                   if res["extra"].get(c, {}).get("nst_exists") and r.get("sku_id")])
+            if dup:   # 1 つの斑马 SKUID に 2 型番 → CSV に出さない（Boss 2026-11-12）
+                st.error(t("❌ 同じ斑马 SKUID が複数の型番に当たったため CSV から外しました: {items}").format(
+                    items=" · ".join(f"{s}: {'・'.join(cs)}" for s, cs in dup.items())))
             if nst_only:
                 st.warning(t("⚠️ NST 登録済みの {n} 件は斑马 SKUID が NST に入っていません。"
                              "下の SKUID 更新 CSV を NST に取り込んでください（在庫同期用）").format(n=len(nst_only)))

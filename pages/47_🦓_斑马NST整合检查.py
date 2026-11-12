@@ -504,12 +504,9 @@ def _render_skuid_tab() -> None:
     by_jan = c6.radio(t("斑马での照合"), [True, False], index=0, key="p47s_by_jan", horizontal=True,
                       format_func=lambda v: t("型番 + JAN") if v else t("型番のみ"),
                       help=t("型番で見つからなければ JAN（斑马の単品 SKU コード = JAN）でも探す"))
-    c7, c8 = st.columns(2)
-    source = c7.radio(t("斑马の照会元"), list(_SK_SOURCES), index=0, key="p47s_source",
+    # 1 つの斑马 SKUID を複数の品に入れる選択肢は置かない（在庫同期が崩れる・Boss 2026-11-12「这个功能本身就是错误的」）
+    source = st.radio(t("斑马の照会元"), list(_SK_SOURCES), index=0, key="p47s_source",
                       format_func=lambda k: t(_SK_SOURCES[k]))
-    allow_dup = c8.checkbox(t("同じ斑马 SKUID を複数の品に入れる"), value=d["allow_dup"], key="p47s_allow_dup",
-                            help=t("既定は入れない（1 つの斑马 SKU に NST の 2 品をつなぐと在庫同期が崩れる）。"
-                                   "入れると「重複で保留」の品も CSV に出します"))
     opts = {"period": period, "depts": tuple(depts), "handlings": tuple(handlings), "states": tuple(states),
             "ranks": tuple(ranks), "by_jan": by_jan, "source": source}
     c9, c10 = st.columns(2)
@@ -543,7 +540,7 @@ def _render_skuid_tab() -> None:
         if res["opts"] != opts:
             st.warning(t("条件が変わりました。「🔍 SKUID 空をチェックする」を押してください（前回の結果は隠しています）"))
         else:
-            _render_skuid_result(res, allow_dup)
+            _render_skuid_result(res)
     if cres:
         st.subheader(t("🩺 斑马の登録内容"))
         if cres["key"] != (opts, tuple(checks), placeholder):
@@ -552,7 +549,7 @@ def _render_skuid_tab() -> None:
             _render_content_result(cres)
 
 
-def _render_skuid_result(res: dict, allow_dup: bool) -> None:
+def _render_skuid_result(res: dict) -> None:
     hits, conflicts, misses = res["hits"], res["conflicts"], res["misses"]
     n_code = sum(h["key"] == "型番" for h in hits + conflicts)
     st.info(t("SKUID 空（{period}・部門 輸出）{total} 件 → 条件に合う {picked} 件 → "
@@ -568,7 +565,7 @@ def _render_skuid_result(res: dict, allow_dup: bool) -> None:
                      use_container_width=True, hide_index=True)
     if conflicts:
         st.subheader(t("⚠️ 同じ斑马 SKUID の重複（{n} 件・{how}）").format(
-            n=len(conflicts), how=t("CSV に出す") if allow_dup else t("CSV に出さない")))
+            n=len(conflicts), how=t("CSV に出さない")))
         st.dataframe(pd.DataFrame([{t("型番"): c["code"], t("JANコード"): c["jan"], t("アイテム名"): c["name"],
                                     t("斑马 SKUID"): c["sku_id"], t("内容"): c["note"]} for c in conflicts]),
                      use_container_width=True, hide_index=True)
@@ -641,9 +638,12 @@ def _render_skuid_result(res: dict, allow_dup: bool) -> None:
             if cnt["fail"]:
                 st.info(t("失敗分はもう一度「🦓 斑马に登録」を押せば、未登録の品だけ登録されます（登録済みは SKUID だけ取ります）"))
 
-    pairs = ([(h["code"], h["sku_id"]) for h in hits] + ([(c["code"], c["sku_id"]) for c in conflicts] if allow_dup else [])
-             + [(c, r["sku_id"]) for c, r in reg.get("rows", []) if r.get("sku_id")])
+    pairs, dup = SF.drop_shared_skuids([(h["code"], h["sku_id"]) for h in hits]
+                                       + [(c, r["sku_id"]) for c, r in reg.get("rows", []) if r.get("sku_id")])
     st.divider()
+    if dup:   # 登録で既存 SKU が返った等で 1 SKUID に 2 型番 → CSV に出さない（重複と同じ扱い）
+        st.error(t("❌ 同じ斑马 SKUID が複数の型番に当たったため CSV から外しました: {items}").format(
+            items=" · ".join(f"{s}: {'・'.join(cs)}" for s, cs in dup.items())))
     if pairs:
         st.download_button(t("⬇️ NST SKUID 更新 CSV（{n} 件）").format(n=len(pairs)), data=SF.update_csv(pairs),
                            file_name=TPL.dated_filename(registrant="SKUID更新"), mime="text/csv", type="primary",
