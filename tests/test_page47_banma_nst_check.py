@@ -33,7 +33,7 @@ def test_page47_renders_and_nav_group():
         at.run()
     assert not at.exception, [e.value for e in at.exception]
     labels = [b.label for b in at.button]
-    assert any("SKUID 空をチェック" in x for x in labels) and any("登録内容をチェック" in x for x in labels)
+    assert any("NST で SKUID が空の品をチェック" in x for x in labels) and any("登録内容をチェック" in x for x in labels)
     groups = dict(i18n._NAV_GROUPS)
     assert ("pages/47_🦓_斑马NST整合检查.py", "🦓 斑马・NST 整合检查") in groups["🦓 斑马・NST"]
     assert not any("47_" in path for path, _ in groups["🛠️ 工具"])
@@ -228,7 +228,7 @@ def test_page47_zh_ja_ui_text_20261112(page15_offline):
             at.button(key="p47s_run").click().run()
         assert not at.exception, [e.value for e in at.exception]
         texts[lang] = first + _ui_texts(at)
-    assert any("SKUID 为空" in x for x in texts["zh"]) and any("SKUID 空をチェック" in x for x in texts["ja"])
+    assert any("NST 中 SKUID 为空" in x for x in texts["zh"]) and any("NST で SKUID が空の品をチェック" in x for x in texts["ja"])
     assert not [x for x in texts["zh"] if kana.search(x)]
     assert not [x for x in texts["ja"] if simplified.search(x.replace("斑马", "").replace("待上图", ""))]
 

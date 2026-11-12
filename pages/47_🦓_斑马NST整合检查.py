@@ -514,7 +514,7 @@ def _render_skuid_tab() -> None:
     placeholder = c10.checkbox(t("仮値も空とみなす（重量 0/1/10/100/200/300/500g・三辺 1×1×1/10×10×10・待上图の画像）"),
                                value=True, key="p47c_placeholder", help=t("page46 と同じ口径（Boss 2026-10-07〜09）"))
     b1, b2, b3 = st.columns(3)
-    if b1.button(t("🔍 SKUID 空をチェックする"), type="primary", key="p47s_run", use_container_width=True):
+    if b1.button(t("🔍 NST で SKUID が空の品をチェックする"), type="primary", key="p47s_run", use_container_width=True):
         for k in _SK_KEYS:
             st.session_state.pop(k, None)
         try:
@@ -534,11 +534,11 @@ def _render_skuid_tab() -> None:
         st.rerun()
     res, cres = st.session_state.get("p47s_result"), st.session_state.get("p47c_result")
     if not res and not cres:
-        st.info(t("条件を選んで「🔍 SKUID 空をチェックする」か「🩺 斑马の登録内容をチェックする」"))
+        st.info(t("条件を選んで「🔍 NST で SKUID が空の品をチェックする」か「🩺 斑马の登録内容をチェックする」"))
     if res:
-        st.subheader(t("🔎 SKUID 空"))
+        st.subheader(t("🔎 NST で SKUID が空の品"))
         if res["opts"] != opts:
-            st.warning(t("条件が変わりました。「🔍 SKUID 空をチェックする」を押してください（前回の結果は隠しています）"))
+            st.warning(t("条件が変わりました。「🔍 NST で SKUID が空の品をチェックする」を押してください（前回の結果は隠しています）"))
         else:
             _render_skuid_result(res)
     if cres:
@@ -552,7 +552,7 @@ def _render_skuid_tab() -> None:
 def _render_skuid_result(res: dict) -> None:
     hits, conflicts, misses = res["hits"], res["conflicts"], res["misses"]
     n_code = sum(h["key"] == "型番" for h in hits + conflicts)
-    st.info(t("SKUID 空（{period}・部門 輸出）{total} 件 → 条件に合う {picked} 件 → "
+    st.info(t("NST で SKUID が空（{period}・部門 輸出）{total} 件 → 条件に合う {picked} 件 → "
               "斑马に有り {found} 件（型番一致 {n_code} · JAN 一致 {n_jan}）"
               "／うち同じ SKUID の重複 {dup} 件 · 斑马に無し {miss} 件").format(
                 period=t(res["opts"]["period"]), total=res["total"], picked=res["picked"],
