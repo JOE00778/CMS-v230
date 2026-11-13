@@ -52,7 +52,7 @@ _NEW_SQL = ("SELECT DISTINCT jan FROM nst.item_master_raw WHERE jan IS NOT NULL 
             "AND date_created >= now() - make_interval(days => %s)")
 _DIMS_SUITEQL = ("SELECT item.upccode AS jan, item.custitem_fb_package_height AS h, item.custitem_fb_package_width AS w, "
                  "item.custitem_fb_package_depth AS d FROM item WHERE item.department IN (4, 9) "
-                 "AND item.custitem_fb_package_height > 0")
+                 "AND item.custitem_fb_package_height > 0 ORDER BY item.id")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
