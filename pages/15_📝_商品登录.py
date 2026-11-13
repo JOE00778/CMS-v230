@@ -447,9 +447,13 @@ def _render_result(res: dict) -> None:
                        .format(n=st.session_state["page15_pending_n"]))
         n = st.session_state.get("page15_csv_n", 0)
         if st.session_state.get("page15_skuid_blank"):
-            st.error(t("❌ SKUID（斑马）が空の品 {n} 件。斑马に登録できていないため在庫同期されません。"
-                       "原因を直して「📦 生成」を押し直してください（登録済みの品は SKUID だけ取り直します）")
-                     .format(n=st.session_state["page15_skuid_blank"]))
+            # 斑马に入らなかった品があっても NST は止めない（Boss 2026-11-13「NST也可以照常进行」）。
+            # 取込済みの CSV をもう一度作って取り込むと NST に二重登録 → 取込後は page47 で SKUID を補う
+            st.warning(t("⚠️ 斑马に登録できなかった {n} 件は SKUID 空のまま CSV に入っています（NST CSV はこのまま取り込めます）。"
+                         "NST に取り込む前なら「📦 生成」を押し直せば、その品だけ斑马に登録し直して SKUID 入りの CSV を作ります。"
+                         "取り込んだ後は押し直さず（NST に二重登録になります）、「🦓 斑马・NST 整合检查」の"
+                         "「🔍 NST で SKUID が空の品をチェックする」で斑马登録と SKUID 更新 CSV を作ってください")
+                       .format(n=st.session_state["page15_skuid_blank"]))
         st.download_button(
             t("⬇️ NST CSV をダウンロード（{n} 件）").format(n=n), data=csv_bytes,
             file_name=st.session_state.get("page15_csv_name") or TPL.dated_filename(),
@@ -473,7 +477,7 @@ def _render_result(res: dict) -> None:
                                         "SPUID": r.get("spu_id", ""), t("内容"): r.get("message", "")}
                                        for c, r in rows]), use_container_width=True, hide_index=True)
             if cnt["fail"]:
-                st.info(t("失敗分は原因を直してもう一度「📦 生成」を押せば、未登録の品だけ登録されます"))
+                st.info(t("失敗分は上の ⚠️ のとおり：NST 取込前なら「📦 生成」の押し直し、取込後は「🦓 斑马・NST 整合检查」で補います"))
             # NST 済・今回斑马に登録した品は SKUID が NST に入らない（新規登録 CSV の対象外）
             # → 型番 + SKUID の NST 更新 CSV を出す（2026-11-10 は手入力の提示だけ → Boss 2026-11-12 CSV に）
             nst_only, dup = SF.drop_shared_skuids([(c, r.get("sku_id", "")) for c, r in rows

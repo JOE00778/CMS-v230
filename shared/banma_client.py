@@ -40,7 +40,7 @@ _MARGIN = dt.timedelta(hours=24)    # token 期限先読み更新（TZ ずれ吸
 
 
 # 元川→斑马 gateway（華為雲北京）は越境経路のロスで接続・握手が 20〜60 秒張り付く時間帯がある（2026-11-12 実測:
-# 失敗の大半は TCP 段・成功する接続/握手は ≤11 秒）→ GET は 20 秒で切って回数を増やす。書込は非冪等なので 60 秒・再試行なし
+# 失敗の大半は TCP 段・成功する接続/握手は ≤11 秒）→ GET は 20 秒で切って回数を増やす。書込は 60 秒・未送達（urlopen error）だけ再送
 GET_TIMEOUT = 20
 WRITE_TIMEOUT = 60
 GET_RETRIES = 8
@@ -156,13 +156,14 @@ class BanmaClient:
              max_retries: int = GET_RETRIES, body=None):
         """→ 応答 envelope の Data。再試行判据は 2026-08-28 全 ingester 統一形。
 
-        body（dict/list）は JSON で送り、署名にも同じ文字列を入れる。**GET 以外は再試行しない**
-        （POST /v1/product は非冪等。応答が読めなかった時の再送は二重登録になる → 呼び出し側が Code で照会）。
+        body（dict/list）は JSON で送り、署名にも同じ文字列を入れる。**GET 以外は未送達のときだけ再送**:
+        urllib は接続・握手・送信段の OSError を URLError に包み、応答を読む段の失敗は裸で投げる（do_open の実装）。
+        URLError ＝ 斑马に届いていない → 再送して安全（Boss 2026-11-13「失败也可以斑马上架」）。
+        読む段の失敗・HTTP 5xx は処理済みかもしれない → 再送しない（POST /v1/product は非冪等 → 呼び出し側が Code で照会）。
         """
         payload = json.dumps(body, ensure_ascii=False) if body is not None else ""
-        if method.upper() != "GET":
-            max_retries = 1
-        timeout = GET_TIMEOUT if method.upper() == "GET" else WRITE_TIMEOUT
+        write = method.upper() != "GET"
+        timeout = WRITE_TIMEOUT if write else GET_TIMEOUT
         query = urllib.parse.urlencode(params, doseq=True, safe=":,-T") \
             if params else ""
         url = GATEWAY + path + (("?" + query) if query else "")
@@ -188,7 +189,7 @@ class BanmaClient:
             except urllib.error.HTTPError as e:
                 # ⚠️ HTTPError ⊂ URLError ⊂ OSError なのでこの branch が必ず先
                 text = e.read().decode("utf-8", "replace")
-                if e.code in RETRY_HTTP_STATUS:
+                if e.code in RETRY_HTTP_STATUS and not write:
                     last_err = e
                     time.sleep(min(BACKOFF_CAP, float(2 ** attempt)))
                     continue
@@ -197,9 +198,9 @@ class BanmaClient:
                 raise BanmaError(e.code, text) from e
             except (OSError, http.client.HTTPException,
                     json.JSONDecodeError) as e:
-                # read 段の裸 TimeoutError / 接続断 / 非 JSON 200。GET のみで冪等
+                # read 段の裸 TimeoutError / 接続断 / 非 JSON 200。GET は冪等・書込は未送達（URLError）だけ
                 last_err = e
-                if attempt + 1 >= max_retries:
+                if attempt + 1 >= max_retries or (write and not isinstance(e, urllib.error.URLError)):
                     break
                 time.sleep(min(BACKOFF_CAP, float(2 ** attempt)))
                 continue

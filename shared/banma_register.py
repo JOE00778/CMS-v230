@@ -7,7 +7,7 @@
   SPU = SKU = 型番 / 产品标题 = 中文名称 = アイテム名 / 规格 1 = 型番 / 成本价 = 商品原価（円の数値そのまま。
   2026-11-09 実測: page15 経由で xlsx 取込した既存品は BM 成本价 = NST 原価（900=900）。文書は CNY と書くが従う）
   重量・長宽高 = パッケージ値 / 海关编码 = _hs / 英文名称 = _name_en / ERP 类目・供应商は空。
-POST は非冪等 → 再送しない（banma_client が GET 以外を 1 回に固定）。応答が読めなければ Code で照会して判定。
+POST は非冪等 → 斑马に届かなかった時（urlopen error）だけ banma_client が再送。応答が読めなければ Code で照会して判定。
 """
 from __future__ import annotations
 

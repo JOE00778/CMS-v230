@@ -404,4 +404,30 @@ def test_get_short_timeout_more_retries_capped_backoff_20261112(monkeypatch):
     seen.clear()
     with pytest.raises(B.BanmaError):
         c.call("POST", "/v1/product/", body={"a": 1})
-    assert seen == [("POST", 60)]
+    assert seen == [("POST", 60)] * 8          # urlopen error = 未送達 → 書込でも再送（2026-11-13）
+
+
+def test_write_resends_only_when_request_never_reached_banma_20261113(monkeypatch):
+    """Boss 2026-11-13「失败也可以斑马上架」: page15 の POST が [Errno 111] / 握手 EOF で落ち、回読で未作成を確認しても fail だった。
+    urlopen error（URLError）は接続・握手・送信段の失敗＝斑马に届いていない → 書込でも再送して安全。
+    応答を読む段の失敗（裸の TimeoutError 等）と HTTP 5xx は斑马が処理済みかもしれない → 再送しない（二重登録防止）。"""
+    import urllib.error
+    sent = []
+    def flaky(req, timeout=None):
+        sent.append(req.get_method())
+        if len(sent) <= 2:
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        return _ok({"SPUID": "1"})
+    monkeypatch.setattr(B.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(B.time, "sleep", lambda s: None)
+    assert _client().call("POST", "/v1/product/", body={"a": 1}) == {"SPUID": "1"}
+    assert sent == ["POST"] * 3
+
+    sent.clear()
+    def bad_gateway(req, timeout=None):
+        sent.append(req.get_method())
+        raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", {}, io.BytesIO(b"{}"))
+    monkeypatch.setattr(B.urllib.request, "urlopen", bad_gateway)
+    with pytest.raises(B.BanmaError):
+        _client().call("PUT", "/v1/product/1", body={"a": 1})
+    assert sent == ["PUT"]
