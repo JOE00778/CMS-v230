@@ -15,7 +15,7 @@ from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 
-from shared import image_search
+from shared import image_search, jan_web
 from shared import new_item_request as NR
 from shared import po_csv
 from shared.auth import require_password
@@ -137,59 +137,90 @@ tab_new, tab_conf, tab_po, tab_track = st.tabs([
     t("📦 发注书（{n}）").format(n=len(by_state["待发注"])),
     t("🚚 到货跟踪（{n}）").format(n=sum(len(by_state[s]) for s in ("超期", "部分到货", "在途", "待发注")))])
 
-# ── ➕ 提申请
+# ── ➕ 提申请（Boss 2026-11-13「先提 JAN，点确认，然后自动检索出单价，商品名和图，然后再根据每个产品填写数量」）
+def _lookup(jans: list[str]) -> list[dict]:
+    """JAN → 画像・商品名・単価（最終仕入原価 > 原価）・起批量。NST 未登録は 楽天 の商品名（単価なし）。"""
+    rec = ITEMS.set_index("jan").to_dict("index") if not ITEMS.empty else {}
+    unreg = [j for j in jans if j not in rec]
+    web = {}
+    if unreg:
+        with st.spinner(t("在网上检索 NST 未建档商品的名称（{n} 件）…").format(n=len(unreg))):
+            with ThreadPoolExecutor(4) as ex:
+                web = dict(zip(unreg, ex.map(_web_name, unreg)))
+    imgs = _images(jans)
+    out = []
+    for j in jans:
+        price, src = NR.unit_price_of(rec.get(j) or {})
+        out.append({"jan": j, "img": imgs.get(j), "name": NAMES.get(j) or web.get(j, ""), "price": price,
+                    "src": src or ("" if j in rec else "NST 未建档"), "lot": _lot_label(j)})
+    return out
+
+
+def _web_name(jan: str) -> str:
+    try:
+        return jan_web.rakuten_meta(jan).name or ""
+    except Exception:  # noqa: BLE001 — 名前が取れなくても申請は止めない（手で入れる）
+        return ""
+
+
 with tab_new:
-    st.caption(t("一行一个商品。商品名可空（NST 已建档的会自动带出）。申请人: {u}").format(u=USER))
-    blank = pd.DataFrame({"JAN": [""] * 5, "数量": [None] * 5, "商品名": [""] * 5, "备注": [""] * 5})
-    ed = lang_stable_editor(blank, key=f"p48_new_editor_{st.session_state.get('p48_new_gen', 0)}", num_rows="dynamic", hide_index=True, use_container_width=True,
-                            column_config={"JAN": st.column_config.TextColumn("JAN"),
-                                           "数量": st.column_config.NumberColumn(t("数量"), min_value=1, step=1),
-                                           "商品名": st.column_config.TextColumn(t("商品名")),
-                                           "备注": st.column_config.TextColumn(t("备注"))})
-    prev = []
-    for rec in ed.to_dict("records"):
-        jan = NR.normalize_jan(rec.get("JAN"))
-        if not jan:
-            continue
-        q = pd.to_numeric(rec.get("数量"), errors="coerce")
-        if pd.isna(q) or q < 1:
-            judge = "⚠️ " + t("未填数量")
-        elif jan not in LOTS:
-            judge = "⚠️ " + t("NST 未建档，起批量未知")
-        else:
-            ok, sug = NR.lot_check(int(q), LOTS[jan])
-            judge = "✅" if ok else "❌ " + t("要 {lot} 的整倍数（建议 {s}）").format(lot=LOTS[jan], s=sug)
-        prev.append({"jan": jan, "name": NAMES.get(jan) or str(rec.get("商品名") or "").strip(),
-                     "qty": None if pd.isna(q) else int(q), "judge": judge})
-    if prev:   # Boss 2026-11-13「填入 JAN 后，是否能把图片调出来，进行 2 次确认」
-        st.markdown(t("**🔍 提交前确认**：看图片是不是要的商品、数量是不是起批量的整倍数（起批量取自 NST 商品主档）"))
-        imgs = _images([x["jan"] for x in prev])
-        st.dataframe(pd.DataFrame([{"img": imgs[x["jan"]], "JAN": x["jan"], "name": x["name"],
-                                    "lot": _lot_label(x["jan"]), "qty": x["qty"], "judge": x["judge"]} for x in prev]),
-                     hide_index=True, use_container_width=True, row_height=72,
-                     column_config={"img": st.column_config.ImageColumn(t("图片"), width="small"),
-                                    "name": st.column_config.Column(t("商品名")),
-                                    "lot": st.column_config.Column(t("起批量")),
-                                    "qty": st.column_config.Column(t("数量")),
-                                    "judge": st.column_config.Column(t("判定"))})
-    if st.button(t("✅ 图片和数量确认无误，提交申请"), type="primary", key="p48_submit", disabled=not prev):
-        rows, errs = NR.parse_new_rows(ed.to_dict("records"), tracked, lots=LOTS)
-        if errs:
-            for e in errs:
-                st.error("❌ " + e)
-            st.warning(t("有错误，全部没有提交"))
-        elif not rows:
-            st.warning(t("没有填 JAN"))
-        else:
-            for r in rows:
-                r["item_name"] = r["item_name"] or NAMES.get(r["jan"], "")
-            with get_connection() as conn:
-                ids = NR.insert_requests(conn, rows, USER)
-            unreg = [r["jan"] for r in rows if r["jan"] not in NAMES]
-            st.session_state["p48_new_gen"] = st.session_state.get("p48_new_gen", 0) + 1   # 入力表を空に戻す
-            _done(t("✅ 已提交 {n} 件（#{ids}）").format(n=len(ids), ids=", #".join(map(str, ids)))
-                  + (" · " + t("NST 未建档 {n} 件：{jans}（发注前要先在 page15 商品登录建档）").format(
-                      n=len(unreg), jans="・".join(unreg)) if unreg else ""))
+    gen = st.session_state.get("p48_new_gen", 0)
+    st.caption(t("① 粘贴 JAN（一行一个，可多个）→「🔍 确认」→ ② 自动带出图片・商品名・单价・起批量，逐行填数量 → 提交。申请人: {u}")
+               .format(u=USER))
+    raw = st.text_area(t("JAN（一行一个）"), key=f"p48_jans_{gen}", height=120)
+    if st.button(t("🔍 确认"), key="p48_lookup_btn", disabled=not raw.strip()):
+        jans, bad = [], []
+        for ln in raw.splitlines():
+            if ln.strip():
+                j = NR.normalize_jan(ln)
+                (jans.append(j) if j else bad.append(ln.strip()))
+        jans = list(dict.fromkeys(jans))
+        conflicts = NR.open_jan_conflicts(jans, tracked)
+        for x in bad:
+            st.error("❌ " + t("JAN「{j}」不是 8〜14 位数字").format(j=x))
+        for j, rid in conflicts.items():
+            st.warning(t("JAN {j} 已有未完成的申请 #{id}（到货或取消后才能再提）").format(j=j, id=rid))
+        st.session_state["p48_lookup"] = _lookup([j for j in jans if j not in conflicts])
+        st.session_state["p48_lookup_gen"] = st.session_state.get("p48_lookup_gen", 0) + 1
+    found = st.session_state.get("p48_lookup") or []
+    if found:
+        st.markdown(t("**② 核对图片和商品，填数量**（数量要是起批量的整倍数；没填数量的行不提交）"))
+        df = pd.DataFrame([{"图片": x["img"], "JAN": x["jan"], "商品名": x["name"], "单价": x["price"],
+                            "单价来源": t(x["src"]) if x["src"] else "", "起批量": x["lot"], "数量": None, "备注": ""} for x in found])
+        ed = lang_stable_editor(df, key=f"p48_fill_{st.session_state.get('p48_lookup_gen', 0)}",
+                                reset=tuple(df["JAN"]), hide_index=True, num_rows="fixed", use_container_width=True,
+                                row_height=72, disabled=["图片", "JAN", "单价来源", "起批量"],
+                                column_config={"图片": st.column_config.ImageColumn(t("图片"), width="small"),
+                                               "商品名": st.column_config.TextColumn(t("商品名")),
+                                               "单价": st.column_config.NumberColumn(t("单价"), min_value=0),
+                                               "单价来源": st.column_config.Column(t("单价来源")),
+                                               "起批量": st.column_config.Column(t("起批量")),
+                                               "数量": st.column_config.NumberColumn(t("数量"), min_value=1, step=1),
+                                               "备注": st.column_config.TextColumn(t("备注"))})
+        recs = [r for r in ed.to_dict("records") if pd.notna(pd.to_numeric(r["数量"], errors="coerce"))]
+        for e in _lot_errors(recs, "数量"):
+            st.error("❌ " + t("数量不是起批量的整倍数: {item}").format(item=e))
+        st.caption(t("要提交 {n} 件（共 {m} 件，没填数量的 {k} 件不提交）").format(n=len(recs), m=len(ed), k=len(ed) - len(recs)))
+        if st.button(t("✅ 图片和数量确认无误，提交申请"), type="primary", key="p48_submit", disabled=not recs):
+            rows, errs = NR.parse_new_rows(recs, tracked, lots=LOTS)
+            if errs:
+                for e in errs:
+                    st.error("❌ " + e)
+                st.warning(t("有错误，全部没有提交"))
+            else:
+                price = {str(r["JAN"]): r["单价"] for r in recs}
+                for r in rows:
+                    r["item_name"] = r["item_name"] or NAMES.get(r["jan"], "")
+                    v = pd.to_numeric(price.get(r["jan"]), errors="coerce")
+                    r["unit_price"] = None if pd.isna(v) else float(v)
+                with get_connection() as conn:
+                    ids = NR.insert_requests(conn, rows, USER)
+                unreg = [r["jan"] for r in rows if r["jan"] not in NAMES]
+                st.session_state["p48_new_gen"] = gen + 1      # JAN 欄を空に
+                st.session_state.pop("p48_lookup", None)
+                _done(t("✅ 已提交 {n} 件（#{ids}）").format(n=len(ids), ids=", #".join(map(str, ids)))
+                      + (" · " + t("NST 未建档 {n} 件：{jans}（发注前要先在 page15 商品登录建档）").format(
+                          n=len(unreg), jans="・".join(unreg)) if unreg else ""))
 
 # ── 📋 待确认
 with tab_conf:

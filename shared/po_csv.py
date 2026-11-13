@@ -17,10 +17,10 @@ def _norm_jan(s: pd.Series) -> pd.Series:
 
 
 def load_item_master(conn) -> pd.DataFrame:
-    """nst.item_master_raw（有効・JAN あり）→ jan/item_code/display_name/tax_schedule/order_lot（発注ロット = 起批量）。
+    """nst.item_master_raw（有効・JAN あり）→ jan/item_code/display_name/tax_schedule/order_lot（発注ロット = 起批量）/cost/last_purchase_cost。
     同 JAN が複数 active（旧レコード未停用・極少）なら last_modified 最新の 1 行。"""
     df = pd.DataFrame([dict(r) for r in conn.execute(
-        "SELECT jan, item_code, display_name, tax_schedule, order_lot, last_modified "
+        "SELECT jan, item_code, display_name, tax_schedule, order_lot, cost, last_purchase_cost, last_modified "
         "FROM nst.item_master_raw "
         "WHERE is_inactive = FALSE AND jan IS NOT NULL AND jan <> ''"
     ).fetchall()])

@@ -67,6 +67,18 @@ def open_jan_conflicts(new_jans: list[str], tracked: list[dict]) -> dict[str, in
     return {x["jan"]: x["id"] for x in tracked if x["jan"] in want and x["state"] in OPEN}
 
 
+def unit_price_of(item: dict) -> tuple[float | None, str]:
+    """NST 商品マスタの行 → (申請時の単価, 出典)。最終仕入原価 > 原価（Boss 2026-11-13「执行」）。どちらも無ければ (None, "")。"""
+    for col, src in (("last_purchase_cost", "最終仕入原価"), ("cost", "原価")):
+        try:
+            v = float(item.get(col))
+        except (TypeError, ValueError):
+            continue
+        if v > 0:          # NaN > 0 は False
+            return v, src
+    return None, ""
+
+
 def lot_check(qty: int, lot) -> tuple[bool, int]:
     """数量は 起批量（NST 発注ロット）の整倍数（Boss 2026-11-13「数量是需要根据起批量来订货」「执行」= 整倍数）。
     → (ok, 提案数 = 切り上げた整倍数)。起批量が空・0 なら 1 扱い（制限なし）。"""
@@ -155,12 +167,14 @@ def load_po_lines(conn, jans: list[str]) -> list[dict]:
 
 
 def insert_requests(conn, rows: list[dict], user: str) -> list[int]:
-    """rows = {jan, qty, note, item_name}。→ 作った id。"""
+    """rows = {jan, qty, note, item_name, unit_price}（単価は申請時の参考値・確認で変えられる）。→ 作った id。"""
     ids = []
     for r in rows:
         ids.append(conn.execute(
-            f"INSERT INTO {TABLE} (jan, item_name, qty, note, requested_by) VALUES (?, ?, ?, ?, ?) RETURNING id",
-            (r["jan"], r.get("item_name") or None, int(r["qty"]), r.get("note") or None, user)).fetchone()["id"])
+            f"INSERT INTO {TABLE} (jan, item_name, qty, note, unit_price, requested_by) "
+            "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            (r["jan"], r.get("item_name") or None, int(r["qty"]), r.get("note") or None, r.get("unit_price"),
+             user)).fetchone()["id"])
     conn.commit()
     return ids
 

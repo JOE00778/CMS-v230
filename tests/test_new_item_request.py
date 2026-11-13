@@ -85,3 +85,11 @@ def test_parse_new_rows_enforces_lot_only_for_known_jan(monkeypatch):
     assert [r["jan"] for r in rows] == ["4900000000011", "4900000000028"]   # 行は返す・エラーがあれば呼び出し側が入れない
     assert len(errs) == 1 and "24" in errs[0] and "48" in errs[0]           # NST 未登録（lots に無い）は止めない
     assert NR.parse_new_rows([{"JAN": "4900000000011", "数量": 48}], [], lots={"4900000000011": 24})[1] == []
+
+
+def test_unit_price_prefers_last_purchase_cost_then_cost_20261113():
+    from decimal import Decimal
+    assert NR.unit_price_of({"last_purchase_cost": Decimal("120.00"), "cost": Decimal("100")}) == (120.0, "最終仕入原価")
+    assert NR.unit_price_of({"last_purchase_cost": None, "cost": Decimal("900.0000")}) == (900.0, "原価")
+    assert NR.unit_price_of({"last_purchase_cost": float("nan"), "cost": 0}) == (None, "")
+    assert NR.unit_price_of({}) == (None, "")
