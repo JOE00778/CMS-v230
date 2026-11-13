@@ -173,7 +173,10 @@ with tab_new:
         for ln in raw.splitlines():
             if ln.strip():
                 j = NR.normalize_jan(ln)
-                (jans.append(j) if j else bad.append(ln.strip()))
+                if j:      # 式文で書くと Streamlit の magic が None を画面に出す（2026-11-13 Boss 指摘）
+                    jans.append(j)
+                else:
+                    bad.append(ln.strip())
         jans = list(dict.fromkeys(jans))
         conflicts = NR.open_jan_conflicts(jans, tracked)
         for x in bad:
