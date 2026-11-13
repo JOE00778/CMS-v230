@@ -79,6 +79,35 @@ def unit_price_of(item: dict) -> tuple[float | None, str]:
     return None, ""
 
 
+def _match_supplier(names, suppliers: list[str]) -> str | None:
+    """名前の候補 → NST 仕入先の表示名（「コード 会社名」）。完全一致 か 会社名部分の一致。"""
+    for c in (n for n in names if n):
+        if c in suppliers:
+            return c
+        hit = next((s for s in suppliers if s.split(" ", 1)[-1] == c), None)
+        if hit:
+            return hit
+    return None
+
+
+def pick_default_supplier(main: dict[str, tuple[str, str | None]], po: dict[str, str],
+                          suppliers: list[str]) -> dict[str, tuple[str, str]]:
+    """JAN → (既定の仕入先, 出典)。page34 供货商管理の「計画仕入先」と同じ順: 主供指定 > 最近 PO の仕入先
+    （Boss 2026-11-13「供货商改成默认供货商，数据应该在供货商管理那里有维护」）。
+    main = JAN → (主供の略称, 正式名(NST))、po = JAN → 最近 PO の vendor_name。NST 仕入先一覧に当たらない名前は使わない。"""
+    out = {}
+    for jan in {*main, *po}:
+        m = main.get(jan)
+        d = _match_supplier((m[1], m[0]), suppliers) if m else None
+        if d:
+            out[jan] = (d, "主供")
+            continue
+        d = _match_supplier((po.get(jan),), suppliers)
+        if d:
+            out[jan] = (d, "最近 PO")
+    return out
+
+
 def lot_check(qty: int, lot) -> tuple[bool, int]:
     """数量は 起批量（NST 発注ロット）の整倍数（Boss 2026-11-13「数量是需要根据起批量来订货」「执行」= 整倍数）。
     → (ok, 提案数 = 切り上げた整倍数)。起批量が空・0 なら 1 扱い（制限なし）。"""
@@ -164,6 +193,27 @@ def load_po_lines(conn, jans: list[str]) -> list[dict]:
         "FROM nst.purchase_order_line pol JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
         "WHERE regexp_replace(trim(im.jan), '^0{5,}', '') = ANY(?) AND pol.trandate IS NOT NULL", (jans,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def load_supplier_sources(conn, jans: list[str]) -> tuple[dict, dict]:
+    """(主供 = JAN → (略称, 正式名), 最近 PO = JAN → vendor_name)。sourcing の表が無ければ主供は空。"""
+    jans = sorted({j for j in jans if j})
+    if not jans:
+        return {}, {}
+    try:
+        main = {r["jan"]: (r["supplier_name"], r["official_name"]) for r in conn.execute(
+            "SELECT m.jan, m.supplier_name, s.official_name FROM sourcing.item_main_supplier m "
+            "LEFT JOIN sourcing.supplier s ON s.supplier_name = m.supplier_name WHERE m.jan = ANY(?)", (jans,)).fetchall()}
+    except Exception:  # noqa: BLE001 — page34 を開いたことが無い環境（表なし）では主供なし
+        conn.rollback()
+        main = {}
+    po = {r["jan"]: r["vendor_name"] for r in conn.execute(
+        "SELECT DISTINCT ON (jan) jan, vendor_name FROM ("
+        "SELECT regexp_replace(trim(im.jan), '^0{5,}', '') AS jan, pol.vendor_name, pol.trandate, pol.po_number "
+        "FROM nst.purchase_order_line pol JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
+        "WHERE pol.vendor_name IS NOT NULL) x WHERE jan = ANY(?) ORDER BY jan, trandate DESC, po_number DESC",
+        (jans,)).fetchall()}
+    return main, po
 
 
 def insert_requests(conn, rows: list[dict], user: str) -> list[int]:

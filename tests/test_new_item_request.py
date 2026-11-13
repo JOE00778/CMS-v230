@@ -93,3 +93,14 @@ def test_unit_price_prefers_last_purchase_cost_then_cost_20261113():
     assert NR.unit_price_of({"last_purchase_cost": None, "cost": Decimal("900.0000")}) == (900.0, "原価")
     assert NR.unit_price_of({"last_purchase_cost": float("nan"), "cost": 0}) == (None, "")
     assert NR.unit_price_of({}) == (None, "")
+
+
+def test_default_supplier_main_then_latest_po_20261113():
+    """供货商管理の主供指定（→ 正式名で NST 仕入先名へ）> 最近 PO の仕入先。NST 仕入先一覧に無い名前は出さない。"""
+    sups = ["0535 株式会社エーアンドティー", "0001 ハリマ共和物産株式会社", "0474 株式会社　五洲"]
+    main = {"J1": ("A&T", "0535 株式会社エーアンドティー"), "J2": ("ハリマ", "ハリマ共和物産株式会社"), "J4": ("謎", None)}
+    po = {"J2": "0535 株式会社エーアンドティー", "J3": "0535 株式会社エーアンドティー", "J4": "0474 株式会社　五洲",
+          "J5": "9999 不明"}
+    assert NR.pick_default_supplier(main, po, sups) == {
+        "J1": ("0535 株式会社エーアンドティー", "主供"), "J2": ("0001 ハリマ共和物産株式会社", "主供"),
+        "J3": ("0535 株式会社エーアンドティー", "最近 PO"), "J4": ("0474 株式会社　五洲", "最近 PO")}

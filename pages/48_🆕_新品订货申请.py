@@ -109,6 +109,27 @@ def _lot_errors(recs: list[dict], qty_col: str) -> list[str]:
     return out
 
 
+def _amount_block(recs: list[dict], qty_col: str, title: str) -> float:
+    """SKU ごとの金額（数量 × 単価）表と合計（Boss 2026-11-13「要体现本次订货SKU总金额和全部都总金额」）。→ 合計。"""
+    rows, total, no_price = [], 0.0, 0
+    for r in recs:
+        q, pr = (pd.to_numeric(r.get(k), errors="coerce") for k in (qty_col, "单价"))
+        a = None if pd.isna(q) or pd.isna(pr) else float(q) * float(pr)
+        no_price += a is None
+        total += a or 0.0
+        rows.append({"JAN": r["JAN"], "name": r.get("商品名") or "", "qty": None if pd.isna(q) else int(q),
+                     "price": None if pd.isna(pr) else float(pr), "amount": a})
+    if rows:
+        st.markdown(title.format(n=len(rows), a=total)
+                    + (t("（单价未填 {k} 个 SKU 未计入）").format(k=no_price) if no_price else ""))
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                     column_config={"name": st.column_config.Column(t("商品名")),
+                                    "qty": st.column_config.NumberColumn(t("数量")),
+                                    "price": st.column_config.NumberColumn(t("单价"), format="yen"),
+                                    "amount": st.column_config.NumberColumn(t("金额"), format="yen")})
+    return total
+
+
 def _img_one(jan: str) -> str:
     try:
         return image_search.search_jan(jan)
@@ -204,6 +225,7 @@ with tab_new:
         for e in _lot_errors(recs, "数量"):
             st.error("❌ " + t("数量不是起批量的整倍数: {item}").format(item=e))
         st.caption(t("要提交 {n} 件（共 {m} 件，没填数量的 {k} 件不提交）").format(n=len(recs), m=len(ed), k=len(ed) - len(recs)))
+        _amount_block(recs, "数量", t("**💴 本次订货：{n} 个 SKU，合计 ¥{a:,.0f}**"))
         if st.button(t("✅ 图片和数量确认无误，提交申请"), type="primary", key="p48_submit", disabled=not recs):
             rows, errs = NR.parse_new_rows(recs, tracked, lots=LOTS)
             if errs:
@@ -233,26 +255,42 @@ with tab_conf:
     else:
         st.caption(t("勾选后「✅ 确认」或「🗑️ 取消」。确认要填仕入先和数量，单价可以到发注书再填。操作人: {u}").format(u=USER))
         imgs = _images([x["jan"] for x in xs])
+        try:   # 既定の仕入先 = 供货商管理の主供指定 > 最近 PO（Boss 2026-11-13）
+            with get_connection() as conn:
+                dflt = NR.pick_default_supplier(*NR.load_supplier_sources(conn, [x["jan"] for x in xs]), SUPPLIERS)
+        except Exception as e:  # noqa: BLE001 — 取れなくても確認は手で選べる
+            st.warning(t("默认供货商读取失败（请手选）: {err}").format(err=f"{type(e).__name__}: {e}"))
+            dflt = {}
         df = pd.DataFrame([{"选择": False, "图片": imgs[x["jan"]], "#": x["id"], "JAN": x["jan"], "商品名": _name(x),
                             "NST": "✅" if x["jan"] in NAMES else "❌", "起批量": _lot_label(x["jan"]),
                             "申请数": x["qty"], "备注": x.get("note") or "",
                             "申请人": x.get("requested_by") or "", "申请日": _when(x["requested_at"]),
-                            "仕入先": x.get("supplier") or None, "单价": x.get("unit_price"), "确认数量": x["qty"]}
+                            "仕入先": x.get("supplier") or dflt.get(x["jan"], (None, ""))[0],
+                            "供货商来源": "" if x.get("supplier") else t(dflt.get(x["jan"], (None, ""))[1] or "无"),
+                            "单价": x.get("unit_price"), "确认数量": x["qty"]}
                            for x in xs])
         ed = lang_stable_editor(df, key="p48_conf_editor", reset=tuple(df["#"]), hide_index=True, num_rows="fixed",
                                 use_container_width=True, row_height=72,
-                                disabled=["图片", "#", "JAN", "商品名", "NST", "起批量", "申请数", "备注", "申请人", "申请日"],
+                                disabled=["图片", "#", "JAN", "商品名", "NST", "起批量", "申请数", "备注", "申请人", "申请日",
+                                          "供货商来源"],
                                 column_config={**{k: st.column_config.Column(t(k)) for k in
-                                                  ("选择", "商品名", "起批量", "申请数", "备注", "申请人", "申请日")},
+                                                  ("选择", "商品名", "起批量", "申请数", "备注", "申请人", "申请日",
+                                                   "供货商来源")},
                                                "图片": st.column_config.ImageColumn(t("图片"), width="small"),
-                                               "NST": st.column_config.Column(t("NST 建档")),
+                                               "NST": st.column_config.Column(t("NST登录")),
                                                "仕入先": st.column_config.SelectboxColumn(t("仕入先"), options=SUPPLIERS),
                                                "单价": st.column_config.NumberColumn(t("单价"), min_value=0),
                                                "确认数量": st.column_config.NumberColumn(t("确认数量"), min_value=1,
                                                                                      step=1)})
-        sel = [r for r in ed.to_dict("records") if r["选择"]]
+        all_recs = ed.to_dict("records")
+        _amount_block(all_recs, "确认数量", t("**💴 全部待确认：{n} 个 SKU，合计 ¥{a:,.0f}**"))
+        sel = [r for r in all_recs if r["选择"]]
+        sel_total = sum(float(q) * float(pr) for q, pr in ((pd.to_numeric(r["确认数量"], errors="coerce"),
+                                                           pd.to_numeric(r["单价"], errors="coerce")) for r in sel)
+                        if pd.notna(q) and pd.notna(pr))
         b1, b2 = st.columns(2)
-        if b1.button(t("✅ 确认（{n} 件）").format(n=len(sel)), type="primary", disabled=not sel, key="p48_confirm"):
+        if b1.button(t("✅ 确认（{n} 件 · ¥{a:,.0f}）").format(n=len(sel), a=sel_total), type="primary", disabled=not sel,
+                     key="p48_confirm"):
             bad = [str(r["JAN"]) for r in sel if not r["仕入先"] or pd.isna(pd.to_numeric(r["确认数量"], errors="coerce"))]
             lot_bad = _lot_errors(sel, "确认数量")
             if bad:
@@ -288,7 +326,7 @@ with tab_po:
                                 disabled=["#", "JAN", "商品名", "NST", "起批量", "确认人", "确认日"],
                                 column_config={**{k: st.column_config.Column(t(k)) for k in
                                                   ("选择", "商品名", "起批量", "确认人", "确认日")},
-                                               "NST": st.column_config.Column(t("NST 建档")),
+                                               "NST": st.column_config.Column(t("NST登录")),
                                                "仕入先": st.column_config.SelectboxColumn(t("仕入先"), options=SUPPLIERS),
                                                "单价": st.column_config.NumberColumn(t("单价"), min_value=0),
                                                "数量": st.column_config.NumberColumn(t("数量"), min_value=1, step=1)})
