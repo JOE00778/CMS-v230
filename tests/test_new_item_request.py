@@ -69,3 +69,19 @@ def test_parse_new_rows_validates_and_blocks_open_jan(monkeypatch):
     assert len(errs) == 4 and "#9" in errs[-1] and "12ab" in errs[0]   # 不正 JAN・数量 0・重複・未完成申請あり
     assert NR.parse_new_rows([{"JAN": "4900000000042", "数量": 1}], tracked) == (
         [{"jan": "4900000000042", "qty": 1, "item_name": "", "note": ""}], [])
+
+
+def test_lot_check_multiple_of_order_lot_20261113():
+    assert NR.lot_check(48, 24) == (True, 48)
+    assert NR.lot_check(30, 24) == (False, 48)       # 整倍数でない → 切り上げを提案
+    assert NR.lot_check(10, 24) == (False, 24)       # 起批量未満
+    assert NR.lot_check(7, None) == (True, 7) and NR.lot_check(7, 0) == (True, 7)   # 起批量なし = 1
+
+
+def test_parse_new_rows_enforces_lot_only_for_known_jan(monkeypatch):
+    monkeypatch.setattr("shared.i18n.get_lang", lambda: "zh")
+    recs = [{"JAN": "4900000000011", "数量": 30}, {"JAN": "4900000000028", "数量": 3}]
+    rows, errs = NR.parse_new_rows(recs, [], lots={"4900000000011": 24})
+    assert [r["jan"] for r in rows] == ["4900000000011", "4900000000028"]   # 行は返す・エラーがあれば呼び出し側が入れない
+    assert len(errs) == 1 and "24" in errs[0] and "48" in errs[0]           # NST 未登録（lots に無い）は止めない
+    assert NR.parse_new_rows([{"JAN": "4900000000011", "数量": 48}], [], lots={"4900000000011": 24})[1] == []

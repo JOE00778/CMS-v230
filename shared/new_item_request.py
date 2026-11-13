@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, timedelta
 
@@ -66,8 +67,18 @@ def open_jan_conflicts(new_jans: list[str], tracked: list[dict]) -> dict[str, in
     return {x["jan"]: x["id"] for x in tracked if x["jan"] in want and x["state"] in OPEN}
 
 
-def parse_new_rows(records: list[dict], tracked: list[dict]) -> tuple[list[dict], list[str]]:
-    """申請表の行（JAN・数量・商品名・备注）→ (登録する行, エラー文)。JAN 空の行は無視。エラーが 1 つでもあれば呼び出し側は何も入れない。"""
+def lot_check(qty: int, lot) -> tuple[bool, int]:
+    """数量は 起批量（NST 発注ロット）の整倍数（Boss 2026-11-13「数量是需要根据起批量来订货」「执行」= 整倍数）。
+    → (ok, 提案数 = 切り上げた整倍数)。起批量が空・0 なら 1 扱い（制限なし）。"""
+    lot = int(lot) if lot and lot >= 1 else 1
+    ok_qty = max(lot, math.ceil(qty / lot) * lot)
+    return ok_qty == qty, ok_qty
+
+
+def parse_new_rows(records: list[dict], tracked: list[dict],
+                   lots: dict[str, int] | None = None) -> tuple[list[dict], list[str]]:
+    """申請表の行（JAN・数量・商品名・备注）→ (登録する行, エラー文)。JAN 空の行は無視。エラーが 1 つでもあれば呼び出し側は何も入れない。
+    lots = NST 登録済み JAN → 起批量。lots に無い JAN（NST 未登録）は起批量を判定しない（発注書の前に登録が要る）。"""
     from shared.i18n import t
     rows, errs, seen = [], [], set()
     for rec in records:
@@ -87,6 +98,10 @@ def parse_new_rows(records: list[dict], tracked: list[dict]) -> tuple[list[dict]
             errs.append(t("JAN {j} 在这次提交里重复了").format(j=jan))
         else:
             seen.add(jan)
+            ok, sug = lot_check(int(qty), (lots or {}).get(jan, 1))
+            if jan in (lots or {}) and not ok:
+                errs.append(t("JAN {j} 的数量 {q} 不是起批量 {lot} 的整倍数（建议 {s}）").format(
+                    j=jan, q=int(qty), lot=lots[jan], s=sug))
             rows.append({"jan": jan, "qty": int(qty), "item_name": str(rec.get("商品名") or "").strip(),
                          "note": str(rec.get("备注") or "").strip()})
     for jan, rid in open_jan_conflicts([r["jan"] for r in rows], tracked).items():

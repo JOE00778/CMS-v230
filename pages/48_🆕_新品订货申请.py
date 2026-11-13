@@ -9,11 +9,13 @@
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
 
+from shared import image_search
 from shared import new_item_request as NR
 from shared import po_csv
 from shared.auth import require_password
@@ -56,6 +58,10 @@ except Exception as e:  # noqa: BLE001
     st.error(t("❌ 读取失败: {err}").format(err=f"{type(e).__name__}: {e}"))
     st.stop()
 NAMES = dict(zip(ITEMS["jan"], ITEMS["display_name"])) if not ITEMS.empty else {}
+# 起批量 = NST 発注ロット（Boss 2026-11-13「数量是需要根据起批量来订货」→ 整倍数）。空・0 は 1 扱いで NO_LOT に印
+_LOT_RAW = dict(zip(ITEMS["jan"], ITEMS["order_lot"])) if not ITEMS.empty else {}
+NO_LOT = {j for j, v in _LOT_RAW.items() if pd.isna(v) or v < 1}
+LOTS = {j: 1 if j in NO_LOT else int(v) for j, v in _LOT_RAW.items()}
 
 flash = st.session_state.pop("p48_flash", None)
 if flash:
@@ -85,6 +91,42 @@ def _when(v) -> str:
     return v.strftime("%Y-%m-%d") if v else ""
 
 
+def _lot_label(jan: str) -> str:
+    if jan not in LOTS:
+        return t("未知（NST 未建档）")
+    return t("未设（按 1）") if jan in NO_LOT else str(LOTS[jan])
+
+
+def _lot_errors(recs: list[dict], qty_col: str) -> list[str]:
+    """NST 登録済みで数量が起批量の整倍数でない行 →「JAN（起批量 24・建议 48）」。"""
+    out = []
+    for r in recs:
+        q = pd.to_numeric(r[qty_col], errors="coerce")
+        if r["JAN"] in LOTS and pd.notna(q):
+            ok, sug = NR.lot_check(int(q), LOTS[r["JAN"]])
+            if not ok:
+                out.append(t("{j}（起批量 {lot}・建议 {s}）").format(j=r["JAN"], lot=LOTS[r["JAN"]], s=sug))
+    return out
+
+
+def _img_one(jan: str) -> str:
+    try:
+        return image_search.search_jan(jan)
+    except Exception:  # noqa: BLE001 — 画像が取れなくても申請は止めない
+        return ""
+
+
+def _images(jans: list[str]) -> dict[str, str]:
+    """JAN → 画像 URL（PG キャッシュ → 楽天 → kakaku・shared/image_search）。セッション内で覚える（取れなかった品も再検索しない）。"""
+    memo = st.session_state.setdefault("p48_img", {})
+    need = [j for j in dict.fromkeys(jans) if j and j not in memo]
+    if need:
+        with st.spinner(t("读取商品图片中（{n} 件）…").format(n=len(need))):
+            with ThreadPoolExecutor(4) as ex:
+                memo.update(zip(need, ex.map(_img_one, need)))
+    return {j: memo.get(j) or None for j in jans}
+
+
 def _done(msg: str) -> None:
     st.session_state["p48_flash"] = msg
     st.rerun()
@@ -104,8 +146,34 @@ with tab_new:
                                            "数量": st.column_config.NumberColumn(t("数量"), min_value=1, step=1),
                                            "商品名": st.column_config.TextColumn(t("商品名")),
                                            "备注": st.column_config.TextColumn(t("备注"))})
-    if st.button(t("📨 提交申请"), type="primary", key="p48_submit"):
-        rows, errs = NR.parse_new_rows(ed.to_dict("records"), tracked)
+    prev = []
+    for rec in ed.to_dict("records"):
+        jan = NR.normalize_jan(rec.get("JAN"))
+        if not jan:
+            continue
+        q = pd.to_numeric(rec.get("数量"), errors="coerce")
+        if pd.isna(q) or q < 1:
+            judge = "⚠️ " + t("未填数量")
+        elif jan not in LOTS:
+            judge = "⚠️ " + t("NST 未建档，起批量未知")
+        else:
+            ok, sug = NR.lot_check(int(q), LOTS[jan])
+            judge = "✅" if ok else "❌ " + t("要 {lot} 的整倍数（建议 {s}）").format(lot=LOTS[jan], s=sug)
+        prev.append({"jan": jan, "name": NAMES.get(jan) or str(rec.get("商品名") or "").strip(),
+                     "qty": None if pd.isna(q) else int(q), "judge": judge})
+    if prev:   # Boss 2026-11-13「填入 JAN 后，是否能把图片调出来，进行 2 次确认」
+        st.markdown(t("**🔍 提交前确认**：看图片是不是要的商品、数量是不是起批量的整倍数（起批量取自 NST 商品主档）"))
+        imgs = _images([x["jan"] for x in prev])
+        st.dataframe(pd.DataFrame([{"img": imgs[x["jan"]], "JAN": x["jan"], "name": x["name"],
+                                    "lot": _lot_label(x["jan"]), "qty": x["qty"], "judge": x["judge"]} for x in prev]),
+                     hide_index=True, use_container_width=True, row_height=72,
+                     column_config={"img": st.column_config.ImageColumn(t("图片"), width="small"),
+                                    "name": st.column_config.Column(t("商品名")),
+                                    "lot": st.column_config.Column(t("起批量")),
+                                    "qty": st.column_config.Column(t("数量")),
+                                    "judge": st.column_config.Column(t("判定"))})
+    if st.button(t("✅ 图片和数量确认无误，提交申请"), type="primary", key="p48_submit", disabled=not prev):
+        rows, errs = NR.parse_new_rows(ed.to_dict("records"), tracked, lots=LOTS)
         if errs:
             for e in errs:
                 st.error("❌ " + e)
@@ -130,16 +198,19 @@ with tab_conf:
         st.success(t("没有待确认的申请"))
     else:
         st.caption(t("勾选后「✅ 确认」或「🗑️ 取消」。确认要填仕入先和数量，单价可以到发注书再填。操作人: {u}").format(u=USER))
-        df = pd.DataFrame([{"选择": False, "#": x["id"], "JAN": x["jan"], "商品名": _name(x),
-                            "NST": "✅" if x["jan"] in NAMES else "❌", "申请数": x["qty"], "备注": x.get("note") or "",
+        imgs = _images([x["jan"] for x in xs])
+        df = pd.DataFrame([{"选择": False, "图片": imgs[x["jan"]], "#": x["id"], "JAN": x["jan"], "商品名": _name(x),
+                            "NST": "✅" if x["jan"] in NAMES else "❌", "起批量": _lot_label(x["jan"]),
+                            "申请数": x["qty"], "备注": x.get("note") or "",
                             "申请人": x.get("requested_by") or "", "申请日": _when(x["requested_at"]),
                             "仕入先": x.get("supplier") or None, "单价": x.get("unit_price"), "确认数量": x["qty"]}
                            for x in xs])
         ed = lang_stable_editor(df, key="p48_conf_editor", reset=tuple(df["#"]), hide_index=True, num_rows="fixed",
-                                use_container_width=True,
-                                disabled=["#", "JAN", "商品名", "NST", "申请数", "备注", "申请人", "申请日"],
+                                use_container_width=True, row_height=72,
+                                disabled=["图片", "#", "JAN", "商品名", "NST", "起批量", "申请数", "备注", "申请人", "申请日"],
                                 column_config={**{k: st.column_config.Column(t(k)) for k in
-                                                  ("选择", "商品名", "申请数", "备注", "申请人", "申请日")},
+                                                  ("选择", "商品名", "起批量", "申请数", "备注", "申请人", "申请日")},
+                                               "图片": st.column_config.ImageColumn(t("图片"), width="small"),
                                                "NST": st.column_config.Column(t("NST 建档")),
                                                "仕入先": st.column_config.SelectboxColumn(t("仕入先"), options=SUPPLIERS),
                                                "单价": st.column_config.NumberColumn(t("单价"), min_value=0),
@@ -149,8 +220,11 @@ with tab_conf:
         b1, b2 = st.columns(2)
         if b1.button(t("✅ 确认（{n} 件）").format(n=len(sel)), type="primary", disabled=not sel, key="p48_confirm"):
             bad = [str(r["JAN"]) for r in sel if not r["仕入先"] or pd.isna(pd.to_numeric(r["确认数量"], errors="coerce"))]
+            lot_bad = _lot_errors(sel, "确认数量")
             if bad:
                 st.error(t("❌ 这些没填仕入先或数量: {jans}").format(jans="・".join(bad)))
+            elif lot_bad:
+                st.error(t("❌ 这些数量不是起批量的整倍数，全部没有确认: {items}").format(items=" / ".join(lot_bad)))
             else:
                 with get_connection() as conn:
                     n = NR.confirm(conn, [{"id": r["#"], "supplier": r["仕入先"],
@@ -171,13 +245,15 @@ with tab_po:
         st.caption(t("勾选要下单的 → 生成 NST 订货单 CSV（与 page10 发注書作成同一格式），在 NST 导入。"
                      "导入后 NST 发注明细同步时会自动变为「在途」"))
         df = pd.DataFrame([{"选择": x["jan"] in NAMES, "#": x["id"], "JAN": x["jan"], "商品名": _name(x),
-                            "NST": "✅" if x["jan"] in NAMES else "❌", "仕入先": x.get("supplier") or None,
+                            "NST": "✅" if x["jan"] in NAMES else "❌", "起批量": _lot_label(x["jan"]),
+                            "仕入先": x.get("supplier") or None,
                             "单价": x.get("unit_price"), "数量": x.get("confirmed_qty") or x["qty"],
                             "确认人": x.get("confirmed_by") or "", "确认日": _when(x.get("confirmed_at"))} for x in xs])
         ed = lang_stable_editor(df, key="p48_po_editor", reset=tuple(df["#"]), hide_index=True, num_rows="fixed",
-                                use_container_width=True, disabled=["#", "JAN", "商品名", "NST", "确认人", "确认日"],
+                                use_container_width=True,
+                                disabled=["#", "JAN", "商品名", "NST", "起批量", "确认人", "确认日"],
                                 column_config={**{k: st.column_config.Column(t(k)) for k in
-                                                  ("选择", "商品名", "确认人", "确认日")},
+                                                  ("选择", "商品名", "起批量", "确认人", "确认日")},
                                                "NST": st.column_config.Column(t("NST 建档")),
                                                "仕入先": st.column_config.SelectboxColumn(t("仕入先"), options=SUPPLIERS),
                                                "单价": st.column_config.NumberColumn(t("单价"), min_value=0),
@@ -200,8 +276,11 @@ with tab_po:
                 st.warning(t("NST 未建档，没放进 CSV（先到 page15 商品登录建档）: {jans}").format(jans="・".join(unreg)))
             if bad:
                 st.error(t("❌ 这些没填仕入先或单价，全部没有生成: {jans}").format(jans="・".join(bad)))
+            lot_bad = _lot_errors([r for r in sel if r["JAN"] in NAMES], "数量")
+            if lot_bad:
+                st.error(t("❌ 这些数量不是起批量的整倍数，全部没有生成: {items}").format(items=" / ".join(lot_bad)))
             ok = [r for r in sel if r["JAN"] in NAMES]
-            if ok and not bad:
+            if ok and not bad and not lot_bad:
                 ext = datetime.now().strftime("%Y%m%d%H%M%S")
                 outs = []
                 for i, (sup, g) in enumerate(pd.DataFrame(ok).groupby("仕入先", sort=True)):
