@@ -2,12 +2,12 @@
 
 口径 = 2026-10-07〜09 Boss 逐条拍板的规则（斑马 Export 一括整备时用过的）:
 - 范围: 有效 SKU、顶层类目 Export、且 NST 有商品等级（A/B/C/NEW · Boss 2026-10-29「没有商品等级的不用检查」）。
-  组合品看组成单品：全部单品都有等级才检查。只补「缺失」(占位值)，不覆盖已有实值。
+  组合品看组成单品：全部单品都有等级才检查。
+  NST 作成 NEW_DAYS 日内的单品不查 → 归 page47（Boss 2026-11-13「按对象分开」: 46 = 存量・47 = 新品；组合品 47 不看，留在 46）。只补「缺失」(占位值)，不覆盖已有实值。
   例外: 组合品重量 = 单品重量 × 件数，不一致就按计算值改（Boss 规则）。
 - 重量占位值 = 0/1/10/100/200/300/500（g）。三边占位 = 有 0、1×1×1、10×10×10。
-- 单品重量: JDL 实测毛重优先，NST 包装重量补位；两源都有且相差 ≥1.8 倍 → 人工。
-  闸门: >5kg / <2g / JDL <6g → 人工。
-- 单品三边: JDL 实测（cm 向上取整、长≥宽≥高）。JDL 会把整盒当单品 → 同 SPU 有实值的兄弟 SKU 时，
+- 单品重量: NST 包装重量（JDL 已停用 · Boss 2026-11-13）。闸门: >5kg / <2g → 人工。
+- 单品三边: NST 包装三边（page46 实时向 NST 取 · cm 向上取整、长≥宽≥高）。同 SPU 有实值的兄弟 SKU 时，
   三边都在 3cm 以内的兄弟至少一个才采用，否则人工；无兄弟参照的照用。最长边 >60cm → 人工。
 - 组合品: 单品取斑马现值（实值）或本次补值。三边 = 同一单品×N 用 a×b×c 格子、混合用分列，
   各取「最长边→体积」最小的排法（10/7 Boss 确认「尽量组成长方形或正方形」）。
@@ -28,6 +28,7 @@ D_PH = {(1, 1, 1), (10, 10, 10)}
 RATIO = 1.8
 SIB_TOL = 3
 MAX_EDGE = 60
+NEW_DAYS = 30   # NST 作成からこの日数以内 = 新品 → page47（page46 は見ない）
 CHUNK = 1000
 TEMPLATE_HEAD = ["SKU编码", "成本价(CNY)", "重量(g)", "长(cm)", "宽(cm)", "高(cm)"]
 TEMPLATE_EXAMPLE = [
@@ -58,10 +59,13 @@ def real_dims(s: dict) -> tuple | None:
     return tuple(sorted(d, reverse=True))
 
 
-def to_cm(mm: tuple) -> tuple | None:
-    if not mm or any(x is None or x <= 0 for x in mm):
+def nst_dims(d: tuple) -> tuple | None:
+    """NST 包装三边（cm・小数あり）→ 向上取整・长≥宽≥高。欠け / 占位 = None。"""
+    try:
+        n = tuple(sorted((math.ceil(float(x)) for x in d), reverse=True))
+    except (TypeError, ValueError):
         return None
-    return tuple(sorted((max(1, math.ceil(float(x) / 10 - 1e-9)) for x in mm), reverse=True))
+    return n if n and all(x > 0 for x in n) and n not in D_PH else None
 
 
 def grid(d: tuple, n: int) -> tuple:
@@ -100,22 +104,19 @@ def columns(units: list[tuple]) -> tuple:
     return best[1]
 
 
-def _single_weight(jdl_g, nst_g) -> tuple[int | None, str, str]:
+def _single_weight(nst_g) -> tuple[int | None, str, str]:
     """→ (候选值, 来源, 问题)。问题非空 = 不补、转人工。"""
-    j = round(float(jdl_g)) if jdl_g else None
-    n = round(float(nst_g)) if nst_g else None
-    if j and n and max(j, n) / min(j, n) >= RATIO:
-        return None, "", Msg("JDL {j}g 与 NST {n}g 相差≥{r}倍", j=j, n=n, r=RATIO)
-    v, src = (j, "JDL") if j else (n, "NST") if n else (None, "")
+    v = round(float(nst_g)) if nst_g else None
     if v is None:
         return None, "", ""
-    if v > 5000 or v < 2 or (src == "JDL" and v < 6):
-        return None, "", Msg("{src} {v}g 数值异常（>5kg / <2g / JDL<6g）", src=src, v=v)
-    return v, src, ""
+    if v > 5000 or v < 2:
+        return None, "", Msg("NST {v}g 数值异常（>5kg / <2g）", v=v)
+    return v, "NST", ""
 
 
-def in_scope(skus: list[dict], ranked: set | None) -> list[dict]:
-    """有效 · 顶层 Export · NST 有等级（组合品 = 全部组成单品有等级）。ranked=None 不限等级。"""
+def in_scope(skus: list[dict], ranked: set | None, new: set = frozenset()) -> list[dict]:
+    """有效 · 顶层 Export · NST 有等级（组合品 = 全部组成单品有等级）。ranked=None 不限等级。
+    new = NST 作成 NEW_DAYS 日内の JAN → その単品は page47 の担当なので除く（組合品は除かない）。"""
     def graded(s):
         if ranked is None:
             return True
@@ -124,19 +125,21 @@ def in_scope(skus: list[dict], ranked: set | None) -> list[dict]:
             return bool(comb) and all(str(c.get("SKUCode")) in ranked for c in comb)
         return s["code"] in ranked
 
-    return [s for s in skus if s.get("is_valid") and s.get("category_top") == "Export" and graded(s)]
+    return [s for s in skus if s.get("is_valid") and s.get("category_top") == "Export" and graded(s)
+            and not (s.get("sku_type") != "组合" and s["code"] in new)]
 
 
-def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> tuple[list[dict], list[dict]]:
-    """skus = banma.sku_dims 全行；jdl = {jan: (weight_g, (l_mm, w_mm, h_mm))}；nst = {jan: package_weight_g}；
-    ranked = 有商品等级的 JAN（None = 不限）。
+def build(skus: list[dict], nst: dict, dims: dict, ranked: set | None = None,
+          new: set = frozenset()) -> tuple[list[dict], list[dict]]:
+    """skus = banma.sku_dims 全行；nst = {jan: package_weight_g}；dims = {jan: NST 包装三边 cm（已 nst_dims）}；
+    ranked = 有商品等级的 JAN（None = 不限）；new = 新品 JAN（page47 担当・不查）。
     → (导入行, 问题行)。导入行 weight/L/W/H 为 None = 该栏留空（斑马不改）。"""
     by_id = {s["sku_id"]: s for s in skus}
     valid = [s for s in skus if s.get("is_valid")]
     code_n: dict[str, int] = {}
     for s in valid:
         code_n[s["code"]] = code_n.get(s["code"], 0) + 1
-    scope = in_scope(skus, ranked)
+    scope = in_scope(skus, ranked, new)
     sib: dict[str, list[tuple]] = {}
     for s in valid:
         if s.get("sku_type") != "组合" and (d := real_dims(s)):
@@ -167,36 +170,35 @@ def build(skus: list[dict], jdl: dict, nst: dict, ranked: set | None = None) -> 
     for s in scope:
         if s.get("sku_type") == "组合":
             continue
-        jw, jmm = jdl.get(s["code"], (None, None))
         nw = nst.get(s["code"])
         cur_w = real_weight(s.get("weight"))
         if cur_w is None:
-            v, src, why = _single_weight(jw, nw)
+            v, src, why = _single_weight(nw)
             if why:
-                issue(s, "重量待人工", why, JDL重量=jw, NST重量=nw)
+                issue(s, "重量待人工", why, NST重量=nw)
             elif v is None:
-                issue(s, "重量缺失·无数据源", Msg("JDL/NST 都没有"))
+                issue(s, "重量缺失·无数据源", Msg("NST 没有包装重量"))
             else:
                 fill_w[s["sku_id"]] = v
                 if v != s.get("weight"):
                     put(s, weight=v, src=src)
-        elif jw and max(cur_w, float(jw)) / max(min(cur_w, float(jw)), 1) >= RATIO:
-            issue(s, "斑马重量与JDL相差≥1.8倍", f"斑马 {cur_w}g / JDL {round(float(jw))}g", JDL重量=jw, NST重量=nw)
+        elif nw and max(cur_w, float(nw)) / max(min(cur_w, float(nw)), 1) >= RATIO:
+            issue(s, "斑马重量与NST相差≥1.8倍", f"斑马 {cur_w}g / NST {round(float(nw))}g", NST重量=nw)
 
         if real_dims(s) is None:
-            d = to_cm(jmm)
+            d = dims.get(s["code"])
             if d is None:
-                issue(s, "三边缺失·无数据源", Msg("JDL 没有实测三边"))
+                issue(s, "三边缺失·无数据源", Msg("NST 没有包装三边"))
             elif d[0] > MAX_EDGE:
-                issue(s, "三边待人工", Msg("JDL 最长边 {d}cm >{m}", d=d[0], m=MAX_EDGE), JDL三边="×".join(map(str, d)))
+                issue(s, "三边待人工", Msg("NST 最长边 {d}cm >{m}", d=d[0], m=MAX_EDGE), NST三边="×".join(map(str, d)))
             else:
                 refs = [x for i, x in sib.get(s["spu_id"], []) if i != s["sku_id"]]
                 if refs and not any(all(abs(a - b) <= SIB_TOL for a, b in zip(d, r)) for r in refs):
-                    issue(s, "三边待人工", Msg("JDL 三边与同款兄弟 SKU 相差>{tol}cm（JDL 可能按整盒测）", tol=SIB_TOL),
-                          JDL三边="×".join(map(str, d)), 同款三边=" / ".join("×".join(map(str, r)) for r in refs[:3]))
+                    issue(s, "三边待人工", Msg("NST 三边与同款兄弟 SKU 相差>{tol}cm", tol=SIB_TOL),
+                          NST三边="×".join(map(str, d)), 同款三边=" / ".join("×".join(map(str, r)) for r in refs[:3]))
                 else:
                     fill_d[s["sku_id"]] = d
-                    put(s, dims=d, src="JDL")
+                    put(s, dims=d, src="NST")
 
     # ── 组合品 ──
     for s in scope:
@@ -252,7 +254,8 @@ _SPEC = re.compile(r", \d+(?:\.\d+)?(?:ml|g|L|kg)$")
 _SET = re.compile(r" (\d+)set$")
 
 
-def customs_issues(skus: list[dict], customs: dict, std: list[tuple], ranked: set | None) -> list[dict]:
+def customs_issues(skus: list[dict], customs: dict, std: list[tuple], ranked: set | None,
+                   new: set = frozenset()) -> list[dict]:
     """报关信息检查（只列问题，斑马「批量修改SKU信息」模板不含报关栏 → 无导入文件）。
     customs = {sku_id: {name_cn, name_en, hs_code}}；std = [(hs, name_cn, name_en)]（9/19 统一的标准英文报关名）。
     英文名标准 = 「标准品类句」或「标准品类句, 容量(ml/g/L/kg)」，组合品末尾再加「 Nset」（10/23 Boss）。"""
@@ -260,7 +263,7 @@ def customs_issues(skus: list[dict], customs: dict, std: list[tuple], ranked: se
     for hs, _, en in std:
         hs_of.setdefault(en, set()).update({hs} if hs else set())  # 审查规则句无 HS → 只算「标准名」，不判对应
     out = []
-    for s in in_scope(skus, ranked):
+    for s in in_scope(skus, ranked, new):
         c = customs.get(s["sku_id"])
         base = {"SKU编码": s["code"], "类型": s.get("sku_type"), "商品名": s.get("spu_title"),
                 "规格": s.get("specification"), "斑马英文名": (c or {}).get("name_en"),
@@ -303,7 +306,7 @@ def _sheet(ws, head, rows):
 
 # 问题类型 → 检查项（page46 勾选用）。「通用」= 任一项勾选都列；报关信息有无 = 英文名或 HS 勾选时列
 GROUP = {
-    "重量待人工": "重量", "重量缺失·无数据源": "重量", "斑马重量与JDL相差≥1.8倍": "重量", "组合品·单品缺重量": "重量",
+    "重量待人工": "重量", "重量缺失·无数据源": "重量", "斑马重量与NST相差≥1.8倍": "重量", "组合品·单品缺重量": "重量",
     "三边缺失·无数据源": "三边", "三边待人工": "三边", "组合品·单品缺三边": "三边",
     "英文名为空或「-」": "英文名", "英文名不是标准报关名": "英文名", "组合品英文名缺「Nset」": "英文名",
     "英文名与HS不对应": "英文名", "HS编码缺失或格式错误": "HS",

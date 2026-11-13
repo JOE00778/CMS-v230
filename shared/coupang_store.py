@@ -69,10 +69,11 @@ def nst_master_map(jans: list[str]) -> tuple[dict[str, dict], str]:
     """JAN → {maker, weight(g)}。戻り値は (マップ, エラー文字列)。
 
     品牌 = `nst.item_master_raw.maker`
-    毛重 = `jdl.v_goods_dimensions.wms_gross_weight_g`（倉庫実測。page02「毛重(g)」と同じ）
+    毛重 = 斑马 SKU 重量 `banma.sku_dims.weight`（単品・有効・占位値 0/1/10/100/200/300/500 は除く・毎日 04:00 の写し）
+           Boss 2026-11-13「斑马中的重量」（JDL 停用で 9/4 の「JDL 优先」を置換）
 
     ⚠️ **2 本に分けて引く**（2026-09-07）。最初は 1 本の LEFT JOIN で書いていたが、
-       それだと JDL 側に何かあった（view が無い・権限が無い等）だけで品牌まで道連れに
+       それだと重量側（当時 JDL）に何かあった（view が無い・権限が無い等）だけで品牌まで道連れに
        なって、運営の画面に「品牌・毛重が両方とも空」で出た。倉庫の重量が引けない日でも
        品牌は出したい。**片方が落ちても、もう片方は生かす。**
        （nst.item_master_raw に weight 列は無い——2026-09-03 にそれで一度やらかしている）
@@ -95,10 +96,10 @@ def nst_master_map(jans: list[str]) -> tuple[dict[str, dict], str]:
             out.setdefault(jan, {})["maker"] = r["maker"]
 
     weights, err = _fetch_by_jan(
-        "SELECT jan, wms_gross_weight_g AS weight FROM jdl.v_goods_dimensions"
-        " WHERE jan IN ({marks})", jans)
+        "SELECT code AS jan, weight FROM banma.sku_dims WHERE is_valid AND sku_type <> '组合'"
+        " AND weight > 0 AND weight NOT IN (1, 10, 100, 200, 300, 500) AND code IN ({marks})", jans)
     if err:
-        errors.append(f"毛重(jdl.v_goods_dimensions): {err}")
+        errors.append(f"毛重(banma.sku_dims): {err}")
     for r in weights:
         jan = str(r["jan"])
         if r["weight"] is not None and out.get(jan, {}).get("weight") is None:

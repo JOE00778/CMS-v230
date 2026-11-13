@@ -242,17 +242,17 @@ def test_品牌の日英対応():
     assert row2["AE"] == "Unilever"
 
 
-def test_毛重は_JDL_優先_無ければ産品重量へ():
-    """Boss 2026-09-04 拍板「毛重用先用JDL的数据」。
+def test_毛重は_斑马_優先_無ければ産品重量へ():
+    """Boss 2026-09-04「毛重用先用JDL的数据」→ 2026-11-13 JDL 停用で「斑马中的重量」。
 
-    JDL（jdl.v_goods_dimensions.wms_gross_weight_g・1 個あたりの g）を最優先。
+    斑马 SKU 重量（banma.sku_dims.weight・1 個あたりの g）を最優先。
     無いときだけ商品マスタの「产品重量」（SKU 全体・入数込み kg）を数量で割る。
     """
-    # 両方あれば JDL が勝つ（産品重量を信じると 3 倍の誤差になる例）
+    # 両方あれば斑马が勝つ（産品重量を信じると 3 倍の誤差になる例）
     row = X.build_row({X.C_SKU: "x_1", X.C_QTY: "1"},
                       {"weight_kg": 0.90}, {"weight": 148.0}, "R")
     assert row["AJ"] == 0.15
-    # JDL 無し → 産品重量 ÷ 入数込み数量にフォールバック
+    # 斑马 無し → 産品重量 ÷ 入数込み数量にフォールバック
     assert X.build_row({X.C_SKU: "4901616011007_3", X.C_QTY: "1"},
                        {"weight_kg": 0.444}, {}, "R")["AJ"] == 0.15
     # どちらも無ければ空。0 で埋めない

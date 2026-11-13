@@ -19,20 +19,19 @@ def test_grid():
 
 def test_build_rules():
     skus = [
-        sku("1", "4900000000001", w=300),                                  # 占位 → JDL
+        sku("1", "4900000000001", w=300),                                  # 占位 → NST
         sku("2", "4900000000002", spu="P2", w=55, d=(8, 4, 3)),            # 实值不动
-        sku("3", "4900000000003", spu="P3"),                               # 两源冲突 → 人工
-        sku("4", "4900000000004", spu="P4"),                  # JDL 三边与兄弟差 >3cm
+        sku("3", "4900000000003", spu="P3"),                               # NST 数值异常 → 人工
+        sku("4", "4900000000004", spu="P4"),                  # NST 三边与兄弟差 >3cm
         sku("5", "4900000000005", spu="P4", d=(6, 5, 5), w=40),            # 兄弟
         sku("6", "4900000000001_2", typ="组合", comb=[{"SKUID": "1", "SKUCode": "4900000000001", "Quantity": 2}]),
         sku("7", "4900000000002_3", typ="组合", w=100,
             comb=[{"SKUID": "2", "SKUCode": "4900000000002", "Quantity": 2}]),  # 后缀≠件数
         sku("8", "4900000000009", cat="EC"),                               # 非 Export 不管
     ]
-    jdl = {"4900000000001": (120, (100, 50, 30)), "4900000000003": (100, None),
-           "4900000000004": (50, (200, 150, 100))}
-    nst = {"4900000000003": (300)}
-    rows, issues = build(skus, jdl, nst)
+    nst = {"4900000000001": 120, "4900000000003": 6000, "4900000000004": 50}
+    dims = {"4900000000001": (10, 5, 3), "4900000000004": (20, 15, 10)}
+    rows, issues = build(skus, nst, dims)
     up = {r["SKU编码"]: r for r in rows}
     assert up["4900000000001"]["重量(g)"] == 120 and up["4900000000001"]["长(cm)"] == 10
     assert up["4900000000001_2"]["重量(g)"] == 240 and (up["4900000000001_2"]["长(cm)"], up["4900000000001_2"]["宽(cm)"],
@@ -55,9 +54,28 @@ def test_rank_scope():
     skus = [sku("1", "4900000000001"), sku("2", "4900000000002", spu="P2"),
             sku("3", "4900000000001_2", typ="组合", comb=[{"SKUID": "1", "SKUCode": "4900000000001", "Quantity": 2}]),
             sku("4", "4900000000002_2", typ="组合", comb=[{"SKUID": "2", "SKUCode": "4900000000002", "Quantity": 2}])]
-    jdl = {"4900000000001": (120, (100, 50, 30)), "4900000000002": (80, (90, 50, 30))}
-    rows, issues = build(skus, jdl, {}, ranked={"4900000000001"})
+    nst = {"4900000000001": 120, "4900000000002": 80}
+    dims = {"4900000000001": (10, 5, 3), "4900000000002": (9, 5, 3)}
+    rows, issues = build(skus, nst, dims, ranked={"4900000000001"})
     assert {r["SKU编码"] for r in rows} == {"4900000000001", "4900000000001_2"} and not issues
+
+
+def test_new_items_go_to_page47():
+    """NST 作成 30 日内の単品は page47 の担当 → page46 は見ない。組合品は page47 が見ないので残す。"""
+    from shared.banma_dims import customs_issues, in_scope
+    skus = [sku("1", "4900000000001"), sku("2", "4900000000002", spu="P2"),
+            sku("3", "4900000000001_2", typ="组合", comb=[{"SKUID": "1", "SKUCode": "4900000000001", "Quantity": 2}])]
+    new = {"4900000000001"}
+    assert {s["code"] for s in in_scope(skus, None, new)} == {"4900000000002", "4900000000001_2"}
+    rows, issues = build(skus, {"4900000000001": 120, "4900000000002": 80}, {}, None, new)
+    assert "4900000000001" not in {r["SKU编码"] for r in rows} | {i["SKU编码"] for i in issues}
+    assert "4900000000001" not in {i["SKU编码"] for i in customs_issues(skus, {}, [], None, new)}
+
+
+def test_nst_dims():
+    from shared.banma_dims import nst_dims
+    assert nst_dims((3.2, 15, 4)) == (15, 4, 4)
+    assert nst_dims((10, 10, 10)) is None and nst_dims((0, 5, 5)) is None and nst_dims((None, 1, 1)) is None
 
 
 def test_customs_issues():

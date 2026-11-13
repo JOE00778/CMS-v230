@@ -8,7 +8,7 @@ ECMS 出力で実際に使っているのは 3 つだけ（HSCode は運営の�
     Product ID AN の URL ← 同上
 
 候補の出所:
-    重量       `jdl.v_goods_dimensions.wms_gross_weight_g`（倉庫実測 g · JAN 単位）
+    重量       `banma.sku_dims.weight`（斑马 SKU 重量 g · 単品・占位値除く · 2026-11-13 JDL 停用で置換）
     英語品名   `compliance.shopify_item.title`（自建站に上げた商品の英語タイトル · JAN 単位）
     ProductID  Coupang API（受注に入っている。この脚本では見ない）
 
@@ -59,8 +59,8 @@ def main() -> int:
     print(f"対象: SKU {len(skus)} 件 / JAN {len(jans)} 件\n")
 
     weights, err_w = _fetch(
-        "SELECT jan, wms_gross_weight_g FROM jdl.v_goods_dimensions"
-        " WHERE jan IN ({marks})", jans)
+        "SELECT code, max(weight) FROM banma.sku_dims WHERE is_valid AND sku_type <> '组合'"
+        " AND weight > 0 AND weight NOT IN (1, 10, 100, 200, 300, 500) AND code IN ({marks}) GROUP BY code", jans)
     titles, err_t = _fetch(
         "SELECT jan, title FROM compliance.shopify_item WHERE jan IN ({marks})", jans)
     makers, err_m = _fetch(
@@ -69,7 +69,7 @@ def main() -> int:
     def pct(n: int) -> str:
         return f"{n}/{len(jans)} ({n / len(jans) * 100:.0f}%)"
 
-    print(f"重量   jdl.v_goods_dimensions        : {pct(len(weights))}"
+    print(f"重量   banma.sku_dims                : {pct(len(weights))}"
           + (f"  ← 取得失敗: {err_w}" if err_w else ""))
     print(f"英語名 compliance.shopify_item       : {pct(len(titles))}"
           + (f"  ← 取得失敗: {err_t}" if err_t else ""))
@@ -87,7 +87,7 @@ def main() -> int:
                 got = float(weights[str(v["jan"])]) * pack / 1000
                 if abs(got - float(v["weight_kg"])) < 0.02:
                     close += 1
-            print(f"\n重量の突き合わせ（JDL × 入数 ÷ 1000 と手入力の差 < 20g）: "
+            print(f"\n重量の突き合わせ（斑马 × 入数 ÷ 1000 と手入力の差 < 20g）: "
                   f"{close}/{len(both)}")
         miss_name = [s for s, v in skus.items() if not v.get("name_en")]
         print(f"英語品名が空の SKU: {len(miss_name)}/{len(skus)}")

@@ -3,7 +3,7 @@
 page15 の「🔎 SKUID 空チェック」tab をそのまま独立させたもの（条件・既定値・書き戻しの方法は同じ）:
   🔎 SKUID 空      NST で SKUID（custitem_item_skuid＝斑马 SKUID・在庫同期用）が空の品 → 斑马の同じ型番 / JAN の SKUID、
                    無ければ斑马に登録して取る → NST 更新 CSV（型番 + SKUID・人が NST に取り込む）。shared/skuid_fill
-  🩺 斑马登録内容  SKUID がある品の斑马 SKU で 三辺・重量・画像・英文名・HS の空 → CMS で直して斑马へ書き戻す。shared/banma_fix
+  🩺 斑马登録内容  新品（NST 作成 30 日以内・存量は page46 · Boss 2026-11-13「按对象分开」）のうち SKUID がある品の斑马 SKU で 三辺・重量・画像・英文名・HS の空 → CMS で直して斑马へ書き戻す。shared/banma_fix
                    （報関 = SKU 単位 API / 三辺・重量・画像 = SPU 丸ごと PUT・描述/包材ありの SPU は書かない・台帳 banma.cms_write_log）
 条件（すべて選択可・既定 = 直近 30 日 / 輸出 2 部門 / 取扱中 / 有効 / 全ランク / 型番+JAN / 斑马 API / 重複は出さない / 仮値も空）。
 """
@@ -22,6 +22,7 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ct
 from data_warehouse.templates import nst_item_master as TPL
 from shared import banma_client, hs_ai, hs_classify, image_search, nst_suiteql
 from shared import banma_fix as BF
+from shared.banma_dims import NEW_DAYS
 from shared import banma_register as BMR
 from shared import item_register as REG
 from shared import nst_choices as NC
@@ -213,36 +214,25 @@ _CC_KEYS = ["p47c_result", "p47c_reg", "p47c_editor"]
 _CC_COLS = {"重量(g)": "Weight", "長(cm)": "Length", "幅(cm)": "Width", "高(cm)": "Height", "画像URL": "Image",
             "HS": "Code", "英文名": "NameEn"}
 _CC_INT = ("Weight", "Length", "Width", "Height")
-_JDL_SQL = ("SELECT jan, wms_gross_weight_g, wms_length_mm, wms_width_mm, wms_height_mm FROM jdl.v_goods_dimensions "
-            "WHERE jan IN ({})")
-
-
-def _cc_suggest(item: dict, jdl: dict | None) -> dict:
-    """重量・三辺の提案（page46 と同じ: 重量 JDL 実測 > NST 包装重量・倍率と異常値の閘門 / 三辺 JDL 実測 > NST 包装寸法）。"""
-    from shared.banma_dims import _single_weight, to_cm
+def _cc_suggest(item: dict) -> dict:
+    """重量・三辺の提案（page46 と同じ: NST 包装重量・異常値の閘門 / NST 包装寸法 · JDL は 2026-11-13 停用）。"""
+    from shared.banma_dims import _single_weight, nst_dims
     out = {}
-    w, src, _ = _single_weight((jdl or {}).get("wms_gross_weight_g"), item.get("pkg_weight"))
+    w, src, _ = _single_weight(item.get("pkg_weight"))
     if w:
         out["Weight"] = (w, src)
-    d = to_cm(tuple((jdl or {}).get(k) for k in ("wms_length_mm", "wms_width_mm", "wms_height_mm")))
-    if d:
-        out["dims"] = (d, "JDL")
-    else:
-        try:
-            n = tuple(sorted((math.ceil(float(item.get(k) or 0)) for k in ("pkg_height", "pkg_width", "pkg_depth")),
-                             reverse=True))
-        except ValueError:
-            n = ()
-        if n and all(x > 0 for x in n) and n not in BF.D_PH:
-            out["dims"] = (n, "NST")
+    if d := nst_dims(tuple(item.get(k) for k in ("pkg_height", "pkg_width", "pkg_depth"))):
+        out["dims"] = (d, "NST")
     return out
 
 
 def _content_check(opts: dict, checks: tuple, placeholder: bool, only: set[str] | None = None) -> dict:
     """NST で SKUID がある品（条件で絞る）→ 斑马 SKU（型番 / JAN）→ 報関 → 空の品だけ・提案を入れた行。
     斑马に照会できなかった品は unchecked（チェック全体は止めない）。only = その型番だけ再照会。"""
+    # 新品だけ（Boss 2026-11-13「按对象分开」: 存量は page46）→ 作成日は最長 NEW_DAYS 日
+    days = min(SF.PERIODS[opts["period"]] or NEW_DAYS, NEW_DAYS)
     with st.spinner(t("NST で SKUID がある品を取得中…")):
-        items = SF.blank_items(nst_suiteql.suiteql_all, days=SF.PERIODS[opts["period"]], has_skuid=True)
+        items = SF.blank_items(nst_suiteql.suiteql_all, days=days, has_skuid=True)
     picked = SF.pick(items, depts=opts["depts"], handlings=opts["handlings"], states=opts["states"],
                      ranks=opts["ranks"])
     n_picked = len(picked)
@@ -309,13 +299,7 @@ def _content_check(opts: dict, checks: tuple, placeholder: bool, only: set[str] 
 
 
 def _cc_fill_suggestions(rows: list[dict]) -> dict:
-    """空の項目に提案を入れる（重量・三辺 = JDL > NST / 画像 = 画像検索 / HS・英文名 = 規則 + AI）。new = 書く候補。"""
-    jans = [str(x["item"].get("jan") or "") for x in rows if {"重量", "三辺"} & set(x["probs"])]
-    jdl = {}
-    if jans:
-        with get_connection() as conn:
-            jdl = {r["jan"]: dict(r) for r in conn.execute(_JDL_SQL.format(",".join("?" for _ in jans)),
-                                                           tuple(jans)).fetchall()}
+    """空の項目に提案を入れる（重量・三辺 = NST 包装 / 画像 = 画像検索 / HS・英文名 = 規則 + AI）。new = 書く候補。"""
     try:
         prefix = _cached_prefix_makers()
     except Exception:  # noqa: BLE001
@@ -328,7 +312,7 @@ def _cc_fill_suggestions(rows: list[dict]) -> dict:
     ai_rows, extra = [], {}
     for x in rows:
         it, new, src = x["item"], dict(x["cur"]), []
-        sug = _cc_suggest(it, jdl.get(str(it.get("jan") or "")))
+        sug = _cc_suggest(it)
         if "重量" in x["probs"] and "Weight" in sug:
             new["Weight"] = sug["Weight"][0]
             src.append(f"{t('重量')}={sug['Weight'][1]}")
@@ -471,7 +455,7 @@ def _render_content_result(res: dict) -> None:
     if not rows:
         st.success(t("空の項目はありません"))
         return
-    st.caption(t("白い列を直して「🦓 斑马に反映」。提案の列 = 自動で入れた値の出典（重量・三辺 = JDL 実測 > NST 包装 / 画像 = 画像検索 / "
+    st.caption(t("白い列を直して「🦓 斑马に反映」。提案の列 = 自動で入れた値の出典（重量・三辺 = NST 包装 / 画像 = 画像検索 / "
                  "HS・英文名 = 規則 + AI）。空欄・現値と同じ値は送りません。三辺・重量・画像は SPU 丸ごとの書込のため、"
                  "描述・包材がある SPU には書かず Excel（三辺・重量）か斑马の画面（画像）に回します"))
     df = pd.DataFrame([{"型番": x["item"]["code"], t("アイテム名"): x["item"].get("name") or "",
@@ -606,6 +590,7 @@ def _render_skuid_tab() -> None:
             _render_skuid_result(res)
     if cres:
         st.subheader(t("🩺 斑马の登録内容"))
+        st.caption(t("新品だけ（NST 作成 {n} 日以内・作成日の条件が長くても {n} 日まで）。それより前の品・組合品は「🩺 斑马信息健康度检查」").format(n=NEW_DAYS))
         if cres["key"] != (opts, tuple(checks), placeholder):
             st.warning(t("条件が変わりました。「🩺 斑马の登録内容をチェックする」を押してください（前回の結果は隠しています）"))
         else:

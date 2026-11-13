@@ -1,7 +1,8 @@
 """模块 · 斑马信息健康度检查（Boss 2026-10-29）。
 
 范围: 斑马 Export 部门有效 SKU 中，NST 商品等级 A/B/C/NEW 的（组合品 = 组成单品全部有等级）。
-检查: ① 三边/重量: 缺失的按 JDL 实测 > NST 包装重量补值，组合品按单品计算，
+      NST 作成 30 日内的单品不查 → page47（Boss 2026-11-13「按对象分开」: 46 = 存量・47 = 新品）。
+检查: ① 三边/重量: 缺失的按 NST 包装重量 / 包装三边（实时向 NST 取）补值，组合品按单品计算，
         生成可直接上传斑马「产品 → 批量修改SKU信息」的 Excel（≤1000 行/个・成本价留空=不改）；补不了的列问题。
       ② 报关信息: 有无、英文名（标准报关名・组合品 Nset）、HS 编码 → 问题清单（模板无报关栏，只出清单）。
 勾选: 重量 / 三边 / 报关英文名 / HS编码（默认三边不勾 · Boss 2026-10-29）。下载 = 一个 Excel（数据・示例・问题清单・导入明细）。
@@ -9,8 +10,8 @@
 
 数据源（PG・本页只读，「立即从斑马拉取」只置 run_now）:
   · banma.sku_dims / sku_customs / name_en_std  pull_sku_health（jdl_scheduler 每日 04:00 JST · 约 3 小时）
-  · jdl.v_goods_dimensions                      JDL 仓库实测毛重/三边
-  · nst.item_master_raw                         NST 包装重量 package_weight_g · 商品等级 item_rank
+  · nst.item_master_raw                         NST 包装重量 package_weight_g · 商品等级 item_rank · 作成日 date_created
+  · NST SuiteQL（实时・勾「三边」时）            NST 包装三边 custitem_fb_package_height/width/depth
 """
 from __future__ import annotations
 
@@ -20,7 +21,8 @@ import json
 import pandas as pd
 import streamlit as st
 
-from shared.banma_dims import Msg, build, customs_issues, in_scope, report_xlsx, select
+from shared import nst_suiteql
+from shared.banma_dims import NEW_DAYS, Msg, build, customs_issues, in_scope, nst_dims, report_xlsx, select
 from shared.db import get_connection, get_readonly_connection
 from shared.i18n import lang_selector, t
 
@@ -43,11 +45,14 @@ _SKU_SQL = ("SELECT sku_id, code, spu_id, spu_title, specification, category_top
             "weight, length, width, height, combine, pulled_at FROM banma.sku_dims")
 _CUS_SQL = "SELECT sku_id, name_cn, name_en, hs_code FROM banma.sku_customs"
 _STD_SQL = "SELECT hs, name_cn, name_en FROM banma.name_en_std"
-_JDL_SQL = ("SELECT jan, wms_gross_weight_g, wms_length_mm, wms_width_mm, wms_height_mm "
-            "FROM jdl.v_goods_dimensions")
 _NST_SQL = ("SELECT jan, max(package_weight_g) AS w FROM nst.item_master_raw "
             "WHERE jan IS NOT NULL AND package_weight_g > 0 GROUP BY jan")
 _RANK_SQL = "SELECT DISTINCT jan FROM nst.item_master_raw WHERE jan IS NOT NULL AND item_rank IN (%s, %s, %s, %s)"
+_NEW_SQL = ("SELECT DISTINCT jan FROM nst.item_master_raw WHERE jan IS NOT NULL "
+            "AND date_created >= now() - make_interval(days => %s)")
+_DIMS_SUITEQL = ("SELECT item.upccode AS jan, item.custitem_fb_package_height AS h, item.custitem_fb_package_width AS w, "
+                 "item.custitem_fb_package_depth AS d FROM item WHERE item.department IN (4, 9) "
+                 "AND item.custitem_fb_package_height > 0")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -58,16 +63,25 @@ def _load():
         skus = q(_SKU_SQL)
         customs = {r["sku_id"]: r for r in q(_CUS_SQL)}
         std = [(r["hs"], r["name_cn"], r["name_en"]) for r in q(_STD_SQL)]
-        jdl = {r["jan"]: (r["wms_gross_weight_g"], (r["wms_length_mm"], r["wms_width_mm"], r["wms_height_mm"]))
-               for r in q(_JDL_SQL)}
         nst = {r["jan"]: r["w"] for r in q(_NST_SQL)}
         ranked = {r["jan"] for r in q(_RANK_SQL, RANKS)}
+        new = {r["jan"] for r in q(_NEW_SQL, (NEW_DAYS,))}
     finally:
         conn.close()
     for s in skus:
         if isinstance(s["combine"], str):
             s["combine"] = json.loads(s["combine"])
-    return skus, customs, std, jdl, nst, ranked
+    return skus, customs, std, nst, ranked, new
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _nst_dims() -> dict:
+    """NST 包装三边（实时 SuiteQL・1 小时缓存）→ {jan: (长, 宽, 高) cm}。"""
+    out = {}
+    for r in nst_suiteql.suiteql_all(_DIMS_SUITEQL):
+        if (jan := str(r.get("jan") or "").strip()) and (d := nst_dims((r.get("h"), r.get("w"), r.get("d")))):
+            out[jan] = d
+    return out
 
 
 # ── 刷新 ──
@@ -98,7 +112,7 @@ else:
             st.error(str(e))
 
 try:
-    skus, customs, std, jdl, nst, ranked = _load()
+    skus, customs, std, nst, ranked, new = _load()
 except Exception as e:
     st.error(t("读取失败") + f": {e}")
     st.stop()
@@ -121,11 +135,19 @@ if not checks:
     st.info(t("请至少勾选一项"))
     st.stop()
 
-rows, dim_issues = build(skus, jdl, nst, ranked)
-rows, issues = select(rows, dim_issues + customs_issues(skus, customs, std, ranked), checks)
+dims = {}
+if "三边" in checks:
+    try:
+        with st.spinner(t("向 NST 取包装三边…")):
+            dims = _nst_dims()
+    except Exception as e:  # noqa: BLE001 — 取不到 = 三边全按「无数据源」列，不补值
+        st.error(t("NST 三边读取失败（三边不补值）") + f": {e}")
+rows, dim_issues = build(skus, nst, dims, ranked, new)
+rows, issues = select(rows, dim_issues + customs_issues(skus, customs, std, ranked, new), checks)
 
 m1, m2, m3 = st.columns(3)
-m1.metric(t("检查对象 SKU"), f"{len(in_scope(skus, ranked)):,}")
+m1.metric(t("检查对象 SKU"), f"{len(in_scope(skus, ranked, new)):,}",
+          help=t("NST 作成 {n} 日内的新品单品不在本页，在「🦓 斑马NST整合检查」").format(n=NEW_DAYS))
 m2.metric(t("可直接上传斑马"), f"{len(rows):,}")
 m3.metric(t("问题 SKU"), f"{len({x['SKU编码'] for x in issues}):,}")
 
@@ -144,7 +166,7 @@ def _tr(v):
 
 
 def _src(v):
-    """来源「重量:JDL；三边:组合计算（原 300g≠单品×件数）」の定型語だけ訳す（select() が「:」「；」で読むので値は変えない）。"""
+    """来源「重量:NST；三边:组合计算（原 300g≠单品×件数）」の定型語だけ訳す（select() が「:」「；」で読むので値は変えない）。"""
     for w in ("重量", "三边", "组合计算", "原 ", "单品×件数"):
         v = v.replace(w, t(w))
     return v

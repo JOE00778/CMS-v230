@@ -2,12 +2,12 @@
 
 两个数据源顶层 tab：
   - NST  · NetSuite API（商品マスタ / 在庫 / 売上 / スケジュール / 手動更新 / 履歴）
-  - JDL  · 京东物流海外仓 OpenAPI（调度+手动同步 / 拉取历史）· 京东库存は 2026-11-04 から使わない
-           （jdl_inventory_daily 停用・京东商品重量 weekly と斑马の job はここで管理）
+  - 定时任务 · 斑马の job（jdl.pull_schedule を jdl_scheduler が見る・名前は歴史的経緯）。
+           JDL は 2026-11-13 全面停用（Boss）→ JDL の job は表に残すが enabled=FALSE・ここには出さない
 
 PG schema：
   - nst.item_master_raw / nst.inventory_snapshot / nst.sales_monthly / nst._pull_runs / nst.pull_schedule
-  - jdl.pull_log / jdl.pull_schedule
+  - jdl.pull_schedule（斑马の job のみ表示）
 
 データは元川の PG に閉じる（原価含むため require_admin）。
 """
@@ -76,7 +76,7 @@ lang_selector()
 conn = get_connection()
 
 st.title(t("📥 数据获取"))
-st.caption(t("外部 API 拉回的原始数据 + 调度管理（NST NetSuite / JDL 京东物流海外仓）"))
+st.caption(t("外部 API 拉回的原始数据 + 调度管理（NST NetSuite / 斑马 / Coupang）"))
 
 
 def _query(sql: str, params: tuple = ()):
@@ -107,11 +107,11 @@ def _job_title(category, frequency, run_time) -> str:
 
 
 # ============================================================
-# 顶层 tab: NST / JDL / Coupang 三个数据源
+# 顶层 tab: NST / 定时任务（斑马）/ Coupang
 # ============================================================
 top_nst, top_jdl, top_cp = st.tabs([
     t("🏬 NST（NetSuite）"),
-    t("⏰ 定时任务（JDL重量 / 斑马）"),
+    t("⏰ 定时任务（斑马）"),
     t("🇰🇷 Coupang（韩国店）"),
 ])
 
@@ -506,25 +506,22 @@ with top_nst:
 
 
 # ============================================================
-# JDL 顶层 tab · 2 个子 tab（调度+手动同步 / 拉取历史）· 京东库存浏览は 2026-11-04 削除
+# 定时任务 tab（斑马の job）· JDL は 2026-11-13 停用 → JDL の job・拉取历史（jdl.pull_log）は出さない
 # ============================================================
 with top_jdl:
-    j_sched, j_log = st.tabs([
-        t("▶️ 调度 + 手动同步"),
-        t("📜 拉取历史"),
-    ])
+    j_sched = st.container()
 
     # ── 调度 + 手动同步：jdl.pull_schedule ────────────────────
     with j_sched:
         st.subheader(t("定时拉取任务"))
         st.caption(t(
             "元川的常驻 jdl_scheduler 容器每分钟检查此表，到时间或 run_now=TRUE 时启动对应任务"
-            "（京东商品重量 / 斑马健康度 / 斑马库存）。京东库存拉取 2026-11-04 起停用。"
+            "（斑马健康度 / 斑马库存）。"
         ))
         jdl_sched_df, err = _query(
             "SELECT job_key, frequency, enabled, run_time, run_now, "
             "       last_run_at, last_status, description "
-            "FROM jdl.pull_schedule ORDER BY job_key"
+            "FROM jdl.pull_schedule WHERE job_key NOT LIKE 'jdl%' ORDER BY job_key"
         )
         if err:
             st.error(t("接続エラー: ") + err)
@@ -555,33 +552,6 @@ with top_jdl:
                             conn.rollback()
                             st.error(str(e))
                 st.divider()
-
-    # ── 拉取历史：jdl.pull_log ───────────────────────────────
-    with j_log:
-        st.caption(t("直近 50 回の取得実行（jdl.pull_log）"))
-        df, err = _query(
-            "SELECT id, started_at, finished_at, status, trigger_source, "
-            "       pages_fetched, rows_written, rows_total, error_code, error_message "
-            "FROM jdl.pull_log ORDER BY id DESC LIMIT 50"
-        )
-        if err:
-            st.error(t("テーブル未取得 or 接続エラー: ") + err)
-        elif df is not None and not df.empty:
-            st.dataframe(df, use_container_width=True, height=480,
-                         column_config={
-                             "id": "ID",
-                             "started_at": t("開始"),
-                             "finished_at": t("終了"),
-                             "status": t("結果"),
-                             "trigger_source": t("触发"),
-                             "pages_fetched": t("拉页数"),
-                             "rows_written": t("写入行数"),
-                             "rows_total": t("总行数(JDL)"),
-                             "error_code": t("错误码"),
-                             "error_message": t("错误信息"),
-                         })
-        else:
-            st.info(t("尚无拉取记录"))
 
 
 # ============================================================

@@ -118,7 +118,7 @@ def test_空入力は何もしない():
 
 
 # ------------------------------------------------------------------
-# NST/JDL 主档の引き当て（2026-09-07 の障害）
+# NST/斑马 主档の引き当て（2026-09-07 の障害）
 # ------------------------------------------------------------------
 def test_片方の表が落ちてももう片方は生きる(monkeypatch):
     """1 本の LEFT JOIN で書いていたせいで、JDL 側が引けないだけで**品牌まで道連れ**に
@@ -130,13 +130,13 @@ def test_片方の表が落ちてももう片方は生きる(monkeypatch):
 
     def fake_fetch(sql, jans):
         calls.append(sql)
-        if "jdl" in sql:                      # JDL 側だけ落ちる状況を作る
-            return [], 'relation "jdl.v_goods_dimensions" does not exist'
+        if "banma" in sql:                    # 重量側だけ落ちる状況を作る
+            return [], 'relation "banma.sku_dims" does not exist'
         return [{"jan": "4901616011007", "maker": "SUNSTAR"}], ""
 
     monkeypatch.setattr(cs, "_fetch_by_jan", fake_fetch)
     out, err = cs.nst_master_map(["4901616011007"])
-    assert out["4901616011007"]["maker"] == "SUNSTAR", "JDL の失敗で品牌が消えた"
+    assert out["4901616011007"]["maker"] == "SUNSTAR", "重量側の失敗で品牌が消えた"
     assert out["4901616011007"].get("weight") is None
     assert "毛重" in err and "does not exist" in err
     assert len(calls) == 2, "2 本に分けて引いていない"
@@ -144,7 +144,7 @@ def test_片方の表が落ちてももう片方は生きる(monkeypatch):
 
 def test_両方引ければ両方入る(monkeypatch):
     def fake_fetch(sql, jans):
-        if "jdl" in sql:
+        if "banma" in sql:
             return [{"jan": "4901616011007", "weight": 148.0}], ""
         return [{"jan": "4901616011007", "maker": "SUNSTAR"}], ""
 
@@ -157,7 +157,7 @@ def test_両方引ければ両方入る(monkeypatch):
 def test_JAN重複時は値の取れた行を優先(monkeypatch):
     """nst.item_master_raw の jan は一意でない（15,589 行 / 15,473 distinct）。"""
     def fake_fetch(sql, jans):
-        if "jdl" in sql:
+        if "banma" in sql:
             return [], ""
         return [{"jan": "X", "maker": None}, {"jan": "X", "maker": "KAO"}], ""
 

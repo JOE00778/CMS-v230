@@ -21,7 +21,6 @@ import streamlit as st
 
 from shared.db import get_readonly_connection
 from shared.i18n import lang_selector, t, get_lang
-from modules.weight_compare import compute_compare, coverage_stats, load_compare
 
 st.set_page_config(page_title=t("商品情报检索"), page_icon="🔍", layout="wide")
 from shared.auth import require_password
@@ -62,7 +61,6 @@ _LBL = {
     "average_cost":       ("平均原价", "平均原価"),
     "cost_estimate":      ("定义原价", "定義原価"),
     "last_purchase_cost": ("前次购入价", "前回購入価格"),
-    "wms_gross_weight_g": ("毛重(g)", "総重量(g)"),
     "carton_qty":         ("箱入数", "カートン入数"),
     "order_lot":          ("发注批量", "発注ロット"),
     "qty_sold":           ("累计销量", "累計販売数"),
@@ -135,19 +133,16 @@ def load_sku_view() -> pd.DataFrame:
             inv.qty_on_hand, inv.qty_available, inv.qty_on_order,
             (COALESCE(im.average_cost, im.cost_estimate, 0)
                 * COALESCE(inv.qty_on_hand, 0)) AS stock_amount,
-            sales.qty_sold, sales.revenue,
-            gd.wms_gross_weight_g
+            sales.qty_sold, sales.revenue
         FROM nst.item_master_raw im
         LEFT JOIN inv   ON inv.item_internal_id   = im.internal_id
         LEFT JOIN sales ON sales.item_internal_id = im.internal_id
-        LEFT JOIN jdl.v_goods_dimensions gd ON gd.jan = im.jan
     """
     rows = conn.execute(sql).fetchall()
     cols = ["internal_id", "item_code", "jan", "display_name", "maker", "item_rank",
             "handling_cd", "is_inactive", "average_cost", "cost_estimate",
             "last_purchase_cost", "carton_qty", "order_lot", "date_created", "qty_on_hand",
-            "qty_available", "qty_on_order", "stock_amount", "qty_sold", "revenue",
-            "wms_gross_weight_g"]
+            "qty_available", "qty_on_order", "stock_amount", "qty_sold", "revenue"]
     return pd.DataFrame([dict(zip(cols, r)) for r in rows], columns=cols)
 
 
@@ -155,12 +150,9 @@ df = load_sku_view()
 total_skus = len(df)
 
 # ============================================================
-# Tabs 切换 · tab1 商品检索（原内容）· tab2 JDL vs NST 重量对比
+# 商品检索（JDL vs NST 重量对比 tab は 2026-11-13 JDL 停用で削除 · Boss）
 # ============================================================
-_tab_search, _tab_compare = st.tabs([
-    _L("🔍 商品检索", "🔍 商品検索"),
-    _L("⚖️ JDL vs NST 重量对比", "⚖️ JDL vs NST 重量比較"),
-])
+_tab_search = st.container()
 
 # ============================================================
 # Tab 1: 商品检索（原内容）
@@ -254,7 +246,7 @@ with _tab_search:
         cols = ("internal_id", "item_code", "jan", "display_name", "maker", "item_rank",
                 "handling_cd", "date_created", "qty_on_hand", "qty_available", "qty_on_order",
                 "stock_amount", "cost_estimate", "average_cost", "last_purchase_cost",
-                "wms_gross_weight_g", "carton_qty", "order_lot", "qty_sold", "revenue")
+                "carton_qty", "order_lot", "qty_sold", "revenue")
         # 行数に応じて高さ自動調整（単品/少数件で空行を出さない · 多件は 560 で頭打ち→スクロール）
         _tbl_h = min(38 + 35 * len(v), 560)
         st.dataframe(
@@ -325,42 +317,6 @@ with _tab_search:
         e2.metric(_lb("average_cost"), f"¥{(row['average_cost'] or 0):,.2f}")
         e3.metric(_lb("last_purchase_cost"), f"¥{(row['last_purchase_cost'] or 0):,.2f}")
 
-        # 物流尺重（JDL 仓库实测·替换原货主预报占位值）
-        dim_df, _ = _query(
-            "SELECT wms_gross_weight_g, wms_length_mm, wms_width_mm, wms_height_mm, wms_volume_cm3 "
-            "FROM jdl.v_goods_dimensions WHERE jan = ?",
-            (str(row["jan"]) if row["jan"] is not None else "",),
-        )
-        if dim_df is not None and not dim_df.empty:
-            d = dim_df.iloc[0]
-            st.markdown("**" + _L("📦 物流尺寸（JDL 仓库实测）", "📦 物流寸法（JDL 倉庫実測）") + "**")
-            w1, w2, w3, w4 = st.columns(4)
-            w1.metric(
-                _L("毛重", "総重量"),
-                f"{float(d['wms_gross_weight_g']):.0f} g" if d["wms_gross_weight_g"] is not None else "—",
-            )
-            w2.metric(
-                _L("尺寸 长×宽×高", "寸法 長×幅×高"),
-                f"{float(d['wms_length_mm']):.0f}×{float(d['wms_width_mm']):.0f}×{float(d['wms_height_mm']):.0f} mm"
-                if all(d[k] is not None for k in ("wms_length_mm", "wms_width_mm", "wms_height_mm")) else "—",
-            )
-            w3.metric(
-                _L("体积", "体積"),
-                f"{float(d['wms_volume_cm3']):.0f} cm³" if d["wms_volume_cm3"] is not None else "—",
-            )
-            w4.metric(
-                _L("理论抛重 (÷6000)", "容積重量 (÷6000)"),
-                f"{float(d['wms_volume_cm3']) / 6000 * 1000:.0f} g"
-                if d["wms_volume_cm3"] is not None else "—",
-                help=_L("抛重 = 体积 cm³ ÷ 6000 = 容积重 kg，与实重取大计费",
-                        "容積重量 kg = 体積 cm³ ÷ 6000、実重と比較し大きい方で課金"),
-            )
-        else:
-            st.caption(_L(
-                "📦 物流尺寸（JDL 实测）：暂无数据 · 等下次 weekly 拉取或在「数据同步」手动触发",
-                "📦 物流寸法（JDL 実測）：データなし · 次回 weekly 拉取またはマニュアル同期で取得",
-            ))
-
         # 店舗×月 売上明細
         st.markdown("**" + _L("店铺×月 销售明细", "店舗×月 売上明細") + "**")
         sd, _ = _query(
@@ -380,82 +336,3 @@ with _tab_search:
                     "revenue": _LBL["revenue"][1 if _JA else 0],
                 },
             )
-
-
-# ============================================================
-# Tab 2: ⚖️ JDL vs NST 重量对比（modules/weight_compare）
-# ============================================================
-with _tab_compare:
-    st.caption(_L(
-        "JDL 仓库实测毛重（wms_gross_weight）vs NST 商品主档「包装重量」（custitem_fb_package_weight）· 同口径含包装总重",
-        "JDL 倉庫実測総重量 vs NST 商品マスタ「パッケージ重量」 · 包装込み総重量で同口径比較",
-    ))
-
-    try:
-        cmp_df = compute_compare(load_compare(conn))
-    except Exception as e:  # noqa: BLE001
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        st.error(_L("数据读取失败：", "データ読み取り失敗：") + str(e))
-        st.stop()
-
-    if cmp_df.empty:
-        st.info(_L("暂无数据", "データなし"))
-    else:
-        s = coverage_stats(cmp_df)
-        n_total = s["n_total"]
-        n_cmp = s["n_cmp"]
-        comparable = s["comparable"]
-
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric(_L("活跃 SKU", "アクティブ SKU"), f"{n_total:,}")
-        k2.metric(_L("NST 有重量", "NST 重量あり"), f"{s['n_nst']:,}",
-                  f"{s['n_nst']/n_total*100:.0f}%" if n_total else "")
-        k3.metric(_L("JDL 有重量", "JDL 重量あり"), f"{s['n_jdl']:,}",
-                  f"{s['n_jdl']/n_total*100:.0f}%" if n_total else "")
-        k4.metric(_L("可对比", "比較可能"), f"{n_cmp:,}",
-                  f"{n_cmp/n_total*100:.0f}%" if n_total else "")
-        k5.metric(
-            _L("差 ≤ 10%", "差 ≤ 10%"), f"{s['n_close']:,}",
-            f"{s['n_close']/n_cmp*100:.0f}%" if n_cmp else "",
-            help=_L("一致性较好的占比", "一致性良好の割合"),
-        )
-
-        if n_cmp > 0:
-            st.divider()
-            st.markdown("**" + _L("📋 明细（按差异降序）", "📋 明細（差異降順）") + "**")
-            show_cols = ["jan", "display_name", "maker", "item_rank",
-                         "nst_package_g", "jdl_wms_g", "diff_g", "diff_pct"]
-            st.dataframe(
-                comparable[show_cols],
-                use_container_width=True, height=800, hide_index=True,
-                column_config={
-                    "jan":           _L("JAN", "JAN"),
-                    "display_name":  _L("商品名", "商品名"),
-                    "maker":         _L("厂商", "メーカー名"),
-                    "item_rank":     _L("等级", "ランク"),
-                    "nst_package_g": st.column_config.NumberColumn(
-                        _L("NST 包装重量(g)", "NST パッケージ重量(g)"), format="%.0f"),
-                    "jdl_wms_g":     st.column_config.NumberColumn(
-                        _L("JDL 实测(g)", "JDL 実測(g)"), format="%.0f"),
-                    "diff_g":        st.column_config.NumberColumn(
-                        _L("差(g) JDL-NST", "差(g) JDL-NST"), format="%+.0f"),
-                    "diff_pct":      st.column_config.NumberColumn(
-                        _L("差异 %", "差異 %"), format="%+.1f%%"),
-                },
-            )
-
-            csv2 = comparable[show_cols].to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                _L("📥 对比明细 CSV", "📥 比較明細 CSV"), data=csv2,
-                file_name=f"jdl_nst_weight_compare_{n_cmp}.csv", mime="text/csv",
-            )
-        else:
-            st.info(_L(
-                "暂无可对比记录 · 需要 NST package_weight + JDL wms_gross_weight 同时存在。"
-                "请先到「数据获取 → NST」执行 items 拉取（含重量字段）。",
-                "比較可能なレコードなし · NST と JDL 両方の重量データが必要。"
-                "「データ取得 → NST」で items 同期を実行してください。",
-            ))

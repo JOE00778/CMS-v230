@@ -172,13 +172,13 @@ def build_row(order: dict, product: dict | None, master: dict | None,
     # 20600÷3=6866.67→**6867**（切り捨てではない）
     unit = int(round_half_up(paid / qty, 0)) if qty else 0
 
-    # Item_Grossweight（2026-09-04 Boss 拍板：**JDL 优先**）:
-    #   JDL 実測（1 個あたりの g・jdl.v_goods_dimensions.wms_gross_weight_g）を最優先。
+    # Item_Grossweight（2026-09-04 Boss 拍板「JDL 优先」→ 2026-11-13 JDL 停用で「斑马中的重量」）:
+    #   斑马 SKU 重量（1 個あたりの g・banma.sku_dims.weight・占位値除く）を最優先。
     #   無ければ商品マスタの「产品重量」（SKU 全体・入数込み kg）を **Item_Quantity で割る**:
     #     4901616011007_3（入数 3 × 購入 1 = 3）: 0.444 / 3 = 0.148 → 0.15
     #     4902111773421  （入数 1 × 購入 2 = 2）: 0.23  / 2 = 0.115 → 0.12（0903 実測）
     #   ⚠️ 物理的には後者の 2 個目のケースは 1 個 0.23 のはずだが、運営の実出力(0.12)に
-    #      合わせている——JDL があればこの誤差は消える。
+    #      合わせている——斑马の重量があればこの誤差は消える。
     weight_g = master.get("weight")
     pack_weight = product.get("weight_kg")
     if weight_g:
