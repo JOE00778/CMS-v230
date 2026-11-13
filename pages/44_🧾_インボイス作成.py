@@ -58,6 +58,9 @@ if st.button(t("注文を読み込む"), type="primary", disabled=not order_no):
     if not order:
         st.warning(t("その注文番号は見つからなかった：") + so.normalize_order_no(order_no))
         st.stop()
+    if not (order.get("lineItems") or {}).get("nodes"):
+        st.warning(t("この注文は今出荷する商品がありません（全部取消・返金済み）：") + so.normalize_order_no(order_no))
+        st.stop()
     items = (order.get("lineItems") or {}).get("nodes") or []
     jans = [((li.get("variant") or {}).get("barcode") or li.get("sku") or "").strip()
             for li in items]

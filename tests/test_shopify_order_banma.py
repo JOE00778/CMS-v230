@@ -28,3 +28,18 @@ def test_banma_overrides_pg_and_pg_fills_gaps():
     assert m["4902505476785"]["net_weight_g"] is None and m["4902505476785"]["gross_weight_g"] == 11
     assert m["4900000000002"] == pg["4900000000002"]          # 斑马が空なら PG のまま
     assert pg["4902505476785"]["hs_code"] is None             # 元の dict は壊さない
+
+
+def test_invoice_uses_current_quantity_after_cancel_20261113(monkeypatch):
+    """#1089: 2 個 → 客の希望で 1 個取消（数量の返金）→ Invoice も 1 個。0 個になった行は出さない。単価は元の口径のまま。"""
+    def li(sku, q, cur, total):
+        return {"title": sku, "sku": sku, "quantity": q, "currentQuantity": cur,
+                "discountedTotalSet": {"shopMoney": {"amount": total}}, "variant": {"barcode": sku}}
+    order = {"name": "#1089", "lineItems": {"nodes": [li("4987643120080", 2, 1, "29.98"),
+                                                      li("4589919566549", 2, 0, "45.98")]}}
+    monkeypatch.setattr(so, "_call", lambda q, v: {"orders": {"nodes": [order]}})
+    assert "currentQuantity" in so.ORDER_Q
+    o = so.fetch_order("1089")
+    assert [x["sku"] for x in o["lineItems"]["nodes"]] == ["4987643120080"]
+    lines, _ = so.to_ci_lines(o, {})
+    assert [(x.units, x.unit_value) for x in lines] == [(1, 14.99)]

@@ -47,7 +47,7 @@ query($q:String!){
                        city provinceCode zip countryCodeV2 country phone }
       lineItems(first:100){
         nodes{
-          title quantity sku
+          title quantity currentQuantity sku
           discountedTotalSet{ shopMoney{ amount } }
           originalUnitPriceSet{ shopMoney{ amount } }
           variant{ barcode inventoryItem{ harmonizedSystemCode } }
@@ -106,8 +106,16 @@ def fetch_order(order_no: str) -> dict | None:
     nodes = (data.get("orders") or {}).get("nodes") or []
     for o in nodes:
         if o.get("name") == name:      # query は前方一致するので name を照合する
-            return o
+            return current_lines(o)
     return None
+
+
+def current_lines(order: dict) -> dict:
+    """今の数（後台の編集・数量の返金の後 = currentQuantity）が 0 の行を落とす。quantity は注文時の数のまま
+    （Boss 2026-11-13 #1089「2 個 → 1 個取消、斑马も 1 個なのに Invoice は 2 個」）。"""
+    nodes = (order.get("lineItems") or {}).get("nodes") or []
+    keep = [li for li in nodes if int(li.get("currentQuantity", li.get("quantity")) or 0) > 0]
+    return {**order, "lineItems": {**(order.get("lineItems") or {}), "nodes": keep}}
 
 
 def customs_by_jan(conn, jans: list[str]) -> dict[str, dict]:
@@ -171,7 +179,8 @@ def to_ci_lines(order: dict, customs: dict[str, dict]) -> tuple[list, list[str]]
         v = li.get("variant") or {}
         jan = (v.get("barcode") or li.get("sku") or "").strip()
         c = customs.get(jan, {})
-        qty = int(li.get("quantity") or 0)
+        qty = int(li.get("quantity") or 0)            # 注文時の数（discountedTotalSet はこの数の金額）
+        units = int(li.get("currentQuantity", qty) or 0)   # 今の数（取消・数量返金の後）
         total = float((li.get("discountedTotalSet") or {}).get("shopMoney", {}).get("amount") or 0)
         unit = round(total / qty, 6) if qty else 0.0
         hs = c.get("hs_code") or (v.get("inventoryItem") or {}).get("harmonizedSystemCode") or ""
@@ -196,7 +205,7 @@ def to_ci_lines(order: dict, customs: dict[str, dict]) -> tuple[list, list[str]]
             warn.append({"jan": jan, "code": "no_weight"})
         lines.append(CiLine(
             description=cname,          # Boss 2026-10-25: 商品名ではなく清関用の英文品名
-            units=qty,
+            units=units,
             net_weight_kg=round(float(w_g) / 1000, 3) if w_g else 0.0,
             hs_code=hs,
             origin=c.get("origin_country") or "",
