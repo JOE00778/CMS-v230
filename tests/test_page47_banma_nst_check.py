@@ -35,7 +35,11 @@ def test_page47_renders_and_nav_group():
     labels = [b.label for b in at.button]
     assert any("NST で SKUID が空の品をチェック" in x for x in labels) and any("登録内容をチェック" in x for x in labels)
     groups = dict(i18n._NAV_GROUPS)
-    assert ("pages/47_🦓_斑马NST整合检查.py", "🦓 斑马・NST 整合检查") in groups["🦓 斑马・NST"]
+    # 2026-11-13 旧 page46 と合并し「📝 商品信息维护」へ（独立板块は廃止・page46 ファイルは削除）
+    assert ("pages/47_🦓_斑马NST整合检查.py", "🦓 斑马信息检查") in groups["📝 商品信息维护"]
+    assert "🦓 斑马・NST" not in groups
+    assert not any("46_" in path for g in groups.values() for path, _ in g)
+    assert [x.label[:2] for x in at.tabs] == ["🩺 ", "🆕 ", "🔎 "]   # 3 タブ（表示は UI 言語）
     assert not any("47_" in path for path, _ in groups["🛠️ 工具"])
 
 
@@ -303,3 +307,12 @@ def test_page47_failed_banma_chunk_is_unchecked_and_retryable_20261112(page15_of
         res = at.session_state["p47s_result"]
         assert res["unchecked"] == []
         assert sorted(h["code"] for h in res["hits"]) == ["X1", "X2"] and [m["code"] for m in res["misses"]] == ["X3"]
+
+
+def test_page47_no_st_stop_20261113():
+    """3 タブ合并（旧 page46 を移設）: st.stop() はタブ以降を全部止める → コードに残さない（docstring/コメントの注意書きは可）。"""
+    import ast
+    tree = ast.parse(PAGE.read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "stop" and getattr(n.func.value, "id", "") == "st"]
+    assert not calls, [c.lineno for c in calls]

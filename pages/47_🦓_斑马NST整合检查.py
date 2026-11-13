@@ -1,4 +1,8 @@
-"""模块 #47 · 🦓 斑马・NST 整合检查（Boss 2026-11-12「做成一个模块，不放在商品登录里，单独做为一个独立的板块」）
+"""模块 #47 · 🦓 斑马信息检查（Boss 2026-11-13「这两个合并到一起」= 旧 page46 斑马信息健康度检查 + 旧 page47 斑马・NST 整合检查）
+
+3 タブ: 🩺 存量体检（旧 page46・斑马全量の写し banma.* → 斑马「批量修改SKU信息」Excel + 問題清単・判定は shared/banma_dims）
+        🆕 新品检查・写回（NST 作成 30 日以内・下の 🩺）/ 🔎 SKUID 关联（下の 🔎）
+旧 page47 の説明:
 
 page15 の「🔎 SKUID 空チェック」tab をそのまま独立させたもの（条件・既定値・書き戻しの方法は同じ）:
   🔎 SKUID 空      NST で SKUID（custitem_item_skuid＝斑马 SKUID・在庫同期用）が空の品 → 斑马の同じ型番 / JAN の SKUID、
@@ -9,6 +13,8 @@ page15 の「🔎 SKUID 空チェック」tab をそのまま独立させたも�
 """
 from __future__ import annotations
 
+import datetime as dt
+import json
 import math
 import threading
 import time
@@ -22,23 +28,23 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ct
 from data_warehouse.templates import nst_item_master as TPL
 from shared import banma_client, hs_ai, hs_classify, image_search, nst_suiteql
 from shared import banma_fix as BF
-from shared.banma_dims import NEW_DAYS
+from shared.banma_dims import NEW_DAYS, Msg, build, customs_issues, in_scope, nst_dims, report_xlsx, select
 from shared import banma_register as BMR
 from shared import item_register as REG
 from shared import nst_choices as NC
 from shared import skuid_fill as SF
 from shared.auth import require_password
-from shared.db import get_connection
+from shared.db import get_connection, get_readonly_connection
 from shared.editor_state import lang_stable_editor
 from shared.i18n import lang_selector, t
 from shared.theme import inject_theme
 
-st.set_page_config(page_title=t("斑马・NST 整合检查"), page_icon="🦓", layout="wide")
+st.set_page_config(page_title=t("斑马信息检查"), page_icon="🦓", layout="wide")
 require_password()
 inject_theme()
 lang_selector()
 
-st.title(t("🦓 斑马・NST 整合检查"))
+st.title(t("🦓 斑马信息检查"))
 
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -532,42 +538,201 @@ def _merge_content(res: dict, new: dict) -> dict:
             + new.get("n_api_customs", 0), "lap": lap, "unchecked": new["unchecked"]}
 
 
-def _render_skuid_tab() -> None:
-    """⚠️ st.stop() 禁止（他タブが消える）。抜けるときは return。"""
-    st.caption(t("🔎 NST で SKUID（斑马 SKUID・在庫同期用）が空の品を探し、斑马の同じ型番 / JAN の SKUID を取る。"
-                 "斑马に無ければ斑马に登録してから取る → NST 更新 CSV（型番 + SKUID）を手で NST に取り込む。"
-                 "🩺 SKUID がある品は斑马の三辺・重量・画像・HS・英文名の空を探し、CMS で直して斑马へ書き戻す"))
+# ── 🩺 存量体检（旧 page46 · 斑马全量の写し banma.* を読む・NST 作成 30 日内の単品は 🆕 タブ）──
+JOB = "banma_health_daily"
+RANKS = ("Aランク", "Bランク", "Cランク", "NEW")
+_SKU_SQL = ("SELECT sku_id, code, spu_id, spu_title, specification, category_top, sku_type, is_valid, "
+            "weight, length, width, height, combine, pulled_at FROM banma.sku_dims")
+_CUS_SQL = "SELECT sku_id, name_cn, name_en, hs_code FROM banma.sku_customs"
+_STD_SQL = "SELECT hs, name_cn, name_en FROM banma.name_en_std"
+_NST_SQL = ("SELECT jan, max(package_weight_g) AS w FROM nst.item_master_raw "
+            "WHERE jan IS NOT NULL AND package_weight_g > 0 GROUP BY jan")
+_RANK_SQL = "SELECT DISTINCT jan FROM nst.item_master_raw WHERE jan IS NOT NULL AND item_rank IN (%s, %s, %s, %s)"
+_NEW_SQL = ("SELECT DISTINCT jan FROM nst.item_master_raw WHERE jan IS NOT NULL "
+            "AND date_created >= now() - make_interval(days => %s)")
+_DIMS_SUITEQL = ("SELECT item.upccode AS jan, item.custitem_fb_package_height AS h, item.custitem_fb_package_width AS w, "
+                 "item.custitem_fb_package_depth AS d FROM item WHERE item.department IN (4, 9) "
+                 "AND item.custitem_fb_package_height > 0 ORDER BY item.id")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load():
+    conn = get_readonly_connection()
+    try:
+        q = lambda sql, p=None: [dict(r) for r in (conn.execute(sql, p) if p else conn.execute(sql)).fetchall()]
+        skus = q(_SKU_SQL)
+        customs = {r["sku_id"]: r for r in q(_CUS_SQL)}
+        std = [(r["hs"], r["name_cn"], r["name_en"]) for r in q(_STD_SQL)]
+        nst = {r["jan"]: r["w"] for r in q(_NST_SQL)}
+        ranked = {r["jan"] for r in q(_RANK_SQL, RANKS)}
+        new = {r["jan"] for r in q(_NEW_SQL, (NEW_DAYS,))}
+    finally:
+        conn.close()
+    for s in skus:
+        if isinstance(s["combine"], str):
+            s["combine"] = json.loads(s["combine"])
+    return skus, customs, std, nst, ranked, new
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _nst_dims() -> dict:
+    """NST 包装三边（实时 SuiteQL・1 小时缓存）→ {jan: (长, 宽, 高) cm}。"""
+    out = {}
+    for r in nst_suiteql.suiteql_all(_DIMS_SUITEQL):
+        if (jan := str(r.get("jan") or "").strip()) and (d := nst_dims((r.get("h"), r.get("w"), r.get("d")))):
+            out[jan] = d
+    return out
+
+
+def _render_stock_tab() -> None:
+    """🩺 存量体检（旧 page46「斑马信息健康度检查」をそのまま移設 · Boss 2026-11-13 合并）。
+    ⚠️ st.stop() 禁止（他タブが消える）→ 旧 page46 の st.stop() は return に置換。"""
+    st.caption(t("斑马 Export 部门、NST 商品等级 A/B/C/NEW 的 SKU：检查三边、重量、报关信息（英文名、HS 编码） · "
+                 "三边/重量可下载 Excel 直接在斑马「批量修改SKU信息」上传"))
+    # ── 刷新 ──
+    c1, c2, c3 = st.columns([2, 2, 3])
+    wconn = get_connection()
+    try:
+        job = wconn.execute("SELECT run_now, last_run_at, last_status FROM jdl.pull_schedule WHERE job_key=%s",
+                            (JOB,)).fetchone()
+    except Exception:
+        wconn.rollback()
+        job = None
+    if job is None:
+        c1.warning(t("排程未登记（banma 002 迁移未应用？）"))
+    else:
+        c2.caption(t("上次拉取") + ": " + (str(job["last_run_at"])[:16] if job["last_run_at"] else "-")
+                   + " · " + str(job["last_status"] or "-"))
+        if job["run_now"]:
+            c1.info(t("⏳ 拉取中（约 3 小时），完成后刷新本页"))
+        elif c1.button(t("▶️ 立即从斑马拉取"), type="primary"):
+            try:
+                wconn.execute("UPDATE jdl.pull_schedule SET run_now=TRUE, updated_at=now() WHERE job_key=%s", (JOB,))
+                wconn.commit()
+                st.cache_data.clear()
+                st.success(t("已预约，1 分钟内开始，约 3 小时完成"))
+                st.rerun()
+            except Exception as e:
+                wconn.rollback()
+                st.error(str(e))
+
+    try:
+        skus, customs, std, nst, ranked, new = _load()
+    except Exception as e:
+        st.error(t("读取失败") + f": {e}")
+        return
+    if not skus:
+        st.warning(t("还没有斑马数据，请先点「立即从斑马拉取」"))
+        return
+
+    pulled = max(s["pulled_at"] for s in skus)
+    c3.caption(t("斑马数据时点") + f": {str(pulled)[:16]}")
+    if pd.Timestamp.now(tz="UTC") - pd.Timestamp(pulled) > pd.Timedelta(hours=26):
+        st.warning(t("斑马数据超过 1 天未更新，上传前请先点「立即从斑马拉取」"))
+
+    stamp = dt.datetime.now().strftime("%Y%m%d")
+    st.markdown("**" + t("检查项") + "**")
+    k1, k2, k3, k4 = st.columns(4)
+    checks = {name for col, name, default in ((k1, "重量", True), (k2, "三边", False),
+                                              (k3, "英文名", True), (k4, "HS", True))
+              if col.checkbox(t({"英文名": "报关英文名", "HS": "HS编码"}.get(name, name)), value=default, key=f"chk_{name}")}
+    if not checks:
+        st.info(t("请至少勾选一项"))
+        return
+
+    dims = {}
+    if "三边" in checks:
+        try:
+            with st.spinner(t("向 NST 取包装三边…")):
+                dims = _nst_dims()
+        except Exception as e:  # noqa: BLE001 — 取不到 = 三边全按「无数据源」列，不补值
+            st.error(t("NST 三边读取失败（三边不补值）") + f": {e}")
+    rows, dim_issues = build(skus, nst, dims, ranked, new)
+    rows, issues = select(rows, dim_issues + customs_issues(skus, customs, std, ranked, new), checks)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric(t("检查对象 SKU"), f"{len(in_scope(skus, ranked, new)):,}",
+              help=t("NST 作成 {n} 日内的新品单品不在本页，在「🦓 斑马NST整合检查」").format(n=NEW_DAYS))
+    m2.metric(t("可直接上传斑马"), f"{len(rows):,}")
+    m3.metric(t("问题 SKU"), f"{len({x['SKU编码'] for x in issues}):,}")
+
+    # 一个 Excel = 数据（斑马上传用・超 1000 行另起 数据2…）+ 示例 + 问题清单 + 导入明细
+    st.download_button(t("📥 下载 Excel（「数据」页可直接上传斑马 + 问题清单）"), report_xlsx(rows, issues),
+                       file_name=f"斑马健康度检查_{stamp}.xlsx", type="primary")
+    st.caption(t("「数据」页 = 斑马「批量修改SKU信息」格式，空栏 = 不修改；超过 1000 行另起「数据2」「数据3」… · "
+                 "报关信息斑马模板没有栏位，只在问题清单里 · 上传后点「立即从斑马拉取」，已改好的会从表中消失"))
+
+
+    def _tr(v):
+        """表示用の訳（Excel / 判定用の値はそのまま）: 说明 = Msg を UI 言語で組み直す · 类型 等の定型語 = t()。"""
+        if isinstance(v, Msg):
+            return t(v.tpl).format(**v.kw)
+        return t(v) if isinstance(v, str) else v
+
+
+    def _src(v):
+        """来源「重量:NST；三边:组合计算（原 300g≠单品×件数）」の定型語だけ訳す（select() が「:」「；」で読むので値は変えない）。"""
+        for w in ("重量", "三边", "组合计算", "原 ", "单品×件数"):
+            v = v.replace(w, t(w))
+        return v
+
+
+    def _show(recs: list[dict]) -> pd.DataFrame:
+        """dict のまま訳してから DataFrame 化（pandas は str サブクラスを素の str にするので Msg が消える）。"""
+        def row(r):
+            return {k: (_src(v) if k == "来源" and isinstance(v, str) else _tr(v) if k in ("类型", "问题", "说明") else v)
+                    for k, v in r.items()}
+        return pd.DataFrame([row(r) for r in recs]).rename(columns=t)
+
+
+    tab_up, tab_issue = st.tabs([t("✅ 可直接上传斑马"), t("⚠️ 问题清单")])
+    with tab_up:
+        if rows:
+            st.dataframe(_show(rows), use_container_width=True, height=520, hide_index=True)
+        else:
+            st.success(t("没有需要补的 SKU"))
+    with tab_issue:
+        if issues:
+            kinds = pd.Series([i["问题"] for i in issues]).value_counts()
+            pick = st.multiselect(t("问题类型"), list(kinds.index), format_func=lambda k: f"{t(k)}（{kinds[k]}）")
+            st.dataframe(_show([i for i in issues if not pick or i["问题"] in pick]), use_container_width=True,
+                         height=520, hide_index=True)
+        else:
+            st.success(t("没有问题 SKU"))
+
+
+def _conditions(kp: str, periods: list[str]) -> dict:
+    """作成日・部門・取扱区分・状態・ランク・照合・照会元。kp = タブごとの widget key 接頭辞（同じ key は置けない）。"""
     d = SF.DEFAULTS
     c1, c2, c3 = st.columns(3)
     # 選択肢の値は原文のまま（SF.pick が値で絞る）。表示だけ format_func=t
-    period = c1.selectbox(t("作成日"), list(SF.PERIODS), index=list(SF.PERIODS).index(d["period"]), key="p47s_period",
-                          format_func=t)
-    depts = c2.multiselect(t("部門"), SF.DEPTS, default=list(d["depts"]), key="p47s_depts", format_func=t)
-    handlings = c3.multiselect(t("取扱区分"), SF.HANDLINGS, default=list(d["handlings"]), key="p47s_handlings",
+    period = c1.selectbox(t("作成日"), periods, index=periods.index(d["period"]), key=f"{kp}_period", format_func=t)
+    depts = c2.multiselect(t("部門"), SF.DEPTS, default=list(d["depts"]), key=f"{kp}_depts", format_func=t)
+    handlings = c3.multiselect(t("取扱区分"), SF.HANDLINGS, default=list(d["handlings"]), key=f"{kp}_handlings",
                                format_func=t)
     c4, c5, c6 = st.columns(3)
-    states = c4.multiselect(t("状態"), SF.STATES, default=list(d["states"]), key="p47s_states", format_func=t)
-    ranks = c5.multiselect(t("商品ランク"), SF.RANKS, default=list(d["ranks"]), key="p47s_ranks", format_func=t)
-    by_jan = c6.radio(t("斑马での照合"), [True, False], index=0, key="p47s_by_jan", horizontal=True,
+    states = c4.multiselect(t("状態"), SF.STATES, default=list(d["states"]), key=f"{kp}_states", format_func=t)
+    ranks = c5.multiselect(t("商品ランク"), SF.RANKS, default=list(d["ranks"]), key=f"{kp}_ranks", format_func=t)
+    by_jan = c6.radio(t("斑马での照合"), [True, False], index=0, key=f"{kp}_by_jan", horizontal=True,
                       format_func=lambda v: t("型番 + JAN") if v else t("型番のみ"),
                       help=t("型番で見つからなければ JAN（斑马の単品 SKU コード = JAN）でも探す"))
     # 1 つの斑马 SKUID を複数の品に入れる選択肢は置かない（在庫同期が崩れる・Boss 2026-11-12「这个功能本身就是错误的」）
-    source = st.radio(t("斑马の照会元"), list(_SK_SOURCES), index=0, key="p47s_source",
+    source = st.radio(t("斑马の照会元"), list(_SK_SOURCES), index=0, key=f"{kp}_source",
                       format_func=lambda k: t(_SK_SOURCES[k]))
-    opts = {"period": period, "depts": tuple(depts), "handlings": tuple(handlings), "states": tuple(states),
+    return {"period": period, "depts": tuple(depts), "handlings": tuple(handlings), "states": tuple(states),
             "ranks": tuple(ranks), "by_jan": by_jan, "source": source}
+
+
+def _render_new_tab() -> None:
+    """🆕 新品检查・写回（NST 作成 NEW_DAYS 日以内・SKUID がある品）。⚠️ st.stop() 禁止。"""
+    st.caption(t("🩺 SKUID がある品は斑马の三辺・重量・画像・HS・英文名の空を探し、CMS で直して斑马へ書き戻す"))
+    st.caption(t("新品だけ（NST 作成 {n} 日以内）。それより前の品・組合品は「🩺 既存品チェック」タブ").format(n=NEW_DAYS))
+    opts = _conditions("p47c", [k for k, v in SF.PERIODS.items() if v and v <= NEW_DAYS])
     c9, c10 = st.columns(2)
     checks = c9.multiselect(t("🩺 斑马の検査項目"), BF.CHECKS, default=list(BF.CHECKS), key="p47c_checks", format_func=t)
     placeholder = c10.checkbox(t("仮値も空とみなす（重量 0/1/10/100/200/300/500g・三辺 1×1×1/10×10×10・待上图の画像）"),
                                value=True, key="p47c_placeholder", help=t("page46 と同じ口径（Boss 2026-10-07〜09）"))
-    b1, b2, b3 = st.columns(3)
-    if b1.button(t("🔍 NST で SKUID が空の品をチェックする"), type="primary", key="p47s_run", use_container_width=True):
-        for k in _SK_KEYS:
-            st.session_state.pop(k, None)
-        try:
-            st.session_state["p47s_result"] = _skuid_check(opts)
-        except Exception as e:  # noqa: BLE001 — 照会失敗は「斑马に無し」にしない
-            st.error(t("❌ チェックに失敗（何も出力していません）: {err}").format(err=f"{type(e).__name__}: {e}"))
+    b2, b3 = st.columns(2)
     if b2.button(t("🩺 斑马の登録内容をチェックする"), type="primary", key="p47c_run", use_container_width=True):
         for k in _CC_KEYS:
             st.session_state.pop(k, None)
@@ -575,26 +740,43 @@ def _render_skuid_tab() -> None:
             st.session_state["p47c_result"] = _content_check(opts, tuple(checks), placeholder)
         except Exception as e:  # noqa: BLE001
             st.error(t("❌ チェックに失敗（何も書いていません）: {err}").format(err=f"{type(e).__name__}: {e}"))
-    if b3.button(t("🗑️ 清除结果"), key="p47s_clear", use_container_width=True):
-        for k in _SK_KEYS + _CC_KEYS:
+    if b3.button(t("🗑️ 清除结果"), key="p47c_clear", use_container_width=True):
+        for k in _CC_KEYS:
             st.session_state.pop(k, None)
         st.rerun()
-    res, cres = st.session_state.get("p47s_result"), st.session_state.get("p47c_result")
-    if not res and not cres:
-        st.info(t("条件を選んで「🔍 NST で SKUID が空の品をチェックする」か「🩺 斑马の登録内容をチェックする」"))
-    if res:
-        st.subheader(t("🔎 NST で SKUID が空の品"))
-        if res["opts"] != opts:
-            st.warning(t("条件が変わりました。「🔍 NST で SKUID が空の品をチェックする」を押してください（前回の結果は隠しています）"))
-        else:
-            _render_skuid_result(res)
-    if cres:
-        st.subheader(t("🩺 斑马の登録内容"))
-        st.caption(t("新品だけ（NST 作成 {n} 日以内・作成日の条件が長くても {n} 日まで）。それより前の品・組合品は「🩺 斑马信息健康度检查」").format(n=NEW_DAYS))
-        if cres["key"] != (opts, tuple(checks), placeholder):
-            st.warning(t("条件が変わりました。「🩺 斑马の登録内容をチェックする」を押してください（前回の結果は隠しています）"))
-        else:
-            _render_content_result(cres)
+    cres = st.session_state.get("p47c_result")
+    if not cres:
+        st.info(t("条件を選んで「🩺 斑马の登録内容をチェックする」"))
+    elif cres["key"] != (opts, tuple(checks), placeholder):
+        st.warning(t("条件が変わりました。「🩺 斑马の登録内容をチェックする」を押してください（前回の結果は隠しています）"))
+    else:
+        _render_content_result(cres)
+
+
+def _render_skuid_tab() -> None:
+    """🔎 SKUID 关联。⚠️ st.stop() 禁止（他タブが消える）。抜けるときは return。"""
+    st.caption(t("🔎 NST で SKUID（斑马 SKUID・在庫同期用）が空の品を探し、斑马の同じ型番 / JAN の SKUID を取る。"
+                 "斑马に無ければ斑马に登録してから取る → NST 更新 CSV（型番 + SKUID）を手で NST に取り込む。"))
+    opts = _conditions("p47s", list(SF.PERIODS))
+    b1, b3 = st.columns(2)
+    if b1.button(t("🔍 NST で SKUID が空の品をチェックする"), type="primary", key="p47s_run", use_container_width=True):
+        for k in _SK_KEYS:
+            st.session_state.pop(k, None)
+        try:
+            st.session_state["p47s_result"] = _skuid_check(opts)
+        except Exception as e:  # noqa: BLE001 — 照会失敗は「斑马に無し」にしない
+            st.error(t("❌ チェックに失敗（何も出力していません）: {err}").format(err=f"{type(e).__name__}: {e}"))
+    if b3.button(t("🗑️ 清除结果"), key="p47s_clear", use_container_width=True):
+        for k in _SK_KEYS:
+            st.session_state.pop(k, None)
+        st.rerun()
+    res = st.session_state.get("p47s_result")
+    if not res:
+        st.info(t("条件を選んで「🔍 NST で SKUID が空の品をチェックする」"))
+    elif res["opts"] != opts:
+        st.warning(t("条件が変わりました。「🔍 NST で SKUID が空の品をチェックする」を押してください（前回の結果は隠しています）"))
+    else:
+        _render_skuid_result(res)
 
 
 def _render_skuid_result(res: dict) -> None:
@@ -704,6 +886,10 @@ def _render_skuid_result(res: dict) -> None:
         st.info(t("CSV に出す品はまだありません"))
 
 
-_render_skuid_tab()
-
-
+tab_stock, tab_new, tab_skuid = st.tabs([t("🩺 存量体检"), t("🆕 新品检查・写回"), t("🔎 SKUID 关联")])
+with tab_stock:
+    _render_stock_tab()
+with tab_new:
+    _render_new_tab()
+with tab_skuid:
+    _render_skuid_tab()
