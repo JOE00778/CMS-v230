@@ -7,6 +7,7 @@ CMS で直した値を斑马へ書き戻す。
 - 三辺・重量・画像: 斑马に SKU 単位の更新 API は無い → PUT /v1/product/{SPUID} で SPU 丸ごと（write_sku_dims.py と同じ形）。
   ⚠️ この PUT は描述（Descriptions）を消し、戻す API も無い（2026-10-07 実測）。包材（PackMaterials）は PUT の body に無い。
   → 描述か包材がある SPU には書かない（三辺・重量は「批量修改SKU信息」Excel、画像は斑马の画面で）。
+  画像が 1 つも無い SPU の PUT は 400 で拒まれる（2026-11-13）→ 新規登録と同じ「待上図」画像を入れて書く。
   2026-11-12 抽出: 直近 90 日の NST 品の SPU 30 件中 描述あり 1・画像なし 26。
 どちらも: 書く前に GET → 台帳 banma.cms_write_log に before を commit（できなければ書かない）→ 書く（非冪等・再送しない）
 → GET し直し、対象以外が 1 つも変わっていないことを確認。違えば mismatch（呼び出し側は以降の SPU 書込を止める）。
@@ -326,6 +327,12 @@ def write_product(client, conn, spu_id: str, changes: dict[str, dict], codes: st
     if not set(changes) <= want:
         return {"status": "fail", "message": t("SPU {spu} に無い SKU: {skus}（書いていません）").format(
             spu=spu_id, skus=sorted(set(changes) - want))}
+    # 斑马は画像が 1 つも無い商品の PUT を 400 BadRequest で拒む（2026-11-13 重量のみ 70/70・画像を足した 1 件は ok）
+    # → 新規登録（page15）と同じ「待上図」を入れる（Boss 2026-11-13「执行」）
+    no_img = not ((before.get("Spu") or {}).get("Image") or before.get("Images")
+                  or any(s.get("Image") for s in before.get("Skus") or []) or any(ch.get("Image") for ch in changes.values()))
+    if no_img:
+        changes = {sid: {**changes.get(sid, {}), "Image": PLACEHOLDER_IMAGE_URL} for sid in want}
     try:
         log_id = _log_start(conn, "product", str(spu_id), codes, changes, before)
     except Exception as e:  # noqa: BLE001
@@ -346,6 +353,8 @@ def write_product(client, conn, spu_id: str, changes: dict[str, dict], codes: st
     else:
         st = "mismatch" if msg else "ok"
     _log_done(conn, log_id, st, after, msg + (f" / 書込: {err}" if err and st == "mismatch" else ""))
+    if st == "ok" and no_img:
+        msg = t("画像が無いため「待上図」画像も入れました（斑马は画像なしの書込を受けない）")
     return {"status": st, "message": msg}
 
 

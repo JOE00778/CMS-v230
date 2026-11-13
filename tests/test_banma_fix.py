@@ -105,6 +105,22 @@ def test_write_product_ok_keeps_other_sku_and_spu_fields():
     assert conn.sql[0][0].startswith("INSERT") and "ok" in conn.sql[-1][1]     # 書く前に台帳 → 結果
 
 
+def test_write_product_adds_placeholder_image_when_spu_has_none_20261113():
+    """斑马は画像が 1 つも無い商品の PUT を 400 で拒む（2026-11-13 page47 重量のみ 70/70）→ 新規登録と同じ「待上図」を入れる。"""
+    p = _product()
+    p["SKUs"] = p["SKUs"][:1]
+    c, conn = _Client(p), _Conn()
+    r = BF.write_product(c, conn, "S1", {"K1": {"Weight": 35}}, "x")
+    put = next(b for m, _, b in c.calls if m == "PUT")
+    assert put["Skus"][0]["Weight"] == 35 and put["Skus"][0]["Image"] == PLACEHOLDER_IMAGE_URL
+    assert put["Spu"]["Image"] == PLACEHOLDER_IMAGE_URL and put["Images"] == [{"Src": PLACEHOLDER_IMAGE_URL, "Sort": 0}]
+    assert r["status"] == "ok" and "待上図" in r["message"]
+    c2 = _Client(_product())                         # どこかに画像がある SPU には足さない
+    assert BF.write_product(c2, _Conn(), "S1", {"K1": {"Weight": 35}}, "x") == {"status": "ok", "message": ""}
+    put2 = next(b for m, _, b in c2.calls if m == "PUT")
+    assert put2["Skus"][0]["Image"] == "" and put2["Spu"]["Image"] == "" and put2["Images"] == []
+
+
 def test_write_product_mismatch_when_server_changes_other_fields():
     def hook(p):
         p["SPU"]["DeveloperID"] = 0

@@ -431,7 +431,7 @@ def _cc_write(changes: list[dict]) -> list[dict]:
                     stop = f"SPU {spu}"
             for c in cs:
                 out.append({"型番": c["item"]["code"], "対象": t("三辺・重量・画像"), "結果": r["status"],
-                            "内容": r.get("message", ""), "excel": c if r["status"] == "skipped" else None})
+                            "内容": r.get("message", ""), "excel": c if r["status"] in ("skipped", "fail") else None})
             done += 1
             bar.progress(done / n, text=f"{done}/{n} SPU {spu}")
         for c in changes:
@@ -516,7 +516,7 @@ def _render_content_result(res: dict) -> None:
                                data=BF.dims_xlsx(xl), file_name=f"斑马_批量修改SKU信息_{datetime.now():%Y%m%d}.xlsx",
                                mime=_XLSX_MIME, key="p47c_xlsx")
         if any(r.get("excel") and "Image" in r["excel"]["prod"] for r in reg):
-            st.info(t("画像を API で書かなかった品は斑马の画面で入れてください（上の表の skipped）"))
+            st.info(t("画像を API で書かなかった品は斑马の画面で入れてください（上の表の skipped / fail）"))
 
 
 def _retry_block(codes: list[str], key: str, rerun, state_key: str, drop: tuple = ()) -> None:
