@@ -55,3 +55,17 @@ def test_arrival_summary_90_days():
     assert (s["total"], s["arrived"], s["in_transit"], s["overdue"], s["unordered"], s["closed_short"]) == (6, 1, 2, 1, 1, 1)
     assert round(s["rate"], 4) == round(1 / 6, 4)
     assert NR.arrival_summary([], TODAY)["rate"] is None
+
+
+def test_parse_new_rows_validates_and_blocks_open_jan(monkeypatch):
+    monkeypatch.setattr("shared.i18n.get_lang", lambda: "zh")
+    tracked = [{"id": 9, "jan": "4900000000011", "state": "在途"}, {"id": 8, "jan": "4900000000028", "state": "已到货"}]
+    recs = [{"JAN": " 4900000000011 ", "数量": 2}, {"JAN": "4900000000028", "数量": 3.0, "商品名": " 名 ", "备注": "PH 用"},
+            {"JAN": "", "数量": None}, {"JAN": "nan"}, {"JAN": "12ab", "数量": 1}, {"JAN": "4900000000035", "数量": 0},
+            {"JAN": "4900000000028", "数量": 1}]
+    rows, errs = NR.parse_new_rows(recs, tracked)
+    assert [r["jan"] for r in rows] == ["4900000000011", "4900000000028"]
+    assert rows[1] == {"jan": "4900000000028", "qty": 3, "item_name": "名", "note": "PH 用"}
+    assert len(errs) == 4 and "#9" in errs[-1] and "12ab" in errs[0]   # 不正 JAN・数量 0・重複・未完成申請あり
+    assert NR.parse_new_rows([{"JAN": "4900000000042", "数量": 1}], tracked) == (
+        [{"jan": "4900000000042", "qty": 1, "item_name": "", "note": ""}], [])

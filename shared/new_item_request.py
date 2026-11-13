@@ -66,6 +66,34 @@ def open_jan_conflicts(new_jans: list[str], tracked: list[dict]) -> dict[str, in
     return {x["jan"]: x["id"] for x in tracked if x["jan"] in want and x["state"] in OPEN}
 
 
+def parse_new_rows(records: list[dict], tracked: list[dict]) -> tuple[list[dict], list[str]]:
+    """申請表の行（JAN・数量・商品名・备注）→ (登録する行, エラー文)。JAN 空の行は無視。エラーが 1 つでもあれば呼び出し側は何も入れない。"""
+    from shared.i18n import t
+    rows, errs, seen = [], [], set()
+    for rec in records:
+        raw = str(rec.get("JAN") or "").strip()
+        if not raw or raw == "nan":
+            continue
+        jan = normalize_jan(raw)
+        try:
+            qty = float(rec.get("数量"))
+        except (TypeError, ValueError):
+            qty = float("nan")
+        if not jan:
+            errs.append(t("JAN「{j}」不是 8〜14 位数字").format(j=raw))
+        elif not qty >= 1:
+            errs.append(t("JAN {j} 的数量要 ≥ 1").format(j=jan))
+        elif jan in seen:
+            errs.append(t("JAN {j} 在这次提交里重复了").format(j=jan))
+        else:
+            seen.add(jan)
+            rows.append({"jan": jan, "qty": int(qty), "item_name": str(rec.get("商品名") or "").strip(),
+                         "note": str(rec.get("备注") or "").strip()})
+    for jan, rid in open_jan_conflicts([r["jan"] for r in rows], tracked).items():
+        errs.append(t("JAN {j} 已有未完成的申请 #{id}（到货或取消后才能再提）").format(j=jan, id=rid))
+    return rows, errs
+
+
 def arrival_summary(tracked: list[dict], today: date, days: int = 90) -> dict:
     """直近 days 日に確認した申請（取消除く）の到货率と内訳。"""
     since = today - timedelta(days=days)
@@ -80,6 +108,9 @@ def arrival_summary(tracked: list[dict], today: date, days: int = 90) -> dict:
 # ───────────── DB ─────────────
 
 def ensure_table(conn) -> None:
+    """表が無い時だけ DDL（毎回 DDL を出すと他タブの居残りトランザクションでロック待ちになり得る・page34 2026-08-07 障害）。"""
+    if conn.execute("SELECT to_regclass(?) AS r", (TABLE,)).fetchone()["r"] is not None:
+        return
     conn.execute("CREATE SCHEMA IF NOT EXISTS sourcing")
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {TABLE} ("
