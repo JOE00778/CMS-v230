@@ -72,12 +72,15 @@ summ = NR.arrival_summary(tracked, TODAY)
 c = st.columns(5)
 c[0].metric(t("待确认"), len(by_state["待确认"]))
 c[1].metric(t("待发注"), len(by_state["待发注"]))
-c[2].metric(t("在途"), len(by_state["在途"]) + len(by_state["部分到货"]))
+c[2].metric(t("在途"), len(by_state["在途"]) + len(by_state["部分到货"]) + len(by_state["已发注待同步"]))
 c[3].metric(t("🔴 超期"), len(by_state["超期"]))
 c[4].metric(t("到货率（近 90 天确认）"), "-" if summ["rate"] is None else f"{summ['rate']:.0%}",
             help=t("确认 {n} 件：已到货 {a} · 在途未超期 {i} · 超期 {o} · 待发注 {u} · PO 关闭未到齐 {c}").format(
                 n=summ["total"], a=summ["arrived"], i=summ["in_transit"], o=summ["overdue"], u=summ["unordered"],
                 c=summ["closed_short"]))
+if by_state["发注书已出无PO"]:
+    st.error(t("⚠️ 已出发注书超过 {d} 天，NST 里还没有 PO 的 {n} 件 → 看「🚚 到货跟踪」（没导入 NST 的请「↩️ 退回待发注」）").format(
+        d=NR.ORDER_SYNC_DAYS, n=len(by_state["发注书已出无PO"])))
 if by_state["超期"]:
     st.error(t("🔴 超期未到货 {n} 件（最长超 {d} 天）→ 看「🚚 到货跟踪」").format(
         n=len(by_state["超期"]), d=max(x["overdue_days"] for x in by_state["超期"])))
@@ -156,7 +159,7 @@ def _done(msg: str) -> None:
 tab_new, tab_conf, tab_po, tab_track = st.tabs([
     t("➕ 提申请"), t("📋 待确认（{n}）").format(n=len(by_state["待确认"])),
     t("📦 发注书（{n}）").format(n=len(by_state["待发注"])),
-    t("🚚 到货跟踪（{n}）").format(n=sum(len(by_state[s]) for s in ("超期", "部分到货", "在途", "待发注")))])
+    t("🚚 到货跟踪（{n}）").format(n=sum(len(by_state[s]) for s in ("发注书已出无PO", "超期", "部分到货", "在途", "已发注待同步", "待发注")))])
 
 # ── ➕ 提申请（Boss 2026-11-13「先提 JAN，点确认，然后自动检索出单价，商品名和图，然后再根据每个产品填写数量」）
 def _lookup(jans: list[str]) -> list[dict]:
@@ -311,6 +314,13 @@ with tab_conf:
 # ── 📦 发注书
 with tab_po:
     xs = by_state["待发注"]
+    got = st.session_state.get("p48_po_csv")
+    if got:   # 生成直後は申請が「已发注待同步」に移って表が空になっても、ダウンロードは残す
+        out, ext = got
+        st.dataframe(out.rename(columns=t), use_container_width=True, hide_index=True)
+        st.download_button(t("📥 订货单 CSV 下载（{n} 行 · ¥{a:,}）").format(n=len(out), a=int(out["総額"].sum())),
+                           data=out.to_csv(index=False, encoding="utf-8-sig"), file_name=f"発注書_新品_{ext}.csv",
+                           mime="text/csv", key="p48_po_dl")
     if not xs:
         st.success(t("没有待发注的申请"))
     else:
@@ -354,42 +364,73 @@ with tab_po:
             ok = [r for r in sel if r["JAN"] in NAMES]
             if ok and not bad and not lot_bad:
                 ext = datetime.now().strftime("%Y%m%d%H%M%S")
-                outs = []
+                outs, marks = [], []
                 for i, (sup, g) in enumerate(pd.DataFrame(ok).groupby("仕入先", sort=True)):
                     out, _ = po_csv.build_output(g.rename(columns={"JAN": "jan", "单价": "単価"})[["jan", "数量", "単価"]],
                                                  ITEMS, ext_id=f"{ext}{i + 1}", sup=sup, order_date=order_date,
                                                  employee=employee, department=department, memo=memo,
                                                  location=location, tax_pct=tax_pct)
                     outs.append(out)
+                    for r in g.to_dict("records"):
+                        r["_ext"] = f"{ext}{i + 1}"
+                        marks.append(r)
                 st.session_state["p48_po_csv"] = (pd.concat(outs, ignore_index=True), ext)
-        got = st.session_state.get("p48_po_csv")
-        if got:
-            out, ext = got
-            st.dataframe(out.rename(columns=t), use_container_width=True, hide_index=True)
-            st.download_button(t("📥 订货单 CSV 下载（{n} 行 · ¥{a:,}）").format(n=len(out), a=int(out["総額"].sum())),
-                               data=out.to_csv(index=False, encoding="utf-8-sig"), file_name=f"発注書_新品_{ext}.csv",
-                               mime="text/csv", key="p48_po_dl")
+                # 発注書を出した記録（その時の仕入先・単価・数量）→ 発注書タブから消え「已发注待同步」へ（Boss 2026-11-13）
+                with get_connection() as conn:
+                    n = NR.mark_ordered(conn, [{"id": r["#"], "supplier": r["仕入先"], "unit_price": float(r["单价"]),
+                                                "confirmed_qty": int(r["数量"]), "po_ext_id": r["_ext"]} for r in marks],
+                                        USER)
+                _done(t("📄 已生成发注书 CSV（{n} 件）→ 请到「📦 发注书」下载并导入 NST。这些申请已移到「🚚 到货跟踪」，NST 同步出 PO 后显示 PO 号")
+                      .format(n=n))
 
 # ── 🚚 到货跟踪
 with tab_track:
-    order = {"超期": 0, "部分到货": 1, "在途": 2, "待发注": 3}
+    order = {"发注书已出无PO": 0, "超期": 1, "部分到货": 2, "在途": 3, "已发注待同步": 4, "待发注": 5}
     xs = sorted((x for x in tracked if x["state"] in order),
                 key=lambda x: (order[x["state"]], -x["overdue_days"], x["id"]))
-    icon = {"超期": "🔴", "部分到货": "🟡", "在途": "🚚", "待发注": "⏳", "已到货": "✅", "PO关闭未到齐": "⚠️", "已取消": "🗑️"}
+    icon = {"发注书已出无PO": "⚠️", "超期": "🔴", "部分到货": "🟡", "在途": "🚚", "已发注待同步": "📨", "待发注": "⏳",
+            "已到货": "✅", "PO关闭未到齐": "⚠️", "已取消": "🗑️"}
+
+    def _amount(x: dict):
+        """NST の PO 金額（同期後）> 発注書の時の 単価 × 数量。"""
+        if x["po_amount"]:
+            return x["po_amount"]
+        q, pr = x.get("confirmed_qty"), x.get("unit_price")
+        return float(q) * float(pr) if q and pr is not None else None
+
+    def _diff_text(x: dict) -> str:
+        return " · ".join(t("{k}: {a} → {b}").format(k=t(k), a=f"{a:g}" if isinstance(a, float) else a,
+                                                      b=f"{b:g}" if isinstance(b, float) else b) for k, a, b in x["diffs"])
 
     def _rows(items):
         return pd.DataFrame([{t("状态"): f"{icon[x['state']]} {t(x['state'])}", "#": x["id"], "JAN": x["jan"],
-                              t("商品名"): _name(x), t("确认数量"): x.get("confirmed_qty") or x["qty"],
-                              t("发注数"): int(x["ordered"]), t("入荷数"): int(x["received"]),
-                              t("PO 号"): "・".join(x["po_numbers"]), t("期限"): _when(x["deadline"]),
-                              t("超期天数"): x["overdue_days"] or None, t("仕入先"): x.get("supplier") or "",
-                              t("申请人"): x.get("requested_by") or "", t("确认人"): x.get("confirmed_by") or "",
-                              t("确认日"): _when(x.get("confirmed_at"))} for x in items])
+                              t("商品名"): _name(x), t("仕入先"): "・".join(x["po_vendors"]) or x.get("supplier") or "",
+                              t("确认数量"): x.get("confirmed_qty") or x["qty"],
+                              t("发注数"): int(x["ordered"]), t("入荷数"): int(x["received"]), t("金额"): _amount(x),
+                              t("PO 号"): "・".join(x["po_numbers"]),
+                              t("与发注书的差异"): ("⚠️ " + _diff_text(x)) if x["diffs"] else "",
+                              t("期限"): _when(x["deadline"]), t("超期天数"): x["overdue_days"] or None,
+                              t("发注书日"): _when(x.get("ordered_at")), t("申请人"): x.get("requested_by") or "",
+                              t("确认人"): x.get("confirmed_by") or ""} for x in items])
 
     if not xs:
         st.success(t("没有未到货的申请"))
     else:
-        st.dataframe(_rows(xs), use_container_width=True, hide_index=True)
+        tot = sum(a for a in (_amount(x) for x in xs) if a)
+        st.markdown(t("**💴 未到货合计：{n} 件，¥{a:,.0f}**（同步出 PO 的按 NST 实际金额，其余按发注书 / 确认时的单价 × 数量）")
+                    .format(n=len(xs), a=tot))
+        st.dataframe(_rows(xs), use_container_width=True, hide_index=True,
+                     column_config={t("金额"): st.column_config.NumberColumn(t("金额"), format="yen")})
+        back = [x for x in xs if x["state"] in ("已发注待同步", "发注书已出无PO")]
+        if back:
+            with st.expander(t("↩️ 退回待发注（生成了发注书但没导入 NST 的）")):
+                ids = st.multiselect(t("申请 #"), [x["id"] for x in back],
+                                     format_func=lambda i: next(f"#{x['id']} {x['jan']} {_name(x)}" for x in back
+                                                                if x["id"] == i), key="p48_unmark_ids")
+                if st.button(t("↩️ 退回（{n} 件）").format(n=len(ids)), disabled=not ids, key="p48_unmark"):
+                    with get_connection() as conn:
+                        n = NR.unmark_ordered(conn, ids)
+                    _done(t("↩️ 已退回待发注 {n} 件").format(n=n))
         with st.expander(t("🗑️ 取消申请（供货商断货等，不再跟踪）")):
             ids = st.multiselect(t("申请 #"), [x["id"] for x in xs],
                                  format_func=lambda i: next(f"#{x['id']} {x['jan']} {_name(x)}" for x in xs if x["id"] == i),
@@ -401,4 +442,5 @@ with tab_track:
     done = [x for x in tracked if x["state"] in ("已到货", "PO关闭未到齐", "已取消")]
     if done:
         with st.expander(t("已完成 {n} 件（已到货 / PO 关闭未到齐 / 已取消）").format(n=len(done))):
-            st.dataframe(_rows(sorted(done, key=lambda x: -x["id"])), use_container_width=True, hide_index=True)
+            st.dataframe(_rows(sorted(done, key=lambda x: -x["id"])), use_container_width=True, hide_index=True,
+                         column_config={t("金额"): st.column_config.NumberColumn(t("金额"), format="yen")})

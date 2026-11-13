@@ -13,7 +13,8 @@ from datetime import date, timedelta
 
 OVERDUE_DAYS = 14          # Boss 2026-11-13: 入荷予定日が無い PO は 発注日 + 14 日（予定日の入力は 7.5% だけ）
 TABLE = "sourcing.new_item_request"
-OPEN = ("待确认", "待发注", "在途", "部分到货", "超期")
+ORDER_SYNC_DAYS = 2       # 発注書 CSV を出してこの日数を過ぎても NST に PO が無ければ警告（PO 同期は毎日 03:03）
+OPEN = ("待确认", "待发注", "已发注待同步", "发注书已出无PO", "在途", "部分到货", "超期")
 STATES = (*OPEN, "已到货", "PO关闭未到齐", "已取消")
 
 
@@ -34,7 +35,8 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
         by_jan.setdefault(p["jan"], []).append(p)
     out = []
     for r in reqs:
-        x = {**r, "ordered": 0, "received": 0, "po_numbers": [], "deadline": None, "overdue_days": 0}
+        x = {**r, "ordered": 0, "received": 0, "po_numbers": [], "deadline": None, "overdue_days": 0,
+             "po_vendors": [], "po_amount": 0.0, "diffs": []}
         if r["status"] == "cancelled":
             x["state"] = "已取消"
         elif r["status"] != "confirmed":
@@ -48,8 +50,13 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
             x["po_numbers"] = list(dict.fromkeys(p["po_number"] for p in lines))
             open_ = [p for p in lines if float(p["quantity_received"] or 0) < float(p["quantity"] or 0)
                      and not p.get("closed")]
+            x["po_vendors"] = list(dict.fromkeys(p.get("vendor_name") for p in lines if p.get("vendor_name")))
+            x["po_amount"] = sum(float(p.get("amount") or 0) for p in lines)
+            x["diffs"] = _diffs(r, lines, x) if lines else []
             if not lines:
-                x["state"] = "待发注"
+                od = _day(r.get("ordered_at"))
+                x["state"] = ("待发注" if not od else "发注书已出无PO" if (today - od).days > ORDER_SYNC_DAYS
+                              else "已发注待同步")
             elif not open_:
                 x["state"] = "已到货" if x["received"] >= x["ordered"] else "PO关闭未到齐"
             else:
@@ -58,6 +65,19 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
                 x["overdue_days"] = max(0, (today - x["deadline"]).days)
                 x["state"] = "超期" if x["overdue_days"] else "部分到货" if x["received"] else "在途"
         out.append(x)
+    return out
+
+
+def _diffs(r: dict, lines: list[dict], x: dict) -> list[tuple]:
+    """発注書の時の値（申請に保存）と NST PO の実際の違い → [(項目, 発注書, NST)]。値が無い項目は比べない。"""
+    out = []
+    if r.get("supplier") and x["po_vendors"] and x["po_vendors"] != [r["supplier"]]:
+        out.append(("供货商", r["supplier"], "・".join(x["po_vendors"])))
+    rates = sorted({float(p["rate"]) for p in lines if p.get("rate") is not None})
+    if r.get("unit_price") is not None and rates and rates != [float(r["unit_price"])]:
+        out.append(("单价", float(r["unit_price"]), rates[0] if len(rates) == 1 else "・".join(f"{v:g}" for v in rates)))
+    if r.get("confirmed_qty") and x["ordered"] != float(r["confirmed_qty"]):
+        out.append(("数量", int(r["confirmed_qty"]), int(x["ordered"])))
     return out
 
 
@@ -156,25 +176,33 @@ def arrival_summary(tracked: list[dict], today: date, days: int = 90) -> dict:
     xs = [x for x in tracked if x["state"] not in ("待确认", "已取消")
           and x.get("confirmed_at") and _day(x["confirmed_at"]) >= since]
     n = {k: sum(x["state"] in v for x in xs) for k, v in (
-        ("arrived", ("已到货",)), ("in_transit", ("在途", "部分到货")), ("overdue", ("超期",)),
-        ("unordered", ("待发注",)), ("closed_short", ("PO关闭未到齐",)))}
+        ("arrived", ("已到货",)), ("in_transit", ("在途", "部分到货", "已发注待同步")), ("overdue", ("超期",)),
+        ("unordered", ("待发注", "发注书已出无PO")), ("closed_short", ("PO关闭未到齐",)))}
     return {"total": len(xs), **n, "rate": n["arrived"] / len(xs) if xs else None}
 
 
 # ───────────── DB ─────────────
 
+_ADDED_COLS = (("ordered_at", "TIMESTAMPTZ"), ("ordered_by", "TEXT"), ("po_ext_id", "TEXT"))   # 2026-11-13 発注書を出した記録
+
+
 def ensure_table(conn) -> None:
-    """表が無い時だけ DDL（毎回 DDL を出すと他タブの居残りトランザクションでロック待ちになり得る・page34 2026-08-07 障害）。"""
-    if conn.execute("SELECT to_regclass(?) AS r", (TABLE,)).fetchone()["r"] is not None:
-        return
-    conn.execute("CREATE SCHEMA IF NOT EXISTS sourcing")
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {TABLE} ("
-        "id BIGSERIAL PRIMARY KEY, jan TEXT NOT NULL, item_name TEXT, qty INTEGER NOT NULL, note TEXT, "
-        "requested_by TEXT, requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
-        "status TEXT NOT NULL DEFAULT 'requested', supplier TEXT, unit_price NUMERIC(14,2), confirmed_qty INTEGER, "
-        "confirmed_by TEXT, confirmed_at TIMESTAMPTZ, cancelled_by TEXT, cancelled_at TIMESTAMPTZ)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_new_item_request_jan ON {TABLE} (jan)")
+    """表・列が無い時だけ DDL（毎回 DDL を出すと他タブの居残りトランザクションでロック待ちになり得る・page34 2026-08-07 障害）。"""
+    if conn.execute("SELECT to_regclass(?) AS r", (TABLE,)).fetchone()["r"] is None:
+        conn.execute("CREATE SCHEMA IF NOT EXISTS sourcing")
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {TABLE} ("
+            "id BIGSERIAL PRIMARY KEY, jan TEXT NOT NULL, item_name TEXT, qty INTEGER NOT NULL, note TEXT, "
+            "requested_by TEXT, requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
+            "status TEXT NOT NULL DEFAULT 'requested', supplier TEXT, unit_price NUMERIC(14,2), confirmed_qty INTEGER, "
+            "confirmed_by TEXT, confirmed_at TIMESTAMPTZ, cancelled_by TEXT, cancelled_at TIMESTAMPTZ)")
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_new_item_request_jan ON {TABLE} (jan)")
+    have = {r["column_name"] for r in conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'sourcing' "
+        "AND table_name = 'new_item_request'").fetchall()}
+    for col, typ in _ADDED_COLS:
+        if col not in have:
+            conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS {col} {typ}")
     conn.commit()
 
 
@@ -189,7 +217,7 @@ def load_po_lines(conn, jans: list[str]) -> list[dict]:
         return []
     rows = conn.execute(
         "SELECT regexp_replace(trim(im.jan), '^0{5,}', '') AS jan, pol.po_number, pol.trandate, pol.quantity, "
-        "pol.quantity_received, pol.expected_receipt_date, pol.closed "
+        "pol.quantity_received, pol.expected_receipt_date, pol.closed, pol.vendor_name, pol.rate, pol.amount "
         "FROM nst.purchase_order_line pol JOIN nst.item_master_raw im ON im.internal_id = pol.item_internal_id "
         "WHERE regexp_replace(trim(im.jan), '^0{5,}', '') = ANY(?) AND pol.trandate IS NOT NULL", (jans,)).fetchall()
     return [dict(r) for r in rows]
@@ -237,6 +265,28 @@ def confirm(conn, items: list[dict], user: str) -> int:
             f"UPDATE {TABLE} SET status = 'confirmed', supplier = ?, unit_price = ?, confirmed_qty = ?, "
             "confirmed_by = ?, confirmed_at = NOW() WHERE id = ? AND status = 'requested' RETURNING id",
             (it.get("supplier") or None, it.get("unit_price"), int(it["confirmed_qty"]), user, int(it["id"]))).fetchall())
+    conn.commit()
+    return n
+
+
+def mark_ordered(conn, items: list[dict], user: str) -> int:
+    """発注書 CSV を出した品 → 発注書の時の 仕入先・単価・数量 と 外部 ID を保存し「已发注待同步」へ（Boss 2026-11-13）。
+    items = {id, supplier, unit_price, confirmed_qty, po_ext_id}。確認済で未記録のものだけ。→ 件数。"""
+    n = 0
+    for it in items:
+        n += len(conn.execute(
+            f"UPDATE {TABLE} SET supplier = ?, unit_price = ?, confirmed_qty = ?, ordered_at = NOW(), ordered_by = ?, "
+            "po_ext_id = ? WHERE id = ? AND status = 'confirmed' AND ordered_at IS NULL RETURNING id",
+            (it["supplier"], it["unit_price"], int(it["confirmed_qty"]), user, it.get("po_ext_id"),
+             int(it["id"]))).fetchall())
+    conn.commit()
+    return n
+
+
+def unmark_ordered(conn, ids: list[int]) -> int:
+    """「↩️ 退回待发注」: 発注書を出した記録を消す（CSV を NST に入れなかった時）。"""
+    n = len(conn.execute(f"UPDATE {TABLE} SET ordered_at = NULL, ordered_by = NULL, po_ext_id = NULL "
+                         "WHERE id = ANY(?) AND status = 'confirmed' RETURNING id", ([int(i) for i in ids],)).fetchall())
     conn.commit()
     return n
 

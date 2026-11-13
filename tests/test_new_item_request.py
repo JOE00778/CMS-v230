@@ -104,3 +104,27 @@ def test_default_supplier_main_then_latest_po_20261113():
     assert NR.pick_default_supplier(main, po, sups) == {
         "J1": ("0535 株式会社エーアンドティー", "主供"), "J2": ("0001 ハリマ共和物産株式会社", "主供"),
         "J3": ("0535 株式会社エーアンドティー", "最近 PO"), "J4": ("0474 株式会社　五洲", "最近 PO")}
+
+
+def test_ordered_waiting_sync_and_missing_po_20261113():
+    """発注書 CSV を出した品は NST 同期待ち（発注書タブから消す）。2 日を過ぎても PO が無ければ警告。"""
+    def r(i, jan, od):
+        x = _req(i, jan, req=date(2026, 11, 10), conf=date(2026, 11, 10))
+        x.update(ordered_at=datetime.combine(od, datetime.min.time()), supplier="0457 カネイシ株式会社",
+                 unit_price=1285, confirmed_qty=24)
+        return x
+    t = {x["id"]: x for x in NR.track([r(1, "A", date(2026, 11, 13)), r(2, "B", date(2026, 11, 10))], [], TODAY)}
+    assert (t[1]["state"], t[2]["state"]) == ("已发注待同步", "发注书已出无PO")
+    assert "已发注待同步" in NR.OPEN and "发注书已出无PO" in NR.OPEN
+
+
+def test_po_actuals_and_diffs_against_order_values():
+    x = _req(1, "A", req=date(2026, 11, 10), conf=date(2026, 11, 10))
+    x.update(ordered_at=datetime(2026, 11, 13), supplier="0457 カネイシ株式会社", unit_price=1285, confirmed_qty=24)
+    po = [dict(_po("A", "PO9", date(2026, 11, 13), 36, 0), vendor_name="0535 株式会社エーアンドティー", rate=1300, amount=46800)]
+    y = NR.track([x], po, TODAY)[0]
+    assert (y["state"], y["po_vendors"], y["po_amount"]) == ("在途", ["0535 株式会社エーアンドティー"], 46800.0)
+    assert y["diffs"] == [("供货商", "0457 カネイシ株式会社", "0535 株式会社エーアンドティー"), ("单价", 1285.0, 1300.0),
+                          ("数量", 24, 36)]
+    po2 = [dict(_po("A", "PO9", date(2026, 11, 13), 24, 0), vendor_name="0457 カネイシ株式会社", rate=1285, amount=30840)]
+    assert NR.track([x], po2, TODAY)[0]["diffs"] == []
