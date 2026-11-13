@@ -81,6 +81,12 @@ def _diffs(r: dict, lines: list[dict], x: dict) -> list[tuple]:
     return out
 
 
+def match_jan(jan: str, query: str) -> bool:
+    """到货跟踪の JAN 検索: 空なら全部。空白・カンマ区切りの語のどれかが JAN に含まれれば当たり（部分一致）。"""
+    words = [w for w in re.split(r"[\s,、，]+", str(query or "").strip()) if w]
+    return not words or any(w in str(jan) for w in words)
+
+
 def open_jan_conflicts(new_jans: list[str], tracked: list[dict]) -> dict[str, int]:
     """新しく出す JAN のうち、未完成の申請がある JAN → その申請 id（同じ PO を 2 件で取り合わない）。"""
     want = set(new_jans)
@@ -164,7 +170,7 @@ def parse_new_rows(records: list[dict], tracked: list[dict],
                 errs.append(t("JAN {j} 的数量 {q} 不是起批量 {lot} 的整倍数（建议 {s}）").format(
                     j=jan, q=int(qty), lot=lots[jan], s=sug))
             rows.append({"jan": jan, "qty": int(qty), "item_name": str(rec.get("商品名") or "").strip(),
-                         "note": str(rec.get("备注") or "").strip()})
+                         "note": str(rec.get("备注") or "").strip(), "ref_no": str(rec.get("定位号") or "").strip()})
     for jan, rid in open_jan_conflicts([r["jan"] for r in rows], tracked).items():
         errs.append(t("JAN {j} 已有未完成的申请 #{id}（到货或取消后才能再提）").format(j=jan, id=rid))
     return rows, errs
@@ -183,7 +189,8 @@ def arrival_summary(tracked: list[dict], today: date, days: int = 90) -> dict:
 
 # ───────────── DB ─────────────
 
-_ADDED_COLS = (("ordered_at", "TIMESTAMPTZ"), ("ordered_by", "TEXT"), ("po_ext_id", "TEXT"))   # 2026-11-13 発注書を出した記録
+_ADDED_COLS = (("ordered_at", "TIMESTAMPTZ"), ("ordered_by", "TEXT"), ("po_ext_id", "TEXT"),   # 2026-11-13 発注書を出した記録
+               ("ref_no", "TEXT"))   # 定位号 = 別の報価表での位置（意味はない・探す用）Boss 2026-11-13
 
 
 def ensure_table(conn) -> None:
@@ -245,14 +252,14 @@ def load_supplier_sources(conn, jans: list[str]) -> tuple[dict, dict]:
 
 
 def insert_requests(conn, rows: list[dict], user: str) -> list[int]:
-    """rows = {jan, qty, note, item_name, unit_price}（単価は申請時の参考値・確認で変えられる）。→ 作った id。"""
+    """rows = {jan, qty, note, item_name, unit_price, ref_no}（単価は申請時の参考値・確認で変えられる）。→ 作った id。"""
     ids = []
     for r in rows:
         ids.append(conn.execute(
-            f"INSERT INTO {TABLE} (jan, item_name, qty, note, unit_price, requested_by) "
-            "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            f"INSERT INTO {TABLE} (jan, item_name, qty, note, unit_price, ref_no, requested_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (r["jan"], r.get("item_name") or None, int(r["qty"]), r.get("note") or None, r.get("unit_price"),
-             user)).fetchone()["id"])
+             r.get("ref_no") or None, user)).fetchone()["id"])
     conn.commit()
     return ids
 

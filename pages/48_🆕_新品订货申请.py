@@ -192,6 +192,7 @@ with tab_new:
     st.caption(t("① 粘贴 JAN（一行一个，可多个）→「🔍 确认」→ ② 自动带出图片・商品名・单价・起批量，逐行填数量 → 提交。申请人: {u}")
                .format(u=USER))
     raw = st.text_area(t("JAN（一行一个）"), key=f"p48_jans_{gen}", height=120)
+    ref = st.text_input(t("定位号（在报价表里的位置，这次的 JAN 共用，可空）"), key=f"p48_ref_{gen}")
     if st.button(t("🔍 确认"), key="p48_lookup_btn", disabled=not raw.strip()):
         jans, bad = [], []
         for ln in raw.splitlines():
@@ -207,17 +208,19 @@ with tab_new:
             st.error("❌ " + t("JAN「{j}」不是 8〜14 位数字").format(j=x))
         for j, rid in conflicts.items():
             st.warning(t("JAN {j} 已有未完成的申请 #{id}（到货或取消后才能再提）").format(j=j, id=rid))
-        st.session_state["p48_lookup"] = _lookup([j for j in jans if j not in conflicts])
+        st.session_state["p48_lookup"] = [{**x, "ref": ref.strip()} for x in _lookup([j for j in jans if j not in conflicts])]
         st.session_state["p48_lookup_gen"] = st.session_state.get("p48_lookup_gen", 0) + 1
     found = st.session_state.get("p48_lookup") or []
     if found:
         st.markdown(t("**② 核对图片和商品，填数量**（数量要是起批量的整倍数；没填数量的行不提交）"))
-        df = pd.DataFrame([{"图片": x["img"], "JAN": x["jan"], "商品名": x["name"], "单价": x["price"],
+        df = pd.DataFrame([{"图片": x["img"], "JAN": x["jan"], "定位号": x.get("ref", ""), "商品名": x["name"],
+                            "单价": x["price"],
                             "单价来源": t(x["src"]) if x["src"] else "", "起批量": x["lot"], "数量": None, "备注": ""} for x in found])
         ed = lang_stable_editor(df, key=f"p48_fill_{st.session_state.get('p48_lookup_gen', 0)}",
                                 reset=tuple(df["JAN"]), hide_index=True, num_rows="fixed", use_container_width=True,
                                 row_height=72, disabled=["图片", "JAN", "单价来源", "起批量"],
                                 column_config={"图片": st.column_config.ImageColumn(t("图片"), width="small"),
+                                               "定位号": st.column_config.TextColumn(t("定位号")),
                                                "商品名": st.column_config.TextColumn(t("商品名")),
                                                "单价": st.column_config.NumberColumn(t("单价"), min_value=0),
                                                "单价来源": st.column_config.Column(t("单价来源")),
@@ -264,7 +267,8 @@ with tab_conf:
         except Exception as e:  # noqa: BLE001 — 取れなくても確認は手で選べる
             st.warning(t("默认供货商读取失败（请手选）: {err}").format(err=f"{type(e).__name__}: {e}"))
             dflt = {}
-        df = pd.DataFrame([{"选择": False, "图片": imgs[x["jan"]], "#": x["id"], "JAN": x["jan"], "商品名": _name(x),
+        df = pd.DataFrame([{"选择": False, "图片": imgs[x["jan"]], "#": x["id"], "定位号": x.get("ref_no") or "",
+                            "JAN": x["jan"], "商品名": _name(x),
                             "NST": "✅" if x["jan"] in NAMES else "❌", "起批量": _lot_label(x["jan"]),
                             "申请数": x["qty"], "备注": x.get("note") or "",
                             "申请人": x.get("requested_by") or "", "申请日": _when(x["requested_at"]),
@@ -274,10 +278,10 @@ with tab_conf:
                            for x in xs])
         ed = lang_stable_editor(df, key="p48_conf_editor", reset=tuple(df["#"]), hide_index=True, num_rows="fixed",
                                 use_container_width=True, row_height=72,
-                                disabled=["图片", "#", "JAN", "商品名", "NST", "起批量", "申请数", "备注", "申请人", "申请日",
-                                          "供货商来源"],
+                                disabled=["图片", "#", "定位号", "JAN", "商品名", "NST", "起批量", "申请数", "备注", "申请人",
+                                          "申请日", "供货商来源"],
                                 column_config={**{k: st.column_config.Column(t(k)) for k in
-                                                  ("选择", "商品名", "起批量", "申请数", "备注", "申请人", "申请日",
+                                                  ("选择", "定位号", "商品名", "起批量", "申请数", "备注", "申请人", "申请日",
                                                    "供货商来源")},
                                                "图片": st.column_config.ImageColumn(t("图片"), width="small"),
                                                "NST": st.column_config.Column(t("NST登录")),
@@ -386,7 +390,8 @@ with tab_po:
 # ── 🚚 到货跟踪
 with tab_track:
     order = {"发注书已出无PO": 0, "超期": 1, "部分到货": 2, "在途": 3, "已发注待同步": 4, "待发注": 5}
-    xs = sorted((x for x in tracked if x["state"] in order),
+    q = st.text_input(t("🔍 JAN 搜索（可以只输一部分，多个 JAN 用空格隔开）"), key="p48_jan_q")   # Boss 2026-11-13
+    xs = sorted((x for x in tracked if x["state"] in order and NR.match_jan(x["jan"], q)),
                 key=lambda x: (order[x["state"]], -x["overdue_days"], x["id"]))
     icon = {"发注书已出无PO": "⚠️", "超期": "🔴", "部分到货": "🟡", "在途": "🚚", "已发注待同步": "📨", "待发注": "⏳",
             "已到货": "✅", "PO关闭未到齐": "⚠️", "已取消": "🗑️"}
@@ -414,7 +419,10 @@ with tab_track:
                               t("确认人"): x.get("confirmed_by") or ""} for x in items])
 
     if not xs:
-        st.success(t("没有未到货的申请"))
+        if q.strip():
+            st.info(t("没有匹配的 JAN"))
+        else:
+            st.success(t("没有未到货的申请"))
     else:
         tot = sum(a for a in (_amount(x) for x in xs) if a)
         st.markdown(t("**💴 未到货合计：{n} 件，¥{a:,.0f}**（同步出 PO 的按 NST 实际金额，其余按发注书 / 确认时的单价 × 数量）")
@@ -439,7 +447,7 @@ with tab_track:
                 with get_connection() as conn:
                     n = NR.cancel(conn, ids, USER)
                 _done(t("🗑️ 已取消 {n} 件").format(n=n))
-    done = [x for x in tracked if x["state"] in ("已到货", "PO关闭未到齐", "已取消")]
+    done = [x for x in tracked if x["state"] in ("已到货", "PO关闭未到齐", "已取消") and NR.match_jan(x["jan"], q)]
     if done:
         with st.expander(t("已完成 {n} 件（已到货 / PO 关闭未到齐 / 已取消）").format(n=len(done))):
             st.dataframe(_rows(sorted(done, key=lambda x: -x["id"])), use_container_width=True, hide_index=True,

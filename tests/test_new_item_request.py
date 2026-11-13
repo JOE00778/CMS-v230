@@ -65,10 +65,10 @@ def test_parse_new_rows_validates_and_blocks_open_jan(monkeypatch):
             {"JAN": "4900000000028", "数量": 1}]
     rows, errs = NR.parse_new_rows(recs, tracked)
     assert [r["jan"] for r in rows] == ["4900000000011", "4900000000028"]
-    assert rows[1] == {"jan": "4900000000028", "qty": 3, "item_name": "名", "note": "PH 用"}
+    assert rows[1] == {"jan": "4900000000028", "qty": 3, "item_name": "名", "note": "PH 用", "ref_no": ""}
     assert len(errs) == 4 and "#9" in errs[-1] and "12ab" in errs[0]   # 不正 JAN・数量 0・重複・未完成申請あり
     assert NR.parse_new_rows([{"JAN": "4900000000042", "数量": 1}], tracked) == (
-        [{"jan": "4900000000042", "qty": 1, "item_name": "", "note": ""}], [])
+        [{"jan": "4900000000042", "qty": 1, "item_name": "", "note": "", "ref_no": ""}], [])
 
 
 def test_lot_check_multiple_of_order_lot_20261113():
@@ -128,3 +128,12 @@ def test_po_actuals_and_diffs_against_order_values():
                           ("数量", 24, 36)]
     po2 = [dict(_po("A", "PO9", date(2026, 11, 13), 24, 0), vendor_name="0457 カネイシ株式会社", rate=1285, amount=30840)]
     assert NR.track([x], po2, TODAY)[0]["diffs"] == []
+
+
+def test_ref_no_and_jan_search_20261113():
+    """定位号（報価表の位置・意味なし）を申請に持つ / 到货跟踪の JAN 検索（部分一致・空白区切りで複数）。"""
+    rows, errs = NR.parse_new_rows([{"JAN": "4548351120665", "数量": 1, "定位号": " 1431 "}], [])
+    assert errs == [] and rows[0]["ref_no"] == "1431"
+    assert NR.match_jan("4548351120665", "") and NR.match_jan("4548351120665", "1120665")
+    assert NR.match_jan("4548351120665", "4511413309605 4548351120665")
+    assert not NR.match_jan("4511413309605", "4548")
