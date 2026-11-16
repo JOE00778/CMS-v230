@@ -87,6 +87,26 @@ def match_jan(jan: str, query: str) -> bool:
     return not words or any(w in str(jan) for w in words)
 
 
+KINDS = ("new", "restock")
+_NEXT = {"待确认": "采购确认", "待发注": "采购发注", "已发注待同步": "等 NST 同步", "发注书已出无PO": "采购确认 NST 导入",
+         "在途": "等到货", "部分到货": "等到货", "超期": "采购跟进（超期）"}
+
+
+def of_kind(tracked, kind: str) -> list[dict]:
+    """種類（new = 新品 / restock = 日常补货）で絞る。kind 列が無い・空の行は新品（2026-11-16 以前の申請）。"""
+    return [x for x in tracked if (x.get("kind") or "new") == kind]
+
+
+def next_actor(state: str) -> str:
+    """到货跟踪「下一步谁做」（Boss 2026-11-16「让两个团队更加清楚」）。終わった申請は空。"""
+    return _NEXT.get(state, "")
+
+
+def split_restock_jans(jans: list[str], names: dict) -> tuple[list[str], list[str]]:
+    """日常补货は NST 登録済みの品だけ → (使える JAN, NST 未登録の JAN)。新品は新品订货で出す。"""
+    return [j for j in jans if j in names], [j for j in jans if j not in names]
+
+
 def open_jan_conflicts(new_jans: list[str], tracked: list[dict]) -> dict[str, int]:
     """新しく出す JAN のうち、未完成の申請がある JAN → その申請 id（同じ PO を 2 件で取り合わない）。"""
     want = set(new_jans)
@@ -273,7 +293,8 @@ def arrival_summary(tracked: list[dict], today: date, days: int = 90) -> dict:
 # ───────────── DB ─────────────
 
 _ADDED_COLS = (("ordered_at", "TIMESTAMPTZ"), ("ordered_by", "TEXT"), ("po_ext_id", "TEXT"),   # 2026-11-13 発注書を出した記録
-               ("ref_no", "TEXT"))   # 定位号 = 別の報価表での位置（意味はない・探す用）Boss 2026-11-13
+               ("ref_no", "TEXT"),   # 定位号 = 別の報価表での位置（意味はない・探す用）Boss 2026-11-13
+               ("kind", "TEXT NOT NULL DEFAULT 'new'"))   # new = 新品 / restock = 日常补货（Boss 2026-11-16・既存行は新品）
 
 
 def ensure_table(conn) -> None:
@@ -335,14 +356,14 @@ def load_supplier_sources(conn, jans: list[str]) -> tuple[dict, dict]:
 
 
 def insert_requests(conn, rows: list[dict], user: str) -> list[int]:
-    """rows = {jan, qty, note, item_name, unit_price, ref_no}（単価は申請時の参考値・確認で変えられる）。→ 作った id。"""
+    """rows = {jan, qty, note, item_name, unit_price, ref_no, kind}（単価は申請時の参考値・確認で変えられる）。→ 作った id。"""
     ids = []
     for r in rows:
         ids.append(conn.execute(
-            f"INSERT INTO {TABLE} (jan, item_name, qty, note, unit_price, ref_no, requested_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            f"INSERT INTO {TABLE} (jan, item_name, qty, note, unit_price, ref_no, kind, requested_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (r["jan"], r.get("item_name") or None, int(r["qty"]), r.get("note") or None, r.get("unit_price"),
-             r.get("ref_no") or None, user)).fetchone()["id"])
+             r.get("ref_no") or None, r.get("kind") or "new", user)).fetchone()["id"])
     conn.commit()
     return ids
 
@@ -377,6 +398,16 @@ def unmark_ordered(conn, ids: list[int]) -> int:
     """「↩️ 退回待发注」: 発注書を出した記録を消す（CSV を NST に入れなかった時）。"""
     n = len(conn.execute(f"UPDATE {TABLE} SET ordered_at = NULL, ordered_by = NULL, po_ext_id = NULL "
                          "WHERE id = ANY(?) AND status = 'confirmed' RETURNING id", ([int(i) for i in ids],)).fetchall())
+    conn.commit()
+    return n
+
+
+def withdraw(conn, ids: list[int], user: str) -> int:
+    """運営の「撤回」: 自分が出して、まだ待确认（requested）の申請だけ取消にする。→ 件数。"""
+    n = len(conn.execute(
+        f"UPDATE {TABLE} SET status = 'cancelled', cancelled_by = ?, cancelled_at = NOW() "
+        "WHERE id = ANY(?) AND status = 'requested' AND requested_by = ? RETURNING id",
+        (user, [int(i) for i in ids], user)).fetchall())
     conn.commit()
     return n
 

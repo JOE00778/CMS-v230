@@ -158,3 +158,15 @@ def test_upload_template_roundtrip_and_parse_20261116():
         ("4548351120658", "1431", 20, None, ""), ("4901234567894", "1500", 5, 88.5, "")]
     assert len(msgs) == 2 and "12ab" in msgs[0] and "4548351120665" in msgs[1]   # 不正 JAN・重複は先の行だけ
     assert NR.parse_upload(pd.DataFrame({"x": ["1"]}))[1]                          # JAN 列が無い
+
+
+def test_kind_next_actor_and_restock_rules_20261116():
+    """新品 / 日常补货（Boss 2026-11-16「加一个日常补货申请…新品订和日常补这个 tab 来区分」）。kind 無しの旧行は新品。"""
+    t = _track()
+    assert [x["id"] for x in NR.of_kind(t.values(), "new")] == list(range(1, 9))     # kind 列が無い行 = 新品
+    assert NR.of_kind([{"id": 1, "kind": "restock"}, {"id": 2}], "restock") == [{"id": 1, "kind": "restock"}]
+    assert [NR.next_actor(s) for s in ("待确认", "待发注", "已发注待同步", "发注书已出无PO", "在途", "部分到货", "超期",
+                                      "已到货", "已取消")] == [
+        "采购确认", "采购发注", "等 NST 同步", "采购确认 NST 导入", "等到货", "等到货", "采购跟进（超期）", "", ""]
+    ok, ng = NR.split_restock_jans(["4900000000011", "4900000000028"], {"4900000000011": "名"})
+    assert (ok, ng) == (["4900000000011"], ["4900000000028"])      # 日常补货は NST 登録済みだけ
