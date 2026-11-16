@@ -41,7 +41,7 @@ from shared import item_register as REG
 from shared import nst_choices as NC
 from shared.auth import require_password
 from shared.db import get_connection
-from shared.editor_state import lang_stable_editor
+from shared.editor_state import lang_stable_editor, set_column
 from shared.i18n import t, lang_selector
 from shared.theme import inject_theme
 
@@ -290,6 +290,8 @@ def _missing_fix(edited: pd.DataFrame) -> pd.DataFrame:
         n=int(miss.sum()), n_name=int(blank(name).sum()), n_wt=int(blank(wt).sum())))
     st.caption(t("ここに入れれば再アップロード不要です。アイテム名 = jancode・楽天・Yahoo のどこにも無かった品（最大 60 字）。"
                  "重量 = 単位 g・不明なら 1 も可（斑马の重量に使います）"))
+    if blank(wt).any() and st.button(t("⚖️ 重量が空欄の品をすべて 1 にする（仮値・非実測）"), key="page15_wt_fill1"):
+        set_column("page15_weight_fix", wt, "1", only_blank=True)   # Boss 2026-11-16「商品重量的位置，批量填1的选项」
     fixed = lang_stable_editor(
         edited.loc[miss, ["型番", name, wt]], key="page15_weight_fix", hide_index=True,
         reset=tuple(edited.loc[miss, "型番"]),

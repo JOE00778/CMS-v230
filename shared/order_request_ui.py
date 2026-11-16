@@ -19,7 +19,7 @@ from shared import image_search, jan_web
 from shared import new_item_request as NR
 from shared import po_csv
 from shared.db import get_connection
-from shared.editor_state import lang_stable_editor
+from shared.editor_state import lang_stable_editor, set_column
 from shared.i18n import t
 from shared.nst_choices import load_choices, load_suppliers
 
@@ -400,6 +400,11 @@ def render_confirm(ctx: Ctx, kind: str) -> None:
                         "仕入先": x.get("supplier") or dflt.get(x["jan"], (None, ""))[0],
                         "供货商来源": "" if x.get("supplier") else t(dflt.get(x["jan"], (None, ""))[1] or "无"),
                         "单价": x.get("unit_price"), "确认数量": x["qty"]} for x in xs])
+    a1, a2, _ = st.columns([1, 1, 4])   # Boss 2026-11-16「加一个可以批量选择的选项」（今の絞り込みの行だけ・ほかの列の入力は保つ）
+    if a1.button(t("☑️ 全选（{n} 件）").format(n=len(xs)), key=f"{k}_sel_all"):
+        set_column(f"{k}_conf_editor", "选择", True)
+    if a2.button(t("⬜ 全不选"), key=f"{k}_sel_none"):
+        set_column(f"{k}_conf_editor", "选择", False)
     ed = lang_stable_editor(df, key=f"{k}_conf_editor", reset=tuple(df["#"]), hide_index=True, num_rows="fixed",
                             use_container_width=True, row_height=72,
                             disabled=["图片", "#", "定位号", "JAN", "商品名", "NST", "起批量", "申请数", "备注", "申请人",

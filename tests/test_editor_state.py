@@ -54,6 +54,26 @@ def _filter_app():
     st.session_state["out"] = out[["line_id", "eta_note"]].values.tolist()
 
 
+def _bulk_app():
+    """全選 / 空欄を 1 で埋める（set_column・Boss 2026-11-16）の形：ボタンの run だけ set_column を呼ぶ。"""
+    import pandas as pd
+    import streamlit as st
+
+    from shared import i18n
+    from shared.editor_state import lang_stable_editor, set_column
+
+    i18n._note_page()
+    lang = st.session_state.get("lang", "zh")
+    df = pd.DataFrame({"pick": [False, False, False], "name": ["n0", "n1", "n2"], "wt": ["", "5", None],
+                       "note": [f"{lang}-{i}" for i in range(3)]})
+    bulk = st.session_state.pop("bulk", None)
+    if bulk:
+        set_column("ed", bulk[0], bulk[1], only_blank=bulk[2])
+    out = lang_stable_editor(df, key="ed", disabled=["note"], reset=("r0", "r1", "r2"),
+                             column_config={"name": st.column_config.TextColumn("名前" if lang == "ja" else "名字")})
+    st.session_state["out"] = out.to_dict("list")
+
+
 class _Front:
     """ブラウザ役：今表示している表（element id）の編集状態を毎回送る。表が別物になれば編集はまっさら。"""
 
@@ -223,3 +243,33 @@ def test_pages_pass_row_identity_as_reset():
                     seen.add((prefix, key))
                     assert ident in kw.get("reset", ""), (page.name, key, kw.get("reset"))
     assert seen == set(want)
+
+
+def test_set_column_bulk_keeps_other_unsaved_edits():
+    """全選・全不選で 1 列を一括で変えても、ほかの列の未保存の編集は消えない（以後の rerun・言語切替も）。"""
+    f = _Front(_bulk_app)
+    f.edit(1, "name", "X")
+    out = f.run(bulk=("pick", True, False))
+    assert out["pick"] == [True, True, True] and out["name"] == ["n0", "X", "n2"]
+    assert f.run()["pick"] == [True, True, True]                    # 次の rerun も同じ
+    f.edit(0, "pick", False)                                       # 一括のあと 1 行だけ外せる
+    assert f.run()["pick"] == [False, True, True]
+    out = f.run(lang="ja")
+    assert out["pick"] == [False, True, True] and out["name"] == ["n0", "X", "n2"]
+    out = f.run(bulk=("pick", False, False))
+    assert out["pick"] == [False, False, False] and out["name"] == ["n0", "X", "n2"]
+
+
+def test_set_column_only_blank_fills_empty_cells():
+    """空欄だけ埋める（重量を 1 に）: 入っている値・手入力した値はそのまま。"""
+    f = _Front(_bulk_app)
+    f.edit(0, "wt", "7")
+    out = f.run(bulk=("wt", "1", True))
+    assert out["wt"] == ["7", "5", "1"]
+    f.edit(2, "wt", "9")                                           # 埋めた後も直せる
+    assert f.run()["wt"] == ["7", "5", "9"]
+
+
+def test_set_column_before_first_render_is_noop():
+    f = _Front(_bulk_app, bulk=("pick", True, False))               # 表がまだ無い run（前の結果なし）
+    assert f.run()["pick"] == [False, False, False]

@@ -351,6 +351,55 @@ def test_page15_missing_weight_can_be_typed_in_cms(page15_offline):
     assert page15_offline.call_args[0][1]["パッケージ重量(g)"] == "55"   # 斑马にも同じ重量
 
 
+def test_page15_missing_weight_bulk_fill_1(page15_offline):
+    """重量がネットで取れない品 → 小表の「重量が空欄の品をすべて 1 にする」で一括 1（Boss 2026-11-16）→ NST CSV・斑马とも 1。"""
+    import csv
+    import io
+
+    from openpyxl import load_workbook
+
+    from data_warehouse.templates import item_entry_form as FORM
+    from shared import jan_web
+    st.cache_data.clear()
+    choices = NC.Choices(suppliers=("0001 ベストアンサ株式会社",), middle_by_large=dict(NC.MIDDLE_BY_LARGE))
+    wb = load_workbook(io.BytesIO(FORM.build_template(choices)))
+    ws = wb[FORM.SHEET_INPUT]
+    vals = {"JANコード": "4901234567894", "商品原価": "100", "仕入先1：仕入先": "0001 ベストアンサ株式会社",
+            "商品担当者": "043 徐越", "大分類": "食品", "中分類": "菓子", "カートン入数": "24"}
+    for j, cell in enumerate(ws[1], start=1):
+        if cell.value in vals:
+            ws.cell(row=2, column=j, value=vals[cell.value])
+    buf = io.BytesIO()
+    wb.save(buf)
+    up = mock.MagicMock()
+    up.getvalue.return_value = buf.getvalue()
+    conn = mock.MagicMock()
+    conn.__enter__.return_value = conn
+    with mock.patch("shared.db.get_connection", return_value=conn), \
+            mock.patch("streamlit.file_uploader", return_value=up), \
+            mock.patch.object(NC, "load_choices", return_value=choices), \
+            mock.patch.object(NC, "load_prefix_makers", return_value={}), \
+            mock.patch.object(NC, "existing_jans", return_value=(set(), [])), \
+            mock.patch.object(NC, "existing_item_codes", return_value=(set(), [])), \
+            mock.patch.object(jan_web, "fetch_meta",
+                              return_value=jan_web.JanMeta("4901234567894", "テスト クッキー 100g", "テスト製菓", "", "ok")), \
+            mock.patch.object(jan_web, "INTERVAL", 0):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.run()
+        at.button(key="page15_run").click().run()
+        at.button(key="page15_gen").click().run()                      # 重量なし → 生成されない
+        assert "page15_csv_bytes" not in at.session_state and page15_offline.call_count == 0
+        at.button(key="page15_wt_fill1").click().run()
+        fix = next(d.value for d in at.dataframe if list(d.value.columns) == ["型番", "アイテム名", "パッケージ重量(g)"])
+        assert fix["パッケージ重量(g)"].tolist() == ["1"]
+        at.button(key="page15_gen").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    rec = next(csv.DictReader(io.StringIO(at.session_state["page15_csv_bytes"].decode("utf-8-sig"))))
+    assert rec["パッケージ重量(g)"] == "1"
+    assert page15_offline.call_args[0][1]["パッケージ重量(g)"] == "1"    # 斑马にも同じ重量
+
+
 def test_page15_hs_retry_button_fills_blank_hs(page15_offline):
     """1 回目の AI が 429 で HS 空 → 「HS を AI で再判定」で空の品だけ埋まる（Boss 2026-11-10）。"""
     from shared import hs_ai, jan_web

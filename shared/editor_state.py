@@ -84,6 +84,23 @@ def _replay(df: pd.DataFrame, snap: tuple, cols: list, column_config: dict) -> p
     return base
 
 
+def set_column(key: str, col: str, value, *, only_blank: bool = False) -> None:
+    """表の 1 列（編集できる列）を一括で value にする。ほかの列の未保存の編集は保つ（全選 / 空欄を 1 で埋める・Boss 2026-11-16）。
+
+    同じ run の lang_stable_editor(key=key) より前に呼ぶ。前の run の結果（フロントの編集込み）の col を書き換えて
+    言語切替と同じく data に重ねて渡し直す（表は新しい element になる）。only_blank = 空欄（None・NaN・空白）だけ。
+    表がまだ一度も出ていなければ何もしない。"""
+    ctx = get_script_run_ctx()
+    s = st.session_state.get(f"{_SK}{ctx.page_script_hash if ctx else ''}:{key}")
+    if not s or s["last"] is None:
+        return
+    R, origins = s["last"]
+    R = R.copy()
+    hit = (R[col].isna() | R[col].astype(str).str.strip().eq("")) if only_blank else pd.Series(True, index=R.index)
+    R.loc[hit, col] = value
+    s["snap"] = (R, origins)
+
+
 def lang_stable_editor(data: pd.DataFrame, *, key: str, reset=None, **kwargs) -> pd.DataFrame:
     """st.data_editor(data, key=key, **kwargs) と同じ戻り値。言語切替をまたいで編集を保つ。
 
