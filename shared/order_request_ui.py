@@ -371,6 +371,19 @@ def render_confirm(ctx: Ctx, kind: str) -> None:
     if not xs:
         st.success(t("没有待确认的申请"))
         return
+    if kind == "new":   # Boss 2026-11-16「待确认里加一个NST登录的筛选项，让我知道哪些是没有登录的」
+        n = {"all": len(xs), "yes": sum(x["jan"] in ctx.names for x in xs)}
+        n["no"] = n["all"] - n["yes"]
+        nst = st.radio(t("NST登录"), ["all", "yes", "no"], horizontal=True, key=f"{k}_nst",
+                       format_func=lambda v: t({"all": "全部（{n}）", "yes": "✅ 已登录（{n}）",
+                                                "no": "❌ 未登录（{n}）"}[v]).format(n=n[v]))
+        if nst != "all":
+            xs = [x for x in xs if (x["jan"] in ctx.names) == (nst == "yes")]
+        if not xs:
+            st.info(t("没有符合条件的申请"))
+            return
+    else:
+        nst = "all"
     st.caption(t("勾选后「✅ 确认」或「🗑️ 取消」。确认要填仕入先和数量，单价可以到发注书再填。操作人: {u}").format(u=ctx.user))
     imgs = images([x["jan"] for x in xs])
     try:   # 既定の仕入先 = 供货商管理の主供指定 > 最近 PO（Boss 2026-11-13）
@@ -400,7 +413,8 @@ def render_confirm(ctx: Ctx, kind: str) -> None:
                                            "单价": st.column_config.NumberColumn(t("单价"), min_value=0),
                                            "确认数量": st.column_config.NumberColumn(t("确认数量"), min_value=1, step=1)})
     all_recs = ed.to_dict("records")
-    amount_block(all_recs, "确认数量", t("**💴 全部待确认：{n} 个 SKU，合计 ¥{a:,.0f}**"))
+    amount_block(all_recs, "确认数量", t("**💴 全部待确认：{n} 个 SKU，合计 ¥{a:,.0f}**") if nst == "all"
+                 else t("**💴 筛选后的待确认：{n} 个 SKU，合计 ¥{a:,.0f}**"))
     sel = [r for r in all_recs if r["选择"]]
     sel_total = sum(float(q) * float(pr) for q, pr in ((pd.to_numeric(r["确认数量"], errors="coerce"),
                                                        pd.to_numeric(r["单价"], errors="coerce")) for r in sel)
@@ -520,13 +534,14 @@ def _track_rows(ctx: Ctx, items: list[dict]) -> pd.DataFrame:
 
 
 def render_tracking(ctx: Ctx, *, ops: bool) -> None:
-    """ops=True（運営ページ）: 既定は自分の申請だけ・自分の待确认を撤回できる。ops=False（採購ページ）: 退回待发注・取消。"""
+    """両ページ同じ表示（Boss 2026-11-16「到货追踪，两个模块的形式不一样，做到统一」）: 筛选・红色提醒・合计・表・已完成。
+    違うのは最下部「🛠 操作」だけ — ops=True（運営）: 自分の待确认を撤回。ops=False（採購）: 退回待发注・取消。"""
     k = "p48trk" if ops else "p49trk"
     c1, c2, c3 = st.columns([2, 3, 2])
     kind = c1.radio(t("类型"), ["all", "new", "restock"], horizontal=True, key=f"{k}_kind",
                     format_func=lambda x: t("全部") if x == "all" else t(KIND_LABEL[x]))
     q = c2.text_input(t("🔍 JAN 搜索（可以只输一部分，多个 JAN 用空格隔开）"), key=f"{k}_jan_q")   # Boss 2026-11-13
-    mine = c3.toggle(t("只看我的申请"), value=ops, key=f"{k}_mine")
+    mine = c3.toggle(t("只看我的申请"), value=False, key=f"{k}_mine")
 
     def keep(x: dict) -> bool:
         return ((kind == "all" or (x.get("kind") or "new") == kind) and NR.match_jan(x["jan"], q)
@@ -540,6 +555,11 @@ def render_tracking(ctx: Ctx, *, ops: bool) -> None:
         else:
             st.success(t("没有未到货的申请"))
     else:
+        nopo, over = ([x for x in xs if x["state"] == s] for s in ("发注书已出无PO", "超期"))
+        if nopo:
+            st.error(t("⚠️ 已出发注书超过 {d} 天，NST 里还没有 PO：{n} 件").format(d=NR.ORDER_SYNC_DAYS, n=len(nopo)))
+        if over:
+            st.error(t("🔴 超期未到货 {n} 件（最长超 {d} 天）").format(n=len(over), d=max(x["overdue_days"] for x in over)))
         sp = NR.receipt_split(xs)   # Boss 2026-11-16「入库的是已经进库存的，这部分也要计算」「还有 SKU 数」
         st.markdown(t("**💴 已入库：{rs} 个 SKU · ¥{ra:,.0f}　｜　未入库：{os} 个 SKU · ¥{oa:,.0f}**（共 {n} 件）").format(
             rs=sp["received"]["sku"], ra=sp["received"]["amount"], os=sp["open"]["sku"], oa=sp["open"]["amount"], n=len(xs)))
@@ -552,6 +572,7 @@ def render_tracking(ctx: Ctx, *, ops: bool) -> None:
                                   format_func=lambda i: next(f"#{x['id']} {x['jan']} {ctx.name(x)}" for x in cands
                                                              if x["id"] == i))
 
+        st.markdown(t("**🛠 操作**"))
         if ops:
             mine_pending = [x for x in xs if x["state"] == "待确认" and x.get("requested_by") == ctx.user]
             if mine_pending:
@@ -561,6 +582,8 @@ def render_tracking(ctx: Ctx, *, ops: bool) -> None:
                         with get_connection() as conn:
                             n = NR.withdraw(conn, ids, ctx.user)
                         _done(t("↩️ 已撤回 {n} 件").format(n=n))
+            else:
+                st.caption(t("只能撤回自己提交、还没确认的申请（现在没有）"))
         else:
             back = [x for x in xs if x["state"] in ("已发注待同步", "发注书已出无PO")]
             if back:
