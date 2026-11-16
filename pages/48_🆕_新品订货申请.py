@@ -187,35 +187,75 @@ def _web_name(jan: str) -> str:
         return ""
 
 
+def _start_fill(items: list[dict]) -> None:
+    """① の結果（JAN ごとの Excel 値つき）→ 画像・商品名・単価・起批量を引いて ② の表へ。未完成の申請がある JAN は外す。"""
+    conflicts = NR.open_jan_conflicts([x["jan"] for x in items], tracked)
+    for j, rid in conflicts.items():
+        st.warning(t("JAN {j} 已有未完成的申请 #{id}（到货或取消后才能再提）").format(j=j, id=rid))
+    items = [x for x in items if x["jan"] not in conflicts]
+    found = []
+    for x, y in zip(items, _lookup([x["jan"] for x in items])):
+        if x.get("price") is not None:          # Excel の単価 > NST（最終仕入原価 > 原価）
+            y["price"], y["src"] = x["price"], "Excel"
+        found.append({**y, "ref": x.get("ref", ""), "qty": x.get("qty"), "note": x.get("note", "")})
+    st.session_state["p48_lookup"] = found
+    st.session_state["p48_lookup_gen"] = st.session_state.get("p48_lookup_gen", 0) + 1
+
+
 with tab_new:
     gen = st.session_state.get("p48_new_gen", 0)
-    st.caption(t("① 粘贴 JAN（一行一个，可多个）→「🔍 确认」→ ② 自动带出图片・商品名・单价・起批量，逐行填数量 → 提交。申请人: {u}")
-               .format(u=USER))
-    raw = st.text_area(t("JAN（一行一个）"), key=f"p48_jans_{gen}", height=120)
-    ref = st.text_input(t("定位号（在报价表里的位置，这次的 JAN 共用，可空）"), key=f"p48_ref_{gen}")
-    if st.button(t("🔍 确认"), key="p48_lookup_btn", disabled=not raw.strip()):
-        jans, bad = [], []
-        for ln in raw.splitlines():
-            if ln.strip():
-                j = NR.normalize_jan(ln)
-                if j:      # 式文で書くと Streamlit の magic が None を画面に出す（2026-11-13 Boss 指摘）
-                    jans.append(j)
+    mode = st.radio(t("提交方式"), ["粘贴 JAN", "📤 Excel 批量上传"], horizontal=True, format_func=t, key="p48_mode")
+    if mode == "粘贴 JAN":
+        st.caption(t("① 粘贴 JAN（一行一个，可多个）→「🔍 确认」→ ② 自动带出图片・商品名・单价・起批量，逐行填数量 → 提交。申请人: {u}")
+                   .format(u=USER))
+        raw = st.text_area(t("JAN（一行一个）"), key=f"p48_jans_{gen}", height=120)
+        ref = st.text_input(t("定位号（在报价表里的位置，这次的 JAN 共用，可空）"), key=f"p48_ref_{gen}")
+        if st.button(t("🔍 确认"), key="p48_lookup_btn", disabled=not raw.strip()):
+            jans, bad = [], []
+            for ln in raw.splitlines():
+                if ln.strip():
+                    j = NR.normalize_jan(ln)
+                    if j:      # 式文で書くと Streamlit の magic が None を画面に出す（2026-11-13 Boss 指摘）
+                        jans.append(j)
+                    else:
+                        bad.append(ln.strip())
+            for x in bad:
+                st.error("❌ " + t("JAN「{j}」不是 8〜14 位数字").format(j=x))
+            _start_fill([{"jan": j, "ref": ref.strip()} for j in dict.fromkeys(jans)])
+    else:   # Boss 2026-11-16「搞一个 excel 批量上传模式」「做一个模板，供下载用」
+        st.caption(t("① 下载模板 → 填 定位号・JAN・数量・单价・备注（JAN 以外可空）→ 上传 →「📥 读取 Excel」→ ② 核对图片和数量 → 提交。"
+                     "定位号空着就沿用上一行；一格多个 JAN 会拆成多行。申请人: {u}").format(u=USER))
+        st.download_button(t("📄 下载 Excel 模板"), data=NR.template_xlsx(), file_name="新品订货申请_模板.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="p48_tpl")
+        up = st.file_uploader(t("上传填好的 Excel（.xlsx / .csv）"), type=["xlsx", "csv"], key=f"p48_up_{gen}")
+        if st.button(t("📥 读取 Excel"), key="p48_read_xlsx", disabled=up is None):
+            try:
+                if up.name.lower().endswith(".csv"):
+                    try:
+                        xdf = pd.read_csv(up, dtype=str, encoding="utf-8-sig")
+                    except UnicodeDecodeError:
+                        up.seek(0)
+                        xdf = pd.read_csv(up, dtype=str, encoding="cp932")
                 else:
-                    bad.append(ln.strip())
-        jans = list(dict.fromkeys(jans))
-        conflicts = NR.open_jan_conflicts(jans, tracked)
-        for x in bad:
-            st.error("❌ " + t("JAN「{j}」不是 8〜14 位数字").format(j=x))
-        for j, rid in conflicts.items():
-            st.warning(t("JAN {j} 已有未完成的申请 #{id}（到货或取消后才能再提）").format(j=j, id=rid))
-        st.session_state["p48_lookup"] = [{**x, "ref": ref.strip()} for x in _lookup([j for j in jans if j not in conflicts])]
-        st.session_state["p48_lookup_gen"] = st.session_state.get("p48_lookup_gen", 0) + 1
+                    xdf = pd.read_excel(up, dtype=str)
+            except Exception as e:  # noqa: BLE001
+                st.error(t("❌ 读取失败: {err}").format(err=f"{type(e).__name__}: {e}"))
+                xdf = None
+            if xdf is not None:
+                items, msgs = NR.parse_upload(xdf)
+                for m_ in msgs:
+                    st.warning(m_)
+                if items:
+                    st.success(t("读到 {n} 个 JAN").format(n=len(items)))
+                    _start_fill(items)
     found = st.session_state.get("p48_lookup") or []
     if found:
         st.markdown(t("**② 核对图片和商品，填数量**（数量要是起批量的整倍数；没填数量的行不提交）"))
+        st.caption(t("💡 单价・数量可以从 Excel 复制一整列，点表格里第一个格子粘贴，一次填满"))
         df = pd.DataFrame([{"图片": x["img"], "JAN": x["jan"], "定位号": x.get("ref", ""), "商品名": x["name"],
                             "单价": x["price"],
-                            "单价来源": t(x["src"]) if x["src"] else "", "起批量": x["lot"], "数量": None, "备注": ""} for x in found])
+                            "单价来源": t(x["src"]) if x["src"] else "", "起批量": x["lot"], "数量": x.get("qty"),
+                            "备注": x.get("note") or ""} for x in found])
         ed = lang_stable_editor(df, key=f"p48_fill_{st.session_state.get('p48_lookup_gen', 0)}",
                                 reset=tuple(df["JAN"]), hide_index=True, num_rows="fixed", use_container_width=True,
                                 row_height=72, disabled=["图片", "JAN", "单价来源", "起批量"],

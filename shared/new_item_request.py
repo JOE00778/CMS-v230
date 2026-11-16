@@ -93,6 +93,89 @@ def open_jan_conflicts(new_jans: list[str], tracked: list[dict]) -> dict[str, in
     return {x["jan"]: x["id"] for x in tracked if x["jan"] in want and x["state"] in OPEN}
 
 
+# ───────────── Excel 一括（Boss 2026-11-16「搞一个 excel 批量上传模式」「做一个模板，供下载用」）─────────────
+
+TEMPLATE_COLS = ["定位号", "JAN", "数量", "单价", "备注"]
+_ALIASES = {"定位号": ("定位号", "no", "no.", "序号", "行号", "位置番号"), "JAN": ("jan", "janコード", "jan码", "jan代码"),
+            "数量": ("数量", "数", "qty", "订货数", "发注数", "発注数"), "单价": ("单价", "単価", "价格", "価格", "price"),
+            "备注": ("备注", "備考", "メモ", "note")}
+
+
+def template_xlsx() -> bytes:
+    """申請用 Excel の雛形（1 行目が見出し・JAN 列は文字列書式・2 枚目に書き方）。"""
+    import io
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "申请"
+    ws.append(TEMPLATE_COLS)
+    for c, w in zip("ABCDE", (10, 18, 8, 10, 30)):
+        ws[f"{c}1"].font = Font(bold=True)
+        ws.column_dimensions[c].width = w
+    for r in range(2, 502):       # JAN を数値にさせない（4.5E+12 化・先頭 0 落ち）
+        ws[f"B{r}"].number_format = "@"
+    ws.freeze_panes = "A2"
+    help_ = wb.create_sheet("填写说明")
+    for line in ("一行一个商品。JAN 必填，数量 / 单价 / 定位号 / 备注 可空（数量可在页面上再填）。",
+                 "定位号 = 在报价表里的位置（例 1431）。空着就沿用上一行的定位号（合并单元格也可以直接贴）。",
+                 "一个 JAN 格里有多个 JAN（换行 / 空格 / 逗号隔开）会拆成多行，共用这一行的定位号・数量・单价。",
+                 "单价空着就用 NST 的最近进货价 > 原价。数量要是起批量（NST 発注ロット）的整倍数，页面上会检查。"):
+        help_.append([line])
+    help_.column_dimensions["A"].width = 100
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _num(v) -> float | None:
+    try:
+        x = float(str(v).strip().replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return x if x == x else None       # NaN → None
+
+
+def parse_upload(df) -> tuple[list[dict], list[str]]:
+    """Excel / CSV の表 → (行 {jan, ref, qty, price, note, line}, 問題の文)。JAN 列が無ければ行なし + 問題 1 つ。
+    定位号が空なら上の行を引き継ぐ。1 セルに複数 JAN は分ける。不正 JAN は飛ばして知らせる。重複 JAN は先の行だけ。"""
+    from shared.i18n import t
+    col = {}
+    for c in df.columns:
+        k = str(c).strip().lower()
+        for std, names in _ALIASES.items():
+            if k in names and std not in col:
+                col[std] = c
+    if "JAN" not in col:
+        return [], [t("Excel 里找不到「JAN」列（请用模板）")]
+
+    def cell(r, std):
+        v = r.get(col[std]) if std in col else None
+        s = "" if v is None else str(v).strip()
+        return "" if s.lower() in ("nan", "none") else s
+
+    rows, msgs, seen, ref = [], [], {}, ""
+    for i, r in enumerate(df.to_dict("records"), start=2):          # Excel の行番号（1 行目は見出し）
+        ref = cell(r, "定位号") or ref
+        raw = cell(r, "JAN")
+        if not raw:
+            continue
+        q = _num(cell(r, "数量"))
+        for tok in (x for x in re.split(r"[\s,、，/]+", raw) if x):
+            jan = normalize_jan(re.sub(r"\.0$", "", tok))
+            if not jan:
+                msgs.append(t("第 {line} 行 JAN「{j}」不是 8〜14 位数字（跳过）").format(line=i, j=tok))
+            elif jan in seen:
+                msgs.append(t("第 {line} 行 JAN {j} 和第 {first} 行重复（只取第 {first} 行）").format(line=i, j=jan,
+                                                                                                first=seen[jan]))
+            else:
+                seen[jan] = i
+                rows.append({"jan": jan, "ref": ref, "qty": int(q) if q and q >= 1 else None,
+                             "price": _num(cell(r, "单价")), "note": cell(r, "备注"), "line": i})
+    return rows, msgs
+
+
 def unit_price_of(item: dict) -> tuple[float | None, str]:
     """NST 商品マスタの行 → (申請時の単価, 出典)。最終仕入原価 > 原価（Boss 2026-11-13「执行」）。どちらも無ければ (None, "")。"""
     for col, src in (("last_purchase_cost", "最終仕入原価"), ("cost", "原価")):

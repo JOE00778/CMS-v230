@@ -137,3 +137,24 @@ def test_ref_no_and_jan_search_20261113():
     assert NR.match_jan("4548351120665", "") and NR.match_jan("4548351120665", "1120665")
     assert NR.match_jan("4548351120665", "4511413309605 4548351120665")
     assert not NR.match_jan("4511413309605", "4548")
+
+
+def test_upload_template_roundtrip_and_parse_20261116():
+    """Excel 一括（Boss 2026-11-16「搞一个 excel 批量上传模式」「做一个模板，供下载用」）:
+    定位号は空なら上の行を引き継ぐ（結合セル）・1 セルに複数 JAN は行に分ける・列名の別名・不正 JAN・重複 JAN。"""
+    import io
+    import pandas as pd
+    raw = NR.template_xlsx()
+    tpl = pd.read_excel(io.BytesIO(raw), dtype=str)
+    assert list(tpl.columns) == ["定位号", "JAN", "数量", "单价", "备注"] and tpl.empty
+    df = pd.DataFrame({"No": ["1431", None, "1500", None, None, None],
+                       "JANコード": ["4548351120665\n4548351120634", "4548351120658", "4901234567894.0", "12ab", "4548351120665",
+                                    None],
+                       "数": ["10", "20", "5", "1", "3", None], "単価": ["120", None, "88.5", None, None, None],
+                       "備考": ["急ぎ", None, None, None, None, None]})
+    rows, msgs = NR.parse_upload(df)
+    assert [(r["jan"], r["ref"], r["qty"], r["price"], r["note"]) for r in rows] == [
+        ("4548351120665", "1431", 10, 120.0, "急ぎ"), ("4548351120634", "1431", 10, 120.0, "急ぎ"),
+        ("4548351120658", "1431", 20, None, ""), ("4901234567894", "1500", 5, 88.5, "")]
+    assert len(msgs) == 2 and "12ab" in msgs[0] and "4548351120665" in msgs[1]   # 不正 JAN・重複は先の行だけ
+    assert NR.parse_upload(pd.DataFrame({"x": ["1"]}))[1]                          # JAN 列が無い
