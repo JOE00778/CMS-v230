@@ -36,7 +36,7 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
     out = []
     for r in reqs:
         x = {**r, "ordered": 0, "received": 0, "po_numbers": [], "deadline": None, "overdue_days": 0,
-             "po_vendors": [], "po_amount": 0.0, "diffs": []}
+             "po_vendors": [], "po_amount": 0.0, "diffs": [], "po_first_date": None}
         if r["status"] == "cancelled":
             x["state"] = "已取消"
         elif r["status"] != "confirmed":
@@ -52,6 +52,7 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
                      and not p.get("closed")]
             x["po_vendors"] = list(dict.fromkeys(p.get("vendor_name") for p in lines if p.get("vendor_name")))
             x["po_amount"] = sum(float(p.get("amount") or 0) for p in lines)
+            x["po_first_date"] = lines[0]["trandate"] if lines else None     # lines は発注日順
             x["diffs"] = _diffs(r, lines, x) if lines else []
             if not lines:
                 od = _day(r.get("ordered_at"))
@@ -90,6 +91,28 @@ def match_jan(jan: str, query: str) -> bool:
 KINDS = ("new", "restock")
 _NEXT = {"待确认": "采购确认", "待发注": "采购发注", "已发注待同步": "等 NST 同步", "发注书已出无PO": "采购确认 NST 导入",
          "在途": "等到货", "部分到货": "等到货", "超期": "采购跟进（超期）"}
+
+
+ORDERED = ("已发注待同步", "发注书已出无PO", "在途", "部分到货", "超期", "已到货", "PO关闭未到齐")
+
+
+def amount_of(x: dict) -> float | None:
+    """申請の金額: NST の PO 実額（同期後）> 発注書の時の 数量 × 単価 > 申請の 数量 × 単価。単価が無ければ None。"""
+    if x.get("po_amount"):
+        return float(x["po_amount"])
+    q, pr = x.get("confirmed_qty") or x.get("qty"), x.get("unit_price")
+    return float(q) * float(pr) if q and pr is not None else None
+
+
+def ordered_in_month(tracked, kind: str, today: date) -> list[dict]:
+    """今月に発注した申請（Boss 2026-11-16「哪些已经订了，当月已订货的金额」）。発注日 = 発注書を出した日 > NST PO の最初の発注日。
+    → 写しに order_date・amount を足して、新しい順。"""
+    out = []
+    for x in of_kind(tracked, kind):
+        d = _day(x.get("ordered_at")) or x.get("po_first_date")
+        if x["state"] in ORDERED and d and (d.year, d.month) == (today.year, today.month):
+            out.append({**x, "order_date": d, "amount": amount_of(x)})
+    return sorted(out, key=lambda x: (x["order_date"], x["id"]), reverse=True)
 
 
 def of_kind(tracked, kind: str) -> list[dict]:

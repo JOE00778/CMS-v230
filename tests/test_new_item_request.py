@@ -170,3 +170,25 @@ def test_kind_next_actor_and_restock_rules_20261116():
         "采购确认", "采购发注", "等 NST 同步", "采购确认 NST 导入", "等到货", "等到货", "采购跟进（超期）", "", ""]
     ok, ng = NR.split_restock_jans(["4900000000011", "4900000000028"], {"4900000000011": "名"})
     assert (ok, ng) == (["4900000000011"], ["4900000000028"])      # 日常补货は NST 登録済みだけ
+
+
+def test_ordered_this_month_window_20261116():
+    """订货申请の「📦 本月已订货」（Boss 2026-11-16）: 已订 = 発注書を出した or NST に PO あり（待确认・待发注・取消は除く）・
+    月 = 発注書の日（無ければ PO の最初の発注日）・金額 = NST PO 実額 > 発注書の 数量 × 単価。"""
+    def x(i, state, kind="new", od=None, po_first=None, po_amount=0.0, qty=24, price=1285):
+        return {"id": i, "state": state, "kind": kind, "ordered_at": datetime.combine(od, datetime.min.time()) if od else None,
+                "po_first_date": po_first, "po_amount": po_amount, "confirmed_qty": qty, "qty": qty, "unit_price": price}
+    today = date(2026, 11, 16)
+    xs = [x(1, "在途", od=date(2026, 11, 13), po_amount=31200.0), x(2, "已发注待同步", od=date(2026, 11, 16)),
+          x(3, "在途", po_first=date(2026, 11, 5), po_amount=5000.0), x(4, "在途", od=date(2026, 10, 30), po_amount=999.0),
+          x(5, "待发注"), x(6, "已取消", od=date(2026, 11, 10)), x(7, "在途", kind="restock", od=date(2026, 11, 10)),
+          x(8, "已到货", od=date(2026, 11, 2), po_amount=100.0)]
+    got = NR.ordered_in_month(xs, "new", today)
+    assert [(g["id"], g["order_date"], g["amount"]) for g in got] == [
+        (2, date(2026, 11, 16), 30840.0), (1, date(2026, 11, 13), 31200.0), (3, date(2026, 11, 5), 5000.0),
+        (8, date(2026, 11, 2), 100.0)]
+    assert [g["id"] for g in NR.ordered_in_month(xs, "restock", today)] == [7]
+    assert NR.amount_of(x(9, "在途", price=None)) is None
+    po = [dict(_po("D", "P1", date(2026, 11, 10), 5, 0)), dict(_po("D", "P2", date(2026, 11, 3), 5, 0))]
+    r = _req(1, "D", req=date(2026, 11, 1), conf=date(2026, 11, 1))
+    assert NR.track([r], po, TODAY)[0]["po_first_date"] == date(2026, 11, 3)
