@@ -38,6 +38,18 @@ def _masters() -> tuple[pd.DataFrame, list[str]]:
         return po_csv.load_item_master(conn), load_suppliers(conn)
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _choices():
+    with get_connection() as conn:
+        return load_choices(conn)
+
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def _register_bytes(rows: tuple, owner: str) -> bytes:
+    """商品登録テンプレ（勾选が変わった時だけ作り直す）。rows = (JAN, 商品名, 単価, 仕入先) のタプル。"""
+    return NR.register_template([dict(zip(("jan", "name", "cost", "supplier"), r)) for r in rows], _choices(), owner)
+
+
 class Ctx:
     """1 回の表示で使う材料（商品マスタ・仕入先・申請と到货の現算・ログイン名）。"""
 
@@ -448,27 +460,24 @@ def render_confirm(ctx: Ctx, kind: str) -> None:
 
 
 def _register_xlsx(ctx: Ctx, k: str, sel: list[dict], col) -> None:
-    """勾选した NST 未登録 → page15「📝 商品登录」のテンプレ（JAN・商品名・原価・仕入先・担当者を預め埋める・Boss 2026-11-16）。"""
+    """勾选した NST 未登録 → page15「📝 商品登录」のテンプレ（JAN・商品名・原価・仕入先・担当者を預め埋める・Boss 2026-11-16）。
+    勾选した画面のボタン 1 回でダウンロード（Boss「下载不了」= 前は「生成」→ 下に出る 2 つ目のボタンが画面の外だった）。"""
     unreg = [r for r in sel if r["JAN"] not in ctx.names]
-    if col.button(t("📝 生成商品登录 Excel（{n} 件）").format(n=len(unreg)), disabled=not unreg, key=f"{k}_reg_make"):
+    data, owner = b"", ""
+    if unreg:
         try:
-            with get_connection() as conn:
-                choices = load_choices(conn)
+            owner = NR.owner_of(ctx.user, _choices().owners)
+            data = _register_bytes(tuple((r["JAN"], r["商品名"], r["单价"], r["仕入先"]) for r in unreg), owner)
         except Exception as e:  # noqa: BLE001
             st.error(t("❌ 读取失败: {err}").format(err=f"{type(e).__name__}: {e}"))
-            return
-        owner = NR.owner_of(ctx.user, choices.owners)
-        data = NR.register_template([{"jan": r["JAN"], "name": r["商品名"], "cost": r["单价"], "supplier": r["仕入先"]}
-                                     for r in unreg], choices, owner)
-        st.session_state[f"{k}_reg_xlsx"] = (data, len(unreg), len(sel) - len(unreg), owner)
-    got = st.session_state.get(f"{k}_reg_xlsx")
-    if not got:
+            unreg = []
+    col.download_button(t("📥 下载商品登录 Excel（{n} 件）").format(n=len(unreg)), data=data, mime=_XLSX,
+                        key=f"{k}_reg_dl", file_name=f"商品登録_入力テンプレ_{ctx.today:%Y%m%d}.xlsx",
+                        disabled=not unreg, on_click="ignore")
+    if not unreg:
         return
-    data, n, skipped, owner = got
-    if skipped:
-        st.info(t("勾选里已登录 NST 的 {n} 件跳过了（不用登录）").format(n=skipped))
-    st.download_button(t("📥 下载商品登录 Excel（{n} 件）").format(n=n), data=data, mime=_XLSX, key=f"{k}_reg_dl",
-                       file_name=f"商品登録_入力テンプレ_{ctx.today:%Y%m%d}.xlsx")
+    if len(sel) > len(unreg):
+        st.caption(t("勾选里已登录 NST 的 {n} 件不放进商品登录 Excel（不用登录）").format(n=len(sel) - len(unreg)))
     st.caption(t("已填好 JAN・商品名・商品原价・供应商{owner}。还要填 大分类・中分类・外箱入数（空着按 1）・订货批量{need}"
                  " → 到「📝 商品登录」上传处理 → 生成 NST CSV 导入 NST（同时登录斑马）→ 第二天 03:02 同步后这里显示 ✅")
                .format(owner=t("・商品负责人（{o}）").format(o=owner) if owner else "",
