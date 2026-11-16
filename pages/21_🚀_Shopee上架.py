@@ -889,7 +889,10 @@ with tab_review:
                             n = update_text(wc, sel, title=new_title, description=new_desc,
                                             category_id=new_cat or None, review_note=note or None)
                             set_status(wc, sel, "draft")
-                        st.success(tt("已保存")) if n else st.warning(tt("没有行被更新"))
+                        if n:   # 式文で書くと Streamlit の magic が DeltaGenerator(...) を画面に出す（2026-11-16）
+                            st.success(tt("已保存"))
+                        else:
+                            st.warning(tt("没有行被更新"))
                     except Exception as e:  # noqa: BLE001
                         st.error(tt("保存失败：") + str(e))
                 if c2.button(tt("📤 上架后台（草稿）· 含勾选店铺"), type="primary", key=f"rv_ok_{sel}",
@@ -921,7 +924,10 @@ with tab_review:
                     if st.button(tt("🗑 删除"), disabled=not d_ok, key=f"rv_del_{sel}", use_container_width=True):
                         wc = get_connection()
                         ok, failed = delete_drafts(wc, [sel])
-                        st.success(tt("已删除 {k}").format(k=sel)) if ok else st.warning(tt("没有行被更新"))
+                        if ok:
+                            st.success(tt("已删除 {k}").format(k=sel))
+                        else:
+                            st.warning(tt("没有行被更新"))
                         st.rerun()
 
 
