@@ -231,34 +231,46 @@ def _read_upload(up):
 
 # ───────────── 運営: 申請 ─────────────
 
-def ordered_window(ctx: Ctx, kind: str) -> None:
-    """📦 本月已订货（Boss 2026-11-16「新品订货和日常补货…做一个窗口，哪些已经订了，当月已订货的金额」）。
-    見出しに件数と金額・開くと明細。口径は NR.ordered_in_month（発注書の日 > PO の発注日・NST 実額 > 発注書の 数量×単価）。"""
-    xs = NR.ordered_in_month(ctx.tracked, kind, ctx.today)
-    total = sum(x["amount"] or 0 for x in xs)
-    no_amt = sum(x["amount"] is None for x in xs)
-    label = (t("📦 本月（{m}）已订货 {n} 件 · ¥{a:,.0f}").format(m=f"{ctx.today:%Y-%m}", n=len(xs), a=total)
-             + (t("（{k} 件没有单价，未计入）").format(k=no_amt) if no_amt else ""))
-    with st.expander(label):
-        if not xs:
-            st.caption(t("本月还没有已订货的{kind}申请").format(kind=t(KIND_LABEL[kind])))
+def month_window(ctx: Ctx, kind: str) -> None:
+    """📦 本月订货（Boss 2026-11-16「哪些已经订了，当月已订货的金额」→「放在最下面，已经订货和已申请的金额分开来计算，
+    入库的是已经进库存的，这部分也要计算」「还有 SKU 数」）。口径は NR.month_summary / applied_in_month / ordered_in_month。"""
+    s = NR.month_summary(ctx.tracked, kind, ctx.today)
+    with st.container(border=True):
+        st.markdown(t("**📦 本月（{m}）{kind}订货**").format(m=f"{ctx.today:%Y-%m}", kind=t(KIND_LABEL[kind])))
+        c = st.columns(3)
+        for col, key, label in ((c[0], "applied", "已申请（还没下单）"), (c[1], "ordered", "已订货"), (c[2], "received", "其中已入库")):
+            col.metric(t(label), f"¥{s[key]['amount']:,.0f}", t("{n} 个 SKU").format(n=s[key]["sku"]), delta_color="off")
+        rows = ([{**x, "_cls": "已申请", "_date": _when(x["requested_at"])} for x in NR.applied_in_month(ctx.tracked, kind, ctx.today)]
+                + [{**x, "_cls": "已订货", "_date": _when(x["order_date"])} for x in NR.ordered_in_month(ctx.tracked, kind, ctx.today)])
+        if not rows:
+            st.caption(t("本月还没有{kind}申请").format(kind=t(KIND_LABEL[kind])))
             return
-        st.dataframe(pd.DataFrame([{
-            "date": _when(x["order_date"]), "JAN": x["jan"], "name": ctx.name(x),
-            "qty": int(x["ordered"]) or x.get("confirmed_qty") or x["qty"], "amount": x["amount"],
-            "sup": "・".join(x["po_vendors"]) or x.get("supplier") or "", "po": "・".join(x["po_numbers"]),
-            "state": f"{ICON[x['state']]} {t(x['state'])}", "by": x.get("requested_by") or "", "ref": x.get("ref_no") or ""}
-            for x in xs]), hide_index=True, use_container_width=True,
-            column_config={"date": st.column_config.Column(t("发注日")), "name": st.column_config.Column(t("商品名")),
-                           "qty": st.column_config.NumberColumn(t("数量")),
-                           "amount": st.column_config.NumberColumn(t("金额"), format="yen"),
-                           "sup": st.column_config.Column(t("仕入先")), "po": st.column_config.Column(t("PO 号")),
-                           "state": st.column_config.Column(t("状态")), "by": st.column_config.Column(t("申请人")),
-                           "ref": st.column_config.Column(t("定位号"))})
-        st.caption(t("发注日 = 生成发注书的日子（没走发注书的用 NST 的 PO 日期）；金额 = NST 同步后的 PO 实际金额，同步前用发注书时的数量 × 单价"))
+        with st.expander(t("明细（{n} 件）").format(n=len(rows))):
+            st.dataframe(pd.DataFrame([{
+                "cls": t(x["_cls"]), "date": x["_date"], "JAN": x["jan"], "name": ctx.name(x),
+                "qty": int(x["ordered"]) or x.get("confirmed_qty") or x["qty"], "amount": x["amount"],
+                "recv": int(x["received"]), "recv_amt": x.get("received_amount") or None,
+                "sup": "・".join(x["po_vendors"]) or x.get("supplier") or "", "po": "・".join(x["po_numbers"]),
+                "state": f"{ICON[x['state']]} {t(x['state'])}", "by": x.get("requested_by") or "", "ref": x.get("ref_no") or ""}
+                for x in rows]), hide_index=True, use_container_width=True,
+                column_config={"cls": st.column_config.Column(t("类别")), "date": st.column_config.Column(t("日期")),
+                               "name": st.column_config.Column(t("商品名")), "qty": st.column_config.NumberColumn(t("数量")),
+                               "amount": st.column_config.NumberColumn(t("金额"), format="yen"),
+                               "recv": st.column_config.NumberColumn(t("入荷数")),
+                               "recv_amt": st.column_config.NumberColumn(t("入库金额"), format="yen"),
+                               "sup": st.column_config.Column(t("仕入先")), "po": st.column_config.Column(t("PO 号")),
+                               "state": st.column_config.Column(t("状态")), "by": st.column_config.Column(t("申请人")),
+                               "ref": st.column_config.Column(t("定位号"))})
+        st.caption(t("已申请 = 本月提交、还在待确认 / 待发注的（数量 × 单价）；已订货 = 本月生成发注书或 NST 有 PO 的（NST 同步后按 PO 实际金额）；"
+                     "其中已入库 = NST 入荷数 × PO 单价（每天 03:03 同步）。日期：已申请 = 申请日，已订货 = 发注日"))
 
 
 def render_submit(ctx: Ctx, kind: str) -> None:
+    _submit_flow(ctx, kind)
+    month_window(ctx, kind)    # 最下部（Boss 2026-11-16「本月订货的内容放在最下面」）
+
+
+def _submit_flow(ctx: Ctx, kind: str) -> None:
     k = f"p48{kind}"
     gen = st.session_state.get(f"{k}_gen", 0)
     mine = [x for x in NR.of_kind(ctx.tracked, kind) if x.get("requested_by") == ctx.user]
@@ -266,7 +278,6 @@ def render_submit(ctx: Ctx, kind: str) -> None:
         kind=t(KIND_LABEL[kind]), a=sum(x["state"] == "待确认" for x in mine),
         b=sum(x["state"] == "待发注" for x in mine),
         c=sum(x["state"] in ("在途", "部分到货", "已发注待同步") for x in mine), d=sum(x["state"] == "超期" for x in mine)))
-    ordered_window(ctx, kind)
     if kind == "restock":
         st.info(t("🔁 日常补货：只能申请 NST 已登录的商品。新品请到「🆕 新品订货」"))
     mode = st.radio(t("提交方式"), ["粘贴 JAN", "📤 Excel 批量上传"], horizontal=True, format_func=t, key=f"{k}_mode")
@@ -499,7 +510,8 @@ def _track_rows(ctx: Ctx, items: list[dict]) -> pd.DataFrame:
                           t("类型"): t(KIND_LABEL[x.get("kind") or "new"]), "#": x["id"], "JAN": x["jan"],
                           t("商品名"): ctx.name(x), t("仕入先"): "・".join(x["po_vendors"]) or x.get("supplier") or "",
                           t("确认数量"): x.get("confirmed_qty") or x["qty"], t("发注数"): int(x["ordered"]),
-                          t("入荷数"): int(x["received"]), t("金额"): NR.amount_of(x), t("PO 号"): "・".join(x["po_numbers"]),
+                          t("入荷数"): int(x["received"]), t("金额"): NR.amount_of(x),
+                          t("入库金额"): x.get("received_amount") or None, t("PO 号"): "・".join(x["po_numbers"]),
                           t("与发注书的差异"): ("⚠️ " + _diff_text(x)) if x["diffs"] else "",
                           t("期限"): _when(x["deadline"]), t("超期天数"): x["overdue_days"] or None,
                           t("发注书日"): _when(x.get("ordered_at")), t("定位号"): x.get("ref_no") or "",
@@ -528,11 +540,12 @@ def render_tracking(ctx: Ctx, *, ops: bool) -> None:
         else:
             st.success(t("没有未到货的申请"))
     else:
-        tot = sum(a for a in (NR.amount_of(x) for x in xs) if a)
-        st.markdown(t("**💴 未到货合计：{n} 件，¥{a:,.0f}**（同步出 PO 的按 NST 实际金额，其余按发注书 / 确认时的单价 × 数量）")
-                    .format(n=len(xs), a=tot))
+        sp = NR.receipt_split(xs)   # Boss 2026-11-16「入库的是已经进库存的，这部分也要计算」「还有 SKU 数」
+        st.markdown(t("**💴 已入库：{rs} 个 SKU · ¥{ra:,.0f}　｜　未入库：{os} 个 SKU · ¥{oa:,.0f}**（共 {n} 件）").format(
+            rs=sp["received"]["sku"], ra=sp["received"]["amount"], os=sp["open"]["sku"], oa=sp["open"]["amount"], n=len(xs)))
+        st.caption(t("已入库 = NST 入荷数 × PO 单价；未入库 = 金额 − 已入库（含还没下单的申请，按数量 × 单价）"))
         st.dataframe(_track_rows(ctx, xs), use_container_width=True, hide_index=True,
-                     column_config={t("金额"): st.column_config.NumberColumn(t("金额"), format="yen")})
+                     column_config={t(c): st.column_config.NumberColumn(t(c), format="yen") for c in ("金额", "入库金额")})
 
         def pick(label: str, cands: list[dict], key: str) -> list:
             return st.multiselect(label, [x["id"] for x in cands], key=key,
@@ -565,6 +578,9 @@ def render_tracking(ctx: Ctx, *, ops: bool) -> None:
                     _done(t("🗑️ 已取消 {n} 件").format(n=n))
     done = [x for x in ctx.tracked if x["state"] in DONE_STATES and keep(x)]
     if done:
-        with st.expander(t("已完成 {n} 件（已到货 / PO 关闭未到齐 / 已取消）").format(n=len(done))):
+        rd = NR.receipt_split(done)["received"]
+        with st.expander(t("已完成 {n} 件（已到货 / PO 关闭未到齐 / 已取消）").format(n=len(done))
+                         + t(" · 已入库 {s} 个 SKU · ¥{a:,.0f}").format(s=rd["sku"], a=rd["amount"])):
             st.dataframe(_track_rows(ctx, sorted(done, key=lambda x: -x["id"])), use_container_width=True,
-                         hide_index=True, column_config={t("金额"): st.column_config.NumberColumn(t("金额"), format="yen")})
+                         hide_index=True, column_config={t(c): st.column_config.NumberColumn(t(c), format="yen")
+                                                          for c in ("金额", "入库金额")})

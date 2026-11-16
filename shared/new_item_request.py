@@ -36,7 +36,7 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
     out = []
     for r in reqs:
         x = {**r, "ordered": 0, "received": 0, "po_numbers": [], "deadline": None, "overdue_days": 0,
-             "po_vendors": [], "po_amount": 0.0, "diffs": [], "po_first_date": None}
+             "po_vendors": [], "po_amount": 0.0, "diffs": [], "po_first_date": None, "received_amount": 0.0}
         if r["status"] == "cancelled":
             x["state"] = "已取消"
         elif r["status"] != "confirmed":
@@ -53,6 +53,9 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
             x["po_vendors"] = list(dict.fromkeys(p.get("vendor_name") for p in lines if p.get("vendor_name")))
             x["po_amount"] = sum(float(p.get("amount") or 0) for p in lines)
             x["po_first_date"] = lines[0]["trandate"] if lines else None     # lines は発注日順
+            # 入庫済みの金額 = 入荷数 × PO 単価（単価が無い行は申請の単価）。Boss 2026-11-16「入库的是已经进库存的，这部分也要计算」
+            x["received_amount"] = sum(float(p["quantity_received"] or 0) * float(
+                p["rate"] if p.get("rate") is not None else (r.get("unit_price") or 0)) for p in lines)
             x["diffs"] = _diffs(r, lines, x) if lines else []
             if not lines:
                 od = _day(r.get("ordered_at"))
@@ -113,6 +116,34 @@ def ordered_in_month(tracked, kind: str, today: date) -> list[dict]:
         if x["state"] in ORDERED and d and (d.year, d.month) == (today.year, today.month):
             out.append({**x, "order_date": d, "amount": amount_of(x)})
     return sorted(out, key=lambda x: (x["order_date"], x["id"]), reverse=True)
+
+
+def _bucket(xs, amount) -> dict:
+    """{sku: JAN の種類数, amount: 金額の合計（金額が分からない行は 0）}。"""
+    return {"sku": len({x["jan"] for x in xs}), "amount": float(sum(amount(x) or 0 for x in xs))}
+
+
+def applied_in_month(tracked, kind: str, today: date) -> list[dict]:
+    """今月申請して、まだ下単していない（待确认・待发注）申請 → 写しに amount を足して、新しい順。"""
+    out = [{**x, "amount": amount_of(x)} for x in of_kind(tracked, kind) if x["state"] in ("待确认", "待发注")
+           and (_day(x["requested_at"]).year, _day(x["requested_at"]).month) == (today.year, today.month)]
+    return sorted(out, key=lambda x: x["id"], reverse=True)
+
+
+def month_summary(tracked, kind: str, today: date) -> dict:
+    """本月窓の 3 区分（Boss 2026-11-16「已经订货和已申请的金额分开来计算」「入库…也要计算」「还有 SKU 数」）。
+    applied = 今月申請してまだ 待确认/待发注 / ordered = ordered_in_month / received = その中の入庫済み（入荷数 × PO 単価）。"""
+    applied = applied_in_month(tracked, kind, today)
+    ordered = ordered_in_month(tracked, kind, today)
+    return {"applied": _bucket(applied, amount_of), "ordered": _bucket(ordered, amount_of),
+            "received": _bucket([x for x in ordered if x.get("received_amount")], lambda x: x["received_amount"])}
+
+
+def receipt_split(xs) -> dict:
+    """到货跟踪の合計: 已入库（入荷数 × PO 単価）と 未入库（金額 − 已入库・未発注の申請も含む）。"""
+    rest = lambda x: max(0.0, (amount_of(x) or 0) - (x.get("received_amount") or 0))   # noqa: E731
+    return {"received": _bucket([x for x in xs if x.get("received_amount")], lambda x: x["received_amount"]),
+            "open": _bucket([x for x in xs if rest(x) > 0], rest)}
 
 
 def of_kind(tracked, kind: str) -> list[dict]:

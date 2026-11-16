@@ -192,3 +192,26 @@ def test_ordered_this_month_window_20261116():
     po = [dict(_po("D", "P1", date(2026, 11, 10), 5, 0)), dict(_po("D", "P2", date(2026, 11, 3), 5, 0))]
     r = _req(1, "D", req=date(2026, 11, 1), conf=date(2026, 11, 1))
     assert NR.track([r], po, TODAY)[0]["po_first_date"] == date(2026, 11, 3)
+
+
+def test_month_summary_applied_ordered_received_with_sku_20261116():
+    """本月窓の 3 区分（Boss 2026-11-16「已经订货和已申请的金额分开来计算」「入库的…也要计算」「还有 SKU 数」）:
+    已申请 = 今月申請・まだ待确认/待发注 / 已订货 = ordered_in_month / 其中已入库 = 入荷数 × PO 単価。SKU = JAN の種類数。"""
+    po = [dict(_po("D", "P1", date(2026, 11, 3), 10, 4), rate=100, amount=1000), dict(_po("D", "P2", date(2026, 11, 5), 5, 0), rate=100, amount=500)]
+    r = _req(1, "D", req=date(2026, 11, 1), conf=date(2026, 11, 1))
+    y = NR.track([r], po, date(2026, 11, 16))[0]
+    assert (y["received_amount"], y["state"]) == (400.0, "部分到货")
+
+    def x(i, jan, state, req, od=None, amount=None, recv=0.0, qty=10, price=100):
+        return {"id": i, "jan": jan, "state": state, "kind": "new", "requested_at": datetime.combine(req, datetime.min.time()),
+                "ordered_at": datetime.combine(od, datetime.min.time()) if od else None, "po_first_date": None,
+                "po_amount": amount or 0.0, "received_amount": recv, "confirmed_qty": qty, "qty": qty, "unit_price": price}
+    xs = [x(1, "A", "待确认", date(2026, 11, 10)), x(2, "B", "待发注", date(2026, 11, 12), qty=5),
+          x(3, "C", "待确认", date(2026, 10, 28)),                                     # 先月の申請 → 已申请に入れない
+          x(4, "D", "部分到货", date(2026, 11, 1), od=date(2026, 11, 3), amount=1500.0, recv=400.0),
+          x(5, "E", "已到货", date(2026, 11, 1), od=date(2026, 11, 4), amount=800.0, recv=800.0),
+          x(6, "F", "在途", date(2026, 11, 2), od=date(2026, 11, 5), amount=300.0)]
+    s = NR.month_summary(xs, "new", date(2026, 11, 16))
+    assert s == {"applied": {"sku": 2, "amount": 1500.0}, "ordered": {"sku": 3, "amount": 2600.0},
+                 "received": {"sku": 2, "amount": 1200.0}}
+    assert NR.receipt_split(xs[3:]) == {"received": {"sku": 2, "amount": 1200.0}, "open": {"sku": 2, "amount": 1400.0}}
