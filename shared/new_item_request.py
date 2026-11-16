@@ -250,6 +250,36 @@ def parse_upload(df) -> tuple[list[dict], list[str]]:
     return rows, msgs
 
 
+def owner_of(user: str, owners) -> str:
+    """ログイン名 → page15 の商品担当者の選択肢（「043 徐越」）。番号と空白を除いて一致したものだけ・無ければ空。"""
+    n = re.sub(r"\s", "", user or "")
+    return next((o for o in owners if n and re.sub(r"^\d+|\s", "", o) == n), "")
+
+
+def register_template(rows: list[dict], choices, owner: str = "") -> bytes:
+    """page15 商品登録のテンプレ（同じ関数で作る・入力規則も同じ）に NST 未登録の待确认を預め埋める（Boss 2026-11-16
+    「填进去供货商，价格…除了箱数和起定量，其他数据都全了，可以按照商品登录那条路走了」）。
+    rows: jan / name / cost / supplier。担当者は owner。大分類・中分類・カートン・発注ロットは人が入れる。"""
+    import io
+
+    from openpyxl import load_workbook
+
+    from data_warehouse.templates import item_entry_form as FORM
+    wb = load_workbook(io.BytesIO(FORM.build_template(choices)))
+    ws = wb[FORM.SHEET_INPUT]
+    col = {n: i for i, n in enumerate(FORM.TEMPLATE_COLUMNS, start=1)}
+    for r, x in enumerate(rows, start=FORM.FIRST_DATA_ROW):
+        cost = _num(x.get("cost"))
+        for k, v in ((FORM.COL_JAN, x["jan"]), (FORM.COL_NAME_MANUAL, x.get("name")),
+                     (FORM.COL_COST, int(cost) if cost is not None and cost == int(cost) else cost),
+                     (FORM.COL_SUPPLIER, x.get("supplier")), (FORM.COL_OWNER, owner)):
+            if v is not None and v != "" and not (isinstance(v, float) and math.isnan(v)):   # 表の空欄は NaN で来る
+                ws.cell(row=r, column=col[k], value=v)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def unit_price_of(item: dict) -> tuple[float | None, str]:
     """NST 商品マスタの行 → (申請時の単価, 出典)。最終仕入原価 > 原価（Boss 2026-11-13「执行」）。どちらも無ければ (None, "")。"""
     for col, src in (("last_purchase_cost", "最終仕入原価"), ("cost", "原価")):

@@ -21,7 +21,7 @@ from shared import po_csv
 from shared.db import get_connection
 from shared.editor_state import lang_stable_editor
 from shared.i18n import t
-from shared.nst_choices import load_suppliers
+from shared.nst_choices import load_choices, load_suppliers
 
 KIND_LABEL = {"new": "🆕 新品", "restock": "🔁 日常补货"}
 KIND_MEMO = {"new": "新品订货申请", "restock": "日常补货申请"}
@@ -419,7 +419,9 @@ def render_confirm(ctx: Ctx, kind: str) -> None:
     sel_total = sum(float(q) * float(pr) for q, pr in ((pd.to_numeric(r["确认数量"], errors="coerce"),
                                                        pd.to_numeric(r["单价"], errors="coerce")) for r in sel)
                     if pd.notna(q) and pd.notna(pr))
-    b1, b2 = st.columns(2)
+    b1, b2, b3 = st.columns(3)
+    if kind == "new":
+        _register_xlsx(ctx, k, sel, b3)
     if b1.button(t("✅ 确认（{n} 件 · ¥{a:,.0f}）").format(n=len(sel), a=sel_total), type="primary", disabled=not sel,
                  key=f"{k}_confirm"):
         bad = [str(r["JAN"]) for r in sel if not r["仕入先"] or pd.isna(pd.to_numeric(r["确认数量"], errors="coerce"))]
@@ -438,6 +440,34 @@ def render_confirm(ctx: Ctx, kind: str) -> None:
         with get_connection() as conn:
             n = NR.cancel(conn, [r["#"] for r in sel], ctx.user)
         _done(t("🗑️ 已取消 {n} 件").format(n=n))
+
+
+def _register_xlsx(ctx: Ctx, k: str, sel: list[dict], col) -> None:
+    """勾选した NST 未登録 → page15「📝 商品登录」のテンプレ（JAN・商品名・原価・仕入先・担当者を預め埋める・Boss 2026-11-16）。"""
+    unreg = [r for r in sel if r["JAN"] not in ctx.names]
+    if col.button(t("📝 生成商品登录 Excel（{n} 件）").format(n=len(unreg)), disabled=not unreg, key=f"{k}_reg_make"):
+        try:
+            with get_connection() as conn:
+                choices = load_choices(conn)
+        except Exception as e:  # noqa: BLE001
+            st.error(t("❌ 读取失败: {err}").format(err=f"{type(e).__name__}: {e}"))
+            return
+        owner = NR.owner_of(ctx.user, choices.owners)
+        data = NR.register_template([{"jan": r["JAN"], "name": r["商品名"], "cost": r["单价"], "supplier": r["仕入先"]}
+                                     for r in unreg], choices, owner)
+        st.session_state[f"{k}_reg_xlsx"] = (data, len(unreg), len(sel) - len(unreg), owner)
+    got = st.session_state.get(f"{k}_reg_xlsx")
+    if not got:
+        return
+    data, n, skipped, owner = got
+    if skipped:
+        st.info(t("勾选里已登录 NST 的 {n} 件跳过了（不用登录）").format(n=skipped))
+    st.download_button(t("📥 下载商品登录 Excel（{n} 件）").format(n=n), data=data, mime=_XLSX, key=f"{k}_reg_dl",
+                       file_name=f"商品登録_入力テンプレ_{ctx.today:%Y%m%d}.xlsx")
+    st.caption(t("已填好 JAN・商品名・商品原价・供应商{owner}。还要填 大分类・中分类・外箱入数（空着按 1）・订货批量{need}"
+                 " → 到「📝 商品登录」上传处理 → 生成 NST CSV 导入 NST（同时登录斑马）→ 第二天 03:02 同步后这里显示 ✅")
+               .format(owner=t("・商品负责人（{o}）").format(o=owner) if owner else "",
+                       need="" if owner else t("・商品负责人")))
 
 
 def render_po(ctx: Ctx, kind: str) -> None:

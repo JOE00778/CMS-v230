@@ -215,3 +215,50 @@ def test_month_summary_applied_ordered_received_with_sku_20261116():
     assert s == {"applied": {"sku": 2, "amount": 1500.0}, "ordered": {"sku": 3, "amount": 2600.0},
                  "received": {"sku": 2, "amount": 1200.0}}
     assert NR.receipt_split(xs[3:]) == {"received": {"sku": 2, "amount": 1200.0}, "open": {"sku": 2, "amount": 1400.0}}
+
+
+def test_register_template_prefill_read_by_page15_20261116():
+    """待确认の NST 未登録 → page15 商品登録テンプレに JAN・商品名・原価・仕入先・担当者を預め埋める。
+    page15 の read_upload で読める（不足は 大分類・中分類 だけ）・入力規則は page15 の雛形のまま。"""
+    import io
+
+    from openpyxl import load_workbook
+
+    from data_warehouse.templates import item_entry_form as FORM
+    from shared import nst_choices as NC
+    ch = NC.Choices(suppliers=("0457 カネイシ株式会社", "0001 ベストアンサ株式会社"), middle_by_large=dict(NC.MIDDLE_BY_LARGE))
+    assert NR.owner_of("徐 越", ch.owners) == "043 徐越"
+    assert NR.owner_of("刘颖", ch.owners) == "" and NR.owner_of("password-login", ch.owners) == ""
+    rows = [{"jan": "4901301452061", "name": "THE ANSWER スーパーラメラシャンプー", "cost": 130.0, "supplier": "0457 カネイシ株式会社"},
+            {"jan": "4977513075862", "name": "はずる ポケットモンスター マスターボール", "cost": 1590, "supplier": None}]
+    data = NR.register_template(rows, ch, owner="043 徐越")
+    ok, issues = FORM.read_upload(data, ch)
+    assert ok == []
+    from shared.i18n import t
+    large = {t("大分類が選択肢にありません（{v}）").format(v=t("空")), t("大分類が選択肢にありません")}
+    sup = {t("仕入先が選択肢にありません（{v}）").format(v=t("空")), t("仕入先が選択肢にありません")}
+    errs = {}
+    for i in issues:
+        assert i.level == "error"
+        errs.setdefault(i.jan, set()).add(i.message)
+    assert errs == {"4901301452061": large, "4977513075862": large | sup}   # 担当者・JAN・原価は通る・仕入先なしは page15 が止める
+    # 大分類・中分類を入れると page15 を通る（JAN・名前・原価・仕入先・担当者は預め埋めた値）
+    wb = load_workbook(io.BytesIO(data))
+    ws = wb[FORM.SHEET_INPUT]
+    assert len(ws.data_validations.dataValidation) == len(
+        load_workbook(io.BytesIO(FORM.build_template(ch)))[FORM.SHEET_INPUT].data_validations.dataValidation)
+    col = {n: i for i, n in enumerate(FORM.TEMPLATE_COLUMNS, start=1)}
+    lg = ch.large[0]
+    for r in (2, 3):
+        ws.cell(row=r, column=col[FORM.COL_LARGE], value=lg)
+        ws.cell(row=r, column=col[FORM.COL_MIDDLE], value=ch.middle_by_large[lg][0])
+    ws.cell(row=3, column=col[FORM.COL_SUPPLIER], value="0001 ベストアンサ株式会社")
+    buf = io.BytesIO()
+    wb.save(buf)
+    ok, issues = FORM.read_upload(buf.getvalue(), ch)
+    assert [i for i in issues if i.level == "error"] == []
+    got = {r[FORM.COL_JAN]: r for r in ok}
+    assert got["4901301452061"][FORM.COL_COST] == "130" and got["4977513075862"][FORM.COL_COST] == "1590"
+    assert got["4901301452061"][FORM.COL_SUPPLIER] == "0457 カネイシ株式会社"
+    assert got["4901301452061"][FORM.COL_NAME_MANUAL] == "THE ANSWER スーパーラメラシャンプー"
+    assert {r[FORM.COL_OWNER] for r in ok} == {"043 徐越"}
