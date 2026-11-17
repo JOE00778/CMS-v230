@@ -22,7 +22,8 @@ st.caption(t("跨季度等级变化跟踪 · 升级/降级/稳定 SKU 分析"))
 # 季度选择 (走 PG adapter)
 quarters = [
     r["quarter"] for r in conn.execute(
-        "SELECT DISTINCT quarter FROM rank_history ORDER BY quarter DESC"
+        # 新しく書いた順（文字列順だと「FY2026-Q1」が「2026-10」より前に来て月次キーが既定の 3 件から漏れる・再審査 M8）
+        "SELECT quarter FROM rank_history GROUP BY quarter ORDER BY MAX(changed_at) DESC NULLS LAST, quarter DESC"
     ).fetchall()
 ]
 

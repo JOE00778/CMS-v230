@@ -314,3 +314,10 @@ def test_parse_peso_like_nan_is_none_20261117():
     assert sourcing.parse_peso_like(float("nan")) is None
     assert sourcing.parse_peso_like(math.inf) is None
     assert sourcing.parse_peso_like(680) == 680.0
+
+
+def test_vendor_sheet_blank_item_name_is_none_20261118():
+    """商品名が空セルの行は item_name = None（文字列「nan」にしない・再審査 M6）。"""
+    import numpy as np
+    from shared import sourcing as S
+    assert S._cell_text(np.nan) is None and S._cell_text("  ") is None and S._cell_text(" 商品A ") == "商品A"

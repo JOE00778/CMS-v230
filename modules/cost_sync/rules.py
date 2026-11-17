@@ -77,7 +77,7 @@ def _is_missing(v) -> bool:
 
 # 停产・取扱中止と見なす語（NST の handling_cd / item_rank の実際の値は 取扱中止・メーカー取扱中止 など。
 # 「廃番」だけ見ていて実データでは 1 件も当たらなかった・監査 M14 2026-11-17。shared/purchase_v3.DISCONTINUED_TOKENS と同じ）
-INACTIVE_TOKENS = ("取扱中止", "取り扱い中止", "メーカー取扱中止", "取扱停止", "廃盤", "廃番", "終売", "生産終了")
+from shared.purchase_v3 import DISCONTINUED_TOKENS as INACTIVE_TOKENS  # noqa: E402 — 停産判定は 1 か所（再審査 M14）
 
 
 def _is_inactive(row: dict, master: dict | None) -> bool:
@@ -140,7 +140,7 @@ def decide_action(row: dict, master: dict | None) -> dict:
     # 1. SKIP_INACTIVE
     if _is_inactive(row, master):
         base["action"] = "SKIP_INACTIVE"
-        base["skip_reason"] = "商品停产（廃番 或 Inactive=T）"
+        base["skip_reason"] = "商品停产（取扱中止・廃番等 或 Inactive=T）"
         return base
 
     # 2. SKIP_NO_MASTER

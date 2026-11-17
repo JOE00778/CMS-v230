@@ -192,8 +192,7 @@ def parse_vendor_sheet(supplier_name: str, raw: pd.DataFrame) -> pd.DataFrame:
         rows.append({
             "supplier_name": supplier_name,
             "jan": jan,
-            "item_name": (str(r.iloc[name_col]).strip()
-                          if name_col is not None and name_col < len(r) else None),
+            "item_name": _cell_text(r.iloc[name_col]) if name_col is not None and name_col < len(r) else None,
             "price": price,
             "order_lot": parse_peso_like(r.iloc[lot_col]) if lot_col is not None and lot_col < len(r) else None,
             "min_order_amount": (parse_peso_like(r.iloc[min_col])
@@ -203,6 +202,13 @@ def parse_vendor_sheet(supplier_name: str, raw: pd.DataFrame) -> pd.DataFrame:
     if not out.empty:
         out = out.drop_duplicates(subset=["jan"], keep="first").reset_index(drop=True)
     return out
+
+
+def _cell_text(v):
+    """セル → 文字列。空セル（NaN）・空白は None（str(NaN) で「nan」という商品名が保存されていた・再審査 M6）。"""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    return str(v).strip() or None
 
 
 def parse_peso_like(v):
@@ -295,8 +301,7 @@ def extract_main_suppliers(raw: pd.DataFrame) -> pd.DataFrame:
         rows.append({
             "supplier_name": sup,
             "jan": jan,
-            "item_name": (str(r.iloc[name_col]).strip()
-                          if name_col is not None and name_col < len(r) else None),
+            "item_name": _cell_text(r.iloc[name_col]) if name_col is not None and name_col < len(r) else None,
             "price": (parse_peso_like(r.iloc[price_col])
                       if price_col is not None and price_col < len(r) else None),
         })

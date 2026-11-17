@@ -600,12 +600,14 @@ def _fetch_internal_ids(conn, jans: list[str]) -> dict[str, dict]:
     placeholder = ",".join(["%s"] * len(jans))
     rows = conn.execute(
         # 停用（旧レコード）を除き、同 JAN 複数は最新 1 件（監査 M20：停用の旧 internal_id を組合せ品に入れるおそれ）
-        f"SELECT DISTINCT ON (jan) jan, internal_id, display_name FROM nst.item_master_raw "
-        f"WHERE jan IN ({placeholder}) AND is_inactive = FALSE "
-        f"ORDER BY jan, last_modified DESC NULLS LAST",
+        # 停用しか無い JAN は internal_id を渡さず「停用のみ」と出す（未命中と区別・再審査 M20）
+        f"SELECT DISTINCT ON (jan) jan, internal_id, display_name, is_inactive FROM nst.item_master_raw "
+        f"WHERE jan IN ({placeholder}) "
+        f"ORDER BY jan, is_inactive ASC, last_modified DESC NULLS LAST",
         jans,
     ).fetchall()
-    return {r["jan"]: dict(r) for r in rows}
+    return {r["jan"]: ({**dict(r), "internal_id": None, "inactive_only": True} if r["is_inactive"] else dict(r))
+            for r in rows}
 
 
 with tab_bundle:
@@ -697,7 +699,8 @@ with tab_bundle:
                 "bundle_sku": it["bundle_sku"],
                 "Internal ID": pg.get("internal_id") or "",
                 "日文品名": pg.get("display_name") or "",
-                "状态": t("✅ 命中") if pg.get("internal_id") else t("❌ PG 未命中"),
+                "状态": (t("✅ 命中") if pg.get("internal_id")
+                         else t("⛔ NST 只有停用记录") if pg.get("inactive_only") else t("❌ PG 未命中")),
             })
         df_bundle = pd.DataFrame(rows)
 
