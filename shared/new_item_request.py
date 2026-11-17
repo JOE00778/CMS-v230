@@ -33,6 +33,11 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
     by_jan: dict[str, list[dict]] = {}
     for p in po_lines:
         by_jan.setdefault(p["jan"], []).append(p)
+    # 同 JAN の次の申請日 → それ以降の PO は次の申請のもの（監査 M7 2026-11-17：旧申請が後の PO まで数えていた）
+    starts: dict[str, list[date]] = {}
+    for r in reqs:
+        if r["status"] != "cancelled" and r.get("requested_at"):
+            starts.setdefault(r["jan"], []).append(_day(r["requested_at"]))
     out = []
     for r in reqs:
         x = {**r, "ordered": 0, "received": 0, "po_numbers": [], "deadline": None, "overdue_days": 0,
@@ -43,7 +48,9 @@ def track(reqs: list[dict], po_lines: list[dict], today: date) -> list[dict]:
             x["state"] = "待确认"
         else:
             since = _day(r["requested_at"])
-            lines = sorted((p for p in by_jan.get(r["jan"], []) if p["trandate"] >= since),
+            until = min((d for d in starts.get(r["jan"], []) if d > since), default=None)
+            lines = sorted((p for p in by_jan.get(r["jan"], [])
+                            if p["trandate"] >= since and (until is None or p["trandate"] < until)),
                            key=lambda p: (p["trandate"], p["po_number"]))
             x["ordered"] = sum(float(p["quantity"] or 0) for p in lines)
             x["received"] = sum(float(p["quantity_received"] or 0) for p in lines)

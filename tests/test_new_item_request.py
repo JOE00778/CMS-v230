@@ -262,3 +262,13 @@ def test_register_template_prefill_read_by_page15_20261116():
     assert got["4901301452061"][FORM.COL_SUPPLIER] == "0457 カネイシ株式会社"
     assert got["4901301452061"][FORM.COL_NAME_MANUAL] == "THE ANSWER スーパーラメラシャンプー"
     assert {r[FORM.COL_OWNER] for r in ok} == {"043 徐越"}
+
+
+def test_older_request_does_not_take_later_requests_po_20261117():
+    """同じ JAN の 2 回目の申請以降の PO は 1 回目に数えない（監査 M7: 已到货 → 部分到货 に戻っていた）。"""
+    reqs = [_req(1, "J", req=date(2026, 10, 1), conf=date(2026, 10, 1)),
+            _req(2, "J", req=date(2026, 11, 1), conf=date(2026, 11, 1))]
+    po = [_po("J", "PO1", date(2026, 10, 2), 10, 10), _po("J", "PO2", date(2026, 11, 2), 10, 0)]
+    a, b = NR.track(reqs, po, TODAY)
+    assert (a["state"], a["ordered"], a["po_numbers"]) == ("已到货", 10, ["PO1"])
+    assert (b["state"], b["ordered"], b["po_numbers"]) == ("在途", 10, ["PO2"])
