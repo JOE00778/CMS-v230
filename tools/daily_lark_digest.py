@@ -291,7 +291,9 @@ def send(card: dict, webhook: str, secret: str = "") -> dict:
     )
     with urllib.request.urlopen(req, timeout=20) as r:
         resp = json.loads(r.read())
-    if resp.get("code") not in (0, None) and resp.get("StatusCode") not in (0, None):
+    # 監査 L17: エラー応答は code だけで StatusCode が無い → and だと素通りして exit 0 になっていた
+    code = resp.get("code", resp.get("StatusCode"))
+    if code != 0:
         raise RuntimeError(f"飞书发送失败: {resp}")
     return resp
 

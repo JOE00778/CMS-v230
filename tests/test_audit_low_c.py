@@ -74,3 +74,31 @@ def test_l12_read_failure_is_not_cached(name, monkeypatch):
         f()
     assert f() is not None                  # 失敗はキャッシュされず、2 回目で読み直す
     f.clear()
+
+
+# ── L17: 飞书 webhook が HTTP 200 + エラーコードを返したら失敗にする ──
+import io
+import json
+import sys
+from unittest import mock
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+import daily_lark_digest as D  # noqa: E402
+
+
+def _urlopen(body):
+    return mock.patch.object(D.urllib.request, "urlopen",
+                             lambda req, timeout=None: io.BytesIO(json.dumps(body).encode()))
+
+
+@pytest.mark.parametrize("body", [{"code": 19021, "msg": "sign match fail"},
+                                  {"code": 19024, "msg": "Key Words Not Found"},
+                                  {"StatusCode": 9499, "StatusMessage": "Bad Request"}])
+def test_l17_lark_error_code_raises(body):
+    with _urlopen(body), pytest.raises(RuntimeError):
+        D.send({}, "https://example.invalid/hook")
+
+
+def test_l17_lark_success_passes():
+    with _urlopen({"StatusCode": 0, "StatusMessage": "success", "code": 0, "msg": "success"}):
+        assert D.send({}, "https://example.invalid/hook")["code"] == 0
