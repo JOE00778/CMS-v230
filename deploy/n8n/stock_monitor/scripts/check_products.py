@@ -92,18 +92,6 @@ def scan_all(items: list[dict], use_sd: bool = False) -> dict[str, dict]:
     return results
 
 
-def keep_last_known(prev: dict, curr: dict) -> tuple[dict, int]:
-    """今回 error（503・タイムアウト・断線）の JAN は前回の記録を引き継ぐ → (状態, error 件数)。
-    error をそのまま保存すると次回の prev が error になり、どの告警分岐にも入らず停産・消失を永久に漏らした（監査 M21 2026-11-17）。"""
-    out, n_err = dict(curr), 0
-    for jan, info in curr.items():
-        if info.get("status") == "error":
-            n_err += 1
-            if prev.get(jan) and prev[jan].get("status") != "error":
-                out[jan] = prev[jan]
-    return out, n_err
-
-
 def diff_status(prev: dict, curr: dict) -> dict:
     """
     变化类型：
@@ -266,8 +254,6 @@ def main():
 
     prev = load_prev_state()
     curr = scan_all(items, use_sd=args.use_sd)
-    curr, n_err = keep_last_known(prev, curr)
-    print(f"取得失敗（前回の状態を維持）: {n_err} 件")
     save_state(curr)
 
     diff = diff_status(prev, curr)

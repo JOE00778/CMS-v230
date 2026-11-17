@@ -24,14 +24,12 @@ _scan_lock = threading.Lock()
 
 def _run_scan() -> dict:
     # 延迟 import 以保证 sys.path 生效
-    from check_products import (load_jan_list, load_prev_state, save_state, scan_all, diff_status, write_report,
-                                keep_last_known)
+    from check_products import load_jan_list, load_prev_state, save_state, scan_all, diff_status, write_report
     from datetime import datetime
 
     items = load_jan_list()
     prev = load_prev_state()
     curr = scan_all(items, use_sd=False)
-    curr, n_err = keep_last_known(prev, curr)   # 取得失敗で前回状態を消さない（監査 M21）
     save_state(curr)
 
     diff = diff_status(prev, curr)
@@ -40,7 +38,6 @@ def _run_scan() -> dict:
 
     return {
         "ok": True,
-        "errors_kept_previous": n_err,
         "run_date": run_date,
         "total": len(items),
         "report_path": str(report),
