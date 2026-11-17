@@ -135,7 +135,14 @@ if (-not $OnlyApi) {
 
 if (-not $OnlyApi -and -not $OnlyShopee) {
     Section "公网入口（Cloudflare Tunnel）"
-    Test-Endpoint "https://smikie-cms.cc/api/automation/shopee/tokens" "smikie-cms.cc/api/automation/* (path routing)" | Out-Null
+    # tokens は公網から見えてはいけない（2026-11-17 監査 C1）→ 404 なら OK
+    try {
+        $r = Invoke-WebRequest -Uri "https://smikie-cms.cc/api/automation/shopee/tokens" -TimeoutSec 5 -UseBasicParsing 2>$null
+        Write-Err "smikie-cms.cc/api/automation/shopee/tokens 公网可读 (HTTP $($r.StatusCode))"
+    } catch {
+        if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { Write-Ok "tokens 公网不可见 (404)" }
+        else { Write-Warn "tokens 公网检查: $($_.Exception.Message.Split([Environment]::NewLine)[0])" }
+    }
     Test-Endpoint "https://smikie-cms.cc" "smikie-cms.cc (streamlit)" $false | Out-Null
     Test-Endpoint "https://n8n.smikie-cms.cc/healthz" "n8n.smikie-cms.cc" $false | Out-Null
 }

@@ -27,8 +27,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 # psycopg2 在 SQLite 模式下不会被使用，但导入失败应是软错误（Mac 开发不强求装）
@@ -51,6 +51,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("cms_api")
 
 app = FastAPI(title="Smikie CMS API sidecar", version="0.2.0")
+
+# 公網（Cloudflare 経由・cf-ray / cf-connecting-ip 付き）から見えるのは OAuth の戻り先だけ（2026-11-17 監査 C1：
+# smikie-cms.cc/api/automation/* が公網に出ていて tokens を誰でも読み書きできた）。
+# N8N は http://cms-api:8789、本機は localhost:8789 で来るので cf-* ヘッダが無く、今まで通り使える。
+_PUBLIC_PATHS = {"/api/automation/shopee/oauth-callback"}
+SHOPEE_MARKETS = {"TW", "PH", "MY", "SG", "TH", "VN", "ID"}
+
+
+@app.middleware("http")
+async def _internal_only(request: Request, call_next):
+    if request.url.path not in _PUBLIC_PATHS and (
+            "cf-ray" in request.headers or "cf-connecting-ip" in request.headers):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    return await call_next(request)
 
 
 @contextmanager
@@ -286,11 +300,11 @@ def _oauth_result_html(title: str, color: str, lines: list[tuple[str, str]]) -> 
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        f"<title>{title}</title>"
+        f"<title>{_html.escape(title)}</title>"
         "<style>body{font-family:-apple-system,Segoe UI,sans-serif;max-width:640px;margin:48px auto;padding:24px;}"
         "h1{margin:0 0 24px;}table{border-collapse:collapse;width:100%;}"
         "tr:nth-child(odd){background:#fafafa;}</style></head>"
-        f"<body><h1 style='color:{color};'>{title}</h1><table>{rows}</table>"
+        f"<body><h1 style='color:{color};'>{_html.escape(title)}</h1><table>{rows}</table>"
         "<p style='margin-top:24px;color:#888;'>本页面由 cms-api OAuth helper 渲染。可以关闭。</p>"
         "</body></html>"
     )
@@ -311,6 +325,18 @@ def shopee_oauth_callback(
 
     本端点二选一传入即可；调 /auth/token/get 时按对应字段构造 body。
     """
+    market = (market or "").upper()
+    if market not in SHOPEE_MARKETS:   # 任意の文字列で tokens に変なキーを作らせない・画面への反射もしない（監査 C1）
+        return HTMLResponse(
+            _oauth_result_html("❌ 市场不正确", "#c62828", [("可用", ", ".join(sorted(SHOPEE_MARKETS)))]),
+            status_code=400,
+        )
+    want = json.loads(os.environ.get("SHOPEE_SHOP_IDS") or "{}").get(market)
+    if want and shop_id and str(shop_id) != str(want):   # 登録済みの店舗と違う shop の code で上書きさせない
+        return HTMLResponse(
+            _oauth_result_html("❌ shop_id 与登记不一致", "#c62828", [("market", market), ("shop_id", shop_id)]),
+            status_code=403,
+        )
     if not SHOPEE_PARTNER_ID or not SHOPEE_PARTNER_KEY:
         return HTMLResponse(
             _oauth_result_html("❌ 配置缺失", "#c62828",
