@@ -97,7 +97,17 @@ def _load_disposal_list(file_bytes: bytes) -> pd.DataFrame:
             missing=missing, cols=list(df.columns)))
     df = df[["jan", "display_name", "bin", "status", "qty"]].dropna(subset=["jan"])
     df = df[df["jan"].astype(str).str.strip() != ""].reset_index(drop=True)
-    df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0).astype(int)
+    # 空セル（NaN）を文字にしない・ステータス空は不良品・数量は正の整数だけ
+    # （「JAN nan」・ステータス空で良品出庫のおそれ・「2個」「2.5」が黙って 0 / 2 になっていた・監査 M18 2026-11-17）
+    for c in ("jan", "display_name", "bin", "status"):
+        df[c] = df[c].fillna("").astype(str).str.strip()
+    df.loc[df["status"] == "", "status"] = "不良品"
+    q = pd.to_numeric(df["qty"], errors="coerce")
+    bad = df[q.isna() | (q <= 0) | (q != q.round())]
+    if not bad.empty:
+        raise ValueError(t("数量（手持）が正の整数でない行があります（直してから再アップロード）: {rows}").format(
+            rows=" / ".join(f"{j}={v}" for j, v in zip(bad["jan"], bad["qty"]))))
+    df["qty"] = q.astype(int)
     return df
 
 
