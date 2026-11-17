@@ -6,6 +6,7 @@ Streamlit 1.57 の data_editor は data と column_config を element id に入�
 from __future__ import annotations
 
 import json
+import re
 
 from streamlit.proto.WidgetStates_pb2 import WidgetStates
 from streamlit.testing.v1 import AppTest
@@ -85,7 +86,7 @@ class _Front:
         self.eid, self.edits = self._eid(), None
 
     def _eid(self) -> str:
-        ids = [d.proto.id for d in self.at.dataframe if d.proto.id.endswith("-ed")]
+        ids = [d.proto.id for d in self.at.dataframe if re.search(r"-ed-[0-9a-f]{12}-\d+$", d.proto.id)]
         assert len(ids) == 1, ids
         return ids[0]
 
@@ -273,3 +274,12 @@ def test_set_column_only_blank_fills_empty_cells():
 def test_set_column_before_first_render_is_noop():
     f = _Front(_bulk_app, bulk=("pick", True, False))               # 表がまだ無い run（前の結果なし）
     assert f.run()["pick"] == [False, False, False]
+
+
+def test_set_column_overrides_earlier_cell_edit_in_same_column():
+    """先单独改过某行的勾，再全选 / 全不选 → 全部按一括的值（Streamlit 1.63 は行数・列が同じだと編集を残すので key を変えて捨てる）。"""
+    f = _Front(_bulk_app)
+    f.edit(1, "pick", True)
+    assert f.run(bulk=("pick", False, False))["pick"] == [False, False, False]
+    f.edit(2, "pick", False)
+    assert f.run(bulk=("pick", True, False))["pick"] == [True, True, True]

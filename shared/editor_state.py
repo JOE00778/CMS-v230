@@ -1,6 +1,8 @@
 """言語を切り替えても st.data_editor の未保存の編集を失わない（全 CMS 中日対応・2026-11-12）。
 
-Streamlit 1.57 の data_editor は data と column_config を element id に入れる（key は主キーではない）。表頭・表示値が
+Streamlit 1.57 の data_editor は data と column_config を element id に入れる（key は主キーではない）。
+1.63（線上）では key 付き・行数固定の表は「列構成 + 行数」だけで同一視され、データが変わっても未保存の編集が残る
+（同じ位置の別の行に乗る）→ データ元（token）と重ね直し（gen）を key に入れて、どの版でも前の編集を捨てる（2026-11-17）。表頭・表示値が
 t() で言語ごとに変わる = 切替の rerun で別の表になり、フロントの編集（edited/added/deleted_rows）は捨てられる。
 
 lang_stable_editor は st.data_editor の代わり。各 rerun の結果を覚えておき、言語が変わった rerun でだけ
@@ -99,6 +101,7 @@ def set_column(key: str, col: str, value, *, only_blank: bool = False) -> None:
     hit = (R[col].isna() | R[col].astype(str).str.strip().eq("")) if only_blank else pd.Series(True, index=R.index)
     R.loc[hit, col] = value
     s["snap"] = (R, origins)
+    s["gen"] = s.get("gen", 0) + 1     # 新しい表として出す（1.63 は列・行数が同じだとフロントの前の編集が上書きする）
 
 
 def lang_stable_editor(data: pd.DataFrame, *, key: str, reset=None, **kwargs) -> pd.DataFrame:
@@ -113,16 +116,20 @@ def lang_stable_editor(data: pd.DataFrame, *, key: str, reset=None, **kwargs) ->
     sk = f"{_SK}{ctx.page_script_hash if ctx else ''}:{key}"
     s = st.session_state.get(sk)
     if s is None or s["token"] != token:
-        s = {"token": token, "lang": lang, "snap": None, "last": None}
+        s = {"token": token, "lang": lang, "snap": None, "last": None, "gen": 0}
     elif s["lang"] != lang:
         s["lang"], s["snap"] = lang, s["last"]
+        s["gen"] = s.get("gen", 0) + 1
     # ponytail: 同じページ内で表を if で隠して同じデータで戻すと累計編集が戻る（ページ移動は forget_all で捨てる）
     if s["snap"] is not None:
         base, origins = _replay(data, s["snap"], cols, kwargs.get("column_config") or {}), list(s["snap"][1])
     else:
         base, origins = data, list(range(len(data)))
-    out = st.data_editor(base, key=key, **kwargs)
-    ed = st.session_state.get(key) or {}
+    # Streamlit 1.63 は key 付き・行数固定の表を「列構成 + 行数」で同一視し、データが変わってもフロントの未保存の編集を
+    # 残す（同じ位置の別の行に乗る）。データ元（token）・重ね直し（gen）ごとに key を変えて、前の編集を確実に捨てる（2026-11-17）
+    wkey = f"{key}-{token[:12]}-{s.get('gen', 0)}"
+    out = st.data_editor(base, key=wkey, **kwargs)
+    ed = st.session_state.get(wkey) or {}
     gone = set(ed.get("deleted_rows") or ())
     origins = [o for i, o in enumerate(origins) if i not in gone] + [None] * len(ed.get("added_rows") or ())
     s["last"] = (out.copy(), origins)

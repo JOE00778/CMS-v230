@@ -5,6 +5,7 @@ load_choices / SuiteQL / DB はモック（网络/DB 不要）。
 from __future__ import annotations
 
 import pathlib
+import re
 from unittest import mock
 
 import pytest
@@ -338,7 +339,7 @@ def test_page15_missing_weight_can_be_typed_in_cms(page15_offline):
 
         def typed(data, *a, **k):                                        # 人が小表に 55 と入れた状態
             out = real(data, *a, **k)
-            if k.get("key") == "page15_weight_fix":
+            if str(k.get("key")).startswith("page15_weight_fix-"):
                 out = out.copy()
                 out["パッケージ重量(g)"] = "55"
             return out
@@ -444,7 +445,7 @@ def test_page15_edit_survives_language_switch(page15_offline):
     with mock.patch("shared.i18n.get_lang", side_effect=lambda: lang[0]):
         at, stack, _, _ = _run_page(ch, up, meta=meta)
         with stack:
-            eid = next(d.proto.id for d in at.dataframe if d.proto.id.endswith("-page15_editor"))
+            eid = next(d.proto.id for d in at.dataframe if re.search(r"-page15_editor-[0-9a-f]{12}-\d+$", d.proto.id))
             ws = at._tree.get_widget_states()
             w = ws.widgets.add()
             w.id, w.string_value = eid, json.dumps({"edited_rows": {"0": {"アイテム名": "編集した名前"}},
