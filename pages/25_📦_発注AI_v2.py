@@ -329,15 +329,21 @@ with top_v2:
             else:
                 # NST コードの推定 (報価の nst_supplier_code → 一致するものを default に)
                 guess_code = sub_sel["nst_supplier_code"].iloc[0]
-                nst_idx = NST_SUPPLIERS.index(guess_code) if guess_code in NST_SUPPLIERS else 0
+                # 一致しなければ未選択 → 人が選ぶまでダウンロード不可（先頭の 1 社が既定で入り、
+                # 若竹園など NST コード空の仕入先の発注が別会社で NST に入る恐れ・監査 L25）
+                nst_idx = NST_SUPPLIERS.index(guess_code) if guess_code in NST_SUPPLIERS else None
                 nst_sup = st.selectbox(t("NST 仕入先コード"), NST_SUPPLIERS, index=nst_idx)
-                df_csv = _build_nst_csv(sub_sel, nst_supplier=nst_sup, order_date=od, employee=emp, department=dept, memo=memo)
-                st.dataframe(df_csv, use_container_width=True, hide_index=True, height=300)
+                if nst_sup is None:
+                    st.warning(t("この仕入先の NST コードが見つかりません。NST 仕入先コードを選ぶとダウンロードできます"))
+                    df_csv = None
+                else:
+                    df_csv = _build_nst_csv(sub_sel, nst_supplier=nst_sup, order_date=od, employee=emp, department=dept, memo=memo)
+                    st.dataframe(df_csv, use_container_width=True, hide_index=True, height=300)
                 st.download_button(
                     t("⬇️ {s} 発注 CSV ダウンロード").format(s=sel_sup),
-                    data=df_csv.to_csv(index=False).encode("utf-8-sig"),
+                    data=b"" if df_csv is None else df_csv.to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"発注書_{sel_sup}_{datetime.now():%Y%m%d}.csv",
-                    mime="text/csv", type="primary",
+                    mime="text/csv", type="primary", disabled=df_csv is None,
                 )
             # 全件まとめ
             st.download_button(

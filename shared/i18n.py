@@ -2851,6 +2851,7 @@ TRANSLATIONS_ZH: dict[str, str] = {
     "NST 発注行メモ（例 1/7AM必着）": "NST 发注行备注（例 1/7AM必着）",
     "NST 発注書 header メモ（例 AB&NEW）": "NST 订货单 header 备注（例 AB&NEW）",
     "NST 仕入先コード": "NST 供货商代码",
+    "この仕入先の NST コードが見つかりません。NST 仕入先コードを選ぶとダウンロードできます": "这个供货商找不到 NST 代码。选好 NST 供货商代码后才能下载",
     "⬇️ 全 SKU 推奨清单 CSV (全仕入先)": "⬇️ 全 SKU 推荐清单 CSV (全供货商)",
     "仕入先": "供货商",
     "取扱 SKU 数": "取扱 SKU 数",

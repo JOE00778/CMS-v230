@@ -179,3 +179,33 @@ def test_quote_upload_page_only_requires_jan_and_price_audit_l4():
     src = _page("34").read_text(encoding="utf-8")
     assert '"supplier_name" not in _miss' not in src, "外側の条件が供货商列を必須にしている → 統一指派に入れない"
     assert "sc.needs_supplier(_norm)" in src and "sc.read_quote_upload(" in src
+
+
+# ── L25: NST コードが無い仕入先で、NST 仕入先が先頭の 1 社に既定選択される ───
+
+def test_po_csv_unknown_nst_supplier_must_be_picked_audit_l25():
+    import streamlit as st
+    from shared import purchase_engine as PE
+    from tests import test_page25_purchase_i18n as P25
+
+    st.cache_data.clear()
+    df = PE.compute_recommendations(P25._conn(), months=3)       # 報価の NST コード 'NST4' は一覧に無い
+    with mock.patch("shared.db.get_readonly_connection", side_effect=lambda *a, **k: P25._conn()):
+        at = AppTest.from_file(str(P25.PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.session_state["__role"] = "admin"
+        at.session_state["lang"] = "zh"
+        at.session_state["po_reco"] = df
+        at.run()
+        assert not at.exception, [e.value for e in at.exception]
+
+        def dl():
+            return next(d.proto for d in at.get("download_button") if "订货 CSV" in d.proto.label or "发注 CSV" in d.proto.label)
+
+        sb = next(s for s in at.selectbox if s.label == "NST 供货商代码")
+        assert sb.value is None                                      # 先頭の「0020 エンパイヤ自動車」にしない
+        assert dl().disabled
+        assert any("NST 代码" in w.value for w in at.warning)
+        sb.select_index(3).run()
+        assert not at.exception, [e.value for e in at.exception]
+        assert not dl().disabled
