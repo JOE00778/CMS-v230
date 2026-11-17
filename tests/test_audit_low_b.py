@@ -88,3 +88,34 @@ def test_sku_detail_cost_blank_shows_dash_audit_l16():
     yen = _page_func("02", "_yen", pd=pd)
     assert yen(float("nan")) == "—" and yen(None) == "—" and yen(pd.NA) == "—"
     assert yen(1234.5) == "¥1,234.50" and yen(0) == "¥0.00"
+
+
+# ── L13: 網紅名册の空欄が 'none' / 'None' で保存される ────────────────
+
+def test_roster_blank_cells_saved_as_empty_audit_l13():
+    import json
+    import pandas as pd
+    import shared.editor_state as ES
+    real = ES.lang_stable_editor
+
+    def editor(data, *, key, **kw):
+        out = real(data, key=key, **kw)
+        if key == "roster_editor":       # 動的行で名前と時給だけ入れた行（他は None）
+            out = pd.concat([out, pd.DataFrame([{"name": "Ann", "wage": 1.5, "payee": None, "kw": None},
+                                                  {"name": None, "wage": None, "payee": None, "kw": None}])],
+                            ignore_index=True)
+        return out
+
+    written = []
+    with mock.patch("shared.auth.require_password", lambda: None), \
+            mock.patch.object(ES, "lang_stable_editor", editor), \
+            mock.patch.object(pathlib.Path, "mkdir", lambda *a, **k: None), \
+            mock.patch.object(pathlib.Path, "write_text", lambda self, s, **k: written.append((self.name, s))):
+        at = AppTest.from_file(str(_page("33")), default_timeout=60)
+        at.run()
+        at.button(key="save_roster").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    saved = json.loads(next(s for n, s in written if n == "influencer_roster.json"))
+    ann = next(r for r in saved if r["name"] == "Ann")
+    assert ann["payee"] == "" and ann["keywords"] == []
+    assert "None" not in [r["name"] for r in saved]          # 名前が空の行は保存しない

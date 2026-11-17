@@ -79,18 +79,21 @@ with st.expander(t("👥 网红名册（人 / 时薪 / 收款人 / 匹配关键�
                                      "kw": st.column_config.TextColumn(t("匹配关键词(逗号分隔)")),
                                  })
     if st.button(t("💾 保存名册"), key="save_roster"):
+        def _cell(v) -> str:   # 空欄（None/NaN）は ''。str(None) で 'None' / 'none' が保存されていた（監査 L13）
+            return "" if pd.isna(v) else str(v).strip()
+
         _new = []
         for _, _row in _edited.iterrows():
             _nm = str(_row["name"]).strip()
             if not _nm or _nm == "nan":
                 continue
-            _kws = [k.strip().lower() for k in str(_row["kw"]).split(",") if k.strip()]
+            _kws = [k.strip().lower() for k in _cell(_row["kw"]).split(",") if k.strip()]
             try:
                 _wg = float(_row["wage"])
             except (ValueError, TypeError):
                 _wg = 0.0
             _new.append({"name": _nm, "wage": _wg,
-                         "payee": str(_row["payee"]).strip(), "keywords": _kws})
+                         "payee": _cell(_row["payee"]), "keywords": _kws})
         if _new:
             _save_roster(_new)
             roster = _new
