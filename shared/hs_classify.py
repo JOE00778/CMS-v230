@@ -473,7 +473,10 @@ def classify(jp_name: str, brand: str, maker: str) -> tuple[str | None, str]:
         return BRAND_CAT[b], "brand"
     mk = (maker or "").lower()
     for k, v in BRAND_CAT.items():
-        if k in mk:
+        # 監査 L24: ASCII 短キー（'st' 'hs' 等 ≤4 字）は部分一致だと 'Daiso Industries' に当たる
+        # → 英数字の境界で照合（日本語キーは従来どおり部分一致）
+        if (re.search(rf"(?<![a-z0-9]){re.escape(k)}(?![a-z0-9])", mk, re.I)
+                if k.isascii() and len(k) <= 4 else k in mk):
             return v, "maker"
     return None, "none"
 

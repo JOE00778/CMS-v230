@@ -187,3 +187,18 @@ def test_l20_name_skips_set_when_first_item_is_set(monkeypatch):
 def test_l20_multipack_of_same_item_is_not_a_set():
     assert not JL._is_set_listing({"itemName": "化粧水 3個セット", "itemCaption": ""}, "4900000000017")
     assert JL._is_set_listing({"itemName": "化粧水 乳液 2点セット", "itemCaption": ""}, "4900000000017")
+
+
+# ── L24: maker 兜底で ASCII 短キー（≤4 字）は単語境界で照合 ──
+from shared import hs_classify as HS  # noqa: E402
+
+
+@pytest.mark.parametrize("maker", ["Daiso Industries", "Kaigen Pharma", "Selection Co.", "Fluxus Inc."])
+def test_l24_short_ascii_key_not_substring(maker):
+    assert HS.classify("", "", maker) == (None, "none")
+
+
+@pytest.mark.parametrize("maker,cat", [("ST Corporation", "消臭・芳香剤"), ("株式会社LEC", "掃除用品"),
+                                       ("KAI Group", "化粧小物・ブラシ"), ("ホーユー（hoyu）", "白髪染め・ヘアカラー")])
+def test_l24_short_ascii_key_word_match_still_hits(maker, cat):
+    assert HS.classify("", "", maker) == (cat, "maker")
