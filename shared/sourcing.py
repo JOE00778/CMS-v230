@@ -11,6 +11,7 @@ JAN ごとに「最新报价」を取り、価格/納期/预付/起訂量 を綜
 """
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 
 import pandas as pd
@@ -116,6 +117,22 @@ def normalize_upload(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
             out[std] = df[hit]
     missing = [c for c in ("supplier_name", "jan", "price") if c not in out.columns]
     return out, missing
+
+
+def needs_supplier(df: pd.DataFrame) -> bool:
+    """供货商列が無い / 全行空（CSV の空串含む）→ 画面で統一指派させる（監査 L4）。"""
+    return ("supplier_name" not in df.columns
+            or df["supplier_name"].fillna("").astype(str).str.strip().eq("").all())
+
+
+def read_quote_upload(name: str, data: bytes) -> pd.DataFrame:
+    """報価ファイル → 全列 str。CSV は utf-8-sig → 失敗したら cp932（日本語 Excel の CSV 保存・監査 L5）。"""
+    if not name.lower().endswith(".csv"):
+        return pd.read_excel(io.BytesIO(data), dtype=str)
+    try:
+        return pd.read_csv(io.BytesIO(data), dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return pd.read_csv(io.BytesIO(data), dtype=str, keep_default_na=False, encoding="cp932")
 
 
 # ============================================================

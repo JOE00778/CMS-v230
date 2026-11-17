@@ -146,3 +146,36 @@ def test_cost_sql_excludes_zero_audit_l7():
         INSERT INTO nst.cost_history VALUES (1, '2026-01-01', 0), (1, '2026-02-01', 980), (1, '2026-03-01', 1000);
     """)
     assert [r["std_cost_new"] for r in c.execute(sql)] == [980, 1000]
+
+
+# ── L5: 報価 CSV が cp932（日本語 Excel の「CSV (コンマ区切り)」）だと解析失敗 ──
+
+@pytest.mark.parametrize("enc", ["cp932", "utf-8-sig", "utf-8"])
+def test_quote_csv_encodings_audit_l5(enc):
+    from shared import sourcing as sc
+    data = "JAN,単価,仕入先\n4901234567894,120,若竹園\n".encode(enc)
+    df = sc.read_quote_upload("見積.CSV", data)
+    assert list(df.columns) == ["JAN", "単価", "仕入先"]
+    assert df.iloc[0].tolist() == ["4901234567894", "120", "若竹園"]
+
+
+# ── L4: 供货商列なし/全空の報価表が「缺少必要列」で弾かれる ───────────
+
+@pytest.mark.parametrize("raw", [
+    {"JAN": ["4901234567894"], "単価": ["120"]},                        # 列なし
+    {"JAN": ["4901234567894"], "単価": ["120"], "仕入先": [""]},          # CSV の空串
+    {"JAN": ["4901234567894"], "単価": ["120"], "仕入先": [None]},
+])
+def test_quote_upload_without_supplier_asks_for_one_audit_l4(raw):
+    import pandas as pd
+    from shared import sourcing as sc
+    norm, _ = sc.normalize_upload(pd.DataFrame(raw))
+    assert sc.needs_supplier(norm)
+    norm["supplier_name"] = "若竹園"
+    assert not sc.needs_supplier(norm)
+
+
+def test_quote_upload_page_only_requires_jan_and_price_audit_l4():
+    src = _page("34").read_text(encoding="utf-8")
+    assert '"supplier_name" not in _miss' not in src, "外側の条件が供货商列を必須にしている → 統一指派に入れない"
+    assert "sc.needs_supplier(_norm)" in src and "sc.read_quote_upload(" in src

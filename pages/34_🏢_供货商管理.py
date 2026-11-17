@@ -1243,17 +1243,16 @@ with tab_up:
     _qdate = st.date_input(t("报价日（整批适用）"), value=dt.date.today(), key="sq_date")
     if _up is not None:
         try:
-            _raw = (pd.read_csv(io.BytesIO(_up.read()), dtype=str, keep_default_na=False)
-                    if _up.name.lower().endswith(".csv")
-                    else pd.read_excel(io.BytesIO(_up.read()), dtype=str))
+            _raw = sc.read_quote_upload(_up.name, _up.getvalue())   # cp932 CSV も読む（監査 L5）
         except Exception as e:  # noqa: BLE001
             st.error(t("解析失败") + f"\n\n{e}")
             _raw = None
         if _raw is not None:
             _norm, _miss = sc.normalize_upload(_raw)
-            if "jan" in _norm.columns and "supplier_name" not in _miss and "price" not in _miss:
-                # 供货商列缺失 → 让用户统一指派
-                if "supplier_name" not in _norm.columns or _norm["supplier_name"].isna().all():
+            # 必須は JAN と単価だけ。供货商列が無い/全空なら統一指派（以前は外側で弾かれて入れなかった・監査 L4）
+            _miss = [c for c in _miss if c != "supplier_name"]
+            if not _miss:
+                if sc.needs_supplier(_norm):
                     _sup_one = st.text_input(t("该文件的供货商名（文件无供货商列时填）"), key="sq_sup_one")
                     if _sup_one.strip():
                         _norm["supplier_name"] = _sup_one.strip()
@@ -1261,7 +1260,7 @@ with tab_up:
                 _norm = sc.apply_supplier_alias(_norm, _alias_map())
                 st.dataframe(_norm.head(50), hide_index=True, use_container_width=True)
                 st.caption(t("预览前 50 行 · 共 {n} 行").format(n=len(_norm)))
-                if "supplier_name" in _norm.columns and st.button(
+                if not sc.needs_supplier(_norm) and st.button(
                         t("✅ 写入报价库"), key="sq_write"):
                     _ensure_suppliers(_norm["supplier_name"].tolist())
                     # 1 行 1 往復だと見積書 1 本で数千往復＝体感 5〜10 分の主因
