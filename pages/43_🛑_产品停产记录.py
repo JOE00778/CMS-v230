@@ -48,7 +48,11 @@ SELECT a.detected_at, a.signal_type, a.source, a.jan,
        m.item_rank, m.handling_cd, m.internal_id,
        a.matched_name, a.product_url
 FROM public.discontinue_alerts a
-LEFT JOIN nst.item_master_raw m ON m.jan = a.jan
+LEFT JOIN (   -- 同 JAN は 1 件：有効を優先・その中で最新（重複で告警が複数行になっていた・監査 M20）。停産で停用のみの JAN も残す
+    SELECT DISTINCT ON (jan) jan, display_name, maker, item_rank, handling_cd, internal_id
+    FROM nst.item_master_raw
+    ORDER BY jan, is_inactive ASC, last_modified DESC NULLS LAST
+) m ON m.jan = a.jan
 ORDER BY a.detected_at DESC, a.jan
 """
 

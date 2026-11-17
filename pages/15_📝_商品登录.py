@@ -599,8 +599,10 @@ def _fetch_internal_ids(conn, jans: list[str]) -> dict[str, dict]:
         return {}
     placeholder = ",".join(["%s"] * len(jans))
     rows = conn.execute(
-        f"SELECT jan, internal_id, display_name FROM nst.item_master_raw "
-        f"WHERE jan IN ({placeholder})",
+        # 停用（旧レコード）を除き、同 JAN 複数は最新 1 件（監査 M20：停用の旧 internal_id を組合せ品に入れるおそれ）
+        f"SELECT DISTINCT ON (jan) jan, internal_id, display_name FROM nst.item_master_raw "
+        f"WHERE jan IN ({placeholder}) AND is_inactive = FALSE "
+        f"ORDER BY jan, last_modified DESC NULLS LAST",
         jans,
     ).fetchall()
     return {r["jan"]: dict(r) for r in rows}
