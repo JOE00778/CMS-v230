@@ -98,59 +98,61 @@ def main() -> int:
         return 1
 
     ok = 1
-    # ---- 2. 面単 ----
-    _step(2, "printLabel（面単）")
     label_path = None
+    # 監査 U1: 第 1 步で建てた運単は、第 2・3 步で何が起きても（data=null の KeyError 等）必ず取消を試みる
     try:
-        label = ec.get_label(tracking_no=tracking)
-    except ec.EcmsError as e:
-        print(f"  NG: {e}", file=sys.stderr)
-    else:
-        ok += 1
-        print(f"  OK size={label['size']} type={label['fileType']} "
-              f"url={'あり' if label['labelUrl'] else 'なし'} "
-              f"base64={'あり' if label['content'] else 'なし'}")
-        if label["content"]:
-            label_path = Path(args.label_dir) / f"ECMS_{tracking}.{label['fileType']}"
-            try:
-                label_path.write_bytes(base64.b64decode(label["content"]))
-                size = label_path.stat().st_size
-                print(f"  面単を保存: {label_path}（{size:,} bytes）")
-                if size < 1000:
-                    print("  ⚠️ ファイルが小さすぎる。中身を確認すること", file=sys.stderr)
-            except Exception as e:                     # 保存に失敗しても続行する
-                print(f"  ⚠️ 保存失敗: {e}", file=sys.stderr)
-        elif label["labelUrl"]:
-            print(f"  URL のみ返却（base64 なし）: {label['labelUrl']}")
-
-    # ---- 3. 追跡 ----
-    _step(3, "getTracking（追跡）")
-    try:
-        events = ec.get_tracking(tracking_no=tracking)
-    except ec.EcmsError as e:
-        print(f"  NG: {e}", file=sys.stderr)
-    else:
-        ok += 1
-        print(f"  OK events={len(events)}")
-        for e in events[:5]:
-            print(f"    {e['date']} {e['code']} {e['description']} {e['location']}")
-        if not events:
-            print("  （建てた直後は 0 件のことがある。S01N100 が付くまで時差あり）")
-
-    # ---- 4. 取消 ----
-    _step(4, "cancelShipment（取消）")
-    if args.keep:
-        print(f"  スキップ（--keep）。この運単は残る: {tracking}")
-    else:
+        # ---- 2. 面単 ----
+        _step(2, "printLabel（面単）")
         try:
-            resp = ec.cancel_shipment(tracking_no=tracking)
-        except ec.EcmsError as e:
+            label = ec.get_label(tracking_no=tracking)
+        except Exception as e:                         # 監査 U1
             print(f"  NG: {e}", file=sys.stderr)
-            print(f"  ⚠️ 建てた運単が残っている: {tracking}。ECMS 画面で取消すこと",
-                  file=sys.stderr)
         else:
             ok += 1
-            print(f"  OK {resp.get('message', '')}")
+            print(f"  OK size={label['size']} type={label['fileType']} "
+                  f"url={'あり' if label['labelUrl'] else 'なし'} "
+                  f"base64={'あり' if label['content'] else 'なし'}")
+            if label["content"]:
+                label_path = Path(args.label_dir) / f"ECMS_{tracking}.{label['fileType']}"
+                try:
+                    label_path.write_bytes(base64.b64decode(label["content"]))
+                    size = label_path.stat().st_size
+                    print(f"  面単を保存: {label_path}（{size:,} bytes）")
+                    if size < 1000:
+                        print("  ⚠️ ファイルが小さすぎる。中身を確認すること", file=sys.stderr)
+                except Exception as e:                     # 保存に失敗しても続行する
+                    print(f"  ⚠️ 保存失敗: {e}", file=sys.stderr)
+            elif label["labelUrl"]:
+                print(f"  URL のみ返却（base64 なし）: {label['labelUrl']}")
+
+        # ---- 3. 追跡 ----
+        _step(3, "getTracking（追跡）")
+        try:
+            events = ec.get_tracking(tracking_no=tracking)
+        except Exception as e:                         # 監査 U1
+            print(f"  NG: {e}", file=sys.stderr)
+        else:
+            ok += 1
+            print(f"  OK events={len(events)}")
+            for e in events[:5]:
+                print(f"    {e['date']} {e['code']} {e['description']} {e['location']}")
+            if not events:
+                print("  （建てた直後は 0 件のことがある。S01N100 が付くまで時差あり）")
+    finally:
+        # ---- 4. 取消 ----
+        _step(4, "cancelShipment（取消）")
+        if args.keep:
+            print(f"  スキップ（--keep）。この運単は残る: {tracking}")
+        else:
+            try:
+                resp = ec.cancel_shipment(tracking_no=tracking)
+            except Exception as e:                     # 監査 U1
+                print(f"  NG: {e}", file=sys.stderr)
+                print(f"  ⚠️ 建てた運単が残っている: {tracking}。ECMS 画面で取消すこと",
+                      file=sys.stderr)
+            else:
+                ok += 1
+                print(f"  OK {resp.get('message', '')}")
 
     total = 3 if args.keep else 4
     print(f"\nok={ok}/{total} env={env} ref={ref} tracking={tracking}"

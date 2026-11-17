@@ -202,3 +202,40 @@ def test_l24_short_ascii_key_not_substring(maker):
                                        ("KAI Group", "化粧小物・ブラシ"), ("ホーユー（hoyu）", "白髪染め・ヘアカラー")])
 def test_l24_short_ascii_key_word_match_still_hits(maker, cat):
     assert HS.classify("", "", maker) == (cat, "maker")
+
+
+# ── U1: ECMS UAT スクリプト。第 2・3 步が想定外の例外でも第 4 步の取消は必ず走る ──
+import ecms_uat_check as U  # noqa: E402
+
+
+def _uat(monkeypatch, label, tracking):
+    ec = U.ec
+    cancelled = []
+    monkeypatch.setattr(sys, "argv", ["ecms_uat_check.py"])
+    monkeypatch.setattr(ec, "env_name", lambda: "uat")
+    monkeypatch.setattr(ec, "base_url", lambda: "https://uat.invalid")
+    monkeypatch.setattr(ec, "is_configured", lambda: True)
+    monkeypatch.setattr(ec, "shipper_default", lambda: {"name": "S"})
+    monkeypatch.setattr(ec, "build_shipment", lambda **kw: {})
+    monkeypatch.setattr(ec, "create_shipment", lambda p: {"boxes": [{"trackingNo": "T1"}], "shipmentId": "S1"})
+    monkeypatch.setattr(ec, "get_label", label)
+    monkeypatch.setattr(ec, "get_tracking", tracking)
+    monkeypatch.setattr(ec, "cancel_shipment", lambda tracking_no: cancelled.append(tracking_no) or {"message": "ok"})
+    return cancelled
+
+
+def _none_data(**kw):
+    return None["data"]          # data=null → TypeError（EcmsError ではない）
+
+
+def test_u1_null_data_in_steps_2_3_still_cancels(monkeypatch):
+    cancelled = _uat(monkeypatch, _none_data, _none_data)
+    assert U.main() == 1
+    assert cancelled == ["T1"]
+
+
+def test_u1_unexpected_error_after_step3_still_cancels(monkeypatch):
+    cancelled = _uat(monkeypatch, _none_data, lambda tracking_no: [{"date": "x"}])   # 項目欠けで KeyError
+    with pytest.raises(KeyError):
+        U.main()
+    assert cancelled == ["T1"]
