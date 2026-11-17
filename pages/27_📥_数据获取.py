@@ -13,6 +13,7 @@ PG schema：
 """
 from __future__ import annotations
 
+import re
 import pandas as pd
 import streamlit as st
 from shared.i18n import t, lang_selector, get_lang
@@ -427,21 +428,28 @@ with top_nst:
                                + f" / {r['last_status'] or '-'}")
                     new_vals[jk] = (en, rt, rd)
                 if st.form_submit_button(t("💾 保存"), type="primary"):
-                    ok = 0
-                    for jk, (en, rt, rd) in new_vals.items():
+                    # 先に全部 HH:MM を確かめ、1 件でも駄目なら何も書かない。書くときは全部か無しか
+                    # （途中の失敗で前の分まで rollback・後ろは commit・件数は数えたまま・rerun でエラーも消えていた・監査 M19）
+                    bad = [jk for jk, (_, rt, _) in new_vals.items()
+                           if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", rt.strip())]
+                    if bad:
+                        st.error(t("起動時刻は HH:MM（00:00〜23:59）で入れてください（保存していません）: {jobs}")
+                                 .format(jobs="・".join(bad)))
+                    else:
                         try:
-                            conn.execute(
-                                "UPDATE nst.pull_schedule SET enabled=?, run_time=?, "
-                                "run_day=?, updated_at=now() WHERE job_key=?",
-                                (en, rt.strip(), rd, jk),
-                            )
-                            ok += 1
-                        except Exception as e:
+                            for jk, (en, rt, rd) in new_vals.items():
+                                conn.execute(
+                                    "UPDATE nst.pull_schedule SET enabled=?, run_time=?, "
+                                    "run_day=?, updated_at=now() WHERE job_key=?",
+                                    (en, rt.strip(), rd, jk),
+                                )
+                            conn.commit()
+                        except Exception as e:  # noqa: BLE001
                             conn.rollback()
-                            st.error(f"{jk}: {e}")
-                    conn.commit()
-                    st.success(t("保存しました（{n} 件）").format(n=ok))
-                    st.rerun()
+                            st.error(t("保存に失敗しました（何も保存していません）: ") + str(e))
+                        else:
+                            st.success(t("保存しました（{n} 件）").format(n=len(new_vals)))
+                            st.rerun()
     
     # ============================================================
     # Tab 手動更新（run_now フラグを立てる）
