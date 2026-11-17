@@ -145,3 +145,45 @@ def test_l19_customs_query_reads_src_columns_and_page_copy_honest():
     assert "hs_src" in c.sql and "customs_name_src" in c.sql
     assert '"manual_overridden"' in PAGE44
     assert "次回から自動で入る" not in PAGE44
+
+
+# ── L20: 楽天 API の JAN 検索で、セット品・他 JAN を含む説明文の成分を拾わない ──
+from shared import jan_lookup as JL  # noqa: E402
+
+ING_SHORT = "【全成分】水、グリセリン、BG、ペンチレングリコール"
+ING_SET = "【全成分】水、グリセリン、BG、エタノール、香料、メチルパラベン、フェノキシエタノール"
+
+
+def _rakuten(monkeypatch, items):
+    monkeypatch.setenv("RAKUTEN_APPLICATION_ID", "x")
+    monkeypatch.setenv("RAKUTEN_ACCESS_KEY", "y")
+    body = json.dumps({"Items": [{"Item": i} for i in items]}).encode()
+    monkeypatch.setattr(JL.urllib.request, "urlopen", lambda req, timeout=None: io.BytesIO(body))
+
+
+def test_l20_set_with_other_jan_excluded_and_first_hit_wins(monkeypatch):
+    jan = "4900000000017"
+    _rakuten(monkeypatch, [
+        {"itemName": "化粧水 本体 200ml", "itemCaption": ""},
+        {"itemName": "化粧水 本体 200ml", "itemCaption": f"JAN:{jan} {ING_SHORT}"},
+        {"itemName": "化粧水 + 乳液 2 点", "itemCaption": f"JAN:{jan} / 4900000000024 {ING_SET}"},
+        {"itemName": "化粧水 本体 詰め合わせ", "itemCaption": ING_SET + "、ヒアルロン酸Na"},
+        {"itemName": "化粧水 本体", "itemCaption": ING_SET},
+    ])
+    r = JL.rakuten_api(jan)
+    assert r["name"] == "化粧水 本体 200ml"
+    assert "エタノール" not in r["ingredient"] and r["ingredient"]   # 最長ではなく最初の合格命中
+
+
+def test_l20_name_skips_set_when_first_item_is_set(monkeypatch):
+    _rakuten(monkeypatch, [
+        {"itemName": "化粧水 乳液 セット", "itemCaption": "4900000000017 4900000000024"},
+        {"itemName": "化粧水 単品", "itemCaption": ING_SHORT},
+    ])
+    r = JL.rakuten_api("4900000000017")
+    assert r["name"] == "化粧水 単品" and r["ingredient"]
+
+
+def test_l20_multipack_of_same_item_is_not_a_set():
+    assert not JL._is_set_listing({"itemName": "化粧水 3個セット", "itemCaption": ""}, "4900000000017")
+    assert JL._is_set_listing({"itemName": "化粧水 乳液 2点セット", "itemCaption": ""}, "4900000000017")

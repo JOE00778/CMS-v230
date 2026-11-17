@@ -126,6 +126,19 @@ def clean_shop_name(name: str) -> str:
     return _PROMO_HEAD.sub("", name or "").strip()
 
 
+_OTHER_JAN = re.compile(r"(?<!\d)\d{13}(?!\d)")
+_SET_NAME = re.compile(r"セット|詰め合わせ|詰合せ|アソート|福袋")
+_MULTIPACK = re.compile(r"\d+\s*(個|本|枚|袋|箱|コ)\s*セット")    # 同一品のまとめ売りはセット扱いしない
+
+
+def _is_set_listing(it: dict, jan: str) -> bool:
+    """監査 L20: セット品・他の JAN を含む出品か。"""
+    name = it.get("itemName", "") or ""
+    text = f"{name} {it.get('itemCaption', '') or ''}"
+    is_set = bool(_SET_NAME.search(_MULTIPACK.sub("", name)))
+    return is_set or any(j != jan for j in _OTHER_JAN.findall(text))
+
+
 def rakuten_api(jan: str) -> dict:
     """楽天全店を JAN で横断検索。itemCaption から成分を拾えることが多い。
 
@@ -156,12 +169,12 @@ def rakuten_api(jan: str) -> dict:
     items = [x.get("Item", {}) for x in (payload or {}).get("Items", [])]
     if not items:
         return {}
-    name = clean_shop_name(items[0].get("itemName", ""))
-    best = ""
-    for it in items:   # 店ごとに説明が違う → 一番長い成分表を採用
-        cand = parse_ingredient(it.get("itemCaption", "") or "")
-        if len(cand) > len(best):
-            best = cand
+    # 監査 L20: キーワード検索なのでセット品・他 JAN を並べた説明文も当たる → それらは除き、
+    # 成分は「最長」ではなく最初の合格命中を採る(最長はセットの合算成分になりやすい)。
+    # ponytail: 他 JAN は 13 桁の数字、セットは名前の語で判定。取りこぼしは許容(合格が無ければ成分なし)
+    ok = [it for it in items if not _is_set_listing(it, jan)]
+    name = clean_shop_name((ok or items)[0].get("itemName", ""))
+    best = next((c for c in (parse_ingredient(it.get("itemCaption", "") or "") for it in ok) if c), "")
     return {"name": name, "ingredient": best, "source": "楽天API",
             "url": f"https://search.rakuten.co.jp/search/mall/{jan}/"} if name else {}
 
