@@ -189,8 +189,12 @@ if st.button(t("PDF を作る"), type="primary", disabled=bool(bad)):
                 conn.close()
             st.success(t("PG に保存：") + f"{n} " + t("件"))
     st.session_state["ci_pdf"] = build(doc)
+    st.session_state["ci_pdf_src"] = repr(doc)
 
-if st.session_state.get("ci_pdf"):
+# 生成後に明細・AWB・重量を直したら古い PDF は出さない（監査 M4 2026-11-17：直す前の PDF がそのまま落とせた）
+if st.session_state.get("ci_pdf") and st.session_state.get("ci_pdf_src") != repr(doc):
+    st.warning(t("⚠️ 内容を直しました。もう一度「PDF を作る」を押してください（前の PDF は隠しています）"))
+elif st.session_state.get("ci_pdf"):
     st.download_button(
         t("PDF をダウンロード"), data=st.session_state["ci_pdf"],
         file_name=f"CI_{so.normalize_order_no(ci['no']).lstrip('#')}.pdf",
