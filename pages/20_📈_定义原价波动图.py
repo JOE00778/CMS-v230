@@ -277,7 +277,8 @@ _SQL_COST = (
     "ch.effective_date AS changed_at, ch.cost_estimate AS std_cost_new "
     "FROM nst.cost_history ch "
     "LEFT JOIN nst.item_master_raw im ON im.internal_id = ch.internal_id "
-    "WHERE ch.cost_estimate IS NOT NULL "
+    # 0 は未設定扱い（0 が最低値だと波動率 0 →「无变化」で隠れた・監査 L7）
+    "WHERE ch.cost_estimate IS NOT NULL AND ch.cost_estimate > 0 "
     "ORDER BY ch.internal_id, ch.effective_date"
 )
 _SQL_PO = (

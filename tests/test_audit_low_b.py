@@ -130,3 +130,19 @@ def test_keyword_contains_is_literal_audit_l6(prefix):
     calls = re.findall(r"\.str\.contains\(([^()]*(?:\([^()]*\)[^()]*)*)\)", src)
     assert calls
     assert all("regex=False" in c for c in calls), [c for c in calls if "regex=False" not in c]
+
+
+# ── L7: 定義原価 0 が混じると波動率 0 →「无变化」で隠れる ────────────
+
+def test_cost_sql_excludes_zero_audit_l7():
+    import ast
+    from tests.nstdb import new_conn
+    tree = ast.parse(_page("20").read_text(encoding="utf-8"))
+    node = next(n for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "_SQL_COST")
+    sql = ast.literal_eval(node.value)
+    c = new_conn()
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS nst.cost_history (internal_id INTEGER, effective_date TEXT, cost_estimate REAL);
+        INSERT INTO nst.cost_history VALUES (1, '2026-01-01', 0), (1, '2026-02-01', 980), (1, '2026-03-01', 1000);
+    """)
+    assert [r["std_cost_new"] for r in c.execute(sql)] == [980, 1000]
