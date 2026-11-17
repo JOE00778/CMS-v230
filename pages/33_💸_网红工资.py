@@ -9,6 +9,7 @@ Shopee ライブ配信の総エクスポート(全網紅混在)をアップロ�
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -196,7 +197,9 @@ if _unmatched:
         st.markdown(f"**{_nm}**　" + t("({n} 场)").format(n=len(_sub)))
         st.dataframe(_sub[_det_cols].rename(columns=t), hide_index=True, use_container_width=True)
         # 選択肢の値は名前のまま（""=跳过）· 表示だけ言語追従
-        _sel = st.selectbox(t("↑ 指派给"), [""] + _names, key=f"assign_{_i}",
+        # key は直播名から（序号だと名册の更新・別ファイルで未匹配リストが変わったとき指派が別の直播へずれた・監査 M11）
+        _sel = st.selectbox(t("↑ 指派给"), [""] + _names,
+                            key="assign_" + hashlib.sha1(_nm.encode("utf-8")).hexdigest()[:12],
                             format_func=lambda x: x or t("（跳过·不计入）"))
         if _sel:
             _assign[_nm] = _sel
