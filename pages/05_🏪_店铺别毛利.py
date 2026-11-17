@@ -2546,6 +2546,7 @@ with tab_ads:
                          key=f"ad_save_{ym}"):
                 _rows_ok, _rows_skip = [], 0
                 _seen: dict[str, list] = {}
+                _mixed: set[str] = set()
                 for _, _r in _ad_edit.iterrows():
                     _s = str(_r.get("shop") or "").strip()
                     _a = pd.to_numeric(_r.get("amount"), errors="coerce")
@@ -2554,8 +2555,10 @@ with tab_ads:
                     if not _s or pd.isna(_a) or float(_a) <= 0:
                         _rows_skip += 1
                         continue
-                    # 同一店舗×通貨は合算（PK が ym×shop のため通貨は最後の行に従う）
-                    if _s in _seen and _seen[_s][1] == _c:
+                    # 同一店舗×通貨は合算。PK が ym×shop なので 1 店舗 1 通貨（違う通貨は前の行を黙って捨てていた・監査 M5 2026-11-17）
+                    if _s in _seen and _seen[_s][1] != _c:
+                        _mixed.add(_s)
+                    elif _s in _seen:
                         _seen[_s][0] += float(_a)
                         if _n:
                             _seen[_s][2] = _n
@@ -2563,25 +2566,30 @@ with tab_ads:
                         _seen[_s] = [float(_a), _c, _n]
                 _rows_ok = [(ym, s, v[0], v[1], v[2] or None)
                             for s, v in _seen.items()]
-                try:
-                    conn_w.execute(f"DELETE FROM {_AD_TBL} WHERE ym = ?", (ym,))
-                    for _row in _rows_ok:
-                        conn_w.execute(
-                            f"INSERT INTO {_AD_TBL} (ym, shop, amount, currency, note) "
-                            "VALUES (?, ?, ?, ?, ?)", _row)
-                    conn_w.commit()
-                    st.success((f"保存完了 ok={len(_rows_ok)} skipped={_rows_skip}"
-                                "（空店舗/金額0）" if get_lang() == "ja" else
-                                f"已保存 ok={len(_rows_ok)} skipped={_rows_skip}"
-                                "（店铺空/金额0）"))
-                    st.rerun()
-                except Exception as _e:  # noqa: BLE001
+                if _mixed:
+                    st.error(("同じ店舗に通貨が 2 種類あります（1 店舗 1 通貨にしてください・保存していません）: "
+                              if get_lang() == "ja" else "同一店铺填了两种币种（每个店铺只能一种币种・未保存）: ")
+                             + "・".join(sorted(_mixed)))
+                else:
                     try:
-                        conn_w.rollback()
-                    except Exception:
-                        pass
-                    st.error(("保存失敗: " if get_lang() == "ja" else "保存失败: ")
-                             + str(_e))
+                        conn_w.execute(f"DELETE FROM {_AD_TBL} WHERE ym = ?", (ym,))
+                        for _row in _rows_ok:
+                            conn_w.execute(
+                                f"INSERT INTO {_AD_TBL} (ym, shop, amount, currency, note) "
+                                "VALUES (?, ?, ?, ?, ?)", _row)
+                        conn_w.commit()
+                        st.success((f"保存完了 ok={len(_rows_ok)} skipped={_rows_skip}"
+                                    "（空店舗/金額0）" if get_lang() == "ja" else
+                                    f"已保存 ok={len(_rows_ok)} skipped={_rows_skip}"
+                                    "（店铺空/金额0）"))
+                        st.rerun()
+                    except Exception as _e:  # noqa: BLE001
+                        try:
+                            conn_w.rollback()
+                        except Exception:
+                            pass
+                        st.error(("保存失敗: " if get_lang() == "ja" else "保存失败: ")
+                                 + str(_e))
 
 
 # ============================================================
