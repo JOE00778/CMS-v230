@@ -67,6 +67,15 @@ def _safe_key(v: str | None, what: str) -> str | None:
     return v
 
 
+def _safe_name(v: str, what: str) -> str:
+    """ファイル名になる値（jan / spu_key / sku_jans）。spu_key は運用が自由に付ける名前（日本語可）なので白名单にせず、
+    パス区切り・「..」・先頭「.」・制御文字だけ拒否 → WHITEBG_ROOT の外へ書けない（CMS 監査 L15）。"""
+    if (not v or len(v) > 128 or "/" in v or "\\" in v or v.startswith(".")
+            or any(ord(ch) < 32 for ch in v)):
+        raise HTTPException(400, f"{what} 不能含路径字符（收到 {v!r}）")
+    return v
+
+
 def _out_path(kind: str, key: str, shop_key: str | None, ext: str = "jpg") -> Path:
     d = DIRS[kind] / shop_key if shop_key else DIRS[kind]
     d.mkdir(parents=True, exist_ok=True)
@@ -268,6 +277,7 @@ def health():
 @app.post("/upscale", response_model=SingleImageResp)
 async def upscale(req: SingleImageReq):
     """原图 → 1500×1500 白底方图。落 /data/whitebg/upscaled/<JAN>.jpg"""
+    _safe_name(req.jan, "jan")
     _ensure_dirs()
     dst = DIRS["upscaled"] / f"{req.jan}.jpg"
     if dst.exists() and not req.overwrite:
@@ -295,6 +305,7 @@ async def cutout(req: SingleImageReq):
     _ensure_dirs()
     shop = _safe_key(req.shop_key, "shop_key")
     _safe_key(req.template_key, "template_key")
+    _safe_name(req.jan, "jan")
     dst = _out_path("branded", req.jan, shop)
     tpl_path, tpl_key = _resolve_template(req.template_key)
     if dst.exists() and not req.overwrite:
@@ -330,6 +341,7 @@ def manual_image(req: ManualImageReq):
     _ensure_dirs()
     shop = _safe_key(req.shop_key, "shop_key")
     _safe_key(req.template_key, "template_key")
+    _safe_name(req.jan, "jan")
     try:
         raw = base64.b64decode(req.image_b64)
         src = Image.open(io.BytesIO(raw))
@@ -417,6 +429,9 @@ def compose_spu(req: ComposeSpuReq):
     """
     _ensure_dirs()
     shop = _safe_key(req.shop_key, "shop_key")
+    _safe_name(req.spu_key, "spu_key")
+    for j in req.sku_jans:
+        _safe_name(j, "sku_jans")
     dst = _out_path("spu", req.spu_key, shop)
     if dst.exists() and not req.overwrite:
         with Image.open(dst) as im:
@@ -466,6 +481,8 @@ def compose_spu(req: ComposeSpuReq):
 def list_image(kind: Literal["raw", "upscaled", "branded", "spu", "cutout", "manual"], key: str,
                shop_key: str | None = None):
     """查某 JAN/SPU 是否已有图。返回 {exists, path}。"""
+    _safe_name(key, "key")
+    shop_key = _safe_key(shop_key, "shop_key")
     ext = "png" if kind == "cutout" else "jpg"
     d = DIRS[kind] / shop_key if shop_key else DIRS[kind]
     p = d / f"{key}.{ext}"
