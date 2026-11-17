@@ -304,3 +304,13 @@ def test_best_effective_quote_tie_break_by_name():
         "price": [100.0, 100.0], "quote_date": ["2026-06-01"] * 2})
     best = sc.best_effective_quote(sc.quote_status(df))
     assert best["best_supplier"].iloc[0] == "A"
+
+
+def test_parse_peso_like_nan_is_none_20261117():
+    """Excel の空セル（NaN）を値として扱わない（監査 M6: NaN が最新見積になり有効価格を上書きしていた）。"""
+    import math
+
+    from shared import sourcing
+    assert sourcing.parse_peso_like(float("nan")) is None
+    assert sourcing.parse_peso_like(math.inf) is None
+    assert sourcing.parse_peso_like(680) == 680.0

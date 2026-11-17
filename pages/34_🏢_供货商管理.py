@@ -198,10 +198,18 @@ def sc_num(v):
     try:
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
-        return float(str(v).replace(",", "").replace("¥", "").replace("￥", "")
-                     .replace("₱", "").strip())
+        f = float(str(v).replace(",", "").replace("¥", "").replace("￥", "")
+                  .replace("₱", "").strip())
+        return None if f != f or f in (float("inf"), float("-inf")) else f   # NaN/空セル → None（監査 M6）
     except (ValueError, TypeError):
         return None
+
+
+def sc_txt(v):
+    """文字列セル → str。空/NaN → None（NaN を文字列 'NaN' で書いていた・監査 M6）。"""
+    if v is None or (not isinstance(v, str) and pd.isna(v)):
+        return None
+    return str(v).strip() or None
 
 
 def sc_int(v):
@@ -1260,11 +1268,14 @@ with tab_up:
                     for _, _r in _norm.iterrows():
                         _sup = str(_r.get("supplier_name", "")).strip()
                         _jan = str(_r.get("jan", "")).strip()
-                        if not _sup or not _jan:
+                        _price = sc_num(_r.get("price"))
+                        # 単価が空の行は書かない（NaN が最新見積になって有効な価格を上書きしていた・監査 M6）
+                        if not _sup or not _jan or _price is None:
                             continue
+                        _nm = _r.get("item_name")
                         _payload.append(
-                            (_sup, _jan, _r.get("item_name"),
-                             sc_num(_r.get("price")), sc_num(_r.get("moq")),
+                            (_sup, _jan, None if _nm is None or pd.isna(_nm) else str(_nm),
+                             _price, sc_num(_r.get("moq")),
                              sc_num(_r.get("order_lot")), sc_int(_r.get("lead_days")),
                              _qdate.isoformat(), "upload"))
                     if _payload:
@@ -1319,6 +1330,7 @@ with tab_up:
                      sc_num(_r.get("order_lot")), _mdate.isoformat(), "excel")
                     for _, _r in _allq.iterrows()
                     if str(_r.get("supplier_name", "")).strip() and str(_r.get("jan", "")).strip()
+                    and sc_num(_r.get("price")) is not None   # 価格が空の行は書かない（監査 M6）
                 ]
                 conn.executemany(
                     "INSERT INTO sourcing.supplier_quote "
@@ -1651,11 +1663,11 @@ with tab_rule:
                     "default_lead_days=EXCLUDED.default_lead_days, "
                     "is_prepay=EXCLUDED.is_prepay, active=EXCLUDED.active, "
                     "note=EXCLUDED.note, updated_at=NOW()",
-                    (str(_r["supplier_name"]).strip(), _r.get("official_name"),
+                    (str(_r["supplier_name"]).strip(), sc_txt(_r.get("official_name")),
                      sc_num(_r.get("min_order_amount")),
                      sc_num(_r.get("free_ship_threshold")),
                      sc_int(_r.get("default_lead_days")), bool(_r.get("is_prepay")),
-                     bool(_r.get("active")), _r.get("note")))
+                     bool(_r.get("active")), sc_txt(_r.get("note"))))
             conn.commit()
             st.success(t("✅ 已保存"))
             if _renamed:

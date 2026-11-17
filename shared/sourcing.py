@@ -210,7 +210,8 @@ def parse_peso_like(v):
     if v is None:
         return None
     if isinstance(v, (int, float)):
-        return float(v)
+        f = float(v)
+        return None if f != f or f in (float("inf"), float("-inf")) else f   # NaN（Excel の空セル）→ None（監査 M6）
     s = _re.sub(r"[^\d.\-]", "", str(v))
     if s in ("", "-", ".", "-."):
         return None
