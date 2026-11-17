@@ -112,19 +112,35 @@ def attach_real_phones(targets: list[dict], boxes: list[dict]) -> int:
     return n
 
 
+def _align(sent: list[dict], res: list[dict]) -> dict[str, dict]:
+    """監査 L8: 送った順に結果を対応させる → {order_id: 結果}。check() は件数が揃えば送信順を保つ。
+    ponytail: 件数不一致（相手 HTML の変化）や PCCC が食い違う行だけ従来どおり PCCC 鍵で拾う。"""
+    smap = pccc_check.status_map(res)
+    aligned = len(res) == len(sent)
+    out = {}
+    for i, t in enumerate(sent):
+        r = res[i] if aligned else None
+        if r is None or (r.get("pccc") or "").strip().upper() != t["pccc"]:
+            r = smap.get(t["pccc"])
+        out[t["order_id"]] = r or {}
+    return out
+
+
 def audit(targets: list[dict], check=None) -> tuple[list[dict], str]:
     """→ (注文ごとの判定, 照合ツールのエラー文字列)。形式不正は送らずに 有误。장애 は 1 回だけ再照会。"""
     check = check or pccc_check.check
     send = [{**t, "phone": t["phone"] if _MOBILE_RE.fullmatch(t["phone"]) else DUMMY_PHONE}
             for t in targets if _PCCC_RE.fullmatch(t["pccc"])]
-    dummy = {t["pccc"] for t in send if t["phone"] == DUMMY_PHONE}
+    # 監査 L8: 結果は PCCC ではなく注文（order_id）単位で持つ。同じ PCCC で氏名・電話が違う注文が
+    # 並ぶと、PCCC 鍵では結果が上書きされ合っていた。dummy 判定も order_id で。
+    dummy = {t["order_id"] for t in send if t["phone"] == DUMMY_PHONE}
     res, err = check(send) if send else ([], "")
-    smap = pccc_check.status_map(res)
-    retry = [t for t in send if (smap.get(t["pccc"]) or {}).get("status") != pccc_check.STATUS_OK
-             and (smap.get(t["pccc"]) or {}).get("status") != pccc_check.STATUS_NG]
+    omap = _align(send, res)
+    retry = [t for t in send if omap[t["order_id"]].get("status")
+             not in (pccc_check.STATUS_OK, pccc_check.STATUS_NG)]
     if retry:
         res2, err2 = check(retry)
-        smap.update({k: v for k, v in pccc_check.status_map(res2).items()
+        omap.update({k: v for k, v in _align(retry, res2).items()
                      if v.get("status") != pccc_check.STATUS_FAULT})
         err = err2 or err
     rows = []
@@ -138,12 +154,12 @@ def audit(targets: list[dict], check=None) -> tuple[list[dict], str]:
             rows.append({**base, "verdict": VERDICT_NG,
                          "reason": "PCCC 格式错误（应为 P + 12 位数字）", "message": ""})
             continue
-        hit = smap.get(t["pccc"]) or {}
+        hit = omap.get(t["order_id"]) or {}
         st = hit.get("status")
         msg = hit.get("message", "")
         if st == pccc_check.STATUS_OK:
             rows.append({**base, "verdict": VERDICT_OK, "reason": "", "message": msg})
-        elif st == pccc_check.STATUS_NG and t["pccc"] in dummy and "전화번호" in msg:
+        elif st == pccc_check.STATUS_NG and t["order_id"] in dummy and "전화번호" in msg:
             rows.append({**base, "verdict": VERDICT_OK,
                          "reason": "PCCC 与姓名一致（电话为 Coupang 虚拟号，未核对）", "message": msg})
         elif st == pccc_check.STATUS_NG:
