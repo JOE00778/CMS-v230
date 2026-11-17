@@ -102,3 +102,46 @@ def test_l17_lark_error_code_raises(body):
 def test_l17_lark_success_passes():
     with _urlopen({"StatusCode": 0, "StatusMessage": "success", "code": 0, "msg": "success"}):
         assert D.send({}, "https://example.invalid/hook")["code"] == 0
+
+
+# ── L19: 斑马優先は維持。PG の手動修正と斑马の値が違えば「要確認」を出す ──
+from shared import shopify_order as so  # noqa: E402
+
+PAGE44 = next((pathlib.Path(__file__).resolve().parents[1] / "pages").glob("44_*.py")).read_text(encoding="utf-8")
+
+
+def _order1(jan):
+    return {"lineItems": {"nodes": [{"title": "x", "quantity": 1, "currentQuantity": 1, "variant": {"barcode": jan},
+                                     "discountedTotalSet": {"shopMoney": {"amount": "10"}}}]}}
+
+
+def test_l19_manual_vs_banma_conflict_warns_and_banma_wins():
+    pg = {"4900000000001": {"hs_code": "330499", "hs_src": "manual", "customs_name_en": "Face cream",
+                            "customs_name_src": "manual", "net_weight_g": 100, "weight_src": "manual",
+                            "origin_country": "JP"},
+          "4900000000002": {"hs_code": "330499", "hs_src": "banma", "origin_country": "JP"}}
+    bm = {"4900000000001": {"hs_code": "330749", "customs_name_en": "Face cream", "gross_weight_g": 120},
+          "4900000000002": {"hs_code": "330749"}}
+    m = so.merge_banma(pg, bm)
+    assert m["4900000000001"]["hs_code"] == "330749"            # 斑马優先は変えない
+    lines, warn = so.to_ci_lines(_order1("4900000000001"), m)
+    hit = [w for w in warn if w["code"] == "manual_overridden"]
+    assert len(hit) == 1 and "330499" in hit[0]["arg"] and "330749" in hit[0]["arg"] and "重量" in hit[0]["arg"]
+    assert "清関品名" not in hit[0]["arg"]                         # 同じ値なら出さない
+    _, warn2 = so.to_ci_lines(_order1("4900000000002"), m)
+    assert not [w for w in warn2 if w["code"] == "manual_overridden"]   # manual でなければ出さない
+
+
+def test_l19_customs_query_reads_src_columns_and_page_copy_honest():
+    class C:
+        def execute(self, sql, params):
+            self.sql = sql
+            return self
+
+        def fetchall(self):
+            return []
+    c = C()
+    so.customs_by_jan(c, ["4900000000001"])
+    assert "hs_src" in c.sql and "customs_name_src" in c.sql
+    assert '"manual_overridden"' in PAGE44
+    assert "次回から自動で入る" not in PAGE44

@@ -124,9 +124,9 @@ def customs_by_jan(conn, jans: list[str]) -> dict[str, dict]:
     if not jans:
         return {}
     rows = conn.execute(
-        "select jan, hs_code, name_en, origin_country, origin_src,"
+        "select jan, hs_code, hs_src, name_en, origin_country, origin_src,"
         "       net_weight_g, gross_weight_g, weight_src,"
-        "       customs_name_en,"
+        "       customs_name_en, customs_name_src,"
         "       extra->'origin_candidates' as origin_candidates,"
         "       extra->>'hs_flag' as hs_flag"
         "  from logistics.item_customs where jan = any(?)", (jans,)).fetchall()
@@ -156,10 +156,25 @@ def banma_customs_by_jan(client, jans: list[str]) -> dict[str, dict]:
 
 
 def merge_banma(customs: dict[str, dict], bm: dict[str, dict]) -> dict[str, dict]:
-    """PG の値に斑马の値を上書き（斑马が主・PG は斑马に無い項目の補完だけ）。"""
+    """PG の値に斑马の値を上書き（斑马が主・PG は斑马に無い項目の補完だけ）。
+
+    監査 L19: 斑马優先は Boss の設計なので変えない。ただし PG に発票画面で手動修正した値
+    （*_src='manual'）があり斑马の値と違うときは、上書きした事実を manual_overridden に残す
+    （to_ci_lines が「要確認」で出す。根本の修正は斑马で）。
+    """
     merged = {j: dict(c) for j, c in customs.items()}
     for jan, b in bm.items():
         c = merged.setdefault(jan, {})
+        diff = []
+        for label, src, pg_key, bm_key in (("HS", "hs_src", "hs_code", "hs_code"),
+                                           ("清関品名", "customs_name_src", "customs_name_en", "customs_name_en"),
+                                           ("重量", "weight_src", "net_weight_g", "gross_weight_g")):
+            pv, bv = c.get(pg_key), b.get(bm_key)
+            if c.get(src) == "manual" and pv not in (None, "") and bv not in (None, "") and str(pv) != str(bv):
+                if label != "重量" or float(pv) != float(bv):
+                    diff.append(f"{label}: PG {pv} → 斑马 {bv}")
+        if diff:
+            c["manual_overridden"] = " / ".join(diff)
         c.update(b)
         if "gross_weight_g" in b:
             c["net_weight_g"] = None        # to_ci_lines は net を優先するので斑马の重量を効かせる
@@ -203,6 +218,8 @@ def to_ci_lines(order: dict, customs: dict[str, dict]) -> tuple[list, list[str]]
                          "arg": " / ".join(c.get("origin_candidates") or [])})
         if not w_g:
             warn.append({"jan": jan, "code": "no_weight"})
+        if c.get("manual_overridden"):      # 監査 L19
+            warn.append({"jan": jan, "code": "manual_overridden", "arg": c["manual_overridden"]})
         lines.append(CiLine(
             description=cname,          # Boss 2026-10-25: 商品名ではなく清関用の英文品名
             units=units,

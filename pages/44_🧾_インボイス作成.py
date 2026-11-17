@@ -95,6 +95,8 @@ WARN_TEXT = {
     "no_weight": t("重量が無い"),
     "origin_conflict": t("原産国を JP で出力・要確認（ネット上の表記が割れている）"),
     "hs_flag": t("HS 要注意"),
+    # 監査 L19: PG の手動修正が斑马の値で上書きされた（斑马優先は Boss 設計のまま）
+    "manual_overridden": t("PG の手動修正と斑马の値が違う（斑马を優先・直すなら斑马で）"),
 }
 warn_by_jan: dict[str, list[str]] = {}
 for w in ci["warn"]:
@@ -103,7 +105,7 @@ for w in ci["warn"]:
 
 st.subheader(t("明細（清関品名・HS・原産国・重量は直接直せる）"))
 st.caption(t("赤字の「要確認」がある行を確認・補完してから PDF を作る。"
-             "「PG にも保存」にチェックすると次回から自動で入る。"))
+             "斑马に値がある項目（HS・清関品名・重量）は斑马の値が優先される。根本的に直すには斑马で修正する。"))
 # data_editor の列キーは固定（言語を切り替えても編集状態・読み戻しがずれない）。表示名は column_config の label。
 base = pd.DataFrame([{
     "JAN": j,
@@ -164,7 +166,7 @@ c1.metric(t("ユニット数合計"), f"{doc.total_units:.0f}")
 c2.metric(t("正味重量合計 kg"), f"{doc.total_net_kg:.2f}")
 c3.metric(t("インボイス合計"), f"{doc.invoice_total:.2f} {order.get('currencyCode', '')}")
 
-save = st.checkbox(t("直した値を PG にも保存する（次回から自動で入る）"), value=True)
+save = st.checkbox(t("直した値を PG にも保存する（斑马に値がある項目は斑马が優先）"), value=True)
 if st.button(t("PDF を作る"), type="primary", disabled=bool(bad)):
     if save:
         changed = []
