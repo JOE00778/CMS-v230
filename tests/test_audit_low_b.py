@@ -65,3 +65,26 @@ def test_difficult_items_history_gets_real_id_audit_l18(pg_like):
     assert not at.exception, [e.value for e in at.exception]
     hist = raw.execute("SELECT item_id, action FROM difficult_items_history").fetchall()
     assert [tuple(r) for r in hist] == [(2, "insert")]
+
+
+
+def _page_func(prefix: str, name: str, **glb):
+    """ページ内の関数定義だけを取り出して実行可能にする（ページ全体は DB が要るので回さない）。"""
+    import ast
+    tree = ast.parse(_page(prefix).read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+    ns = dict(glb)
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), name, "exec"), ns)
+    return ns[name]
+
+
+# ── L16: SKU 詳細の原価が NULL →「¥nan」 ─────────────────────────
+
+def test_sku_detail_cost_blank_shows_dash_audit_l16():
+    import pandas as pd
+    src = _page("02").read_text(encoding="utf-8")
+    for col in ("cost_estimate", "average_cost", "last_purchase_cost"):
+        assert f"_yen(row['{col}'])" in src, f"{col} が _yen を通っていない（NaN or 0 は NaN →「¥nan」）"
+    yen = _page_func("02", "_yen", pd=pd)
+    assert yen(float("nan")) == "—" and yen(None) == "—" and yen(pd.NA) == "—"
+    assert yen(1234.5) == "¥1,234.50" and yen(0) == "¥0.00"

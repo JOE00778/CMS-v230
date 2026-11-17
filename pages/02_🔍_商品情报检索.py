@@ -312,10 +312,13 @@ with _tab_search:
         i3.metric(_lb("qty_sold"), f"{int(row['qty_sold'] or 0):,}")
 
         # 原価（定义原价 → 平均原价 → 前次购入价）
+        def _yen(v) -> str:   # NaN or 0 は NaN のまま →「¥nan」だった（未入荷の新品・監査 L16）
+            return "—" if pd.isna(v) else f"¥{v:,.2f}"
+
         e1, e2, e3 = st.columns(3)
-        e1.metric(_lb("cost_estimate"), f"¥{(row['cost_estimate'] or 0):,.2f}")
-        e2.metric(_lb("average_cost"), f"¥{(row['average_cost'] or 0):,.2f}")
-        e3.metric(_lb("last_purchase_cost"), f"¥{(row['last_purchase_cost'] or 0):,.2f}")
+        e1.metric(_lb("cost_estimate"), _yen(row['cost_estimate']))
+        e2.metric(_lb("average_cost"), _yen(row['average_cost']))
+        e3.metric(_lb("last_purchase_cost"), _yen(row['last_purchase_cost']))
 
         # 店舗×月 売上明細
         st.markdown("**" + _L("店铺×月 销售明细", "店舗×月 売上明細") + "**")
