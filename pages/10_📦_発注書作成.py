@@ -201,12 +201,13 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
         st.download_button(
             t("📥 订货单 CSV 下载"),
             data=df_out.to_csv(index=False, encoding="utf-8-sig"),
-            file_name=f"発注書_{external_id}.csv", mime="text/csv",
+            file_name=f"発注書_{external_id}.csv", mime="text/csv", disabled=df_out.empty,
         )
 
     # 多文件模式 → 每文件一段预览 + 合并为单 CSV 下载
     if files_data:
         outputs: list[pd.DataFrame] = []
+        n_missing = 0
         for fd in files_data:
             df_out, missing = _build_output(fd["df_order"], df_item,
                                             ext_id=fd["external_id"],
@@ -221,6 +222,9 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
                     st.dataframe(localize_df(missing[["jan"]]))
                 st.dataframe(df_out.rename(columns=t), use_container_width=True)  # 表示のみ訳す（CSV は NetSuite 形式のまま）
             outputs.append(df_out)
+            n_missing += len(missing)
+        if n_missing:   # 折りたたみの中だけだと見落とす（再審査）
+            st.warning(t("⚠ 共 {n} 件 JAN 在 nst.item_master_raw 找不到，没有写进 CSV（展开各文件查看）").format(n=n_missing))
 
         # 合并所有文件为单 CSV（各文件用 外部ID _NN 区分 → NetSuite 自动分单）
         df_merged = pd.concat(outputs, ignore_index=True)
@@ -228,5 +232,5 @@ if files_data or (df_order_text is not None and not df_order_text.empty):
             t("📥 订货单 CSV 下载（合并 {n} 个文件 · {rows} 行）").format(
                 n=len(outputs), rows=len(df_merged)),
             data=df_merged.to_csv(index=False, encoding="utf-8-sig"),
-            file_name=f"発注書_{external_id}.csv", mime="text/csv",
+            file_name=f"発注書_{external_id}.csv", mime="text/csv", disabled=df_merged.empty,
         )

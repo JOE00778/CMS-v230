@@ -3636,6 +3636,7 @@ TRANSLATIONS_JA.update({  # 全 CMS 中日対応 2026-11-12 · page29/30/34/28/1
     '❌ nst.item_master_raw 表为空。请到 page 27「📥 NST 取得数据」执行 items 取得。': '❌ nst.item_master_raw が空です。page 27「📥 NST 取得データ」で items 取得を実行してください。',
     '📥 订货单 CSV 下载（合并 {n} 个文件 · {rows} 行）': '📥 発注書 CSV ダウンロード（{n} ファイル統合 · {rows} 行）',
     '⚠ {n} 件 JAN 在 nst.item_master_raw 找不到': '⚠ {n} 件の JAN が nst.item_master_raw に見つかりません',
+    '⚠ 共 {n} 件 JAN 在 nst.item_master_raw 找不到，没有写进 CSV（展开各文件查看）': '⚠ 計 {n} 件の JAN が nst.item_master_raw に見つからず、CSV に入れていません（各ファイルを開いて確認）',
     '{n} 行': '{n} 行',
     '📄 {f} → {s} ({n} 行 · ¥{a:,})': '📄 {f} → {s} ({n} 行 · ¥{a:,})',
     'ECMS 航空运费': 'ECMS 航空運賃',

@@ -19,16 +19,18 @@ def _norm_jan(s: pd.Series) -> pd.Series:
 
 
 def parse_items_text(text: str) -> pd.DataFrame:
-    """貼り付けテキスト → jan / 数量 / 単価。1 行に JAN（8〜14 桁）+ 数量 + 単価。
-    千位カンマ・¥・行頭の番号（「1.」「2)」）を除き、単価の小数も読む（監査 M12: ¥1,280 が 1 になっていた）。"""
+    """貼り付けテキスト → jan / 数量 / 単価。1 行に JAN（8〜14 桁）+ 数量 + 単価（JAN の前後どちらでも・数量が先）。
+    千位カンマ・¥・行頭の番号（「1.」「2)」）を除き、単価の小数も読む（監査 M12: ¥1,280 が 1 になっていた）。
+    JAN の隣がカンマの行は CSV（カンマ = 区切り）→ 千位として消さない（再審査 M12: 「JAN,24,500」が 24500 になった）。"""
     rows = []
     for ln in text.splitlines():
-        ln = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", ln.strip()).replace("¥", " ").replace("￥", " ")
+        ln = re.sub(r"^\s*\d{1,3}[.)、]\s+", "", ln.replace("¥", " ").replace("￥", " "))
+        if not re.search(r"\d{8,14}\s*,|,\s*\d{8,14}(?!\d)", ln):
+            ln = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", ln)
         m = re.search(r"(?<![\d.])(\d{8,14})(?![\d.])", ln)
         if not m:
             continue
-        rest = ln[m.end():]
-        nums = re.findall(r"(?<![\d.])(\d+(?:\.\d+)?)(?![\d.])", rest)
+        nums = re.findall(r"(?<![\d.])(\d+(?:\.\d+)?)(?![\d.])", ln[:m.start()] + " " + ln[m.end():])
         rows.append({"jan": m.group(1), "数量": int(float(nums[0])) if nums else 0,
                      "単価": float(nums[1]) if len(nums) >= 2 else 0.0})
     return pd.DataFrame(rows, columns=["jan", "数量", "単価"])
@@ -85,8 +87,9 @@ def build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *, ext_id: str, 
     df["数量"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int)
     # 単価は小数を保つ（astype(int) で切り捨てて PO 金額が低くなっていた・監査 M2）。金額は円で四捨五入
     price = pd.to_numeric(df["単価"] if "単価" in df.columns else 0, errors="coerce")
-    df["単価"] = (price if isinstance(price, pd.Series) else pd.Series(price, index=df.index)).fillna(0).round(2)
-    df["金額"] = (df["単価"] * df["数量"]).round().astype(int)
+    # 単価は NST 原価と同じ小数 4 桁まで（2 桁だと到货跟踪で偽の単価差・再審査）。金額は円で四捨五入（round は偶数丸めなので floor(+0.5)）
+    df["単価"] = (price if isinstance(price, pd.Series) else pd.Series(price, index=df.index)).fillna(0).round(4)
+    df["金額"] = np.floor((df["単価"] * df["数量"]).round(6) + 0.5).astype(int)
     if "tax_schedule" in df.columns:
         df["_tax_rate"] = df["tax_schedule"].map(tax_rate_from_schedule).fillna(tax_pct)
     else:
@@ -105,7 +108,8 @@ def build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *, ext_id: str, 
         "アイテム": (df.get(code_col, "").astype(str) + " "
                   + df.get(name_col, "").astype(str)).str.strip(),
         "数量": df["数量"],
-        "単価/率": df["単価"].map(lambda v: int(v) if float(v).is_integer() else float(v)),
+        # 文字列で持つ（int と float が混ざると列が float64 になり CSV に「100.0」と出る・再審査）
+        "単価/率": df["単価"].map(lambda v: f"{float(v):.4f}".rstrip("0").rstrip(".")),
         "金額": df["金額"],
         "税額": df["税額"],
         "総額": df["総額"],
