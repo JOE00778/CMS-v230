@@ -319,3 +319,28 @@ class TestRankParams:
                                                 "safety_stop": 0, "lead_days": 60})
         assert r["lead_time_days"] == 60 and r["safety_factor"] == 2.0
         assert r["reorder_point"] == 400.0   # 100 × 2ヶ月 × 2.0
+
+
+def test_dead_sku_without_sales_rows_is_proposed_20261117(monkeypatch):
+    """期間内に売上行が 1 つも無い取扱中の SKU も建議に入り、無動销 → 取扱中止 になる。窓より後に作った新品は入れない（監査 M10）。"""
+    import sqlite3
+
+    from modules.rank_classifier import proposal as P
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("ATTACH ':memory:' AS nst")
+    conn.execute("CREATE TABLE nst.item_master_raw (internal_id TEXT, item_code TEXT, display_name TEXT, handling_cd TEXT,"
+                 " is_inactive BOOLEAN, item_rank TEXT, date_created TEXT)")
+    conn.execute("CREATE TABLE nst.sales_monthly (item_internal_id TEXT, year_month TEXT, revenue REAL, qty_sold REAL,"
+                 " gross_profit REAL)")
+    conn.executemany("INSERT INTO nst.item_master_raw VALUES (?,?,?,?,?,?,?)", [
+        ("1", "LIVE", "売れる", "取扱中", 0, "Aランク", "2025-01-01"),
+        ("2", "DEAD", "滞留", "取扱中", 0, "Bランク", "2025-01-01"),
+        ("3", "NEWBIE", "新品", "取扱中", 0, "NEW", "2026-10-20"),
+        ("4", "STOP", "停止済", "取扱中止", 0, "取扱中止", "2025-01-01")])
+    conn.executemany("INSERT INTO nst.sales_monthly VALUES (?,?,?,?,?)",
+                     [("1", ym, 1000, 10, 300) for ym in ("2026-08", "2026-09", "2026-10")])
+    monkeypatch.setattr("shared.db.get_connection", lambda: conn)
+    out = {r["sku"]: r for r in P.generate_proposal("2026-10", "", period_start="2026-10-01", period_end="2026-10-31")}
+    assert "DEAD" in out and out["DEAD"]["new_rank"] == "取扱中止"
+    assert "NEWBIE" not in out and "STOP" not in out and "LIVE" in out

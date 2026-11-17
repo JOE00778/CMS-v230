@@ -44,6 +44,26 @@ def calc_reorder(monthly_sales: float, lead_time_days: int, rank: str,
     }
 
 
+def _no_sales_window(conn, period_end, rp) -> tuple[str, str] | None:
+    """無動销を見る窓（開始 YYYY-MM, 終了 YYYY-MM）。終了 = 期間の終わり（無ければ sales_monthly の最新月）。"""
+    try:
+        if period_end:
+            ref = period_end[:7]
+        else:
+            r = conn.execute("SELECT MAX(year_month) AS m FROM nst.sales_monthly").fetchone()
+            ref = r['m'] if r else None
+        if not ref:
+            return None
+        y, m = int(ref[:4]), int(ref[5:7])
+        sm, sy = m - (int(rp['no_sales_months']) - 1), y
+        while sm <= 0:
+            sm += 12
+            sy -= 1
+        return f"{sy:04d}-{sm:02d}", ref
+    except Exception:  # noqa: BLE001 — 窓が出せなければ無動销は判定しない（従来どおり）
+        return None
+
+
 def generate_proposal(
     quarter: str = '2026-Q1',
     db_path: str = 'data_warehouse/warehouse.db',
@@ -68,6 +88,7 @@ def generate_proposal(
         list of dicts (含 sku/old_rank/new_rank/sales/margin/rank_pct 等)
     """
     from shared.db import get_connection
+    from shared.purchase_v3 import DISCONTINUED_TOKENS
     conn = get_connection()
     rp = load_rank_params()   # 閾値は page07 で可変（2026-09-15）· ⚠️ params は SQL 引数タプルで既に使用
 
@@ -98,6 +119,35 @@ def generate_proposal(
             {ym_where}
             GROUP BY im.item_code
         """, params).fetchall()]
+
+        # 期間内に 1 件も売れていない取扱中の SKU も母集団に入れる（売上行が無いと漏れて「N ヶ月無動销 → 取扱中止」が本当の
+        # 滞留品に効かなかった・監査 M10 2026-11-17）。無動销の窓より後に作った新品・作成日不明は入れない
+        _win = _no_sales_window(conn, period_end, rp)
+        try:
+            _extra = conn.execute("""
+                SELECT item_code, MIN(internal_id) AS internal_id, MIN(display_name) AS display_name,
+                       MIN(handling_cd) AS handling_status, MAX(item_rank) AS item_rank
+                FROM nst.item_master_raw
+                WHERE item_code IS NOT NULL AND is_inactive = FALSE
+                  AND date_created IS NOT NULL AND date_created < ?
+                GROUP BY item_code
+            """, (f"{_win[0]}-01",)).fetchall() if _win else []
+        except Exception:  # noqa: BLE001 — date_created が無い古い DB 等は従来どおり（売上のある SKU だけ）
+            _extra = []
+            try:
+                conn.rollback()   # PG は失敗した文で取引が止まる → 後の SELECT のために戻す
+            except Exception:  # noqa: BLE001
+                pass
+        if _extra:
+            _seen = {r['item_code'] for r in sales_data}
+            for r in _extra:
+                r = dict(r)
+                _txt = f"{r.get('handling_status') or ''} {r.get('item_rank') or ''}"
+                if r['item_code'] in _seen or any(tok in _txt for tok in DISCONTINUED_TOKENS):
+                    continue
+                sales_data.append({'item_code': r['item_code'], 'internal_id': r.get('internal_id'),
+                                   'display_name': r.get('display_name'), 'handling_status': r.get('handling_status'),
+                                   'total_revenue': 0, 'total_qty': 0, 'total_gp': 0})
 
         if not sales_data:
             return []
@@ -146,18 +196,8 @@ def generate_proposal(
         # 3 ヶ月無動销: sales_monthly の直近 3 ヶ月で qty_sold=0 の SKU
         no_sales_3m_set: set[str] = set()
         try:
-            if period_end:
-                _ref_ym = period_end[:7]
-            else:
-                _r = conn.execute("SELECT MAX(year_month) AS m FROM nst.sales_monthly").fetchone()
-                _ref_ym = _r['m'] if _r else None
-            if _ref_ym:
-                _y, _m = int(_ref_ym[:4]), int(_ref_ym[5:7])
-                _sm, _sy = _m - (int(rp['no_sales_months']) - 1), _y
-                while _sm <= 0:
-                    _sm += 12
-                    _sy -= 1
-                _start_ym = f"{_sy:04d}-{_sm:02d}"
+            if _win:
+                _start_ym, _ref_ym = _win
                 _active = {
                     r['item_code']
                     for r in conn.execute("""

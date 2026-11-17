@@ -116,6 +116,9 @@ with tab1:
                 )
                 st.session_state.proposal_data = data
                 st.session_state.proposal_period_label = ("月度", f"{sel_month} ({ms} ~ {me})")
+                st.session_state.proposal_period_key = sel_month      # rank_history の quarter 列（監査 M8）
+                for _k in ("rank_csv_bytes", "rank_csv_stat", "rank_confirm"):   # 前回の結果を残さない（監査 M9）
+                    st.session_state.pop(_k, None)
             st.success(t("✓ [月度 {m}] 已生成 {n} 条建议").format(m=sel_month, n=len(data)))
 
     with g2:
@@ -136,6 +139,9 @@ with tab1:
                 )
                 st.session_state.proposal_data = data
                 st.session_state.proposal_period_label = ("季度", f"{q} ({QUARTER_RANGES.get(q,'?')})")
+                st.session_state.proposal_period_key = q
+                for _k in ("rank_csv_bytes", "rank_csv_stat", "rank_confirm"):
+                    st.session_state.pop(_k, None)
             st.success(t("✓ [季度 {q}] 已生成 {n} 条建议").format(q=q, n=len(data)))
 
     # 当前已选期间提示
@@ -241,7 +247,7 @@ with tab1:
         st.warning(t("⚠️ 即将变更 {n} 个 SKU 的等级").format(n=n_to_confirm))
 
         # 二次确认：checkbox + button
-        confirmed = st.checkbox(t("我已审阅并确认"))
+        confirmed = st.checkbox(t("我已审阅并确认"), key="rank_confirm")
         if confirmed:
             if st.button(t("✅ 写入 rank_history + 导出 CSV")):
                 # 找出有变化的行
@@ -250,7 +256,8 @@ with tab1:
                     if row.get('old_rank') != row.get('new_rank'):
                         rows_to_insert.append((
                             row.get('sku'),
-                            q,
+                            # 生成した期間（月度なら 'YYYY-MM'）。季度の下拉の今の値ではない（監査 M8: 別の季度の履歴を上書きしていた）
+                            st.session_state.get("proposal_period_key") or q,
                             row.get('old_rank'),
                             str(row.get('new_rank')),
                             'BOSS',
