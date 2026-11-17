@@ -29,3 +29,48 @@ def test_l8_dummy_judged_by_order_id():
     rows, _ = A.audit(ts, check=lambda r: (res, ""))
     v = {r["order_id"]: r["verdict"] for r in rows}
     assert v == {"1": A.VERDICT_NG, "2": A.VERDICT_OK}
+
+
+# ── L11 / L12: page39（合規検出）。関数・式だけ AST で取り出して試す ──
+import ast
+import pathlib
+
+import pandas as pd
+import pytest
+import streamlit as st
+
+P39 = (pathlib.Path(__file__).resolve().parents[1] / "pages" / "39_🛡️_合规检测.py").read_text(encoding="utf-8")
+P39_TREE = ast.parse(P39)
+
+
+def test_l11_batch_skips_external_only_when_all_countries_blocked():
+    fn = next(n for n in ast.walk(P39_TREE) if isinstance(n, ast.FunctionDef) and n.name == "_manual_screen")
+    assign = next(n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == "blocked" for t in n.targets))
+    assert isinstance(assign.value, ast.Call) and assign.value.func.id == "all"
+
+
+def _p39_fn(name, conn):
+    fn = next(n for n in P39_TREE.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    ns = {"st": st, "pd": pd, "_conn": conn}
+    exec(compile(ast.Module([fn], []), "page39", "exec"), ns)
+    return ns[name]
+
+
+@pytest.mark.parametrize("name", ["_load_rules", "_load_overview"])
+def test_l12_read_failure_is_not_cached(name, monkeypatch):
+    calls = {"n": 0}
+
+    def conn():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("一時的な接続失敗")
+        return "CONN"
+
+    monkeypatch.setattr(pd, "read_sql_query", lambda sql, c: pd.DataFrame([{"n": 1}]))
+    f = _p39_fn(name, conn)
+    f.clear()
+    with pytest.raises(RuntimeError):
+        f()
+    assert f() is not None                  # 失敗はキャッシュされず、2 回目で読み直す
+    f.clear()

@@ -80,44 +80,47 @@ def _conn():
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _load_rules():
-    """规则表 → list[dict](引擎输入)。compliance schema 不存在(本地)→ None。"""
-    try:
-        conn = _conn()
-        kw = pd.read_sql_query(
-            "SELECT country, category, pattern, severity, note FROM compliance.keyword_rule "
-            "WHERE enabled = TRUE", conn)
-        ing = pd.read_sql_query(
-            "SELECT country, ingredient, match_terms, cas, rule_type, condition_note, "
-            "source, source_ref, source_version FROM compliance.ingredient_rule", conn)
-        cat = pd.read_sql_query(
-            "SELECT country, category, match_terms, exclude_terms, severity, note, blocking, enabled "
-            "FROM compliance.category_rule WHERE enabled = TRUE", conn)
-        return kw.to_dict("records"), ing.to_dict("records"), cat.to_dict("records")
-    except Exception:
-        return None
+    """规则表 → list[dict](引擎输入)。読めなければ例外(監査 L12: None を返すと cache_data が
+    30 分キャッシュしてしまう。例外はキャッシュされない → 呼び出し側 _safe で「读取失败」表示)。"""
+    conn = _conn()
+    kw = pd.read_sql_query(
+        "SELECT country, category, pattern, severity, note FROM compliance.keyword_rule "
+        "WHERE enabled = TRUE", conn)
+    ing = pd.read_sql_query(
+        "SELECT country, ingredient, match_terms, cas, rule_type, condition_note, "
+        "source, source_ref, source_version FROM compliance.ingredient_rule", conn)
+    cat = pd.read_sql_query(
+        "SELECT country, category, match_terms, exclude_terms, severity, note, blocking, enabled "
+        "FROM compliance.category_rule WHERE enabled = TRUE", conn)
+    return kw.to_dict("records"), ing.to_dict("records"), cat.to_dict("records")
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _load_overview():
+    conn = _conn()
+    ing = pd.read_sql_query(
+        "SELECT country, rule_type, COUNT(*) AS n FROM compliance.ingredient_rule "
+        "GROUP BY country, rule_type", conn)
+    kw = pd.read_sql_query(
+        "SELECT country, severity, COUNT(*) AS n FROM compliance.keyword_rule "
+        "WHERE enabled = TRUE GROUP BY country, severity", conn)
+    snap = pd.read_sql_query(
+        "SELECT source_key, fetched_at, http_status, changed, diff_note FROM ("
+        "  SELECT s.*, ROW_NUMBER() OVER (PARTITION BY source_key ORDER BY fetched_at DESC) rn"
+        "  FROM compliance.source_snapshot s) x WHERE rn = 1", conn)
+    # 成分の収録率は**全成分表**で数える(shopify_item は主成分紹介なので
+    # 数えても「判定に使える成分」の実態を表さない·2026-08-05)
+    cov = pd.read_sql_query(
+        "SELECT (SELECT COUNT(*) FROM compliance.sheet_item) AS total, "
+        "COUNT(*) AS with_ing, MAX(fetched_at) AS last_sync "
+        "FROM compliance.ingredient_full", conn)
+    return {"ing": ing, "kw": kw, "snap": snap, "cov": cov}
+
+
+def _safe(load):
+    """監査 L12: 読込失敗 → None(キャッシュはされない)。次の表示で読み直す。"""
     try:
-        conn = _conn()
-        ing = pd.read_sql_query(
-            "SELECT country, rule_type, COUNT(*) AS n FROM compliance.ingredient_rule "
-            "GROUP BY country, rule_type", conn)
-        kw = pd.read_sql_query(
-            "SELECT country, severity, COUNT(*) AS n FROM compliance.keyword_rule "
-            "WHERE enabled = TRUE GROUP BY country, severity", conn)
-        snap = pd.read_sql_query(
-            "SELECT source_key, fetched_at, http_status, changed, diff_note FROM ("
-            "  SELECT s.*, ROW_NUMBER() OVER (PARTITION BY source_key ORDER BY fetched_at DESC) rn"
-            "  FROM compliance.source_snapshot s) x WHERE rn = 1", conn)
-        # 成分の収録率は**全成分表**で数える(shopify_item は主成分紹介なので
-        # 数えても「判定に使える成分」の実態を表さない·2026-08-05)
-        cov = pd.read_sql_query(
-            "SELECT (SELECT COUNT(*) FROM compliance.sheet_item) AS total, "
-            "COUNT(*) AS with_ing, MAX(fetched_at) AS last_sync "
-            "FROM compliance.ingredient_full", conn)
-        return {"ing": ing, "kw": kw, "snap": snap, "cov": cov}
+        return load()
     except Exception:
         return None
 
@@ -421,9 +424,9 @@ def _batch_tab(rules):
     """
     st.markdown(_dl("##### 上架前批量筛查(内容制作前的闸门)",
                     "##### 出品前一括スクリーニング(コンテンツ制作前のゲート)"))
-    if not rules:      # ローカル/未マイグレーション環境
-        st.info(_dl("compliance schema 未接入——批量筛查不可用",
-                    "compliance schema 未接続——一括スクリーニングは利用できません"))
+    if not rules:      # 監査 L12: 読込失敗(一時障害・ローカル/未マイグレーション)
+        st.warning(_dl("规则表读取失败(数据库查询出错或 compliance schema 缺失)——批量筛查暂不可用,请稍后刷新重试",
+                       "ルール表の読込に失敗(DB エラーまたは compliance schema なし)——一括スクリーニング不可、時間をおいて再読込してください"))
         return
     kw_rules, ing_rules, cat_rules = rules
     st.caption(_dl(
@@ -509,7 +512,8 @@ def _manual_screen(kw_rules, ing_rules, cat_rules):
                        "L1": pre.get("l1", ""), "L2": pre.get("l2", ""),
                        _dl("商品名", "商品名"): pre.get("name_ja") or pre.get("name_en", "")}
         # 品类が blocking(例:ピジョン=US 児童製品)なら成分を取りに行く必要が無い
-        blocked = any(
+        # 監査 L11: 選んだ国が**すべて**品類で止まるときだけ外部取得を省く(any だと他国が成分未取得に)
+        blocked = all(
             judge([], [], c, {"n": ""}, None, category_rules=cat_rules,
                   category_signals=cat_signals)["stopped_at"] == "category"
             for c in countries)
@@ -567,7 +571,7 @@ def _manual_screen(kw_rules, ing_rules, cat_rules):
                        file_name="compliance_screen.csv", mime="text/csv")
 
 
-rules = _load_rules()
+rules = _safe(_load_rules)
 tab0, tab_batch, tab_us, tab_ph, tab_ca = st.tabs(
     [_dl("📚 判定标准", "📚 判定基準"), _dl("📋 批量筛查", "📋 一括スクリーニング"),
      "🇺🇸 US", "🇵🇭 PH", "🇨🇦 CA"])
@@ -576,10 +580,10 @@ with tab_batch:
     _batch_tab(rules)
 
 with tab0:
-    ov = _load_overview()
-    if ov is None:
-        st.info(_dl("compliance schema 未接入(本地环境或迁移未执行)——判定标准总览不可用",
-                    "compliance schema 未接続(ローカル環境または未マイグレーション)"))
+    ov = _safe(_load_overview)
+    if ov is None:      # 監査 L12
+        st.warning(_dl("判定标准总览读取失败(数据库查询出错或 compliance schema 缺失)——请稍后刷新重试",
+                       "判定基準の読込に失敗(DB エラーまたは compliance schema なし)——時間をおいて再読込してください"))
     else:
         c1, c2, c3 = st.columns(3)
         ing_p = ov["ing"].set_index(["country", "rule_type"])["n"] if not ov["ing"].empty else {}
@@ -638,8 +642,8 @@ with tab0:
 if rules is None:
     for tb in (tab_us, tab_ph, tab_ca):
         with tb:
-            st.info(_dl("规则表未接入(compliance schema 缺失)——无法判定",
-                        "ルール未接続(compliance schema なし)——判定不可"))
+            st.warning(_dl("规则表读取失败(数据库查询出错或 compliance schema 缺失)——无法判定,请稍后刷新重试",
+                           "ルール表の読込に失敗(DB エラーまたは compliance schema なし)——判定不可、時間をおいて再読込してください"))
 else:
     with tab_us:
         _country_tab("US", rules)
