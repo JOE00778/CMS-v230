@@ -149,6 +149,8 @@ def _month_total(frame: pd.DataFrame, ym: str) -> float:
 # ============================================================
 # KPI（当月 · 選択部署）
 # ============================================================
+# KPI は JD 3 種（CT_KEYS）だけ。部署を登録した ECMS 行は下で別に出すので、ここに入れると二重計上（監査 M15 2026-11-17）
+base = base[base["cost_type"].isin(CT_KEYS)]
 cur = base[base["year_month"] == sel_month]
 prev_idx = months.index(sel_month) + 1
 prev_month = months[prev_idx] if prev_idx < len(months) else None

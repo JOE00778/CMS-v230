@@ -95,6 +95,16 @@ if sagawa:
     conn.commit()
 print(f"佐川: {len(sagawa)} 件", flush=True)
 
+# ── 4b. ECMS 海外直送（ECLBF+国コード2桁+数字）→ ECMS海外直送（dept=輸出）・page29 と同じ規則（監査 M1 2026-11-17：抜けていて【不明】に残っていた）──
+ecms = [k for k in banma_client.missing_join_keys(conn, [YM]) if re.match(r"^ECLBF[A-Z]{2}\d+", k)]
+if ecms:
+    conn.cursor().executemany(
+        banma_client.UPSERT_SHOP_MAP,
+        [{"parcel_no": k, "order_id": None, "waybill_no": k,
+          "platform": "ECMS", "shop": "ECMS海外直送", "ship_date": None} for k in ecms])
+    conn.commit()
+print(f"ECMS海外直送: {len(ecms)} 件", flush=True)
+
 # ── 5. 重算（全月）──
 ns["run_recompute"](None)
 conn.commit()

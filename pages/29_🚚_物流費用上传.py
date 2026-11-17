@@ -212,7 +212,9 @@ def run_recompute(ym=None):
     # 請求書の出庫単号が Coupang 注文番号(13/14桁)になり parcel_no と不一致 → 全部【不明】化）。
     # order_id は全庫で店舗衝突ゼロ確認済 · サブクエリで order_id 一意化し二重計上を防ぐ。
     conn.execute(
-        "DELETE FROM logistics.cost_monthly WHERE (%s IS NULL OR year_month=%s)",
+        # 消すのは JD の重算分（source='recompute'）だけ。ECMS 分（source='ecms'）は ecms_cost が月ごとに作り直す
+        # （ym=None で全月の ECMS 配賦行まで消していた・監査 M13 2026-11-17）
+        "DELETE FROM logistics.cost_monthly WHERE source = 'recompute' AND (%s IS NULL OR year_month=%s)",
         (ym, ym),
     )
     conn.execute(
