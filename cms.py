@@ -10,14 +10,14 @@ UI Phase 1 mockup 落地（docs/14-ui-redesign-mockup.html）：
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
 
 from shared.db import get_connection
 from shared.i18n import get_lang, lang_selector, t
-from shared.kpi_history import get_delta, get_history, take_snapshot
+from shared.kpi_history import get_delta, get_history, prev_month_same_period, take_snapshot
 from shared.supabase_client import is_configured
 
 # 页面配置
@@ -172,6 +172,16 @@ sales_amount = _safe_scalar(
     default=0,
 )
 
+# 3b) 上月同期营业额（上月 1 日〜上月同日）· 監査 L10: 本月至今 vs 上月整月 は月初に -90% 前後で赤表示になる
+_pp_from, _pp_to = prev_month_same_period(now.date())
+sales_prev_same = _safe_scalar(
+    f"""
+    SELECT COALESCE(SUM(revenue), 0) FROM nst.sales_daily
+    WHERE sale_date >= '{_pp_from}' AND sale_date < '{_pp_to + timedelta(days=1)}'
+    """,
+    default=0,
+)
+
 # 4) 毛利率（nst.sales_daily 当月 gross_profit / revenue）
 gp_row = _safe_df(
     f"""
@@ -223,9 +233,10 @@ _stock_delta_str = (
     _fmt_delta_pct(_kpi_delta["stock_delta_pct"])
     if _kpi_delta.get("stock_delta_pct") is not None else None
 )
-_revenue_delta_str = (
-    _fmt_delta_pct(_kpi_delta["revenue_delta_pct"])
-    if _kpi_delta.get("revenue_delta_pct") is not None else None
+_revenue_delta_str = (   # 監査 L10: 上月同期比
+    f"{_fmt_delta_pct((float(sales_amount or 0) - float(sales_prev_same)) / float(sales_prev_same) * 100)} "
+    f"{t('vs 上月同期')}"
+    if float(sales_prev_same or 0) > 0 else None
 )
 _margin_delta_str = (
     _fmt_delta_pct(_kpi_delta["margin_delta_pp"], suffix="pp")
@@ -273,7 +284,8 @@ with k3:
     st.metric(t("在库金额"), _fmt_jpy_short(inv_amount), delta=_stock_delta_str)
     _spark("stock_value_jpy")
 with k4:
-    st.metric(t("本月销售"), _fmt_jpy_short(sales_amount), delta=_revenue_delta_str)
+    st.metric(t("本月销售"), _fmt_jpy_short(sales_amount), delta=_revenue_delta_str,
+              help=t("环比口径：本月 1 日至今 vs 上月 1 日至上月同日"))
     _spark("month_revenue_jpy")
 
 

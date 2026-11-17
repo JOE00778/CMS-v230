@@ -3,7 +3,7 @@
 设计:
 - `kpi_monthly_history` 表幂等建表 (兼容 SQLite + Postgres)
 - 每次访问 home 时 `take_snapshot()` 自动 UPSERT 当月快照
-- `get_delta()` 拿当月 vs 上月 delta (sku/stock/revenue/margin)
+- `get_delta()` 拿当月 vs 上月 delta (sku/stock/margin · 销售环比见 prev_month_same_period)
 - `get_history(field, n)` 拿过去 n 个月某字段历史 (sparkline 用)
 
 字段（数据源 2026-07 全部切 nst.* · 旧 item_v2/shop_sales 已弃）:
@@ -14,11 +14,11 @@
 - gross_margin     nst.sales_daily 当月 gross_profit / revenue (0~1·对齐page05)
 - snapshot_at      ISO timestamp
 
-所有 SQL 都 try/except 防挂.
+KPI 查询失败时不写快照（異常は呼び出し側へ · 監査 L9）, 其余 SQL try/except 防挂.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -49,27 +49,29 @@ def _ensure_table(conn) -> None:
 
 
 def _scalar(conn, sql, default=None):
-    """跑 single-row single-col SQL, 失败/空返回 default."""
-    try:
-        r = conn.execute(sql).fetchone()
-        if r is None:
-            return default
-        try:
-            v = r[0]
-        except Exception:
-            try:
-                v = list(dict(r).values())[0]
-            except Exception:
-                return default
-        return v if v is not None else default
-    except Exception:
+    """跑 single-row single-col SQL, 空返回 default.
+
+    監査 L9: 查询失败**不再**吞成 default —— 抛出去让 take_snapshot 跳过本次写入,
+    否则「读不到」和「真的是 0」分不出来, 0 会被写进当月快照.
+    """
+    r = conn.execute(sql).fetchone()
+    if r is None:
         return default
+    try:
+        v = r[0]
+    except Exception:
+        try:
+            v = list(dict(r).values())[0]
+        except Exception:
+            return default
+    return v if v is not None else default
 
 
 def take_snapshot(conn=None) -> dict:
     """对当前数据快照, UPSERT 到 kpi_monthly_history.
 
     返回 {year_month, sku_total, stock_value_jpy, month_revenue_jpy, gross_margin}.
+    任一 KPI 查询失败即抛异常、不写快照（監査 L9）.
     """
     conn = conn or get_connection()
     _ensure_table(conn)
@@ -166,7 +168,7 @@ def _row_get(row, key, idx):
 
 def get_delta(conn=None) -> dict:
     """返回当前 vs 上月 delta:
-    {sku_delta, stock_delta_pct, revenue_delta_pct, margin_delta_pp}.
+    {sku_delta, stock_delta_pct, margin_delta_pp}.
     历史不足 2 月返回 {}.
     """
     conn = conn or get_connection()
@@ -198,17 +200,19 @@ def get_delta(conn=None) -> dict:
                 / prev["stock_value_jpy"]
                 * 100
             )
-        if prev["month_revenue_jpy"]:
-            out["revenue_delta_pct"] = (
-                ((cur["month_revenue_jpy"] or 0) - prev["month_revenue_jpy"])
-                / prev["month_revenue_jpy"]
-                * 100
-            )
+        # 監査 L10: 销售环比不在这里算 —— 快照的当月值是「本月至今」, 上月值是「整月」,
+        # 口径不对齐. 首页改用 prev_month_same_period() 直接查上月同期.
         if cur.get("gross_margin") is not None and prev.get("gross_margin") is not None:
             out["margin_delta_pp"] = (cur["gross_margin"] - prev["gross_margin"]) * 100
         return out
     except Exception:
         return {}
+
+
+def prev_month_same_period(today: date) -> tuple[date, date]:
+    """上月同期 = (上月 1 日, 上月同日)。上月没有同日（如 3/31）时取上月末日. 監査 L10."""
+    last_prev = today.replace(day=1) - timedelta(days=1)
+    return last_prev.replace(day=1), last_prev.replace(day=min(today.day, last_prev.day))
 
 
 def get_history(field: str, n: int = 6, conn=None) -> pd.DataFrame:
@@ -241,4 +245,4 @@ def get_history(field: str, n: int = 6, conn=None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-__all__ = ["take_snapshot", "get_delta", "get_history"]
+__all__ = ["take_snapshot", "get_delta", "get_history", "prev_month_same_period"]

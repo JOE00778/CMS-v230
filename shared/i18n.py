@@ -7,6 +7,7 @@
     st.title(t("🔍 商品情报检索"))
 """
 from __future__ import annotations
+import logging
 import streamlit as st
 
 LANGS = {"中文": "zh", "日本語": "ja"}
@@ -653,7 +654,7 @@ TRANSLATIONS_JA: dict[str, str] = {
 # group_label = None 表示无分组(顶层直显), 用于 首页 / 数据导入与设置
 _NAV_GROUPS: list[tuple[str | None, list[tuple[str, str]]]] = [
     (None, [
-        ("商品信息管理.py", "🏠 首页"),
+        ("cms.py", "🏠 首页"),  # 監査 L1: 入口は 0b21738 で cms.py に改名
     ]),
     ("🎯 运营管理", [
         ("pages/02_🔍_商品情报检索.py", "🔍 商品情报检索"),
@@ -3073,16 +3074,16 @@ def lang_selector():
             for path, label in pages:
                 try:
                     st.sidebar.page_link(path, label=t(label))
-                except Exception:
-                    pass
+                except Exception as e:  # 監査 L1: 黙って消さずログに残す
+                    logging.getLogger(__name__).warning("sidebar page_link failed: %s: %s", path, e)
         else:
             # 分组用 expander 包起来,默认展开
             with st.sidebar.expander(t(group_label), expanded=True):
                 for path, label in pages:
                     try:
                         st.page_link(path, label=t(label))
-                    except Exception:
-                        pass
+                    except Exception as e:  # 監査 L1
+                        logging.getLogger(__name__).warning("sidebar page_link failed: %s: %s", path, e)
 
     return cur_lang_code
 
@@ -4655,6 +4656,14 @@ TRANSLATIONS_ZH.update({  # 監査修正 2026-11-17
     "⚠️ 内容を直しました。もう一度「PDF を作る」を押してください（前の PDF は隠しています）":
         "⚠️ 内容已修改，请重新点「生成 PDF」（之前的 PDF 已隐藏）",
 })
+
+# 監査 低危 A 組（L2 / L10）2026-11-18: 原文は中文 → 日文
+for _zh, _ja in [
+    ("保存失败，本批全部未保存（已回滚）", "保存に失敗しました。この一括分はすべて未保存です（ロールバック済み）"),
+    ("vs 上月同期", "前月同期比"),
+    ("环比口径：本月 1 日至今 vs 上月 1 日至上月同日", "比較の基準：今月 1 日〜今日 vs 前月 1 日〜前月の同日"),
+]:
+    TRANSLATIONS_JA[_zh] = _ja
 
 TRANSLATIONS_ZH.update({  # page15 重量の一括 1（Boss 2026-11-16）
     "⚖️ 重量が空欄の品をすべて 1 にする（仮値・非実測）": "⚖️ 重量为空的全部填 1（临时值・非实测）",

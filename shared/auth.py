@@ -45,7 +45,8 @@ def _secret(name: str, default: str = "") -> str:
 
 
 def _check(entered: str, expected: str) -> bool:
-    return bool(expected) and hmac.compare_digest(entered, expected)
+    # 監査 L23: str 同士だと非 ASCII（全角・日中文 IME）で TypeError → bytes で比べる
+    return bool(expected) and hmac.compare_digest(entered.encode("utf-8"), expected.encode("utf-8"))
 
 
 def _login_form() -> None:

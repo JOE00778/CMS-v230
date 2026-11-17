@@ -1096,7 +1096,9 @@ with tab_owner:
                         _errs.append(f"{_s}: {_e}")
                 if _fail:
                     conn_w.rollback()
-                    st.error(f"ok={_ok} fail={_fail} — " + " / ".join(_errs))
+                    # 監査 L2: 1 件でも失敗すると整批 rollback → ok 件数を出すと「その分は保存済み」と誤読される
+                    st.error(t("保存失败，本批全部未保存（已回滚）")
+                             + f"（0/{len(_diff)}）— " + " / ".join(_errs))
                 else:
                     conn_w.commit()
                     st.success(f"ok={_ok} fail=0 · {_set_ym} " +
