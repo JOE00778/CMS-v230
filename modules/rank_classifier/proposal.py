@@ -120,8 +120,13 @@ def generate_proposal(
             GROUP BY im.item_code
         """, params).fetchall()]
 
+        # 期間に売上が 1 行も無い = まだ締まっていない / 未来の期間 → 建議しない（でないと全商品が無動销 → 取扱中止・再審査 M10）
+        if not sales_data:
+            return []
+
         # 期間内に 1 件も売れていない取扱中の SKU も母集団に入れる（売上行が無いと漏れて「N ヶ月無動销 → 取扱中止」が本当の
-        # 滞留品に効かなかった・監査 M10 2026-11-17）。無動销の窓より後に作った新品・作成日不明は入れない
+        # 滞留品に効かなかった・監査 M10 2026-11-17）。無動销の窓より後に作った新品・作成日不明は入れない。
+        # 足すのは 輸出事業 × A/B/C ランクだけ（等級なし・NEW・中国は口径未定 → 入れない・2026-11-18）
         _win = _no_sales_window(conn, period_end, rp)
         try:
             _extra = conn.execute("""
@@ -129,6 +134,7 @@ def generate_proposal(
                        MIN(handling_cd) AS handling_status, MAX(item_rank) AS item_rank
                 FROM nst.item_master_raw
                 WHERE item_code IS NOT NULL AND is_inactive = FALSE
+                  AND department = '輸出事業' AND item_rank IN ('Aランク', 'Bランク', 'Cランク')
                   AND date_created IS NOT NULL AND date_created < ?
                 GROUP BY item_code
             """, (f"{_win[0]}-01",)).fetchall() if _win else []
@@ -148,9 +154,6 @@ def generate_proposal(
                 sales_data.append({'item_code': r['item_code'], 'internal_id': r.get('internal_id'),
                                    'display_name': r.get('display_name'), 'handling_status': r.get('handling_status'),
                                    'total_revenue': 0, 'total_qty': 0, 'total_gp': 0})
-
-        if not sales_data:
-            return []
 
         # PG NUMERIC → Decimal を float へ正規化（calc_sales_rank の cumsum 等で float 混在を防ぐ）
         for row in sales_data:

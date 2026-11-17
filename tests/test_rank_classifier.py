@@ -330,10 +330,11 @@ def test_dead_sku_without_sales_rows_is_proposed_20261117(monkeypatch):
     conn.row_factory = sqlite3.Row
     conn.execute("ATTACH ':memory:' AS nst")
     conn.execute("CREATE TABLE nst.item_master_raw (internal_id TEXT, item_code TEXT, display_name TEXT, handling_cd TEXT,"
-                 " is_inactive BOOLEAN, item_rank TEXT, date_created TEXT)")
+                 " is_inactive BOOLEAN, item_rank TEXT, date_created TEXT, department TEXT DEFAULT '輸出事業')")
     conn.execute("CREATE TABLE nst.sales_monthly (item_internal_id TEXT, year_month TEXT, revenue REAL, qty_sold REAL,"
                  " gross_profit REAL)")
-    conn.executemany("INSERT INTO nst.item_master_raw VALUES (?,?,?,?,?,?,?)", [
+    conn.executemany("INSERT INTO nst.item_master_raw (internal_id, item_code, display_name, handling_cd, is_inactive,"
+                     " item_rank, date_created) VALUES (?,?,?,?,?,?,?)", [
         ("1", "LIVE", "売れる", "取扱中", 0, "Aランク", "2025-01-01"),
         ("2", "DEAD", "滞留", "取扱中", 0, "Bランク", "2025-01-01"),
         ("3", "NEWBIE", "新品", "取扱中", 0, "NEW", "2026-10-20"),
@@ -344,3 +345,38 @@ def test_dead_sku_without_sales_rows_is_proposed_20261117(monkeypatch):
     out = {r["sku"]: r for r in P.generate_proposal("2026-10", "", period_start="2026-10-01", period_end="2026-10-31")}
     assert "DEAD" in out and out["DEAD"]["new_rank"] == "取扱中止"
     assert "NEWBIE" not in out and "STOP" not in out and "LIVE" in out
+
+
+def _m10_db():
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("ATTACH ':memory:' AS nst")
+    conn.execute("CREATE TABLE nst.item_master_raw (internal_id TEXT, item_code TEXT, display_name TEXT, handling_cd TEXT,"
+                 " is_inactive BOOLEAN, item_rank TEXT, date_created TEXT, department TEXT)")
+    conn.execute("CREATE TABLE nst.sales_monthly (item_internal_id TEXT, year_month TEXT, revenue REAL, qty_sold REAL,"
+                 " gross_profit REAL)")
+    conn.executemany("INSERT INTO nst.item_master_raw VALUES (?,?,?,?,?,?,?,?)", [
+        ("1", "LIVE", "売れる", "取扱中", 0, "Aランク", "2025-01-01", "輸出事業"),
+        ("2", "DEAD_C", "滞留C", "取扱中", 0, "Cランク", "2025-01-01", "輸出事業"),
+        ("3", "NORANK", "等級なし", "取扱中", 0, None, "2025-01-01", "輸出事業"),
+        ("4", "OLDNEW", "古いNEW", "取扱中", 0, "NEW", "2025-01-01", "輸出事業"),
+        ("5", "CN_C", "中国C", "取扱中", 0, "Cランク", "2025-01-01", "輸出事業 : 輸出（中国）")])
+    conn.executemany("INSERT INTO nst.sales_monthly VALUES (?,?,?,?,?)",
+                     [("1", ym, 1000, 10, 300) for ym in ("2026-08", "2026-09", "2026-10")])
+    return conn
+
+
+def test_dead_sku_only_export_dept_abc_ranks_20261118(monkeypatch):
+    """売上行の無い SKU を足すのは 輸出事業 × A/B/C ランクだけ（等級なし・NEW・中国は入れない・再審査 M10）。"""
+    from modules.rank_classifier import proposal as P
+    monkeypatch.setattr("shared.db.get_connection", _m10_db)
+    out = {r["sku"] for r in P.generate_proposal("2026-10", "", period_start="2026-10-01", period_end="2026-10-31")}
+    assert out == {"LIVE", "DEAD_C"}
+
+
+def test_period_without_any_sales_returns_empty_20261118(monkeypatch):
+    """まだ売上の無い期間（未来の四半期など）は空を返す。全商品が取扱中止の建議になってはいけない（再審査 M10）。"""
+    from modules.rank_classifier import proposal as P
+    monkeypatch.setattr("shared.db.get_connection", _m10_db)
+    assert P.generate_proposal("FY2026-Q4", "", period_start="2027-01-01", period_end="2027-03-31") == []
