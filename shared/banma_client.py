@@ -27,6 +27,7 @@ import hashlib
 import http.client
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -81,6 +82,8 @@ def is_configured() -> bool:
 
 
 class BanmaClient:
+    _token_lock = threading.Lock()   # 401 の取り直しを 1 本にまとめる（監査 M17・クラス共通で十分）
+
     def __init__(self, app_id: str, app_secret: str,
                  min_interval: float = 0.25):     # 5QPS/app に余裕
         self.app_id = app_id
@@ -140,14 +143,19 @@ class BanmaClient:
     # ponytail: 新 token は PG に書き戻さない。次のプロセスは古い token で 1 回 401 を踏んで
     # ここで自己回復する（1 リクエスト余分）。書き戻しが要るなら ensure_token 側に保存フックを足す
     def call(self, method: str, path: str, *args, **kwargs):
+        used = self.access_token
         try:
             return self._call(method, path, *args, **kwargs)
         except BanmaAuthError:
             if path.startswith("/v1/Auth/"):
                 raise
-            self.access_token = None
-            data = self._call("GET", "/v1/Auth/GetToken") or {}
-            self.access_token = data.get("AccessToken") or None
+            # 複数スレッドが同時に 401 → 取り直しは 1 回だけ。後から来たスレッドは取り直された token を使う
+            # （各自 GetToken すると互いに前の token を無効にして 8 本中 6〜7 本が失敗した・監査 M17 2026-11-17）
+            with self._token_lock:
+                if self.access_token == used:
+                    self.access_token = None
+                    data = self._call("GET", "/v1/Auth/GetToken") or {}
+                    self.access_token = data.get("AccessToken") or None
             if not self.access_token:
                 raise
             return self._call(method, path, *args, **kwargs)
