@@ -56,7 +56,7 @@ app = FastAPI(title="Smikie CMS API sidecar", version="0.2.0")
 # smikie-cms.cc/api/automation/* が公網に出ていて tokens を誰でも読み書きできた）。
 # N8N は http://cms-api:8789、本機は localhost:8789 で来るので cf-* ヘッダが無く、今まで通り使える。
 _PUBLIC_PATHS = {"/api/automation/shopee/oauth-callback"}
-SHOPEE_MARKETS = {"TW", "PH", "MY", "SG", "TH", "VN", "ID"}
+SHOPEE_MARKETS = {"TW", "PH", "MY", "SG", "TH", "VN", "ID", "BR"}   # BR は tokens にある（再審査 C1）
 
 
 @app.middleware("http")
@@ -331,10 +331,20 @@ def shopee_oauth_callback(
             _oauth_result_html("❌ 市场不正确", "#c62828", [("可用", ", ".join(sorted(SHOPEE_MARKETS)))]),
             status_code=400,
         )
-    want = json.loads(os.environ.get("SHOPEE_SHOP_IDS") or "{}").get(market)
-    if want and shop_id and str(shop_id) != str(want):   # 登録済みの店舗と違う shop の code で上書きさせない
+    # 登録済みの店舗と違う shop の code で上書きさせない。登録表（.env SHOPEE_SHOP_IDS）があれば未登録の市場も拒否、
+    # main_account_id（CB merchant）経路は SHOPEE_MAIN_ACCOUNT_IDS と一致したときだけ（素通りしていた・再審査 C1）
+    shop_reg = json.loads(os.environ.get("SHOPEE_SHOP_IDS") or "{}")
+    if main_account_id:
+        want, got, what = json.loads(os.environ.get("SHOPEE_MAIN_ACCOUNT_IDS") or "{}").get(market), main_account_id, "main_account_id"
+        bad = str(got) != str(want)
+    else:
+        want, got, what = shop_reg.get(market), shop_id, "shop_id"
+        bad = bool(shop_id) and (str(got) != str(want) if (want or shop_reg) else False)
+    if bad:
         return HTMLResponse(
-            _oauth_result_html("❌ shop_id 与登记不一致", "#c62828", [("market", market), ("shop_id", shop_id)]),
+            _oauth_result_html(f"❌ {what} 与登记不一致", "#c62828",
+                               [("market", market), (what, got),
+                                ("说明", "先把它登记进元川 .env 的 SHOPEE_SHOP_IDS / SHOPEE_MAIN_ACCOUNT_IDS，再重建 cms-api")]),
             status_code=403,
         )
     if not SHOPEE_PARTNER_ID or not SHOPEE_PARTNER_KEY:
