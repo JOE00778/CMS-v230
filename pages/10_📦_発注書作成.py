@@ -35,22 +35,8 @@ st.caption(t("文本 / CSV / Excel → NetSuite 订货单 CSV"))
 
 
 def _parse_items_text(text: str) -> pd.DataFrame:
-    """从粘贴文本里提取 JAN + 数量 + 単価。
-    每行尝试匹配 13 位 JAN 起头, 再抽 1-2 个整数作数量/単価。"""
-    rows = []
-    for ln in text.splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        m = re.search(r"\b(\d{8,14})\b", ln)
-        if not m:
-            continue
-        jan = m.group(1)
-        nums = [int(x) for x in re.findall(r"\b(\d+)\b", ln) if x != jan]
-        qty = nums[0] if len(nums) >= 1 else 0
-        price = nums[1] if len(nums) >= 2 else 0
-        rows.append({"jan": jan, "数量": qty, "単価": price})
-    return pd.DataFrame(rows)
+    """粘贴文本 → JAN + 数量 + 単価（shared/po_csv.parse_items_text・千位逗号/¥/行首序号/小数対応）。"""
+    return po_csv.parse_items_text(text)
 
 
 def _provide_template():
@@ -72,12 +58,12 @@ def _parse_uploaded(file) -> pd.DataFrame | None:
     """单个 CSV/Excel → 规范列名（jan/数量/単価/...）。失败返回 None。"""
     try:
         if file.name.endswith(".xlsx"):
-            df = pd.read_excel(file)
+            df = pd.read_excel(file, dtype=str)   # JAN を文字列で（空セルで float 化しない・監査 M3）
         else:
-            df = pd.read_csv(file, encoding="utf-8-sig")
+            df = pd.read_csv(file, encoding="utf-8-sig", dtype=str)
     except UnicodeDecodeError:
         file.seek(0)
-        df = pd.read_csv(file, encoding="shift_jis")
+        df = pd.read_csv(file, encoding="shift_jis", dtype=str)
     df.columns = df.columns.str.strip().str.lower()
     rename_map = {
         "janコード": "jan", "ｊａｎ": "jan", "jan": "jan",

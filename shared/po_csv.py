@@ -13,7 +13,25 @@ LOCATIONS = ["弁天倉庫"]  # Boss 2026-11-04 京东仓不再使用
 
 
 def _norm_jan(s: pd.Series) -> pd.Series:
-    return s.astype(str).str.strip().str.replace(r"^0{5,}", "", regex=True)
+    # 空セルがあると Excel/CSV の JAN 列が float になり '4901234567890.0' になる → .0 を外す（監査 M3 2026-11-17）
+    return (s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            .str.replace(r"^0{5,}", "", regex=True))
+
+
+def parse_items_text(text: str) -> pd.DataFrame:
+    """貼り付けテキスト → jan / 数量 / 単価。1 行に JAN（8〜14 桁）+ 数量 + 単価。
+    千位カンマ・¥・行頭の番号（「1.」「2)」）を除き、単価の小数も読む（監査 M12: ¥1,280 が 1 になっていた）。"""
+    rows = []
+    for ln in text.splitlines():
+        ln = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", ln.strip()).replace("¥", " ").replace("￥", " ")
+        m = re.search(r"(?<![\d.])(\d{8,14})(?![\d.])", ln)
+        if not m:
+            continue
+        rest = ln[m.end():]
+        nums = re.findall(r"(?<![\d.])(\d+(?:\.\d+)?)(?![\d.])", rest)
+        rows.append({"jan": m.group(1), "数量": int(float(nums[0])) if nums else 0,
+                     "単価": float(nums[1]) if len(nums) >= 2 else 0.0})
+    return pd.DataFrame(rows, columns=["jan", "数量", "単価"])
 
 
 def load_item_master(conn) -> pd.DataFrame:
@@ -57,14 +75,18 @@ def build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *, ext_id: str, 
     税率优先按 item.tax_schedule 行级匹配，DB 为空时回退 tax_pct。"""
     df_order = df_order.copy()
     df_order["jan"] = _norm_jan(df_order["jan"])
+    df_order = df_order[df_order["jan"].notna() & ~df_order["jan"].isin(["", "nan", "None", "<NA>"])]   # 空行・合計行（監査 M3）
     df = df_order.merge(df_item, on="jan", how="left")
     name_col, code_col = "display_name", "item_code"
     missing = df[df[name_col].isna()]
+    df = df[df[name_col].notna()]   # 未登録 JAN は CSV に出さない（NaN のアイテムで NST 取込が失敗する・監査 M3）
 
     qty_col = "ロット×数量" if "ロット×数量" in df.columns else "数量"
     df["数量"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int)
-    df["単価"] = pd.to_numeric(df["単価"], errors="coerce").fillna(0).astype(int)
-    df["金額"] = df["単価"] * df["数量"]
+    # 単価は小数を保つ（astype(int) で切り捨てて PO 金額が低くなっていた・監査 M2）。金額は円で四捨五入
+    price = pd.to_numeric(df["単価"] if "単価" in df.columns else 0, errors="coerce")
+    df["単価"] = (price if isinstance(price, pd.Series) else pd.Series(price, index=df.index)).fillna(0).round(2)
+    df["金額"] = (df["単価"] * df["数量"]).round().astype(int)
     if "tax_schedule" in df.columns:
         df["_tax_rate"] = df["tax_schedule"].map(tax_rate_from_schedule).fillna(tax_pct)
     else:
@@ -83,7 +105,7 @@ def build_output(df_order: pd.DataFrame, df_item: pd.DataFrame, *, ext_id: str, 
         "アイテム": (df.get(code_col, "").astype(str) + " "
                   + df.get(name_col, "").astype(str)).str.strip(),
         "数量": df["数量"],
-        "単価/率": df["単価"],
+        "単価/率": df["単価"].map(lambda v: int(v) if float(v).is_integer() else float(v)),
         "金額": df["金額"],
         "税額": df["税額"],
         "総額": df["総額"],
