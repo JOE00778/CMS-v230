@@ -119,3 +119,14 @@ def test_roster_blank_cells_saved_as_empty_audit_l13():
     ann = next(r for r in saved if r["name"] == "Ann")
     assert ann["payee"] == "" and ann["keywords"] == []
     assert "None" not in [r["name"] for r in saved]          # 名前が空の行は保存しない
+
+
+# ── L6: キーワード検索が正則扱い（半角括弧で ArrowInvalid） ─────────────
+
+@pytest.mark.parametrize("prefix", ["34", "20"])
+def test_keyword_contains_is_literal_audit_l6(prefix):
+    import re
+    src = _page(prefix).read_text(encoding="utf-8")
+    calls = re.findall(r"\.str\.contains\(([^()]*(?:\([^()]*\)[^()]*)*)\)", src)
+    assert calls
+    assert all("regex=False" in c for c in calls), [c for c in calls if "regex=False" not in c]

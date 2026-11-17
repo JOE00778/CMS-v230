@@ -179,9 +179,10 @@ def _render_volatility(df: pd.DataFrame, *, value_label: str, key_prefix: str,
     if sel_grades:
         view = view[view[grade_col].isin(sel_grades)]
     if kw.strip():
+        # 半角 ( [ + * ? で正則エラー → 字面一致（監査 L6）
         cond = (
-            view["item_code"].astype(str).str.contains(kw.strip(), na=False)
-            | view["display_name"].astype(str).str.contains(kw.strip(), na=False)
+            view["item_code"].astype(str).str.contains(kw.strip(), na=False, regex=False)
+            | view["display_name"].astype(str).str.contains(kw.strip(), na=False, regex=False)
         )
         view = view[cond]
 

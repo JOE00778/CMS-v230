@@ -839,9 +839,10 @@ with tab_wr:
         _kw_w = st.text_input(t("🔍 JAN / 商品名 搜索"), key="wr_kw")
         if _kw_w.strip():
             _k = _kw_w.strip()
-            _w4src = _po_w[_po_w["jan"].astype(str).str.contains(_k, na=False)
+            # 半角 ( [ + * ? で正則エラー → 字面一致（監査 L6）
+            _w4src = _po_w[_po_w["jan"].astype(str).str.contains(_k, na=False, regex=False)
                            | _po_w["display_name"].astype(str)
-                           .str.contains(_k, case=False, na=False)]
+                           .str.contains(_k, case=False, na=False, regex=False)]
             if _w4src.empty:
                 st.info(t("この条件のデータがありません"))
             else:
@@ -907,8 +908,9 @@ with tab_sku:
             _v = _v[_v["n_quotes"] > 0]
         if _kw_s.strip():
             _k = _kw_s.strip()
-            _v = _v[_v["jan"].astype(str).str.contains(_k, na=False)
-                    | _v["display_name"].astype(str).str.contains(_k, case=False, na=False)]
+            # 半角 ( [ + * ? で正則エラー → 字面一致（監査 L6）
+            _v = _v[_v["jan"].astype(str).str.contains(_k, na=False, regex=False)
+                    | _v["display_name"].astype(str).str.contains(_k, case=False, na=False, regex=False)]
             if _v.empty:
                 _k2 = f"%{_k}%"
                 _im_hit = _read("SELECT item_rank FROM nst.item_master_raw "
