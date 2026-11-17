@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
 import math
 import re
 from collections import defaultdict
@@ -101,6 +102,10 @@ def _classify_trend(months: list[float]) -> str:
 SALES_SOURCE_PRIORITY = ["export_item"]
 
 
+def _this_month() -> str:
+    return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m")   # JST
+
+
 def _load_monthly_sales(conn, months: int = 3, sales_source: str = "auto") -> tuple[pd.DataFrame, str]:
     # nst.sales_monthly（輸出·月次 SKU 販売数）→ JAN 単位集計（旧 shop_sales/export_item 置換·2026-05-26）
     rows = conn.execute(
@@ -113,7 +118,9 @@ def _load_monthly_sales(conn, months: int = 3, sales_source: str = "auto") -> tu
     src = "export_item"
     if rows:
         df = pd.DataFrame([dict(r) for r in rows])
-        periods = sorted(df["period_start"].dropna().unique())[-months:]
+        # 当月は途中（nst.sales_monthly は毎日 当月 を書き直す）→ 入れると月販が低く出て少なく発注する（監査 H1 2026-11-17）
+        cur = _this_month()
+        periods = [p for p in sorted(df["period_start"].dropna().unique()) if str(p)[:7] < cur][-months:]
         df = df[df["period_start"].isin(periods)].copy()
         df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
         return df, src
