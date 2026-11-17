@@ -1,0 +1,67 @@
+"""監査 低危 B 組（L4/L5/L6/L7/L13/L14/L16/L18/L25）の回帰テスト。DB・網なし。"""
+from __future__ import annotations
+
+import pathlib
+import sqlite3
+from unittest import mock
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+PAGES = pathlib.Path(__file__).resolve().parents[1] / "pages"
+
+
+def _page(prefix: str) -> pathlib.Path:
+    return next(PAGES.glob(f"{prefix}_*.py"))
+
+
+# ── L18: 入荷困難商品の履歴 item_id ──────────────────────────────
+
+class _PgLikeConn:
+    """psycopg2 と同じく cursor.lastrowid が 0（OID なし表）を返す SQLite 接続。"""
+
+    class _Cur:
+        def __init__(self, cur):
+            self._cur = cur
+            self.lastrowid = 0
+
+        def __getattr__(self, name):
+            return getattr(self._cur, name)
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def execute(self, sql, params=()):
+        return self._Cur(self._raw.execute(sql, params))
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
+def _diff_db() -> sqlite3.Connection:
+    c = sqlite3.connect(":memory:", check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    c.executescript("""
+        CREATE TABLE difficult_items (id INTEGER PRIMARY KEY AUTOINCREMENT, item_key TEXT NOT NULL,
+            reason TEXT NOT NULL, note TEXT, created_at TEXT, updated_at TEXT);
+        CREATE TABLE difficult_items_history (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER,
+            item_key TEXT, reason TEXT, note TEXT, action TEXT, action_at TEXT);
+        INSERT INTO difficult_items (item_key, reason) VALUES ('既存', '廃番');   -- 新規は id=2
+    """)
+    return c
+
+
+@pytest.mark.parametrize("pg_like", [True, False], ids=["pg-lastrowid-0", "sqlite"])
+def test_difficult_items_history_gets_real_id_audit_l18(pg_like):
+    raw = _diff_db()
+    conn = _PgLikeConn(raw) if pg_like else raw
+    with mock.patch("shared.auth.require_password", lambda: None), \
+            mock.patch("shared.db.get_connection", lambda: conn):
+        at = AppTest.from_file(str(_page("12")), default_timeout=60)
+        at.run()
+        at.text_input[0].input("4901111310490")
+        at.text_input[1].input("在庫無し")
+        at.button[0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    hist = raw.execute("SELECT item_id, action FROM difficult_items_history").fetchall()
+    assert [tuple(r) for r in hist] == [(2, "insert")]

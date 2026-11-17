@@ -46,11 +46,12 @@ with st.expander(t("➕ 新规录入"), expanded=False):
                 st.error(t("ブランド/商品名/JAN 与 理由 都必须填写。"))
             else:
                 now = _now()
-                cur = conn.execute(
-                    "INSERT INTO difficult_items (item_key, reason, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                # PG（psycopg2）の lastrowid は OID で常に 0 → RETURNING で実 id を取る（SQLite 3.35+ も可・監査 L18）
+                new_id = conn.execute(
+                    "INSERT INTO difficult_items (item_key, reason, note, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?) RETURNING id",
                     (item_key.strip(), reason.strip(), (note or "").strip() or None, now, now),
-                )
-                new_id = cur.lastrowid
+                ).fetchone()[0]
                 conn.execute(
                     """
                     INSERT INTO difficult_items_history (item_id, item_key, reason, note, action, action_at)
