@@ -627,8 +627,9 @@ def compute_recommendations(
         return df
 
     # 推奨分のみで supplier_total を集計 (NEW/保留 は 0 円なので除外しても同じ)
+    # 在庫過多で保留（overstock）の行は発注しないので合計に入れない（入れると最低受注額を満たしたと誤判定・監査 M16）
     df["supplier_total"] = df["supplier_name"].map(
-        df[df["line_cost"] > 0].groupby("supplier_name")["line_cost"].sum()
+        df[(df["line_cost"] > 0) & ~df["overstock"].fillna(False).astype(bool)].groupby("supplier_name")["line_cost"].sum()
     ).fillna(0).astype(int)
     df["meets_min_order"] = df.apply(
         lambda r: (r["min_order_amount"] == 0) or (r["supplier_total"] >= r["min_order_amount"]),
