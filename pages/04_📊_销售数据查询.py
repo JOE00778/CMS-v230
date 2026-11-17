@@ -625,12 +625,16 @@ with _q_tab:
         tot_g = df["arari"].astype(float).sum()
         # 库存总金额/数量 = 输出部门 · 弁天倉庫 最新快照（2026-11-04 京东/CGF 除外）
         # 应用 _filt 中 im.* 条件（等级/厂商/取扱区分/SKU 关键词），s.shop 库存无适用故剔除
-        _filt_im = [c for c in _filt if c.startswith("im.")]
+        # 在庫に効く条件 = im.* だけを見る条件（「(im.jan LIKE ? OR …)」のように ( で始まる JAN/商品名検索も含む。
+        # startswith("im.") だと検索語が落ちて、売上は絞り込み・在庫は部門全体 → 周転率・存销比が狂っていた・監査 M22）
+        def _inv_ok(c: str) -> bool:
+            return "im." in c and "s." not in c.replace("im.", "")
+        _filt_im = [c for c in _filt if _inv_ok(c)]
         _filtp_im: list = []
         _pi = 0
         for c in _filt:
             n = c.count("?")
-            if c.startswith("im."):
+            if _inv_ok(c):
                 _filtp_im.extend(_filtp[_pi:_pi + n])
             _pi += n
         _inv_extra = (" AND " + " AND ".join(_filt_im)) if _filt_im else ""
