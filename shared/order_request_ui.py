@@ -525,12 +525,14 @@ def render_po(ctx: Ctx, kind: str) -> None:
                      key=f"{k}_make_po"):
         return
     unreg = [str(r["JAN"]) for r in sel if r["JAN"] not in ctx.names]
+    # 数量が空/0 の行も止める（数量 0 の CSV を出した後 int(NaN) で落ち、申請が待发注に残っていた・監査 L14）
     bad = [str(r["JAN"]) for r in sel if r["JAN"] in ctx.names and (
-        not r["仕入先"] or pd.isna(pd.to_numeric(r["单价"], errors="coerce")) or float(r["单价"]) <= 0)]
+        not r["仕入先"] or pd.isna(pd.to_numeric(r["单价"], errors="coerce")) or float(r["单价"]) <= 0
+        or pd.isna(pd.to_numeric(r["数量"], errors="coerce")) or float(r["数量"]) <= 0)]
     if unreg:
         st.warning(t("NST 未建档，没放进 CSV（先到 page15 商品登录建档）: {jans}").format(jans="・".join(unreg)))
     if bad:
-        st.error(t("❌ 这些没填仕入先或单价，全部没有生成: {jans}").format(jans="・".join(bad)))
+        st.error(t("❌ 这些没填仕入先、单价或数量，全部没有生成: {jans}").format(jans="・".join(bad)))
     lot_bad = ctx.lot_errors([r for r in sel if r["JAN"] in ctx.names], "数量")
     if lot_bad:
         st.error(t("❌ 这些数量不是起批量的整倍数，全部没有生成: {items}").format(items=" / ".join(lot_bad)))

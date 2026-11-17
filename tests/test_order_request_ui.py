@@ -85,3 +85,42 @@ def test_register_excel_disabled_without_unregistered_selection_20261116():
     _, dl, reg = _run(select_all=False)
     b = dl["p49new_reg_dl"]
     assert b.disabled and b.label == "📥 下载商品登录 Excel（0 件）" and reg.call_count == 0
+
+
+def test_po_blank_qty_blocks_whole_batch_audit_l14():
+    """監査 L14: 待发注で「数量」を空にして生成 → CSV を作らず、发注済みにも移さない（以前は数量 0 の CSV + int(NaN) で落ちた）。"""
+    import shared.order_request_ui as UI
+    from shared import new_item_request as NR
+    real = UI.lang_stable_editor
+
+    def editor(data, *, key, reset=None, **kw):
+        out = real(data, key=key, reset=reset, **kw)
+        if key == "p49new_po_editor":
+            out = out.copy()
+            out["选择"] = True
+            out["数量"] = float("nan")
+        return out
+
+    req = {**_req(1, "4900000000011", None), "status": "confirmed", "supplier": SUP, "confirmed_qty": 12}
+    st.cache_data.clear()
+    choices = NC.Choices(suppliers=(SUP,), middle_by_large=dict(NC.MIDDLE_BY_LARGE))
+    with mock.patch("shared.auth.require_password", lambda: None), \
+            mock.patch.object(UI, "get_connection", _conn), \
+            mock.patch.object(UI, "load_suppliers", lambda c: [SUP]), \
+            mock.patch.object(UI, "load_choices", lambda c: choices), \
+            mock.patch.object(UI, "lang_stable_editor", editor), \
+            mock.patch("shared.po_csv.load_item_master", lambda c: ITEMS), \
+            mock.patch("shared.image_search.search_jan", lambda j: ""), \
+            mock.patch.object(NR, "ensure_table", lambda c: None), \
+            mock.patch.object(NR, "load_requests", lambda c: [dict(req)]), \
+            mock.patch.object(NR, "load_po_lines", lambda c, j: []), \
+            mock.patch.object(NR, "load_supplier_sources", lambda c, j: ({}, {})), \
+            mock.patch.object(NR, "mark_ordered", return_value=1) as mark:
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__lark_user"] = {"name": "徐 越"}
+        at.run()
+        at.button(key="p49new_make_po").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert mark.call_count == 0
+    assert "p49new_po_csv" not in at.session_state
+    assert any("4900000000011" in e.value and "数量" in e.value for e in at.error), [e.value for e in at.error]
