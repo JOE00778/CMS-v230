@@ -208,6 +208,8 @@ if step == 1:
                 MAX(im.item_code) AS item_code,
                 MAX(im.display_name) AS display_name,
                 MAX(im.handling_cd) AS handling_status,
+                MAX(im.item_rank) AS item_rank,
+                BOOL_OR(im.is_inactive) AS is_inactive,
                 MAX(im.cost_estimate) AS std_cost,
                 MAX(im.average_cost) AS avg_cost,
                 MAX(im.maker) AS maker,
@@ -234,9 +236,11 @@ if step == 1:
                 "display_name": r["display_name"],
                 "avg_cost": float(r["avg_cost"]) if r["avg_cost"] is not None else None,
                 "std_cost_old": float(r["std_cost"]) if r["std_cost"] is not None else None,
+                "inactive_flag": r["is_inactive"],   # NST の停用（監査 M14）
             }
             master = {
                 "handling_status": r["handling_status"],
+                "item_rank": r["item_rank"],
                 "display_name": r["display_name"],
             }
             d = decide_action(row, master)

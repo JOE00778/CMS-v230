@@ -75,9 +75,15 @@ def _is_missing(v) -> bool:
     return f <= 0
 
 
+# 停产・取扱中止と見なす語（NST の handling_cd / item_rank の実際の値は 取扱中止・メーカー取扱中止 など。
+# 「廃番」だけ見ていて実データでは 1 件も当たらなかった・監査 M14 2026-11-17。shared/purchase_v3.DISCONTINUED_TOKENS と同じ）
+INACTIVE_TOKENS = ("取扱中止", "取り扱い中止", "メーカー取扱中止", "取扱停止", "廃盤", "廃番", "終売", "生産終了")
+
+
 def _is_inactive(row: dict, master: dict | None) -> bool:
-    """先看 master.handling_status，再看 row.inactive_flag。"""
-    if master and str(master.get("handling_status", "")).strip() == "廃番":
+    """先看 master.handling_status / item_rank，再看 row.inactive_flag。"""
+    if master and any(tok in f"{master.get('handling_status') or ''} {master.get('item_rank') or ''}"
+                      for tok in INACTIVE_TOKENS):
         return True
     flag = row.get("inactive_flag")
     if flag is None:
