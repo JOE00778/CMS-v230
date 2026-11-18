@@ -87,6 +87,44 @@ _ITEM_KEYS = ["page15_result", "page15_csv_bytes", "page15_csv_name", "page15_cs
               "page15_skuid_blank", "page15_weight_fix", "page15_hs_retry_msg"]
 
 
+_STORE_TTL = 6 * 3600   # 処理結果をサーバに置く時間（秒）
+
+
+@st.cache_resource
+def _result_store() -> dict:
+    """{(操作者, ファイル hash): (保存時刻, 処理結果)}。会話（session）が消えても（再接続・再起動・ブラウザの再読込）、
+    同じ人が同じファイルを上げ直せば網を引き直さずに戻す（Boss 2026-11-18「商品登録が不安定・データが消える」）。
+    ponytail: プロセスのメモリ・6 時間・最大 30 件。コンテナ再起動では消える（その時は「処理する」を押し直す）。"""
+    return {}
+
+
+def _store_user() -> str:
+    u = st.session_state.get("__lark_user") or {}
+    return str(u.get("union_id") or u.get("name") or "")
+
+
+def _store_put(h: str, res: dict) -> None:
+    import time
+    store, now = _result_store(), time.time()
+    for k in [k for k, (ts, _) in store.items() if now - ts > _STORE_TTL]:
+        store.pop(k, None)
+    store[(_store_user(), h)] = (now, res)
+    for k in sorted(store, key=lambda k: store[k][0])[:-30]:
+        store.pop(k, None)
+
+
+def _store_get(h: str) -> dict | None:
+    import time
+    hit = _result_store().get((_store_user(), h))
+    return hit[1] if hit and time.time() - hit[0] <= _STORE_TTL else None
+
+
+def _store_forget() -> None:
+    store, me = _result_store(), _store_user()
+    for k in [k for k in store if k[0] == me]:
+        store.pop(k, None)
+
+
 def _content_hash(records) -> str:
     """表・行の内容ハッシュ（CSV が今の表から作られたか / 台帳に同じ内容を記録済みか の判定）。"""
     import json
@@ -536,6 +574,7 @@ def _render_item_tab() -> None:
     run = col_r.button(t("▶ 処理する"), type="primary", disabled=uploaded is None,
                        key="page15_run", use_container_width=True)
     if col_c.button(t("🗑️ 清除结果"), key="page15_item_clear", use_container_width=True):
+        _store_forget()
         for k in _ITEM_KEYS:
             st.session_state.pop(k, None)
         st.session_state.pop("page15_upload", None)
@@ -558,6 +597,10 @@ def _render_item_tab() -> None:
             return
         res["key"] = (h, want_weight)
         st.session_state["page15_result"] = res
+        _store_put(h, res)
+    if not run and (not res or res["key"][0] != h) and (saved := _store_get(h)) is not None:
+        res = st.session_state["page15_result"] = saved
+        st.info(t("🔄 已恢复这个文件的处理结果（无需重新处理）。之前未生成的手动修改需要重新填写"))
     if not res:
         return
     if res["key"][0] != h:

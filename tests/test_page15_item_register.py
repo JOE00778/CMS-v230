@@ -487,3 +487,57 @@ def test_table_hash_ignores_display_columns_that_follow_language():
     assert ns["_table_hash"](pd.DataFrame([zh])) == h
     assert ns["_table_hash"](pd.DataFrame([{**base, "アイテム名": "直した"}])) != h
     assert ns["_table_hash"](pd.DataFrame([{**base, "型番": "X-1"}])) != h
+
+
+def test_page15_result_survives_lost_session_20261118(page15_offline):
+    """会話（session）が消えても、同じ人が同じファイルを上げ直せば「処理する」の結果がすぐ戻る（網を引き直さない）。
+    別の人・別のファイルには出さない。🗑️ 清除结果 で消える（Boss 2026-11-18「执行」）。"""
+    import io
+
+    from openpyxl import load_workbook
+
+    from data_warehouse.templates import item_entry_form as FORM
+    from shared import jan_web
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    choices = NC.Choices(suppliers=("0001 ベストアンサ株式会社",), middle_by_large=dict(NC.MIDDLE_BY_LARGE))
+    wb = load_workbook(io.BytesIO(FORM.build_template(choices)))
+    ws = wb[FORM.SHEET_INPUT]
+    vals = {"JANコード": "4901234567894", "商品原価": "100", "仕入先1：仕入先": "0001 ベストアンサ株式会社",
+            "商品担当者": "043 徐越", "大分類": "食品", "中分類": "菓子", "カートン入数": "24"}
+    for j, cell in enumerate(ws[1], start=1):
+        if cell.value in vals:
+            ws.cell(row=2, column=j, value=vals[cell.value])
+    buf = io.BytesIO()
+    wb.save(buf)
+    up = mock.MagicMock()
+    up.getvalue.return_value = buf.getvalue()
+    conn = mock.MagicMock()
+    conn.__enter__.return_value = conn
+    fetch = mock.MagicMock(return_value=jan_web.JanMeta("4901234567894", "テスト クッキー 100g", "テスト製菓", "", "ok"))
+
+    def session(user):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.session_state["__lark_user"] = {"name": user, "union_id": f"u-{user}"}
+        return at.run()
+
+    with mock.patch("shared.db.get_connection", return_value=conn), \
+            mock.patch("streamlit.file_uploader", return_value=up), \
+            mock.patch.object(NC, "load_choices", return_value=choices), \
+            mock.patch.object(NC, "load_prefix_makers", return_value={}), \
+            mock.patch.object(NC, "existing_jans", return_value=(set(), [])), \
+            mock.patch.object(NC, "existing_item_codes", return_value=(set(), [])), \
+            mock.patch.object(jan_web, "fetch_meta", fetch), mock.patch.object(jan_web, "INTERVAL", 0):
+        at = session("徐越")
+        at.button(key="page15_run").click().run()
+        n = fetch.call_count
+        assert n >= 1 and "page15_result" in at.session_state
+        at2 = session("徐越")                                   # 会話が消えた → 新しい会話・同じファイル
+        assert not at2.exception, [e.value for e in at2.exception]
+        assert "page15_result" in at2.session_state and fetch.call_count == n      # 網を引き直さない
+        assert at2.button(key="page15_wt_fill1") is not None
+        at3 = session("刘颖")                                   # 別の人には出さない
+        assert "page15_result" not in at3.session_state
+        at2.button(key="page15_item_clear").click().run()        # 清除结果 → 次の会話にも出ない
+        assert "page15_result" not in session("徐越").session_state
