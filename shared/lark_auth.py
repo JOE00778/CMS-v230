@@ -21,6 +21,7 @@ URL flow：
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import secrets
 from typing import Optional
@@ -75,6 +76,24 @@ def _browser_cookie(name: str) -> str:
         return (st.context.cookies or {}).get(name) or ""
     except Exception:
         return ""
+
+
+_log = logging.getLogger("cms.auth")
+
+
+def _client() -> str:
+    """飞书客户端内置浏览器（UA 带 Lark / Feishu）还是一般浏览器。日志用，不记 UA 全文。"""
+    try:
+        ua = (st.context.headers or {}).get("User-Agent") or ""
+    except Exception:
+        ua = ""
+    return "lark" if ("Lark" in ua or "Feishu" in ua) else "browser"
+
+
+def _log_login(result: str, **extra) -> None:
+    """登录结果 1 行（docker logs 可查；不记 code・state・token・姓名・Boss 2026-11-18）。WARNING = 不配 handler 也会输出"""
+    _log.warning("lark_login result=%s client=%s%s", result, _client(),
+                 "".join(f" {k}={v}" for k, v in extra.items()))
 
 
 def build_login_url(state: str) -> str:
@@ -150,11 +169,13 @@ def try_handle_oauth_callback() -> Optional[dict]:
     # 監査 L3: 发起登录的浏览器才有同值 cookie；不符（他人发来的 /?code= 链接）就不换 code
     got, expect = qp.get("state") or "", _browser_cookie(STATE_COOKIE)
     if not (got and expect and hmac.compare_digest(got.encode(), expect.encode())):
+        _log_login("state_mismatch", cookie="missing" if not expect else "differs")
         return None
     try:
         user = exchange_code_for_user(code)
     except Exception:
-        return None
+        user = None
+    _log_login("ok" if user else "exchange_failed")
     if user:
         # 清掉 URL 上的 code，避免刷新重提交
         try:

@@ -346,16 +346,16 @@ def _lark_login_gate(dev_mock: bool = False) -> None:
     # session_state 刷新即丢，靠这个让刷新自动重登：飞书已授权则静默回跳带 code →
     # 自动登录，用户只闪一下、无需手动点。
     if lark_on and not code_failed and not dev_mock:
-        import streamlit.components.v1 as components
         _card = ('<div class="lark-card"><h1>' + t("🔒 CMS 登录") + '</h1>'
                  '<p>' + t("正在跳转飞书登录…<br>没有自动跳转的话，点下方按钮。") + '</p>'
                  f'<a class="lark-btn" href="{login_url}" target="_top">' + t("用飞书登录") + '</a></div>')
         st.markdown(_card, unsafe_allow_html=True)
-        # Streamlit components iframe 的 sandbox 含 allow-top-navigation → 可跳顶层窗口
-        components.html(   # 先写 state cookie 再跳转（同一 script 内顺序执行）
+        # components.html 的 iframe sandbox 没有 allow-top-navigation（1.63 实测）→ 跳不出去、从未生效。
+        # st.html(unsafe_allow_javascript=True) 在主文档执行 → 能跳（2026-11-18）
+        st.html(   # 先写 state cookie 再跳转（同一 script 内顺序执行）
             f'<script>{lark_auth.state_cookie_js(_state)} '
-            f'window.top.location.href = "{login_url}";</script>',
-            height=0,
+            f'window.location.href = "{login_url}";</script>',
+            unsafe_allow_javascript=True,
         )
         st.stop()
 
