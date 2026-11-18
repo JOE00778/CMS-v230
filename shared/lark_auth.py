@@ -20,7 +20,9 @@ URL flow：
 """
 from __future__ import annotations
 
+import hmac
 import os
+import secrets
 from typing import Optional
 
 import requests
@@ -51,8 +53,32 @@ def is_configured() -> bool:
     return bool(app_id and app_secret and redirect)
 
 
-def build_login_url(state: str = "cms") -> str:
-    """构造飞书 OAuth 同意页 URL。"""
+# 監査 L3（login CSRF）: state は毎回ランダム、発行したブラウザに cookie で紐付け、
+# 回调で URL の state と cookie が一致したときだけ code を換える。
+# cookie の書き方は 7 天免登 cookie（auth._write_login_cookie）と同じ JS document.cookie。
+STATE_COOKIE = "cms_lark_state"
+_STATE_TTL = 600  # 10 分：飞书授权页で放置しても通る長さ
+
+
+def new_state() -> str:
+    return "cms-" + secrets.token_urlsafe(16)
+
+
+def state_cookie_js(state: str) -> str:
+    """state を同ブラウザの cookie に書く JS（components.html の <script> 内で使う）。"""
+    return (f'document.cookie = "{STATE_COOKIE}={state}; path=/; '
+            f'max-age={_STATE_TTL}; SameSite=Lax";')
+
+
+def _browser_cookie(name: str) -> str:
+    try:
+        return (st.context.cookies or {}).get(name) or ""
+    except Exception:
+        return ""
+
+
+def build_login_url(state: str) -> str:
+    """构造飞书 OAuth 同意页 URL。state 用 new_state() 生成并用 state_cookie_js() 写进浏览器。"""
     app_id, _, redirect = _config()
     return (
         f"{LARK_OPEN_HOST}/open-apis/authen/v1/index"
@@ -120,6 +146,10 @@ def try_handle_oauth_callback() -> Optional[dict]:
     qp = st.query_params
     code = qp.get("code")
     if not code:
+        return None
+    # 監査 L3: 发起登录的浏览器才有同值 cookie；不符（他人发来的 /?code= 链接）就不换 code
+    got, expect = qp.get("state") or "", _browser_cookie(STATE_COOKIE)
+    if not (got and expect and hmac.compare_digest(got.encode(), expect.encode())):
         return None
     try:
         user = exchange_code_for_user(code)

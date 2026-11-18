@@ -92,3 +92,51 @@ def test_l2_rollback_message_is_truthful():
     block = src[src.index("if _fail:", i):src.index("conn_w.commit()", i)]
     assert "ok={_ok}" not in block
     assert 't("保存失败，本批全部未保存（已回滚）")' in block
+
+
+# ---- L3: 飞书 OAuth state はランダム・発行ブラウザの cookie と一致したときだけ code を換える ----
+class _FakeSt:
+    def __init__(self, qp: dict, cookies: dict):
+        from types import SimpleNamespace
+
+        class _QP(dict):
+            def clear(self):
+                super().clear()
+        self.query_params = _QP(qp)
+        self.context = SimpleNamespace(cookies=cookies)
+        self.secrets = {}
+
+
+def _run_callback(monkeypatch, qp, cookies):
+    from shared import lark_auth
+    for k, v in {"LARK_APP_ID": "cli_x", "LARK_APP_SECRET": "s", "LARK_REDIRECT_URI": "https://cms"}.items():
+        monkeypatch.setenv(k, v)
+    calls = []
+    monkeypatch.setattr(lark_auth, "st", _FakeSt(qp, cookies))
+    monkeypatch.setattr(lark_auth, "exchange_code_for_user",
+                        lambda code: calls.append(code) or {"name": "u", "union_id": code})
+    return lark_auth.try_handle_oauth_callback(), calls
+
+
+def test_l3_matching_state_logs_in(monkeypatch):
+    user, calls = _run_callback(monkeypatch, {"code": "c1", "state": "cms-abc"}, {"cms_lark_state": "cms-abc"})
+    assert user and calls == ["c1"]
+
+
+@pytest.mark.parametrize("qp,cookies", [
+    ({"code": "c1", "state": "cms-abc"}, {}),                              # 受害者に cookie なし
+    ({"code": "c1", "state": "cms-abc"}, {"cms_lark_state": "cms-xyz"}),   # 別ブラウザの state
+    ({"code": "c1", "state": "cms"}, {"cms_lark_state": "cms-xyz"}),       # 旧固定 state
+    ({"code": "c1"}, {"cms_lark_state": "cms-xyz"}),                       # state なし
+])
+def test_l3_state_mismatch_is_rejected_without_exchanging_code(monkeypatch, qp, cookies):
+    user, calls = _run_callback(monkeypatch, qp, cookies)
+    assert user is None and calls == []
+
+
+def test_l3_state_is_random_and_cookie_js_carries_it():
+    from shared import lark_auth
+    s1, s2 = lark_auth.new_state(), lark_auth.new_state()
+    assert s1 != s2 and len(s1) > 16
+    assert f"state={s1}" in lark_auth.build_login_url(s1)
+    assert f"{lark_auth.STATE_COOKIE}={s1};" in lark_auth.state_cookie_js(s1)

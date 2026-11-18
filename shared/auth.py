@@ -337,29 +337,33 @@ def _lark_login_gate(dev_mock: bool = False) -> None:
             pass
 
     lark_on = _lark_sso_enabled()
+    if lark_on:   # 監査 L3: 本次渲染的登录链接与 state cookie 用同一个 state
+        from shared import lark_auth
+        _state = lark_auth.new_state()
+        login_url = lark_auth.build_login_url(_state)
 
     # 正常未登录 + 飞书已配 + 非失败 + 非 dev → 自动重定向飞书授权（方案B）。
     # session_state 刷新即丢，靠这个让刷新自动重登：飞书已授权则静默回跳带 code →
     # 自动登录，用户只闪一下、无需手动点。
     if lark_on and not code_failed and not dev_mock:
-        from shared import lark_auth
         import streamlit.components.v1 as components
-        login_url = lark_auth.build_login_url()
         _card = ('<div class="lark-card"><h1>' + t("🔒 CMS 登录") + '</h1>'
                  '<p>' + t("正在跳转飞书登录…<br>没有自动跳转的话，点下方按钮。") + '</p>'
                  f'<a class="lark-btn" href="{login_url}" target="_top">' + t("用飞书登录") + '</a></div>')
         st.markdown(_card, unsafe_allow_html=True)
         # Streamlit components iframe 的 sandbox 含 allow-top-navigation → 可跳顶层窗口
-        components.html(
-            f'<script>window.top.location.href = "{login_url}";</script>',
+        components.html(   # 先写 state cookie 再跳转（同一 script 内顺序执行）
+            f'<script>{lark_auth.state_cookie_js(_state)} '
+            f'window.top.location.href = "{login_url}";</script>',
             height=0,
         )
         st.stop()
 
     # 失败 / 飞书没配 / dev_mock → 显示卡片 + 手动按钮（不自动跳）
     if lark_on:
-        from shared import lark_auth
-        action = (f'<a class="lark-btn" href="{lark_auth.build_login_url()}" '
+        import streamlit.components.v1 as components
+        components.html(f'<script>{lark_auth.state_cookie_js(_state)}</script>', height=0)
+        action = (f'<a class="lark-btn" href="{login_url}" '
                   'target="_top">' + t("用飞书登录") + '</a>')
     else:
         action = '<div class="lark-note">' + t("飞书未配置（开发模式）") + '</div>'
