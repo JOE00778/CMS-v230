@@ -580,6 +580,13 @@ else:
 #        起票済は NST 売上に反映済みなので推定から丸ごと外すのが正しい。
 #     注文の帰属月 = min(ym)（出荷正票の月）。財務が補票すると当該注文が
 #     除外に回り本列が減り、NST 売上が下がり、調整後売上はほぼ動かない。
+# ⚠️ v_shipped_order 全量集計は ~36s（2026-11-20 実測）> cms_reader の statement_timeout 30s。
+#    超時を握り潰すと「取消冲减估 ¥0」になり調整後売上/CM が過大に出る → この 1 本だけ延長し、失敗は表示する。
+#    ponytail: 本質対策はビューの事前集計（database 側）。結果は data_version で日次キャッシュ。
+try:
+    conn.execute("SET statement_timeout = '120s'")
+except Exception:
+    pass
 _cxl_df, _cxl_err = _query(
     "WITH o AS ("
     "  SELECT trim(shop) AS shop, order_no, min(ym) AS ym0, "
@@ -593,6 +600,14 @@ _cxl_df, _cxl_err = _query(
     "SELECT shop, sum(coalesce(pos_amt,0)) AS cancel_est "
     "FROM o WHERE ym0 = ? AND NOT has_credit "
     "GROUP BY 1", (ym,))
+try:
+    conn.execute("SET statement_timeout = DEFAULT")
+except Exception:
+    pass
+if _cxl_err:
+    st.error(("取消控除見込の取得に失敗（0 として扱えないため調整後売上/CM は参考値）: "
+              if get_lang() == "ja" else
+              "取消冲减估取数失败（调整后营业额/CM 仅供参考）: ") + _cxl_err)
 if _cxl_df is None or _cxl_df.empty:
     _cxl_df = pd.DataFrame(columns=["shop", "cancel_est"])
 
@@ -774,14 +789,23 @@ _perf_tab_lbl = "📋 運営業績" if get_lang() == "ja" else "📋 运营绩�
 # Tab 0：月内日次推移（曲線図）← Boss 依頼の核心
 # ============================================================
 with tab_day:
-    daily = df.groupby("sale_date", as_index=False).agg(
-        qty=("qty_sold", "sum"),
-        revenue=("revenue", "sum"),
-        defined_cost=("defined_cost", "sum"),
-        gross_profit=("gross_profit", "sum"),
-        n_shop=("shop", "nunique"),
-        n_sku=("item_internal_id", "nunique"),
-    ).sort_values("sale_date")
+    # 按下单日（Boss 2026-11-20）：NST は開票日計上で日曜に開票が無い → 下単日へ按分。
+    #   Shopee/Coupang は下単日あり、その他は開票日のまま。上月下単分は本月日次から除外し注記。
+    from shared.order_date_daily import SHARES_SQL, redistribute
+    _shop_day = df.groupby(["shop", "sale_date"], as_index=False).agg(
+        qty=("qty_sold", "sum"), revenue=("revenue", "sum"),
+        defined_cost=("defined_cost", "sum"), gross_profit=("gross_profit", "sum"))
+    _shares, _sh_err = _query(SHARES_SQL, (ym,))
+    if _sh_err:
+        st.error(("下単日按分の取得に失敗（開票日のまま表示）: " if get_lang() == "ja"
+                  else "下单日分摊取数失败（按开票日显示）: ") + _sh_err)
+    daily, _prior_rev = redistribute(
+        _shop_day, _shares if _shares is not None else pd.DataFrame(
+            columns=["shop", "inv_date", "order_date", "amt"]), ym)
+    daily["sale_date"] = pd.to_datetime(daily["sale_date"]).dt.date
+    daily = daily[daily["sale_date"] <= _cutoff]
+    for _c in ("revenue", "defined_cost", "gross_profit"):
+        daily[_c] = daily[_c].map(_rhu)
     daily["gross_margin"] = (
         daily["gross_profit"] / daily["revenue"].where(daily["revenue"] != 0)
     ).fillna(0) * 100
@@ -914,8 +938,15 @@ with tab_day:
     # 明细表（日付倒序·最近日在上。daily 本体は昇順維持＝前日指標/曲線図が依存）
     day_cols = ("sale_date", "qty", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "ad", "cm_est",
-                "n_shop", "n_sku")
+                "n_shop")
     html_table(_disp(daily.sort_values("sale_date", ascending=False), day_cols))
+    st.caption((f"日付=下単日（Shopee/Coupang の注文日で按分・その他は開票日）· "
+                f"原価/粗利は店舗×開票日の粗利率で按分した推定 · "
+                f"前月下単・当月開票 ¥{_prior_rev:,.0f} は日次に含まず（月次 KPI には含む）· 直近数日は未開票分が後から加算される")
+               if get_lang() == "ja" else
+               (f"日期=下单日（Shopee/Coupang 按订单下单日分摊·其他按开票日）· "
+                f"原价/毛利按店铺×开票日毛利率分摊（估算）· "
+                f"上月下单本月开票 ¥{_prior_rev:,.0f} 未计入每日（月度 KPI 已含）· 最近几天的订单开票后才会陆续补上"))
     st.caption(("広告費=Shopee Ads 日次消耗（円換算·手入力の月次分は含まず）· "
                 "CM(日次推定)=日粗利 − 日広告費 − 日収益×当月手数料率"
                 "（手数料/取消控除は月次概念のため率で按分した推定値·月次 CM が正）")
