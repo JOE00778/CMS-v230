@@ -31,6 +31,7 @@ def build(today: dt.date) -> tuple[str, dict]:
     cnt = trk.state.value_counts().to_dict() if len(trk) else {}
     red = trk[trk.state == "🔴 转第二货源"] if len(trk) else trk
     out = trk[(trk.state == "⛔ 已断货") & (trk["rank"] != "C")] if len(trk) else trk
+    red = red.drop_duplicates("jan") if len(red) else red; out = out.drop_duplicates("jan") if len(out) else out   # 同一品多张 PO 只提一次
     yel = trk[trk.state.isin(["🟠 盯第一货源", "🟡 迟到"]) & (trk["rank"] != "C")] if len(trk) else trk
     L.append("🚚 到货闭环：" + " / ".join(f"{k} {v}" for k, v in cnt.items()) + f" · 在途合计 {len(trk)} 行 {wan(trk.amount.sum()) if len(trk) else '0'}")
     for _, r in out.head(10).iterrows():
