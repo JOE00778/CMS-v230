@@ -52,10 +52,16 @@ def load_inputs(conn, today: date | None = None) -> dict:
                    "WHERE quantity > 0 AND trandate >= ?", (today - timedelta(days=365),))
     rcpt = _df(conn, "SELECT vendor_name, item_internal_id, lead_time_days AS lt FROM nst.receipt_po_match "
                      "WHERE lead_time_days IS NOT NULL AND lead_time_days >= 0")
-    brand = _df(conn, "SELECT jan, brand FROM brand.item_vendor_brand")
+    try:
+        brand = _df(conn, "SELECT jan, brand FROM brand.item_vendor_brand")
+        brand_ok = True
+    except Exception:   # cms_reader 无 brand schema 权限时降级：交期只到供货商级
+        try: conn.rollback()
+        except Exception: pass
+        brand = pd.DataFrame(columns=["jan", "brand"]); brand_ok = False
     sales_max = sales.sale_date.max() if len(sales) else None
     return dict(today=today, items=items, sales=sales, snap=snap, snap_date=snap_date, open_po=open_po, po=po,
-                rcpt=rcpt, brand=brand, sales_max=sales_max)
+                rcpt=rcpt, brand=brand, brand_ok=brand_ok, sales_max=sales_max)
 
 
 def _lead_tables(inp: dict):

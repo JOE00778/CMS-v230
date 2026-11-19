@@ -62,6 +62,8 @@ wan = lambda x: f"{x / 1e4:,.0f}万"
 st.caption(t("库存快照 {s} · 销量到 {d} · 品数 {n}（A/B/C 有销量、排除 OEM）· 下次定期订货日 {nx}").format(
     s=inp["snap_date"], d=inp["sales_max"], n=s["n"], nx=res["next_day"]))
 
+if not inp.get("brand_ok", True):
+    st.warning(t("只读账号没有 brand schema 权限：交期按供货商级中位计算（未到供货商×品牌）。授权后自动恢复。"))
 c1, c2, c3, c4 = st.columns(4)
 c1.metric(t("A/B 手持（原价）"), wan(s["oh_ab"]), help=t("弁天倉庫 × 定義原価"))
 c2.metric(t("A/B 在途"), wan(s["pipe_ab"]), t("含审批保留 {x}").format(x=wan(s["pending_ab"])))
