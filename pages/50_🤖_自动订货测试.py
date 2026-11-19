@@ -34,6 +34,7 @@ with st.sidebar:
     H = st.number_input(t("巡检视野（天）"), 7, 30, 12, 1)
     order_day = st.number_input(t("每月定期订货日"), 1, 28, 1, 1)
     fwd_days = st.number_input(t("前推天数"), 60, 240, 150, 30)
+    buffer_days = st.number_input(t("保险日（到货闭环）"), 0, 14, 3, 1)
     st.markdown("---")
     plan_txt = st.text_area(t("计划月销（活动/上新前录入）"), placeholder="JAN,月销件数\n4901234567890,600",
                             help=t("覆盖该品的日均需求（取大）。回测证明这是补掉促销尖峰断货的唯一办法。"))
@@ -54,7 +55,7 @@ def _inputs(today: date) -> dict:
 
 if run: _inputs.clear()
 inp = _inputs(date.today())
-params = dict(zslow=zslow, zcard=zcard, trend=trend, H=int(H), order_day=int(order_day), fwd_days=int(fwd_days))
+params = dict(zslow=zslow, zcard=zcard, trend=trend, H=int(H), order_day=int(order_day), fwd_days=int(fwd_days), buffer_days=int(buffer_days))
 with st.spinner(t("计算中…")):
     res = E.compute(inp, params, plan)
 df, fwd, s = res["items"], res["forward"], E.summary(res)
@@ -71,7 +72,7 @@ c3.metric(t("今天巡检触发 A/B"), wan(s["emerg_amt"]), t("{n} SKU · 现货
     n=s["emerg_sku"], c=s["emerg_card_sku"], a=wan(s["emerg_card_amt"])))
 c4.metric(t("下次定期单 A/B"), wan(s["next_ab_amt"]), t("{n} SKU · C 另 {c}").format(n=s["next_ab_sku"], c=wan(s["next_c_amt"])))
 
-tab1, tab2, tab3, tab4 = st.tabs([t("🚨 今日巡检"), t("📅 下次定期单"), t("📈 前推"), t("📋 逐品明细")])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([t("🚨 今日巡检"), t("📅 下次定期单"), t("📈 前推"), t("📋 逐品明细"), t("🚚 到货闭环")])
 SHOW = ["jan", "name", "rank", "vendor", "card", "planned", "L", "sL", "lot", "d", "d30", "d90", "cost", "oh", "pipe", "pending",
         "days_cover", "oh_next", "S", "q_next", "amt_next", "trig_now", "q_emerg", "amt_emerg"]
 
@@ -112,3 +113,26 @@ with tab4:
     st.dataframe(df[SHOW], use_container_width=True, hide_index=True)
     buf = io.BytesIO(); df[SHOW].to_csv(buf, index=False, encoding="utf-8-sig")
     st.download_button(t("⬇️ 下载逐品 CSV"), buf.getvalue(), f"auto_order_{date.today()}.csv", "text/csv")
+
+with tab5:
+    trk = E.po_tracking(inp, res, params)
+    if trk.empty:
+        st.info(t("没有未受领的 PO 行"))
+    else:
+        st.write(t("全部未受领 PO 行（不限来源）。计划到货日 = NST 入荷予定日，没填的按供货商交期；"
+                   "最晚决策日 = 预计断货日 − 第二货源交期 − 保险日 {b} 天。到了最晚决策日还没到货 → 🔴 直接在第二货源下单（给出建议量）。").format(b=int(buffer_days)))
+        cnt = trk.state.value_counts()
+        keys = ["⛔ 已断货", "🔴 转第二货源", "🟠 盯第一货源", "🟡 迟到", "📦 今日应到", "🚚 在途"]
+        c = st.columns(len(keys))
+        for k, key in enumerate(keys):
+            sub = trk[trk.state == key]; c[k].metric(key, f"{len(sub)} 行", wan(sub.amount.sum()))
+        red = trk[trk.state.isin(["🔴 转第二货源", "⛔ 已断货"]) & (trk.q_alt > 0)]
+        if len(red):
+            st.error(t("🔴 {n} 行建议立即在第二货源下单，合计 {a}（原价）").format(n=len(red), a=wan(red.amt_alt.sum())))
+        cols = ["state", "po_number", "vendor", "jan", "name", "rank", "po_date", "eta", "eta_src", "late_days", "open_qty", "amount",
+                "oh", "d", "stockout", "decide_by", "alt_vendor", "alt_L", "q_alt", "amt_alt"]
+        st.dataframe(trk[cols].rename(columns={"state": t("状态"), "eta": t("计划到货"), "eta_src": t("来源"), "late_days": t("迟到天"),
+                                              "stockout": t("预计断货"), "decide_by": t("最晚决策日"), "alt_vendor": t("第二货源"),
+                                              "alt_L": t("第二交期"), "q_alt": t("第二货源建议量")}), use_container_width=True, hide_index=True)
+        buf2 = io.BytesIO(); trk.to_csv(buf2, index=False, encoding="utf-8-sig")
+        st.download_button(t("⬇️ 下载到货闭环 CSV"), buf2.getvalue(), f"po_tracking_{date.today()}.csv", "text/csv")

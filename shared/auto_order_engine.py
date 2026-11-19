@@ -23,7 +23,7 @@ Z_RANK = {"Aランク": 2.33, "Bランク": 2.05, "Cランク": 1.28}
 SHOP_FILTER = "(shop ILIKE 'shopee%%' OR shop ILIKE 'lazada%%' OR shop ILIKE '%%coupang%%')"   # 带参数的 SQL 里 % 要写 %%（psycopg 会做格式化）
 CARD_VENDOR_PAT = "カード仕入れ|現金仕入れ"
 OEM_LOT = 10000
-DEFAULT_PARAMS = dict(zslow=2.0, zcard=1.0, trend=1.0, H=12, card_L=5, order_day=1, fwd_days=150)
+DEFAULT_PARAMS = dict(zslow=2.0, zcard=1.0, trend=1.0, H=12, card_L=5, order_day=1, fwd_days=150, buffer_days=3)
 
 
 def _df(conn, sql: str, params=None) -> pd.DataFrame:
@@ -44,8 +44,8 @@ def load_inputs(conn, today: date | None = None) -> dict:
     snap_date = _df(conn, "SELECT MAX(snapshot_date) AS d FROM nst.inventory_snapshot").iloc[0, 0]
     snap = _df(conn, "SELECT item_internal_id, SUM(qty_on_hand) AS oh FROM nst.inventory_snapshot "
                      "WHERE snapshot_date = ? AND warehouse = '弁天倉庫' GROUP BY 1", (snap_date,))
-    open_po = _df(conn, "SELECT po_internal_id, trandate, vendor_name, item_internal_id, "
-                        "quantity - COALESCE(quantity_received, 0) AS open_qty, status "
+    open_po = _df(conn, "SELECT po_internal_id, line_id, po_number, trandate, vendor_name, item_internal_id, "
+                        "quantity - COALESCE(quantity_received, 0) AS open_qty, quantity, status, expected_receipt_date, rate "
                         "FROM nst.purchase_order_line WHERE quantity > COALESCE(quantity_received, 0) "
                         "AND trandate >= ? AND status NOT LIKE '%%終了%%'", (today - timedelta(days=120),))
     po = _df(conn, "SELECT trandate, vendor_name, item_internal_id, quantity FROM nst.purchase_order_line "
@@ -199,3 +199,55 @@ def summary(res: dict) -> dict:
                 next_ab_sku=int((ab.q_next > 0).sum()), next_ab_amt=float(ab.amt_next.sum()),
                 next_c_sku=int((c.q_next > 0).sum()), next_c_amt=float(c.amt_next.sum()),
                 month_cogs_ab=float((ab.d * ab.cost).sum() * 30))
+
+
+# ============================================================
+# 到货闭环：每张未受领 PO 行 → 计划到货日 / 预计断货日 / 最晚决策日 / 状态
+#   Boss 2026-11-19：超期以断货日倒推——第一货源不到，还来得及在第二货源下单才算安全
+#   最晚决策日 = 预计断货日 − 第二货源交期 − 保险日
+#   第二货源交期：有カード/現金渠道 → 5 天；否则近 12 月给该品供过货的其他供货商里交期中位最短的；都没有 → 14 天并标「无第二货源」
+# ============================================================
+def po_tracking(inp: dict, res: dict, params: dict | None = None) -> pd.DataFrame:
+    p = {**DEFAULT_PARAMS, **(params or {})}
+    today = pd.Timestamp(inp["today"]); items = res["items"].set_index("item")
+    op = inp["open_po"].copy()
+    if op.empty: return pd.DataFrame()
+    op["open_qty"] = pd.to_numeric(op.open_qty); op["trandate"] = pd.to_datetime(op.trandate)
+    op["expected_receipt_date"] = pd.to_datetime(op.expected_receipt_date, errors="coerce")
+    # 供货商级交期中位（受领突合）
+    lv = inp["rcpt"].groupby("vendor_name").lt.median()
+    po = inp["po"].copy(); po["trandate"] = pd.to_datetime(po.trandate)
+    alt = {}   # item → (第二货源名, 交期)
+    for i, g in po.groupby("item_internal_id"):
+        vs = [v for v in g.vendor_name.unique() if v in lv.index]
+        alt[i] = sorted(((float(lv[v]), v) for v in vs), key=lambda x: x[0])
+    rows = []
+    for _, r in op.iterrows():
+        i = r.item_internal_id
+        if i not in items.index: continue
+        it = items.loc[i]; L = int(it.L); d = float(it.d); oh = max(float(it.oh), 0.0)
+        eta_src = "NST予定日"; eta = r.expected_receipt_date
+        if pd.isna(eta): eta = r.trandate + pd.Timedelta(days=L); eta_src = "供货商交期"
+        others = [(l, v) for l, v in alt.get(i, []) if v != r.vendor_name]
+        if it.card: L2, src2 = p["card_L"], "カード/現金"
+        elif others: L2, src2 = int(others[0][0]), others[0][1]
+        else: L2, src2 = 14, "无第二货源"
+        stockout = today + pd.Timedelta(days=int(oh / d)) if d > 0 else pd.NaT
+        decide = stockout - pd.Timedelta(days=L2 + p["buffer_days"]) if pd.notna(stockout) else pd.NaT
+        late = (today - eta).days if today > eta else 0
+        alt_arrive = today + pd.Timedelta(days=L2); isAB = it["rank"] != "C"
+        if oh <= 0 and d > 0: state = "⛔ 已断货"
+        elif isAB and pd.notna(decide) and today >= decide and alt_arrive < eta and src2 != "无第二货源": state = "🔴 转第二货源"
+        elif isAB and pd.notna(decide) and today >= decide: state = "🟠 盯第一货源"   # 换货源也赶不上，只能催
+        elif late > 0: state = "🟡 迟到"
+        elif eta == today: state = "📦 今日应到"
+        else: state = "🚚 在途"
+        q2 = math.ceil(max(d * (L2 + p["buffer_days"] + 7) - oh, 0) / max(int(it.lot), 1)) * max(int(it.lot), 1) if state in ("🔴 转第二货源", "⛔ 已断货") and src2 != "无第二货源" else 0
+        rows.append(dict(po_number=r.po_number, po_internal_id=r.po_internal_id, line_id=r.line_id, vendor=r.vendor_name, jan=it.jan, name=it["name"], rank=it["rank"],
+                         po_date=r.trandate.date(), eta=eta.date(), eta_src=eta_src, late_days=late, open_qty=float(r.open_qty), amount=float(r.open_qty) * float(r.rate or 0),
+                         oh=oh, d=round(d, 2), stockout=stockout.date() if pd.notna(stockout) else None, alt_vendor=src2, alt_L=L2,
+                         decide_by=decide.date() if pd.notna(decide) else None, state=state, q_alt=q2, amt_alt=q2 * float(it.cost),
+                         pending=bool(r.pending) if "pending" in r else False))
+    df = pd.DataFrame(rows)
+    order = {"⛔ 已断货": 0, "🔴 转第二货源": 1, "🟠 盯第一货源": 2, "🟡 迟到": 3, "📦 今日应到": 4, "🚚 在途": 5}
+    return df.assign(_o=df.state.map(order)).sort_values(["_o", "decide_by", "late_days"], ascending=[True, True, False]).drop(columns="_o") if len(df) else df
