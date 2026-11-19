@@ -82,7 +82,6 @@ def nst_to_bm_row(
     """NST 行 → BM 行（list, len=46, 顺序 = BM_HEADER）。"""
     item_code = _g(nst_row, "型番", "JANコード")
     name_ja = _g(nst_row, "アイテム名")
-    cost = _g(nst_row, "商品原価")
     weight_g = _g(nst_row, "パッケージ重量(g)")   # v2: パッケージのみ（商品寸法へ落ちない）
     length = _g(nst_row, "パッケージ奥行(cm)")
     width = _g(nst_row, "パッケージ幅(cm)")
@@ -98,7 +97,7 @@ def nst_to_bm_row(
     row[13] = image_url                   # 图片URL
     row[14] = "1"                         # 规格1名称（sample 模板值）
     row[15] = item_code                   # 规格1值（sample 模板值）
-    row[24] = _num_or_blank(cost)         # 成本价(￥)
+    row[24] = ""                          # 成本价(￥)：入れない（Boss 2026-11-19「斑马的原价不可以输入」）
     row[25] = _num_or_blank(weight_g)     # 重量(g)
     row[26] = _num_or_blank(length)       # 长(cm)
     row[27] = _num_or_blank(width)        # 宽(cm)

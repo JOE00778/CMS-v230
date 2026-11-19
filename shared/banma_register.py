@@ -4,8 +4,8 @@
 → Code で回読して原価・重量を照合。結果は record(code, dict) で台帳へ（呼び出し側が書く）。
 
 値の口径は従来の 斑马 xlsx（jd_bm_item_master.nst_to_bm_row）と同じ:
-  SPU = SKU = 型番 / 产品标题 = 中文名称 = アイテム名 / 规格 1 = 型番 / 成本价 = 商品原価（円の数値そのまま。
-  2026-11-09 実測: page15 経由で xlsx 取込した既存品は BM 成本价 = NST 原価（900=900）。文書は CNY と書くが従う）
+  SPU = SKU = 型番 / 产品标题 = 中文名称 = アイテム名 / 规格 1 = 型番 / 成本价 = 0（Boss 2026-11-19: 斑马に原価を入れない。
+  以前は NST 商品原価を円のまま入れていた）
   重量・長宽高 = パッケージ値 / 海关编码 = _hs / 英文名称 = _name_en / ERP 类目・供应商は空。
 POST は非冪等 → 斑马に届かなかった時（urlopen error）だけ banma_client が再送。応答が読めなければ Code で照会して判定。
 """
@@ -33,7 +33,8 @@ def product_body(row: dict) -> dict:
     return {
         "Spu": {"Code": code, "Title": row[COL_NAME], "Image": image, "Source": "手工创建"},
         "Skus": [{
-            "Code": code, "Specification": code, "CostPrice": float(row.get("商品原価") or 0),
+            # 成本价は入れない（0）。NST 原価が斑马に出ると困る（Boss 2026-11-19「斑马的原价不可以输入，要空白或者为0」）
+            "Code": code, "Specification": code, "CostPrice": 0,
             "Image": image, "Weight": _int_up(row.get("パッケージ重量(g)")),
             "Length": _int_up(row.get("パッケージ奥行(cm)")), "Width": _int_up(row.get("パッケージ幅(cm)")),
             "Height": _int_up(row.get("パッケージ高さ(cm)")),

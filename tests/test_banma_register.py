@@ -41,7 +41,7 @@ class FakeClient:
         return {}
 
 
-SKU = {"SKUID": "11", "SPUID": "22", "Code": "4901234567894", "CostPrice": 900.0, "Weight": 121}
+SKU = {"SKUID": "11", "SPUID": "22", "Code": "4901234567894", "CostPrice": 0.0, "Weight": 121}
 
 
 def test_product_body_matches_xlsx_conventions():
@@ -49,7 +49,7 @@ def test_product_body_matches_xlsx_conventions():
     sku = b["Skus"][0]
     assert b["Spu"] == {"Code": "4901234567894", "Title": "テスト クッキー", "Image": "https://img/x.jpg",
                         "Source": "手工创建"}
-    assert sku["CostPrice"] == 900.0                       # 円の数値そのまま（既存運用）
+    assert sku["CostPrice"] == 0                           # 斑马の成本价は入れない（Boss 2026-11-19・NST 原価があっても 0）
     assert (sku["Weight"], sku["Height"], sku["Width"], sku["Length"]) == (121, 10, 6, 3)
     assert sku["Specification"] == "4901234567894" and sku["Options"] == [{"Name": "1", "Value": "4901234567894"}]
     assert b["Images"] == [{"Src": "https://img/x.jpg", "Sort": 0}]
@@ -87,7 +87,7 @@ def test_post_error_and_not_found_is_fail():
 def test_missing_hs_or_mismatch_is_partial():
     r = BMR.register_one(FakeClient(after=SKU), {**ROW, COL_HS: ""})
     assert r["status"] == "partial" and "報関情報なし" in r["message"]
-    r = BMR.register_one(FakeClient(after={**SKU, "CostPrice": 0}), ROW)
+    r = BMR.register_one(FakeClient(after={**SKU, "CostPrice": 900}), ROW)      # 斑马側に原価が入っていたら知らせる
     assert r["status"] == "partial" and "CostPrice" in r["message"]
     r = BMR.register_one(FakeClient(after=SKU, customs_error=RuntimeError("x")), ROW)
     assert r["status"] == "partial" and "報関情報の書込に失敗" in r["message"]
@@ -111,3 +111,10 @@ def test_find_skus_chunks_by_50_and_exact_match_only():
     assert client.call.call_count == 3                                     # 120 件 → 50/50/20
     assert all(len(c.args[2]["Code"].split(",")) <= 50 and c.args[2]["PageSize"] == 50 for c in client.call.call_args_list)
     assert out == {"C000": "SC000", "C001": "SC001", "C050": "SC050", "C051": "SC051", "C100": "SC100", "C101": "SC101"}
+
+
+def test_bm_xlsx_cost_is_blank_20261119():
+    """斑马 xlsx の 成本价 列は空（Boss 2026-11-19「斑马的原价不可以输入」）。"""
+    from data_warehouse.templates import jd_bm_item_master as JBM
+    row = JBM.nst_to_bm_row({**ROW, "商品原価": "900"}, image_url="https://img/x.jpg")
+    assert row[JBM.BM_HEADER.index("成本价(￥)")] == ""
