@@ -21,9 +21,9 @@ import pandas as pd
 
 Z_RANK = {"Aランク": 2.33, "Bランク": 2.05, "Cランク": 1.28}
 SHOP_FILTER = "(shop ILIKE 'shopee%%' OR shop ILIKE 'lazada%%' OR shop ILIKE '%%coupang%%')"   # 带参数的 SQL 里 % 要写 %%（psycopg 会做格式化）
-CARD_VENDOR_PAT = "カード仕入れ|現金仕入れ"
+CARD_VENDOR_PAT = "カード仕入れ"   # 現金仕入れ 不作为渠道（Boss 2026-11-19：现金采购基本不能考虑）
 OEM_LOT = 10000
-DEFAULT_PARAMS = dict(zslow=2.0, zcard=1.0, trend=1.0, H=12, card_L=5, order_day=1, fwd_days=150, buffer_days=3)
+DEFAULT_PARAMS = dict(zslow=2.0, zcard=1.0, trend=1.0, H=12, card_L=5, order_day=1, fwd_days=150, buffer_days=5)   # 保险日 5 天（Boss 2026-11-19）
 
 
 def _df(conn, sql: str, params=None) -> pd.DataFrame:
@@ -205,7 +205,7 @@ def summary(res: dict) -> dict:
 # 到货闭环：每张未受领 PO 行 → 计划到货日 / 预计断货日 / 最晚决策日 / 状态
 #   Boss 2026-11-19：超期以断货日倒推——第一货源不到，还来得及在第二货源下单才算安全
 #   最晚决策日 = 预计断货日 − 第二货源交期 − 保险日
-#   第二货源交期：有カード/現金渠道 → 5 天；否则近 12 月给该品供过货的其他供货商里交期中位最短的；都没有 → 14 天并标「无第二货源」
+#   第二货源交期：有カード仕入れ渠道 → 5 天（現金仕入れ 不算）；否则近 12 月给该品供过货的其他供货商里交期中位最短的；都没有 → 14 天并标「无第二货源」
 # ============================================================
 def po_tracking(inp: dict, res: dict, params: dict | None = None) -> pd.DataFrame:
     p = {**DEFAULT_PARAMS, **(params or {})}
@@ -228,8 +228,8 @@ def po_tracking(inp: dict, res: dict, params: dict | None = None) -> pd.DataFram
         it = items.loc[i]; L = int(it.L); d = float(it.d); oh = max(float(it.oh), 0.0)
         eta_src = "NST予定日"; eta = r.expected_receipt_date
         if pd.isna(eta): eta = r.trandate + pd.Timedelta(days=L); eta_src = "供货商交期"
-        others = [(l, v) for l, v in alt.get(i, []) if v != r.vendor_name]
-        if it.card: L2, src2 = p["card_L"], "カード/現金"
+        others = [(l, v) for l, v in alt.get(i, []) if v != r.vendor_name and "現金仕入れ" not in v]
+        if it.card: L2, src2 = p["card_L"], "カード仕入れ"
         elif others: L2, src2 = int(others[0][0]), others[0][1]
         else: L2, src2 = 14, "无第二货源"
         stockout = today + pd.Timedelta(days=int(oh / d)) if d > 0 else pd.NaT

@@ -28,13 +28,13 @@ st.caption(t("按回测定稿规则（z慢 + 周巡检）用线上最新销量/�
 with st.sidebar:
     st.subheader(t("参数"))
     zslow = st.number_input(t("z慢（A/B 无现货渠道倍数）"), 1.0, 4.0, 2.0, 0.5)
-    zcard = st.number_input(t("z现货（A/B 有カード/現金渠道倍数）"), 0.5, 3.0, 1.0, 0.5)
+    zcard = st.number_input(t("z现货（A/B 有カード仕入れ渠道倍数）"), 0.5, 3.0, 1.0, 0.5)
     trend = st.selectbox(t("需求口径"), [1.0, 1.25], index=0,
                          format_func=lambda x: t("90 天日均") if x == 1.0 else t("max(90 天, 30 天×1.25)"))
     H = st.number_input(t("巡检视野（天）"), 7, 30, 12, 1)
     order_day = st.number_input(t("每月定期订货日"), 1, 28, 1, 1)
     fwd_days = st.number_input(t("前推天数"), 60, 240, 150, 30)
-    buffer_days = st.number_input(t("保险日（到货闭环）"), 0, 14, 3, 1)
+    buffer_days = st.number_input(t("保险日（到货闭环）"), 0, 14, 5, 1)
     st.markdown("---")
     plan_txt = st.text_area(t("计划月销（活动/上新前录入）"), placeholder="JAN,月销件数\n4901234567890,600",
                             help=t("覆盖该品的日均需求（取大）。回测证明这是补掉促销尖峰断货的唯一办法。"))
