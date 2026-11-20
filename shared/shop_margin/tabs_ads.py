@@ -60,7 +60,9 @@ with tab_ads:
             _te, _tc, _ti = (_adl["expense"].sum(), _adl["clicks"].sum(),
                              _adl["impression"].sum())
             _to, _tg = _adl["ad_orders"].sum(), _adl["ad_gmv"].sum()
-            _k1, _k2, _k3, _k4, _k5, _k6 = st.columns(6)
+            # 6 列だと消耗/GMV（本币の大きい桁）が省略表示される → 3 列×2 行（Boss 2026-11-20「KPI断了」）
+            _k1, _k2, _k3 = st.columns(3)
+            _k4, _k5, _k6 = st.columns(3)
             _k1.metric("消耗 計" if _ja_ad else "消耗 合计", f"{_te:,.2f}")
             _k2.metric("クリック" if _ja_ad else "点击", f"{_tc:,.0f}")
             _k3.metric("表示" if _ja_ad else "曝光", f"{_ti:,.0f}")
@@ -407,7 +409,9 @@ with tab_perf:
     # KPI（対象店舗の合計 · 率は合算後）
     _tot = {c: float(_pt[c].sum()) for c in
             ("revenue", "gross_profit", "ded_total", "shop_gp", "jd", "ecms", "ad", "perf", "refund", "offline")}
-    k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
+    # 8 列だと ¥ 金額が省略表示される → 4 列×2 行（Boss 2026-11-20「KPI断了」）
+    k1, k2, k3, k4 = st.columns(4)
+    k5, k6, k7, k8 = st.columns(4)
     k1.metric(("売上(NST·調整除く)" if _ja_pf else "销售额(NST·剔调整)"), f"¥{_tot['revenue']:,.0f}")
     k2.metric(_col("gross_profit"), f"¥{_tot['gross_profit']:,.0f}",
               (f"{_tot['gross_profit'] / _tot['revenue'] * 100:.2f}%" if _tot["revenue"] else "—"),
