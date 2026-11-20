@@ -1,7 +1,8 @@
 """模块 #06 库存监控 · 库存构成分析 + 库存健康监控 2 タブ統合（Boss 2026-06-02）.
 
 旧 page33 库存构成分析 + page18 库存风控 を 1 ページ 2 タブに統合。
-- tab1 构成分析：弁天のみ 用途/等级構成（内部に 棚別/SKU別/弁天-斑马対账 の 3 子タブ）
+- tab1 构成分析：弁天のみ 用途/等级構成
+- 棚別 / SKU別 / 弁天-斑马対账：Boss 2026-11-20 に子タブ → 上位タブへ昇格（倉庫×カテゴリ クロス集計は弁天 1 倉庫のみで不要 → 削除）
 - tab2 库存风控：可售天数(弁天输出棚库存/日均销量)による断货 / 压库存リスク監視（shared.risk_control_view）
 Boss 2026-11-04: 京东(JD-物流-千葉)库存を全面削除 → 大分弁天へ。NST vs JDL 対账 → 弁天 vs 斑马 対账、京东库存查询タブ削除。
 旧「库存健康监控」タブは 2026-06-04 削除。各 body は関数化し st.stop()→return。
@@ -29,7 +30,7 @@ conn = get_readonly_connection()
 st.title(t("📦 库存监控"))
 
 
-def _render_composition():
+def _render_composition(tab1, tab2, tab4):
     st.title(t("📦 库存构成分析（弁天）"))
     st.caption(t("弁天按棚番号分类（输出 / 输出中国 / 返品 / 不良品）· 只看大分弁天倉庫（不含京东仓 / CGF）"))
 
@@ -324,31 +325,6 @@ def _render_composition():
     st.divider()
 
     # ============================================================
-    # 仓库 × 类别 交叉表
-    # ============================================================
-    st.subheader(t("🏬 仓库 × 类别 交叉表"))
-    wh_cat = df.groupby(["warehouse", "category"], as_index=False).agg(
-        qty=("qty_on_hand", "sum"), amt=("amt", "sum"))
-    piv = wh_cat.pivot(index="warehouse", columns="category", values="amt").fillna(0)
-    for c in CATEGORIES:
-        if c not in piv.columns:
-            piv[c] = 0.0
-    piv = piv[list(CATEGORIES)]
-    piv["合計"] = piv.sum(axis=1)
-    piv.loc[t("合計")] = piv.sum(axis=0)
-    piv = piv.reset_index()
-    piv.columns = [t("仓库")] + [_labels.get(c, c) for c in CATEGORIES] + [t("合計")]
-    st.dataframe(
-        piv, hide_index=True, use_container_width=True,
-        column_config={
-            c: st.column_config.NumberColumn(format="¥%,.0f")
-            for c in piv.columns if c != t("仓库")
-        },
-    )
-
-    st.divider()
-
-    # ============================================================
     # tab 内 构成 KPI 渲染辅助（拆 2 步：先 pick 类别 · 再 render KPI 卡）
     # ============================================================
     def _pick_categories(key_prefix: str) -> list[str]:
@@ -382,11 +358,7 @@ def _render_composition():
     # tab1 按棚番号查商品（弁天）
     # tab2 按 SKU 查棚分布（弁天）
     # ============================================================
-    tab1, tab2, tab4 = st.tabs([
-        t("🔎 按棚番号查商品（弁天）"),
-        t("🔍 按 SKU 查库存分布（弁天）"),
-        t("📊 弁天 vs 斑马 库存对账"),
-    ])
+    # Boss 2026-11-20: 3 子タブはページ上位タブ（库存风控と並列）へ昇格 · 中身は従来どおり
 
     bn_df = df[df["warehouse"] == "弁天倉庫"].copy()
 
@@ -630,8 +602,14 @@ def _render_composition():
         )
 
 
-tab_comp, tab_risk = st.tabs([t("📦 库存构成分析"), t("🛡️ 库存风控")])
+tab_comp, tab1, tab2, tab4, tab_risk = st.tabs([
+    t("📦 库存构成分析"),
+    t("🔎 按棚番号查商品（弁天）"),
+    t("🔍 按 SKU 查库存分布（弁天）"),
+    t("📊 弁天 vs 斑马 库存对账"),
+    t("🛡️ 库存风控"),
+])
 with tab_comp:
-    _render_composition()
+    _render_composition(tab1, tab2, tab4)
 with tab_risk:
     render_risk_control(conn)
