@@ -38,6 +38,13 @@ _THEME_CSS = """
    用 !important + 连子元素一起命中，避免被 Streamlit emotion 类的高优先级盖掉 */
 [data-testid="stMetricValue"],
 [data-testid="stMetricValue"] > div { font-size:1.6rem !important; }
+/* 卡片窄时数字被省略成「¥40,343,…」（Boss 2026-11-20「KPI断了」）→ 字号随卡片宽度缩放：
+   卡片宽够就保持 1.6rem，6~8 列一行时自动缩小到约 12 个字符放得下（下限 0.85rem）。 */
+[data-testid="stMetric"] { container-type:inline-size; }
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] > div { font-size:clamp(0.85rem, 13.5cqi, 1.6rem) !important; }
+[data-testid="stMetricDelta"],
+[data-testid="stMetricDelta"] div { font-size:clamp(0.7rem, 8cqi, 0.875rem) !important; }
 
 /* 分隔符 st.divider（=<hr>）上下间距压到 0（Boss 2026-05-26） */
 hr { margin-top:0 !important; margin-bottom:0 !important; }
