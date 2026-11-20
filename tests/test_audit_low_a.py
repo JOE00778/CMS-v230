@@ -87,7 +87,7 @@ def test_l10_home_uses_same_period_query():
 
 # ---- L2: 整批回滚時は ok=N を出さず「全部未保存（已回滚）」と言う ----
 def test_l2_rollback_message_is_truthful():
-    src = (ROOT / "pages" / "05_🏪_店铺别毛利.py").read_text(encoding="utf-8")
+    src = (ROOT / "shared" / "shop_margin" / "tabs_main.py").read_text(encoding="utf-8")
     i = src.index('key="owner_save"')
     block = src[src.index("if _fail:", i):src.index("conn_w.commit()", i)]
     assert "ok={_ok}" not in block
