@@ -82,7 +82,7 @@ def _read_w(sql: str, params: tuple = ()) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-st.title(t("🏪 店铺毛利"))
+st.title(t(f"{PAGE_ICON} {PAGE_TITLE}"))  # 各ページの名前（サイドバーと一致 · Boss 2026-11-20）
 # データ更新日時（sales_daily 最新 pulled_at · UTC→JST）
 try:
     _u = conn.execute("SELECT max(pulled_at) AS u FROM nst.sales_daily").fetchone()
