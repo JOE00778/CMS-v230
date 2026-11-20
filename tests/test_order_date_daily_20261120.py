@@ -62,5 +62,5 @@ def test_daily_order_counts_by_order_date():
         {"shop": "Lazada PH", "order_no": "C", "inv_date": D(2026, 11, 16), "order_date": None},   # 下单日不明→开票日
         {"shop": "Shopee PH", "order_no": "D", "inv_date": D(2026, 11, 2), "order_date": D(2026, 10, 31)},  # 上月下单→除外
     ])
-    by = daily_order_counts(o, "2026-11").set_index("sale_date")["orders"]
+    by = daily_order_counts(o, "2026-11").set_index("sale_date")["n_orders"]
     assert by.to_dict() == {D(2026, 11, 15): 1, D(2026, 11, 16): 2}

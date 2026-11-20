@@ -38,7 +38,7 @@ with tab_day:
             columns=["shop", "inv_date", "order_date", "amt"]), ym)
     daily["sale_date"] = pd.to_datetime(daily["sale_date"]).dt.date
     daily = daily.merge(daily_order_counts(_ord, ym), on="sale_date", how="left")
-    daily["orders"] = daily["orders"].fillna(0)
+    daily["n_orders"] = daily["n_orders"].fillna(0)
     daily = daily[daily["sale_date"] <= _cutoff]
     for _c in ("revenue", "defined_cost", "gross_profit"):
         daily[_c] = daily[_c].map(_rhu)
@@ -107,7 +107,7 @@ with tab_day:
     #    価格預警タブが落ちる（2026-09-08 実際に発生）
     pq, po, pr, pg, pm, p_ad, p_cm = st.columns(7)
     pq.metric(_col("qty"), f"{int(_last['qty']):,}", _delta("qty"))
-    po.metric(_col("orders"), f"{int(_last['orders']):,}", _delta("orders"))
+    po.metric(_col("n_orders"), f"{int(_last['n_orders']):,}", _delta("n_orders"))
     pr.metric(_col("revenue"), f"¥{_last['revenue']:,.0f}", _delta("revenue"))
     pg.metric(_col("gross_profit"), f"¥{_last['gross_profit']:,.0f}", _delta("gross_profit"))
     pm.metric(_col("gross_margin"), f"{_last['gross_margin']:.2f}%", _delta("gross_margin", pct=True))
@@ -173,7 +173,7 @@ with tab_day:
     st.altair_chart(bar_chart, use_container_width=True)
 
     # 明细表（日付倒序·最近日在上。daily 本体は昇順維持＝前日指標/曲線図が依存）
-    day_cols = ("sale_date", "qty", "orders", "revenue", "defined_cost",
+    day_cols = ("sale_date", "qty", "n_orders", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "ad", "cm_est",
                 "n_shop")
     html_table(_disp(daily.sort_values("sale_date", ascending=False), day_cols))
@@ -489,11 +489,11 @@ with tab_market:
     g = _with_cm(g, "market")
     _shop_mkt = df[["shop", "market"]].drop_duplicates()
     g = g.merge(_ord.merge(_shop_mkt, on="shop").groupby("market", as_index=False)
-                .agg(orders=("order_no", "nunique")), on="market", how="left")
-    g["orders"] = g["orders"].fillna(0)
+                .agg(n_orders=("order_no", "nunique")), on="market", how="left")
+    g["n_orders"] = g["n_orders"].fillna(0)
     g = g.sort_values("gross_profit", ascending=False)
 
-    mkt_cols = ("market", "qty", "orders", "revenue", "cancel_est", "revenue_adj",
+    mkt_cols = ("market", "qty", "n_orders", "revenue", "cancel_est", "revenue_adj",
                 "defined_cost", "gross_profit", "gross_margin",
                 "fee", "ad", "cm", "cm_rate",
                 "fee_match", "payout_rate", "n_shop", "n_sku")
@@ -533,10 +533,10 @@ with tab_market:
             _ng2["gross_profit"] / _ng2["revenue"].where(_ng2["revenue"] != 0)
         ).fillna(0) * 100
         _ng2 = _ng2.merge(_ord_all.groupby("shop", as_index=False)
-                          .agg(orders=("order_no", "nunique")), on="shop", how="left")
-        _ng2["orders"] = _ng2["orders"].fillna(0)
+                          .agg(n_orders=("order_no", "nunique")), on="shop", how="left")
+        _ng2["n_orders"] = _ng2["n_orders"].fillna(0)
         _ng2 = _ng2.sort_values("gross_profit", ascending=False)
-        html_table(_disp(_ng2, ("shop", "market", "qty", "orders", "revenue", "defined_cost",
+        html_table(_disp(_ng2, ("shop", "market", "qty", "n_orders", "revenue", "defined_cost",
                                 "gross_profit", "gross_margin", "n_sku")))
         st.caption(
             ("担当者を割り当てると、翌計算からは上の市場統計・KPI に入ります"

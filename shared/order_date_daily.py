@@ -83,14 +83,14 @@ ORDERS_SQL = (
 
 def daily_order_counts(orders: pd.DataFrame, ym: str) -> pd.DataFrame:
     """orders: shop, order_no, inv_date, order_date(None=未知)
-    → 下单日别 订单数 DataFrame[sale_date, orders]。下单日不明は開票日、上月下单は除外。"""
+    → 下单日别 订单数 DataFrame[sale_date, n_orders]。下单日不明は開票日、上月下单は除外。"""
     if orders.empty:
-        return pd.DataFrame(columns=["sale_date", "orders"])
+        return pd.DataFrame(columns=["sale_date", "n_orders"])
     o = orders.copy()
     inv = pd.to_datetime(o["inv_date"]).dt.date
     od = pd.to_datetime(o["order_date"]).dt.date
     o["sale_date"] = [d if pd.notna(d) else i for d, i in zip(od, inv)]
     o = o[pd.to_datetime(o["sale_date"]).dt.strftime("%Y-%m") == ym]
     return (o.groupby("sale_date", as_index=False)
-            .agg(orders=("order_no", "nunique"))
+            .agg(n_orders=("order_no", "nunique"))
             .sort_values("sale_date").reset_index(drop=True))

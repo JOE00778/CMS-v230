@@ -115,7 +115,7 @@ _LBL = {
     "maker":         ("厂商", "メーカー名"),
     "item_rank":     ("商品等级", "商品ランク"),
     "qty":           ("销售数量", "販売数量"),
-    "orders":        ("订单数", "注文数"),
+    "n_orders":      ("订单数", "注文数"),
     "revenue":       ("总收益(NST)", "総収益(NST)"),
     "cancel_est":    ("取消冲减估", "取消控除見込"),
     "revenue_adj":   ("调整后营业额", "調整後売上"),
@@ -184,7 +184,7 @@ _MONEY = {"revenue", "defined_cost", "gross_profit", "fee", "ad", "cm",
           "buyer_ship", "rebate", "other_ded", "ded_total", "shop_gp", "jd", "ecms",
           "perf", "refund", "offline"}
 _PCT = {"gross_margin", "cm_rate", "perf_rate"}
-_INT = {"qty", "orders", "n_shop", "n_sku"}
+_INT = {"qty", "n_orders", "n_shop", "n_sku"}
 # 环比対象（相対%）。gross_margin は _PCT で百分点(pp)环比、n_shop/n_sku は構造カウントで环比なし。
 _MOM_VALUE_COLS = {"qty", "revenue", "defined_cost", "gross_profit"}
 # _PCT のうち环比(pp)を付ける列。cm_rate は上月側の再計算が要るため対象外（第1版）。
