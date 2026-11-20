@@ -101,6 +101,18 @@ def products_by_jan(jans: list[str]) -> dict[str, dict]:
     return out
 
 
+def products_by_ids(ids: list[str]) -> dict[str, dict]:
+    """product id → 同 products_by_jan 的形状（新建商品搜索索引有延迟时，用台账里的 id 兜底）。"""
+    out = {}
+    for pid in dict.fromkeys(i for i in ids if i):
+        p = gql("""query($id:ID!){ product(id:$id){ id title status handle
+                  media(first:50){ nodes{ id alt mediaContentType } } } }""", {"id": pid})["product"]
+        if p:
+            out[pid] = {"id": p["id"], "title": p["title"], "status": p["status"], "handle": p["handle"],
+                        "media": [m for m in p["media"]["nodes"] if m["mediaContentType"] == "IMAGE"]}
+    return out
+
+
 # ───────────── 建草稿 ─────────────
 
 def _txt(s, bold=False):
@@ -244,9 +256,8 @@ def readback(product_id: str, variant_id: str) -> dict:
     d = gql("""query($id:ID!,$pl:ID!,$q:String!){ product(id:$id){ title handle status vendor productType tags templateSuffix
               seo{ title description } metafields(first:40){ nodes{ namespace key } }
               variants(first:1){ nodes{ price barcode sku inventoryPolicy inventoryItem{ tracked } } }
-              us: publishedOnPublication(publicationId:"%s") ph: publishedOnPublication(publicationId:"%s")
-              web: publishedOnPublication(publicationId:"%s") }
-              priceList(id:$pl){ prices(first:1, query:$q){ nodes{ price{ amount } } } } }""" % (US_PUB, PH_PUB, ONLINE_STORE),
+              resourcePublicationsV2(first:20, onlyPublished:false){ nodes{ publication{ id } } } }
+              priceList(id:$pl){ prices(first:1, query:$q){ nodes{ price{ amount } } } } }""",
             {"id": product_id, "pl": US_PRICE_LIST, "q": "variant_id:" + variant_id.rsplit("/", 1)[-1]})
     return d
 
@@ -277,8 +288,11 @@ def verify(row: dict, expected: dict, rb: dict) -> list[str]:
     pr = rb["priceList"]["prices"]["nodes"]
     if not pr or f"{float(pr[0]['price']['amount']):.2f}" != inp["variants"][0]["price"]:
         bad.append("美国价目表固定价不一致")
-    if not p["us"] or not p["web"] or p["ph"]:
-        bad.append(f"发布状态 web={p['web']} us={p['us']} ph={p['ph']}")
+    # 草稿的发布记录 isPublished=False 是正常的（改 ACTIVE 时才生效）→ 只看网店有没有发布记录。
+    # 市场目录（US/PH）不出现在这里，以 publish/unpublish 的 userErrors 为准（create_draft 的 steps）。
+    pubs = {n["publication"]["id"] for n in p["resourcePublicationsV2"]["nodes"]}
+    if ONLINE_STORE not in pubs:
+        bad.append("网店渠道没有发布记录")
     return bad
 
 

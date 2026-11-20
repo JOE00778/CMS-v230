@@ -64,6 +64,16 @@ def log(conn, *, operator: str, batch: str, action: str, jan: str, product_id: s
     conn.commit()
 
 
+def drafted_ids(conn, jans: list[str]) -> dict[str, str]:
+    """JAN → 本页最近一次建草稿成功的 product_id（Shopify 搜索索引延迟时挂图用）。"""
+    if not jans:
+        return {}
+    rows = conn.execute(
+        f"SELECT DISTINCT ON (jan) jan, product_id FROM {LEDGER} WHERE action = 'create_draft' AND ok "
+        "AND jan = ANY(?) ORDER BY jan, id DESC", (list(jans),)).fetchall()
+    return {r["jan"]: r["product_id"] for r in rows}
+
+
 def recent(conn, limit: int = 300) -> list[dict]:
     return [dict(r) for r in conn.execute(
         f"SELECT at, operator, batch, action, jan, handle, product_id, ok, detail FROM {LEDGER} "

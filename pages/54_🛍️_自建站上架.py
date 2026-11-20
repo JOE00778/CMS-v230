@@ -297,6 +297,15 @@ with tab_img:
             st.error(f"{n}：{why}")
         if got:
             prods = SH.products_by_jan(list(got))
+            _miss = [j for j in got if j not in prods]
+            if _miss:   # 刚建的草稿 Shopify 搜索还没索引到 → 用台账里的 product_id 找
+                _c = get_connection()
+                C.ensure_ledger(_c)
+                _ids = C.drafted_ids(_c, _miss)
+                _byid = SH.products_by_ids(list(_ids.values()))
+                for j, pid in _ids.items():
+                    if pid in _byid:
+                        prods[j] = _byid[pid]
             recs = []
             for jan, items in sorted(got.items()):
                 items.sort()
