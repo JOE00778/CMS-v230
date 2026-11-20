@@ -137,11 +137,17 @@ def _render_composition(tab1, tab2, tab4):
     _RANK_ORDER = ["NEW", "Aランク", "Bランク", "Cランク", "取扱中止", t("未分类")]
 
     # ----- 月次推移 -----
-    # 弁天は bin スナップショットの月末日（2026-05-27 開始＝それ以前の月は点が無い）。
-    #   JD 主倉（inventory_activity_monthly）は Boss 2026-11-04 京东库存削除で外した。
+    # JD 主倉は nst.inventory_activity_monthly.closing_qty（月末在庫）を使う。
+    #   日次スナップショットは 2026-05-20 開始だが、この月次表は 2025-12 まで遡れる
+    #   （2026-01 以降 receipts_daily が毎日更新／2025-12〜2026-04 は nst_report 取込）。
+    #   4 ヶ月分を日次スナップショットの月末値と突合し数量・金額とも完全一致を確認済。
+    # 弁天は bin スナップショット（2026-05-27 開始）しか無いため、それ以前の月は
+    #   JD のみ＝返品/不良品/输出中国 の 3 線は 2026-05 より前に点が無い。
+    # Boss 2026-11-20「月次推移改为出口整体库存金额」：京东撤仓後も過去月は JD に在庫があったので
+    #   JD + 弁天 + CGF の合算に戻す（11-04 に弁天のみへ絞ったら 8 月以前が消えた）。用途別ラジオは廃止し合計 1 本。
     # 金額 = その月の数量 × **現在の** cost_estimate。原価は履歴を持たないので、
     #   線は数量の増減だけを表す（原価改定のノイズが混ざらない）。ランクも現在値。
-    st.markdown("##### " + t("📈 月次推移（近 12 个月）"))
+    st.markdown("##### " + t("📈 月次推移（输出整体库存金额 · 近 12 个月）"))
     _TREND_SQL = """
     WITH win AS (
         SELECT (date_trunc('month', CURRENT_DATE) - INTERVAL '11 months')::DATE AS d0,
@@ -149,10 +155,24 @@ def _render_composition(tab1, tab2, tab4):
     ), bin_me AS (
         SELECT to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
         FROM nst.inventory_bin_snapshot, win WHERE snapshot_date >= win.d0 GROUP BY 1
+    ), snap_me AS (
+        -- 月次入出庫の集計が無い倉庫（CGF）は日次スナップショットの月末で代用
+        SELECT warehouse, to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
+        FROM nst.inventory_snapshot, win
+        WHERE snapshot_date >= win.d0 AND warehouse NOT IN ('JD-物流-千葉', '弁天倉庫')
+        GROUP BY 1, 2
     ), inv_all AS (
-        SELECT m.ym, m.d AS as_of, '弁天倉庫' AS warehouse, b.item_internal_id,
-               b.qty_on_hand, b.bin_number
+        SELECT a.year_month AS ym, NULL::DATE AS as_of, 'JD-物流-千葉' AS warehouse,
+               a.item_internal_id, a.closing_qty AS qty_on_hand, NULL::TEXT AS bin_number
+        FROM nst.inventory_activity_monthly a, win
+        WHERE a.year_month >= win.ym0 AND a.location = 'JD-物流-千葉'
+        UNION ALL
+        SELECT m.ym, m.d, '弁天倉庫', b.item_internal_id, b.qty_on_hand, b.bin_number
         FROM nst.inventory_bin_snapshot b JOIN bin_me m ON m.d = b.snapshot_date
+        UNION ALL
+        SELECT m.ym, m.d, s.warehouse, s.item_internal_id, s.qty_on_hand, NULL::TEXT
+        FROM nst.inventory_snapshot s
+        JOIN snap_me m ON m.d = s.snapshot_date AND m.warehouse = s.warehouse
     )
     SELECT
         inv_all.ym, max(inv_all.as_of) AS as_of, inv_all.warehouse,
@@ -213,18 +233,11 @@ def _render_composition(tab1, tab2, tab4):
         tdf["qty"] = pd.to_numeric(tdf["qty"], errors="coerce").fillna(0)
         tdf["amt"] = pd.to_numeric(tdf["amt"], errors="coerce").fillna(0)
 
-        # 用途 推移（全仓库合算 · 上の構成 KPI カードと同じ口径）
-        # 4 類別を重ねると 通常输出(¥70M) が他(¥0.5〜2.4M)を潰して平線に見えるため、
-        # 1 類別ずつ表示 + Y 軸 0 起点なし で振れ幅を拡大する（Boss 2026-08-07）。
-        sel_cat = st.radio(
-            t("用途类别（推移）"), list(CATEGORIES), horizontal=True, index=0,
-            format_func=lambda c: _labels.get(c, c), key="trend_cat_sel",
-        )
-        t_cat = (tdf[tdf["category"] == sel_cat]
-                 .groupby("ym", as_index=False).agg(qty=("qty", "sum"), amt=("amt", "sum")))
+        # 输出整体（全仓库 · 全用途）合计 1 本（Boss 2026-11-20）
+        t_cat = tdf.groupby("ym", as_index=False).agg(qty=("qty", "sum"), amt=("amt", "sum"))
         st.altair_chart(
             _trend_chart(t_cat, None, t("用途"), "tableau10", zero=False, labels=True)
-            .properties(title=f"{_labels.get(sel_cat, sel_cat)} {t('推移')}"),
+            .properties(title=t("输出整体库存金额 推移")),
             use_container_width=True)
         if len(t_cat) >= 2:
             _prev, _last = float(t_cat["amt"].iloc[-2]), float(t_cat["amt"].iloc[-1])
@@ -233,11 +246,8 @@ def _render_composition(tab1, tab2, tab4):
             st.caption(t("最新月 ¥{a:,.0f} · 环比 {s}¥{d:,.0f}（{p:+.1f}%）· 期间内 最小 ¥{lo:,.0f} / 最大 ¥{hi:,.0f}").format(
                 a=_last, s="+" if _diff >= 0 else "-", d=abs(_diff), p=_pct,
                 lo=float(t_cat["amt"].min()), hi=float(t_cat["amt"].max())))
-
-        _bn_from = tdf.loc[tdf["as_of"].notna(), "ym"].min()
-        st.caption(t("弁天＝bin 快照月末值，{b} 起才有 · "
-                     "当月为进行中月份 · 金额按当前定义原价换算").format(
-            b=str(_bn_from) if pd.notna(_bn_from) else "—"))
+        st.caption(t("含京东仓（月次入出库的月末在库 · 2025-12 起）+ 弁天（bin 快照月末 · 2026-05 起）+ CGF（日次快照月末）· "
+                     "当月为进行中月份 · 金额按当前定义原价换算"))
 
     st.divider()
 
