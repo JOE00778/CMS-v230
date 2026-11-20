@@ -197,7 +197,8 @@ def _load_sellthrough(conn) -> dict[str, float]:
         rows = conn.execute(
             "SELECT im.jan AS jan, "
             "SUM(a.sold_qty) / NULLIF(SUM(a.opening_qty + a.received_qty), 0) AS rate "
-            "FROM nst.inventory_activity_monthly a "
+            # 京东撤仓後は同月に JD 行と弁天行が並ぶ → item×月で在庫/入庫は合算・sold（全店合計）は 1 回だけ
+            "FROM (SELECT item_internal_id, year_month, SUM(opening_qty) AS opening_qty, SUM(received_qty) AS received_qty, MAX(sold_qty) AS sold_qty FROM nst.inventory_activity_monthly GROUP BY 1, 2) a "
             "JOIN nst.item_master_raw im ON im.internal_id = a.item_internal_id "
             "WHERE a.year_month = (SELECT MAX(year_month) FROM nst.inventory_activity_monthly) "
             "  AND im.jan IS NOT NULL "

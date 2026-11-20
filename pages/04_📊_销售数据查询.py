@@ -594,7 +594,8 @@ with _q_tab:
         _st_df, _ = _query(
             "SELECT im.jan AS jan, SUM(a.sold_qty) AS st_sold, "
             "SUM(a.opening_qty) AS st_open, SUM(a.received_qty) AS st_recv "
-            "FROM nst.inventory_activity_monthly a "
+            # 同月に JD 行と弁天行が並ぶ（京东撤仓）→ item×月で sold は 1 回だけ数える
+            "FROM (SELECT item_internal_id, year_month, SUM(opening_qty) AS opening_qty, SUM(received_qty) AS received_qty, MAX(sold_qty) AS sold_qty FROM nst.inventory_activity_monthly GROUP BY 1, 2) a "
             "JOIN nst.item_master_raw im ON im.internal_id = a.item_internal_id "
             "WHERE a.year_month BETWEEN ? AND ? GROUP BY im.jan",
             (_ym_from, _ym_to),
