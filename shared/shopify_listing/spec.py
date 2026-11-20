@@ -116,7 +116,8 @@ BANNED_WARN = [
 # 07 规则 §1-4：上架前要过合规的品类（按 L1/L2 名或模板判）
 COMPLIANCE_L1 = {"Beauty", "Health", "Food & Drinks", "Baby & Family"}
 
-JAN_RE = re.compile(r"^(\d{8}|\d{13})$")
+JAN_RE = re.compile(r"^\d{8,14}$")          # 8~14 位数字（14 位 = 自编特殊 JAN，Boss 2026-11-20 不拦）
+CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{3,39}$")   # 其他自编码（含字母）→ 人工确认
 HANDLE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 KANA_KANJI = re.compile(r"[ぁ-ゖァ-ヺ一-鿿]")
 
@@ -165,47 +166,43 @@ def brand_tags(vendor: str, brand: str) -> list[str]:
     return out
 
 
-# ── 「商品」工作表的列 ──
-# kind: pre = 系统预填（不许改，上传时核对）/ info = 系统预填仅供参考 / ai = AI 填
-# (key, 中文名, kind, 必填, 字数上限, 说明)
-COLUMNS: list[tuple[str, str, str, bool, int | None, str]] = [
-    ("jan", "JAN", "pre", True, None, "商品身份。一切以 JAN 为准，标题/规格必须对应这个 JAN 的实物"),
-    ("nst_name", "NST 商品名（日文）", "info", False, None, "仅供识别，常混错厂商名，不能当事实"),
-    ("vendor", "厂商 Vendor", "pre", True, None, "灰色=口径表已定，不要改；白色=口径表还没有，按 README 第 3.5 节查官网填写"),
-    ("brand", "品牌", "pre", False, None, "灰色=口径表已定，不要改；白色=按 README 第 3.5 节填写（没有品牌就填厂商名）"),
-    ("brand_display", "前台品牌展示名", "info", False, None, "商品页品牌行显示的名字；标题开头用这个"),
-    ("price_usd", "美国价 USD", "pre", True, None, "= 定義原価 ÷ 55.8 向上取到 .99，系统算好，不要改"),
-    ("stock", "可用库存", "info", False, None, "大分弁天仓（斑马）当前可用数，仅供参考"),
-    ("title", "标题", "ai", True, 255, "英文。品牌 + 系列/商品名 + 关键特征 + 规格（容量放最后）"),
-    ("handle", "handle", "ai", True, 255, "标题转小写、空格换 -、去符号；全店唯一"),
-    ("l1", "大类", "ai", True, None, "从「选项」表选（如 Beauty）"),
-    ("l2", "小类", "ai", True, None, "从「选项」表选，必须属于所选大类（如 Skincare）"),
-    ("page_type", "商品页类型", "ai", True, None, "standard / otc（医药品）/ food（食品）"),
-    ("tags", "其他标签", "ai", False, None, "series- / item- / feat- / concern- / skin-，英文逗号分隔；不要写 cat-/brand-/sale-"),
-    ("description", "商品介绍", "ai", True, None, "英文段落：是什么、怎么用、规格；只写查得到的事实"),
-    ("ingredients", "成分", "ai", False, None, "照官方原文译英文，一行一个或逗号串；不适用写 N/A"),
-    ("howto", "用法", "ai", False, None, "一行一步"),
-    ("highlights", "卖点", "ai", False, None, "一行一条，3~5 条"),
-    ("faq", "FAQ", "ai", False, None, "Q: … A: … 成对，换行分隔"),
-    ("geo_us", "GEO US", "ai", True, None, "美国专用说明段落，最后一句必须是固定结尾句（见 README）"),
-    ("brand_subtitle", "品牌副标", "ai", True, 80, "「品牌名 — 一句品牌介绍」，恰好一个 em dash（—）"),
-    ("short_description", "短描述", "ai", True, 120, "商品一句话摘要"),
-    ("seo_title", "SEO 标题", "ai", True, 70, "<标题> | Japanese <品类名>，超 70 字符按单词裁短"),
-    ("seo_description", "SEO 描述", "ai", True, 320, "<标题> — Japanese <品类名> <卖点>. Made for <烦恼>. Ships from Japan to the US, Philippines and South Korea."),
-    ("food_nutrition", "营养成分（食品）", "ai", False, None, "page_type=food 时填"),
-    ("food_allergen", "过敏原（食品）", "ai", False, None, "page_type=food 时必填，逐项对官网アレルギー物質表"),
-    ("food_storage", "保存方法（食品）", "ai", False, None, "page_type=food 时填"),
-    ("otc_class", "OTC 类别（医药品）", "ai", False, None, "page_type=otc 时必填，如 第2類医薬品"),
-    ("otc_efficacy", "效能（医药品）", "ai", False, None, "按包装原文，不能多写"),
-    ("otc_precautions", "注意事项（医药品）", "ai", False, None, ""),
-    ("otc_specs", "规格·保管（医药品）", "ai", False, None, ""),
-    ("sources", "查证出处", "ai", True, None, "用到的官网/资料 URL，一行一个"),
-    ("notes", "备注", "ai", False, None, "合规疑点、查不到的项目、需要人确认的事"),
+# ── 「商品」工作表的列（Boss 2026-11-20：全部由同事的 AI 按 README 填，CMS 只在上传时检查）──
+# (key, 中文名, 必填, 字数上限, 说明)
+COLUMNS: list[tuple[str, str, bool, int | None, str]] = [
+    ("jan", "JAN", True, None, "商品身份。一切以 JAN 为准，标题/规格必须对应这个 JAN 的实物。单元格设为文本，不能变成科学计数"),
+    ("vendor", "厂商 Vendor", True, None, "公司英文名（README 第 4 节）"),
+    ("brand", "品牌", False, None, "消费者认识的品牌名；没有单独品牌就填厂商名（README 第 4 节）"),
+    ("cost_jpy", "定義原価（日元）", False, None, "知道就填数字；不知道留空"),
+    ("price_usd", "美国价 USD", False, None, "= 定義原価 ÷ 55.8 向上取到 .99；不知道原価就留空，在 CMS 上传页由人填"),
+    ("title", "标题", True, 255, "英文。品牌 + 系列/商品名 + 关键特征 + 规格（容量放最后）"),
+    ("handle", "handle", True, 255, "标题转小写、空格换 -、去符号；全店唯一"),
+    ("l1", "大类", True, None, "从「选项」表选（如 Beauty）"),
+    ("l2", "小类", True, None, "从「选项」表选，必须属于所选大类（如 Skincare）"),
+    ("page_type", "商品页类型", True, None, "standard / otc（医药品）/ food（食品）"),
+    ("tags", "其他标签", False, None, "series- / item- / feat- / concern- / skin-，英文逗号分隔；不要写 cat-/brand-/sale-"),
+    ("description", "商品介绍", True, None, "英文段落：是什么、怎么用、规格；只写查得到的事实"),
+    ("ingredients", "成分", False, None, "照官方原文译英文，一行一个或逗号串；不适用写 N/A"),
+    ("howto", "用法", False, None, "一行一步"),
+    ("highlights", "卖点", False, None, "一行一条，3~5 条"),
+    ("faq", "FAQ", False, None, "Q: … A: … 成对，换行分隔"),
+    ("geo_us", "GEO US", True, None, "美国专用说明段落，最后一句必须是固定结尾句（见 README）"),
+    ("brand_subtitle", "品牌副标", True, 80, "「品牌名 — 一句品牌介绍」，恰好一个 em dash（—）"),
+    ("short_description", "短描述", True, 120, "商品一句话摘要"),
+    ("seo_title", "SEO 标题", True, 70, "<标题> | Japanese <品类名>，超 70 字符按单词裁短"),
+    ("seo_description", "SEO 描述", True, 320, "<标题> — Japanese <品类名> <卖点>. Made for <烦恼>. Ships from Japan to the US, Philippines and South Korea."),
+    ("food_nutrition", "营养成分（食品）", False, None, "page_type=food 时填"),
+    ("food_allergen", "过敏原（食品）", False, None, "page_type=food 时必填，逐项对官网アレルギー物質表"),
+    ("food_storage", "保存方法（食品）", False, None, "page_type=food 时填"),
+    ("otc_class", "OTC 类别（医药品）", False, None, "page_type=otc 时必填，如 第2類医薬品"),
+    ("otc_efficacy", "效能（医药品）", False, None, "按包装原文，不能多写"),
+    ("otc_precautions", "注意事项（医药品）", False, None, ""),
+    ("otc_specs", "规格·保管（医药品）", False, None, ""),
+    ("sources", "查证出处", True, None, "核实身份和事实用到的页面 URL，一行一个；至少一个页面上要能看到这个 JAN"),
+    ("notes", "备注", False, None, "合规疑点、查不到的项目、需要人确认的事（不会发布到商品页）"),
 ]
 COL_KEYS = [c[0] for c in COLUMNS]
-PRE_KEYS = [c[0] for c in COLUMNS if c[2] == "pre"]
-REQUIRED = [c[0] for c in COLUMNS if c[3]]
-MAXLEN = {c[0]: c[4] for c in COLUMNS if c[4]}
+REQUIRED = [c[0] for c in COLUMNS if c[2]]
+MAXLEN = {c[0]: c[3] for c in COLUMNS if c[3]}
 TEXT_KEYS = ["title", "description", "ingredients", "howto", "highlights", "faq", "geo_us", "brand_subtitle",
              "short_description", "seo_title", "seo_description", "food_nutrition", "food_allergen", "food_storage",
              "otc_efficacy", "otc_precautions", "otc_specs"]

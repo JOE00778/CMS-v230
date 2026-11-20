@@ -39,9 +39,9 @@ def _u(zh: str, ja: str) -> str:
 
 
 st.title(t("🛍️ 自建站上架"))
-st.caption(_u("美国 · 单品（组合品不在此页）。流程：① 下载上架包 → 同事的 AI 按 README 填内容 → ② 上传 Excel 检查并建草稿 → "
+st.caption(_u("美国 · 单品（组合品不在此页）。流程：① 下载上架模板 → 同事的 AI 按 README 填内容 → ② 上传 Excel 检查并建草稿 → "
               "③ 上传图片挂到商品页。本页只建草稿（draft），改上架请在 Shopify 后台操作。",
-              "米国 · 単品（セット品は対象外）。流れ：① 出品パックをダウンロード → 同僚の AI が README に従って記入 → "
+              "米国 · 単品（セット品は対象外）。流れ：① 出品テンプレートをダウンロード → 同僚の AI が README に従って記入 → "
               "② Excel をアップロードして検査・下書き作成 → ③ 画像をアップロードして商品ページに掲載。"
               "本ページは下書き（draft）まで。公開は Shopify 管理画面で行ってください。"))
 
@@ -87,72 +87,74 @@ def _shopify_ready() -> bool:
 
 
 tab_dl, tab_up, tab_img, tab_log = st.tabs([
-    _u("📦 ① 下载上架包", "📦 ① 出品パック DL"), _u("⬆️ ② 上传内容·建草稿", "⬆️ ② 内容アップ・下書き作成"),
+    _u("📦 ① 下载上架模板", "📦 ① 出品テンプレート DL"), _u("⬆️ ② 上传内容·建草稿", "⬆️ ② 内容アップ・下書き作成"),
     _u("🖼️ ③ 上传图片", "🖼️ ③ 画像アップ"), _u("📜 台账", "📜 履歴")])
 
 # ============================================================
-# ① 下载上架包
+# ① 下载上架模板
 # ============================================================
 with tab_dl:
-    if _shopify_ready():
-        with st.spinner(_u("读取候选品与 Shopify 现有商品…", "候補品と Shopify 既存商品を読み込み中…")):
-            cands, skipped = _cands()
-            have = _existing_jans()
-        todo = [c for c in cands if c["jan"] not in have]
-        st.caption(_u("候选 = NST 商品等级 NEW · 取扱中 · 非無効 · JAN 8/13 位（整箱 14 位排除）· 定義原価已录 · Shopify 还没有这个 JAN。"
-                      "厂商口径表里还没有的商品，厂商/品牌列留白由 AI 填，上传时要人工确认。",
-                      "候補 = NST ランク NEW · 取扱中 · 無効でない · JAN 8/13 桁（ケース 14 桁は除外）· 定義原価あり · Shopify 未登録。"
-                      "メーカー確定表にない商品はメーカー/ブランド欄を空けて AI が記入、アップ時に要確認。"))
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(_u("可上架候选", "出品候補"), f"{len(todo):,}")
-        m2.metric(_u("其中厂商待 AI 填", "うちメーカー AI 記入"), f"{sum(1 for c in todo if not c['vendor_known']):,}")
-        m3.metric(_u("Shopify 已有", "Shopify 登録済"), f"{len(cands) - len(todo):,}")
-        m4.metric(_u("排除（原価缺失）", "除外（原価なし）"), f"{sum(skipped.values()):,}")
-        f1, f2 = st.columns([2, 1])
-        kw = f1.text_input(_u("筛选（JAN / 商品名 / 厂商 / 品牌）", "絞り込み（JAN / 商品名 / メーカー / ブランド）"))
-        only_stock = f2.toggle(_u("只看有库存", "在庫ありのみ"), value=True)
-        df = pd.DataFrame(todo)
-        if not df.empty:
-            if kw:
-                m = df[["jan", "nst_name", "vendor", "brand"]].astype(str).apply(
-                    lambda s: s.str.contains(kw, case=False, regex=False)).any(axis=1)
-                df = df[m]
-            if only_stock:
-                df = df[pd.to_numeric(df["stock"], errors="coerce").fillna(0) > 0]
-            df = df.sort_values(["vendor", "brand", "jan"]).reset_index(drop=True)
-            df.insert(0, "sel", False)
-            ed = st.data_editor(
-                df[["sel", "jan", "nst_name", "vendor", "brand", "price_usd", "stock"]],
-                column_config={"sel": st.column_config.CheckboxColumn(_u("选", "選択")),
-                               "jan": "JAN", "nst_name": _u("NST 商品名", "NST 商品名"),
-                               "vendor": _u("厂商", "メーカー"), "brand": _u("品牌", "ブランド"),
-                               "price_usd": st.column_config.NumberColumn(_u("美国价", "米国価格"), format="$%.2f"),
-                               "stock": _u("可用库存", "利用可能在庫")},
-                disabled=["jan", "nst_name", "vendor", "brand", "price_usd", "stock"],
-                hide_index=True, use_container_width=True, height=420, key="dl_editor")
-            picked = df[ed["sel"].values]
-            st.caption(_u("共 {n} 件，已选 {k} 件。建议一个上架包 30 件以内，AI 一次能查证的量有限。",
-                          "全 {n} 件、選択 {k} 件。1 パック 30 件以内を推奨（AI が一度に調べられる量に限りがあるため）。")
-                       .format(n=len(df), k=len(picked)))
-            if len(picked):
-                data = W.build(picked.drop(columns=["sel"]).to_dict("records"))   # vendor_known=False → 厂商白格
-                st.download_button(
-                    _u("⬇️ 下载上架包（Excel · {k} 件）", "⬇️ 出品パックをダウンロード（Excel · {k} 件）").format(k=len(picked)),
-                    data, file_name=f"上架包_US_{dt.datetime.now():%Y%m%d_%H%M}_{len(picked)}件.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-        else:
-            st.info(_u("没有可上架的候选品。", "出品候補はありません。"))
-        with st.expander(_u("📖 交给 AI 的说法（复制给同事）", "📖 AI への渡し方（同僚にコピー）")):
-            st.code("请先完整阅读这个 Excel 的 README 工作表，再看「字段说明」「选项」「样例」「禁用词」工作表，"
-                    "然后按 README 的规则逐行填写「商品」工作表的空白列（灰色列不要改）。"
-                    "每件商品都要按 JAN 去官网查证，查不到的写「待查」。填完后把整个 Excel 文件交回给我。",
-                    language=None)
+    st.caption(_u("上架模板 = 一个 Excel：README（全部上架规则，给 AI 读）+ 商品表（AI 填）+ 字段说明 + 选项 + 样例 + 禁用词。"
+                  "模板不依赖 NST，任何 JAN 都可以做；NST 和厂商口径表在上传时用来对照检查。",
+                  "出品テンプレート = Excel 1 つ：README（出品ルール全部・AI 用）+ 商品表（AI が記入）+ 項目説明 + 選択肢 + 見本 + 禁止語。"
+                  "NST に依存せず、どの JAN でも作成可能。NST とメーカー確定表はアップロード時の照合に使う。"))
+    jans_txt = st.text_area(_u("预填 JAN（选填 · 一行一个或用逗号分隔；也可在下方 NST 参考清单里勾选）",
+                               "JAN を事前記入（任意 · 1 行 1 つかカンマ区切り。下の NST 参考リストで選んでも可）"), height=100)
+    typed = [j for j in re.split(r"[\s,，、]+", jans_txt or "") if j]
+    with st.expander(_u("📋 NST 新品参考清单（NEW · 取扱中 · Shopify 还没有）", "📋 NST 新商品の参考リスト（NEW · 取扱中 · Shopify 未登録）")):
+        picked = []
+        if _shopify_ready():
+            with st.spinner(_u("读取中…", "読み込み中…")):
+                cands, _ = _cands()
+                have = _existing_jans()
+            df = pd.DataFrame([c for c in cands if c["jan"] not in have])
+            if df.empty:
+                st.info(_u("没有。", "ありません。"))
+            else:
+                f1, f2 = st.columns([2, 1])
+                kw = f1.text_input(_u("筛选（JAN / 商品名 / 厂商 / 品牌）", "絞り込み（JAN / 商品名 / メーカー / ブランド）"))
+                only_stock = f2.toggle(_u("只看有库存", "在庫ありのみ"), value=True)
+                if kw:
+                    df = df[df[["jan", "nst_name", "vendor", "brand"]].astype(str).apply(
+                        lambda s: s.str.contains(kw, case=False, regex=False)).any(axis=1)]
+                if only_stock:
+                    df = df[pd.to_numeric(df["stock"], errors="coerce").fillna(0) > 0]
+                df = df.sort_values(["vendor", "brand", "jan"]).reset_index(drop=True)
+                df.insert(0, "sel", False)
+                ed = st.data_editor(
+                    df[["sel", "jan", "nst_name", "vendor", "brand", "price_usd", "stock"]],
+                    column_config={"sel": st.column_config.CheckboxColumn(_u("选", "選択")), "jan": "JAN",
+                                   "nst_name": _u("NST 商品名", "NST 商品名"), "vendor": _u("厂商", "メーカー"),
+                                   "brand": _u("品牌", "ブランド"),
+                                   "price_usd": st.column_config.NumberColumn(_u("公式美国价", "計算上の米国価格"), format="$%.2f"),
+                                   "stock": _u("可用库存", "利用可能在庫")},
+                    disabled=["jan", "nst_name", "vendor", "brand", "price_usd", "stock"],
+                    hide_index=True, use_container_width=True, height=380, key="dl_editor")
+                picked = df[ed["sel"].values]["jan"].tolist()
+                st.caption(_u("共 {n} 件，勾选 {k} 件。", "全 {n} 件、選択 {k} 件。").format(n=len(df), k=len(picked)))
+    jans = list(dict.fromkeys(typed + picked))
+    st.caption(_u("模板里预填 {k} 个 JAN。建议一次 30 件以内，AI 一次能查证的量有限。",
+                  "テンプレートに JAN {k} 件を事前記入。1 回 30 件以内を推奨（AI が一度に調べられる量に限りがあるため）。").format(k=len(jans)))
+    st.download_button(_u("⬇️ 下载上架模板（Excel）", "⬇️ 出品テンプレートをダウンロード（Excel）"), W.build(jans),
+                       file_name=f"上架模板_US_{dt.datetime.now():%Y%m%d_%H%M}_{len(jans)}件.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+    with st.expander(_u("📖 交给 AI 的说法（复制给同事）", "📖 AI への渡し方（同僚にコピー）")):
+        st.code("请先完整阅读这个 Excel 的 README 工作表，再看「字段说明」「选项」「样例」「禁用词」工作表，"
+                "然后按 README 的规则逐行填写「商品」工作表（每件商品都要先按 JAN 去官网核实身份，"
+                "查不到的写「待查」，不要编）。填完后把整个 Excel 文件交回给我。", language=None)
 
 # ============================================================
 # ② 上传内容 · 建草稿
 # ============================================================
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _src_hit(sources: str, jan: str) -> str | None:
+    return C.source_has_jan(sources, jan)
+
+
 with tab_up:
-    up = st.file_uploader(_u("上传填好的上架包（Excel）", "記入済みの出品パック（Excel）"), type=["xlsx"], key="up_xlsx")
+    up = st.file_uploader(_u("上传填好的上架模板（Excel）", "記入済みの出品テンプレート（Excel）"), type=["xlsx"], key="up_xlsx")
     if up is not None and _shopify_ready():
         try:
             rows = W.read(up.getvalue())
@@ -160,12 +162,30 @@ with tab_up:
             st.error(str(e))
             rows = []
         if rows:
-            with st.spinner(_u("检查中（查重 / handle / 集合 / 合规）…", "検査中（重複 / handle / コレクション / コンプラ）…")):
-                cands, _ = _cands()
-                exp = {c["jan"]: c for c in cands}
-                res = V.check_all(rows, exp, existing_jans=_existing_jans(),
+            # 美国价：没有原価的商品由人在这里填（底表只来自 Excel、不随检查结果变 → 编辑不会被重置）
+            with st.expander(_u("💲 美国价（{k} 件为空 · 可在这里直接填或改）", "💲 米国価格（空欄 {k} 件 · ここで入力・修正可）")
+                             .format(k=sum(1 for r in rows if V._num(r.get("price_usd")) is None)),
+                             expanded=any(V._num(r.get("price_usd")) is None for r in rows)):
+                pe = st.data_editor(
+                    pd.DataFrame([{"jan": V._s(r.get("jan")), "title": V._s(r.get("title"))[:70],
+                                   "cost_jpy": V._num(r.get("cost_jpy")), "price_usd": V._num(r.get("price_usd"))}
+                                  for r in rows]),
+                    hide_index=True, use_container_width=True, key=f"price_editor_{up.name}_{up.size}",
+                    disabled=["jan", "title", "cost_jpy"],
+                    column_config={"cost_jpy": st.column_config.NumberColumn(_u("表里原価", "表の原価"), format="¥%d"),
+                                   "price_usd": st.column_config.NumberColumn(_u("美国价", "米国価格"), format="%.2f")})
+                for r, p_ in zip(rows, pe["price_usd"].tolist()):
+                    r["price_usd"] = None if p_ is None or p_ != p_ else p_
+            with st.spinner(_u("检查中（查重 / handle / 集合 / NST / 厂商口径 / 出处页 / 合规）…",
+                               "検査中（重複 / handle / コレクション / NST / メーカー表 / 出典ページ / コンプラ）…")):
+                conn_w = get_connection()
+                ctx = C.context(conn_w, [V._s(r.get("jan")) for r in rows])
+                res = V.check_all(rows, ctx, existing_jans=_existing_jans(),
                                   existing_handles=SH.handles_taken([V._s(r.get("handle")) for r in rows]),
                                   live_cat_tags=_live_cat_tags())
+                for r, rs in zip(rows, res):
+                    if rs["jan"] and V._s(r.get("sources")) and not _src_hit(V._s(r.get("sources")), rs["jan"]):
+                        rs["warns"].append(("sources", "查证出处的页面里找不到这个 JAN（官网用 JS 显示时也会这样）请确认身份"))
                 try:
                     kwr, ingr, catr = _compliance_rules()
                     for r, rs in zip(rows, res):
@@ -180,45 +200,45 @@ with tab_up:
                 except Exception as e:  # noqa: BLE001
                     st.warning(_u("合规规则读取失败，本次未做合规判定：", "コンプラ規則の読込失敗、今回は判定なし：") + str(e)[:200])
             table = pd.DataFrame([{
-                "jan": rs["jan"], "title": V._s(r.get("title"))[:70],
+                "jan": rs["jan"], "title": V._s(r.get("title"))[:70], "price_usd": V._num(r.get("price_usd")),
                 "状态": "❌" if rs["errors"] else ("⚠️" if rs["warns"] else "✅"),
-                "问题": "\n".join(f"[{f}] {m}" for f, m in rs["errors"] + rs["warns"]),
-                "确认": False} for r, rs in zip(rows, res)])
+                "问题": "\n".join(f"[{f}] {m}" for f, m in rs["errors"] + rs["warns"])} for r, rs in zip(rows, res)])
             n_err = int((table["状态"] == "❌").sum())
             n_warn = int((table["状态"] == "⚠️").sum())
             a, b, c = st.columns(3)
             a.metric(_u("✅ 可建草稿", "✅ 作成可"), f"{len(table) - n_err - n_warn}")
             b.metric(_u("⚠️ 需人工确认", "⚠️ 要確認"), f"{n_warn}")
             c.metric(_u("❌ 有错误（回 Excel 改）", "❌ エラー（Excel で修正）"), f"{n_err}")
-            st.caption(_u("❌ 不能建草稿，请让 AI 按「问题」改好再上传；⚠️ 看过没问题就在「确认」打勾。",
-                          "❌ は下書き作成不可。「問題」に沿って AI に直させて再アップ。⚠️ は確認済みなら「確認」にチェック。"))
-            ed = st.data_editor(
-                table, hide_index=True, use_container_width=True, key="up_editor",
-                disabled=["jan", "title", "状态", "问题"],
-                column_config={"问题": st.column_config.TextColumn(_u("问题", "問題"), width="large"),
-                               "确认": st.column_config.CheckboxColumn(_u("确认", "確認")),
-                               "状态": _u("状态", "状態")})
-            go = [i for i in range(len(rows)) if not res[i]["errors"] and (not res[i]["warns"] or ed["确认"].iloc[i])]
+            st.caption(_u("❌ 不能建草稿，请让 AI 按「问题」改好再上传（美国价为空的在上面直接填）；⚠️ 看过没问题就在下面选中确认。",
+                          "❌ は下書き作成不可。「問題」に沿って AI に直させて再アップ（米国価格の空欄は上で入力）。⚠️ は確認済みなら下で選択。"))
+            st.dataframe(table, hide_index=True, use_container_width=True,
+                         column_config={"问题": st.column_config.TextColumn(_u("问题", "問題"), width="large"),
+                                        "price_usd": st.column_config.NumberColumn(_u("美国价", "米国価格"), format="%.2f"),
+                                        "状态": _u("状态", "状態")})
+            _wl = {i: f"{res[i]['jan']}  {V._s(rows[i].get('title'))[:50]}" for i in range(len(rows))
+                   if not res[i]["errors"] and res[i]["warns"]}
+            conf = st.multiselect(_u("⚠️ 已人工确认、可以建草稿的商品", "⚠️ 確認済みで下書き作成してよい商品"),
+                                  list(_wl.values()), key=f"confirm_{up.name}_{up.size}")
+            go = [i for i in range(len(rows)) if not res[i]["errors"] and (not res[i]["warns"] or _wl.get(i) in conf)]
             st.download_button(_u("⬇️ 下载检查结果（CSV）", "⬇️ 検査結果をダウンロード（CSV）"),
-                               table.drop(columns=["确认"]).to_csv(index=False).encode("utf-8-sig"),
+                               table.to_csv(index=False).encode("utf-8-sig"),
                                file_name=f"检查结果_{dt.datetime.now():%Y%m%d_%H%M}.csv", mime="text/csv")
             if st.button(_u("🚀 建 Shopify 草稿（{k} 件）", "🚀 Shopify 下書き作成（{k} 件）").format(k=len(go)),
                          type="primary", disabled=not go):
-                conn = get_connection()
-                C.ensure_ledger(conn)
+                C.ensure_ledger(conn_w)
                 batch = f"{dt.datetime.now():%Y%m%d-%H%M%S} {up.name}"
                 bar = st.progress(0.0)
                 out = []
                 for n, i in enumerate(go, 1):
-                    r, e = rows[i], exp[V._s(rows[i].get("jan"))]
+                    r = rows[i]
                     try:
-                        cr = SH.create_draft(r, e)
-                        bad = SH.verify(r, e, SH.readback(cr["product_id"], cr["variant_id"])) if cr.get("product_id") else []
+                        cr = SH.create_draft(r)
+                        bad = SH.verify(r, SH.readback(cr["product_id"], cr["variant_id"])) if cr.get("product_id") else []
                         ok = cr["ok"] and not bad
                         detail = cr["error"] or ("; ".join(bad) if bad else "ok")
                     except Exception as ex:  # noqa: BLE001
                         cr, ok, detail = {}, False, f"{type(ex).__name__}: {ex}"
-                    C.log(conn, operator=OPERATOR, batch=batch, action="create_draft", jan=V._s(r.get("jan")),
+                    C.log(conn_w, operator=OPERATOR, batch=batch, action="create_draft", jan=V._s(r.get("jan")),
                           product_id=cr.get("product_id") or "", handle=cr.get("handle") or "", ok=ok, detail=detail)
                     out.append({"jan": r.get("jan"), "handle": cr.get("handle"), "ok": "✅" if ok else "❌",
                                 "detail": detail})
@@ -233,7 +253,7 @@ with tab_up:
 # ============================================================
 # ③ 上传图片
 # ============================================================
-_IMG_NAME = re.compile(r"^(\d{8}|\d{13})(?:_(\d{1,2}))?\.webp$", re.I)
+_IMG_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9-]{3,39}?)(?:_(\d{1,2}))?\.webp$", re.I)   # JAN（含自编码）
 
 
 def _collect(files) -> tuple[dict, list]:

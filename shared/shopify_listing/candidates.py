@@ -44,6 +44,37 @@ def load(conn) -> tuple[list[dict], dict]:
     return out, skipped
 
 
+def context(conn, jans: list[str]) -> dict[str, dict]:
+    """上传检查用的内部对照数据：JAN → {"nst": {...} | None, "brand": {...} | None}。
+    NST 取本体行（item_code = jan）；口径表 boss_confirmed = Boss 逐条拍板、不可覆盖。"""
+    js = sorted({j for j in jans if j})
+    out = {j: {"nst": None, "brand": None} for j in js}
+    if not js:
+        return out
+    for r in conn.execute(
+            "SELECT jan, handling_cd, is_inactive, cost::float AS cost, display_name FROM nst.item_master_raw "
+            "WHERE item_code = jan AND jan = ANY(?)", (js,)).fetchall():
+        out[r["jan"]]["nst"] = {"status": r["handling_cd"], "inactive": bool(r["is_inactive"]),
+                                "cost": r["cost"], "name": r["display_name"]}
+    for r in conn.execute(
+            "SELECT jan, vendor, brand, boss_confirmed FROM brand.item_vendor_brand WHERE jan = ANY(?)", (js,)).fetchall():
+        out[r["jan"]]["brand"] = {"vendor": r["vendor"] or "", "brand": r["brand"] or "",
+                                  "boss_confirmed": bool(r["boss_confirmed"])}
+    return out
+
+
+def source_has_jan(sources: str, jan: str, max_urls: int = 3) -> str | None:
+    """查证出处的页面里能否找到这个 JAN → 找到的 URL / None（身份佐证 · 只读抓页）。"""
+    import re
+    from shared import jan_lookup
+    urls = re.findall(r"https?://[^\s,;|]+", sources or "")[:max_urls]
+    for u in urls:
+        raw = jan_lookup._get(u)
+        if raw and jan in jan_lookup.decode(raw):
+            return u
+    return None
+
+
 def ensure_ledger(conn) -> None:
     """台账表不存在时才建（page48 同款：每次都发 DDL 会撞别的 tab 的居残り事务锁）。"""
     if conn.execute("SELECT to_regclass(?) AS r", (LEDGER,)).fetchone()["r"] is None:

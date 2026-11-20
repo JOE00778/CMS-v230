@@ -1,4 +1,6 @@
-"""上架包 Excel：生成（README + 商品 + 字段说明 + 选项 + 样例 + 禁用词）与读回。
+"""上架模板 Excel：生成（README + 商品 + 字段说明 + 选项 + 样例 + 禁用词）与读回。
+
+商品表全部由同事的 AI 按 README 填（Boss 2026-11-20），可选预填 JAN。
 
 README 来自 rules_us.md（一行一条）；读回只读「商品」表、按第 1 行列名取值，其他工作表忽略。
 """
@@ -17,7 +19,6 @@ from shared.shopify_listing import spec as S
 
 _DIR = Path(__file__).resolve().parent
 SHEET = "商品"
-GREY = PatternFill("solid", fgColor="E5E7EB")
 HEAD = PatternFill("solid", fgColor="1F2937")
 WRAP = Alignment(wrap_text=True, vertical="top")
 
@@ -48,7 +49,8 @@ def _header(ws, keys: list[str], widths: dict[str, int] | None = None) -> None:
     ws.freeze_panes = "B2"
 
 
-def build(cands: list[dict]) -> bytes:
+def build(jans: list[str] | None = None) -> bytes:
+    jans = [str(j).strip() for j in (jans or []) if str(j).strip()]
     wb = Workbook()
     # ① README
     ws = wb.active
@@ -65,45 +67,32 @@ def build(cands: list[dict]) -> bytes:
         for c in row:
             c.alignment = WRAP
 
-    # ② 商品
+    # ② 商品（全部由 AI 填；可选预填 JAN）
     ws = wb.create_sheet(SHEET)
-    _header(ws, S.COL_KEYS, {"jan": 16, "title": 50, "description": 60, "geo_us": 60, "nst_name": 36})
-    kind = {k: kd for k, _, kd, *_ in S.COLUMNS}
-    for i, (k, zh, kd, req, mx, note) in enumerate(S.COLUMNS, 1):
-        who = {"pre": "系统预填·不要改", "info": "系统预填·仅参考", "ai": "AI 填"}[kd]
-        ws.cell(1, i).comment = Comment(f"{zh}（{who}{'·必填' if req else ''}{f'·≤{mx}字' if mx else ''}）\n{note}", "SmikieJapan")
-    for r, cand in enumerate(cands, 2):
-        for i, k in enumerate(S.COL_KEYS, 1):
-            v = cand.get(k)
-            c = ws.cell(r, i, v if kind[k] != "ai" else None)
-            if k == "jan":
-                c.value = str(v)
-                c.number_format = "@"
-            open_vendor = k in ("vendor", "brand") and not cand.get("vendor")   # 口径表没有 → AI 填
-            if kind[k] != "ai" and not open_vendor:
-                c.fill = GREY
-            c.alignment = WRAP
-    n = max(len(cands) + 1, 2)
+    _header(ws, S.COL_KEYS, {"jan": 16, "title": 50, "description": 60, "geo_us": 60, "sources": 40})
+    for i, (k, zh, req, mx, note) in enumerate(S.COLUMNS, 1):
+        ws.cell(1, i).comment = Comment(f"{zh}（{'必填' if req else '选填'}{f'·≤{mx}字' if mx else ''}）\n{note}", "SmikieJapan")
+    n = max(len(jans), 1) + 200
     col = {k: ws.cell(1, i).column_letter for i, k in enumerate(S.COL_KEYS, 1)}
-    for k in ("jan",):
-        for r in range(2, n + 50):
-            ws[f"{col[k]}{r}"].number_format = "@"
+    for r in range(2, n + 2):
+        ws[f"{col['jan']}{r}"].number_format = "@"
+    for r, jan in enumerate(jans, 2):
+        ws[f"{col['jan']}{r}"] = str(jan)
     dv = DataValidation(type="list", formula1="=选项!$A$2:$A$" + str(1 + len(S.CATEGORIES)), allow_blank=True)
-    dv.add(f"{col['l1']}2:{col['l1']}{n + 50}")
+    dv.add(f"{col['l1']}2:{col['l1']}{n + 1}")
     n_l2 = sum(len(v[1]) for v in S.CATEGORIES.values())
     dv2 = DataValidation(type="list", formula1=f"=选项!$C$2:$C${1 + n_l2}", allow_blank=True)
-    dv2.add(f"{col['l2']}2:{col['l2']}{n + 50}")
+    dv2.add(f"{col['l2']}2:{col['l2']}{n + 1}")
     dv3 = DataValidation(type="list", formula1='"standard,otc,food"', allow_blank=True)
-    dv3.add(f"{col['page_type']}2:{col['page_type']}{n + 50}")
+    dv3.add(f"{col['page_type']}2:{col['page_type']}{n + 1}")
     for d in (dv, dv2, dv3):
         ws.add_data_validation(d)
 
     # ③ 字段说明
     ws = wb.create_sheet("字段说明")
-    _header(ws, ["列名", "中文名", "谁填", "必填", "字数上限", "说明"], {"说明": 90})
-    for k, zh, kd, req, mx, note in S.COLUMNS:
-        ws.append([k, zh, {"pre": "系统预填·不要改", "info": "系统预填·仅参考", "ai": "AI 填"}[kd],
-                   "是" if req else "", mx or "", note])
+    _header(ws, ["列名", "中文名", "必填", "字数上限", "说明"], {"说明": 90})
+    for k, zh, req, mx, note in S.COLUMNS:
+        ws.append([k, zh, "是" if req else "", mx or "", note])
 
     # ④ 选项
     ws = wb.create_sheet("选项")

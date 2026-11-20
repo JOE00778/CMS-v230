@@ -173,7 +173,8 @@ def _s(v) -> str:
     return "" if v is None else str(v).strip()
 
 
-def build_input(row: dict, expected: dict) -> dict:
+def build_input(row: dict) -> dict:
+    """上传表一行（已过检查）→ productSet input。厂商/品牌/价格都取表里的值。"""
     jan = _s(row["jan"])
     pt = _s(row.get("page_type")) or "standard"
     mf: list[dict] = []
@@ -184,8 +185,7 @@ def build_input(row: dict, expected: dict) -> dict:
 
     add("smikie", "jan_code", "single_line_text_field", jan)
     add("smikie", "origin_city", "single_line_text_field", "Japan")
-    vendor = _s(expected.get("vendor")) or _s(row.get("vendor"))
-    brand = _s(expected.get("brand")) if _s(expected.get("vendor")) else _s(row.get("brand"))
+    vendor, brand = _s(row.get("vendor")), _s(row.get("brand"))
     add("smikie", "brand_display", "single_line_text_field", S.display_name(vendor, brand))
     add("smikie", "acc_intro_html", "rich_text_field", richtext(row.get("description"), "intro"))
     add("smikie", "acc_geo_us_html", "rich_text_field", richtext(row.get("geo_us"), "geo"))
@@ -205,12 +205,12 @@ def build_input(row: dict, expected: dict) -> dict:
             add("smikie", "acc_nutrition_html", "rich_text_field", richtext(row.get("food_nutrition"), "intro"))
             add("smikie", "acc_allergen_html", "rich_text_field", richtext(row.get("food_allergen"), "intro"))
             add("smikie", "acc_storage_html", "rich_text_field", richtext(row.get("food_storage"), "intro"))
-    price = f"{float(expected['price_usd']):.2f}"
+    price = f"{float(str(row['price_usd']).replace('$', '').replace(',', '')):.2f}"
     return {
         "title": _s(row["title"]), "handle": _s(row["handle"]), "vendor": vendor,
         "productType": f"{_s(row['l1'])} {_s(row['l2'])}".strip(),
         "status": "DRAFT", "templateSuffix": S.TEMPLATES.get(pt, "smikie-standard"),
-        "tags": final_tags(row, expected),
+        "tags": final_tags(row),
         "descriptionHtml": _s(row.get("description")),
         "seo": {"title": _s(row.get("seo_title")), "description": _s(row.get("seo_description"))},
         "metafields": mf,
@@ -227,9 +227,9 @@ _PRODUCT_SET = """mutation($input:ProductSetInput!){ productSet(synchronous:true
   product{ id handle status variants(first:1){ nodes{ id } } } userErrors{ field message } } }"""
 
 
-def create_draft(row: dict, expected: dict) -> dict:
+def create_draft(row: dict) -> dict:
     """→ {'ok', 'product_id', 'handle', 'variant_id', 'steps': {...}, 'error'}。每步单独报，不捆绑。"""
-    inp = build_input(row, expected)
+    inp = build_input(row)
     d = gql(_PRODUCT_SET, {"input": inp})["productSet"]
     if d["userErrors"] or not d["product"]:
         return {"ok": False, "error": json.dumps(d["userErrors"], ensure_ascii=False)[:500], "steps": {}}
@@ -262,10 +262,10 @@ def readback(product_id: str, variant_id: str) -> dict:
     return d
 
 
-def verify(row: dict, expected: dict, rb: dict) -> list[str]:
+def verify(row: dict, rb: dict) -> list[str]:
     """回读与应写值比对 → 不一致项。"""
     p = rb["product"]
-    inp = build_input(row, expected)
+    inp = build_input(row)
     v = p["variants"]["nodes"][0]
     bad = []
     for k in ("title", "handle", "vendor", "productType", "templateSuffix"):
