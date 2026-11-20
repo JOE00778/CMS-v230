@@ -45,6 +45,11 @@ _THEME_CSS = """
 [data-testid="stMetricValue"] > div { font-size:clamp(0.85rem, 13.5cqi, 1.6rem) !important; }
 [data-testid="stMetricDelta"],
 [data-testid="stMetricDelta"] div { font-size:clamp(0.7rem, 8cqi, 0.875rem) !important; }
+/* delta 的说明文字放不下时换行，不省略（Boss 2026-11-20「入款率下面的文字断了」） */
+[data-testid="stMetricDelta"] { height:auto !important; }
+[data-testid="stMetricDelta"] div,
+[data-testid="stMetricDelta"] p { white-space:normal !important; overflow:visible !important; text-overflow:clip !important; }
+div:has(> [data-testid="stMetricDelta"]) { overflow:visible !important; height:auto !important; }
 
 /* 分隔符 st.divider（=<hr>）上下间距压到 0（Boss 2026-05-26） */
 hr { margin-top:0 !important; margin-bottom:0 !important; }
