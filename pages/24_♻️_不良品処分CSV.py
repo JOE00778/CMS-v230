@@ -264,7 +264,8 @@ with col_cfg:
             help=t("注文書とは異なる ID にすること"),
         )
         customer = st.selectbox(t("顧客"), CUSTOMER_OPTIONS, index=0)
-        location = st.selectbox(t("場所 (出荷倉庫)"), LOCATION_OPTIONS, index=0)
+        location = LOCATION_OPTIONS[0]   # 弁天倉庫のみ（Boss 2026-11-20：選択肢 1 つの下拉は不要）
+        st.text_input(t("場所 (出荷倉庫)"), location, disabled=True)
     with c2:
         department = st.selectbox(t("部門"), DEPARTMENT_OPTIONS, index=1)
         employee = st.selectbox(t("従業員 (営業担当者)"), EMPLOYEE_OPTIONS, index=4)

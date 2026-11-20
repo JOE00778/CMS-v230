@@ -21,10 +21,10 @@ _THEME_CSS = """
 
 /* 完全默认 Streamlit 主题（无自定义字体/颜色/字号/缩放）。
    仅保留 html_table 助手的表格样式——否则满宽 HTML 表格会变成无样式裸表。 */
-.cms-table-wrap { width:100% !important; overflow-x:auto; border:1px solid #E2E8F0; border-radius:8px; background:#FFFFFF; margin-bottom:2rem; }
+.cms-table-wrap { width:100% !important; overflow-x:auto; border:1px solid #E2E8F0; border-radius:8px; background:#FFFFFF; margin-bottom:.5rem; }
 .cms-table { width:100% !important; border-collapse:collapse; table-layout:auto; }
-.cms-table thead th { background:#F8FAFC; color:#64748B; font-weight:600; text-align:left; padding:10px 14px; border-bottom:1px solid #E2E8F0; white-space:nowrap; }
-.cms-table tbody td { padding:9px 14px; border-bottom:1px solid #F1F5F9; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.cms-table thead th { background:#F8FAFC; color:#64748B; font-weight:600; text-align:left; padding:7px 12px; border-bottom:1px solid #E2E8F0; white-space:nowrap; }
+.cms-table tbody td { padding:6px 12px; border-bottom:1px solid #F1F5F9; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .cms-table tbody tr:last-child td { border-bottom:none; }
 .cms-table tbody tr:hover td { background:#F8FAFC; }
 .cms-table td.num, .cms-table th.num { text-align:right; }
@@ -32,7 +32,7 @@ _THEME_CSS = """
 /* KPI 指标卡片化（Boss 2026-05-25）·组件级选择器，仅命中 st.metric，不影响 dataframe */
 [data-testid="stMetric"] {
   background:#F8FAFC; border:1px solid #E2E8F0; border-radius:10px;
-  padding:14px 16px; box-shadow:0 1px 2px rgba(15,23,42,.04);
+  padding:10px 14px; box-shadow:0 1px 2px rgba(15,23,42,.04);
 }
 /* 卡片数字字号缩小（Boss 2026-05-26）·默认约 2.25rem → 1.6rem
    用 !important + 连子元素一起命中，避免被 Streamlit emotion 类的高优先级盖掉 */
@@ -51,8 +51,6 @@ _THEME_CSS = """
 [data-testid="stMetricDelta"] p { white-space:normal !important; overflow:visible !important; text-overflow:clip !important; }
 div:has(> [data-testid="stMetricDelta"]) { overflow:visible !important; height:auto !important; }
 
-/* 分隔符 st.divider（=<hr>）上下间距压到 0（Boss 2026-05-26） */
-hr { margin-top:0 !important; margin-bottom:0 !important; }
 
 /* PPVI Pass 1 · P0 · 等宽 mono 字体（IBM Plex Mono），仅命中数字/代码/JAN/SKU。
    规范来源：~/CC/.claude/skills/ppvi-web-design（结构主义场景的瑞士设计灵魂）。
@@ -76,9 +74,26 @@ code, kbd, samp {
 .main p, [data-testid="stMarkdown"] p,
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p,
 [data-testid="stExpander"] p {
-  line-height: 1.75 !important;
+  line-height: 1.5 !important;   /* Boss 2026-11-20「整体可以紧凑些」：1.75 → 1.5 */
 }
 /* PPVI P3 终止 */
+
+/* 全站紧凑化（Boss 2026-11-20「间距太大·整体太空 → 整体可以紧凑些」）
+   回滚：删除本段到「紧凑化 终止」。 */
+[data-testid="stVerticalBlock"] { gap: .5rem !important; }                 /* 元素间隔 1rem → .5rem */
+[data-testid="stHorizontalBlock"] { gap: .75rem !important; }              /* 并排列间隔 */
+[data-testid="stMarkdownContainer"] h1, h1 { padding: .25rem 0 .25rem !important; }
+[data-testid="stMarkdownContainer"] h2, [data-testid="stMarkdownContainer"] h3,
+h2, h3 { padding: .5rem 0 .1rem !important; margin-bottom: 0 !important; }
+[data-testid="stMarkdownContainer"] h4, [data-testid="stMarkdownContainer"] h5,
+h4, h5 { padding: .35rem 0 .05rem !important; margin-bottom: 0 !important; }
+[data-testid="stMarkdownContainer"] { margin-bottom: 0 !important; }      /* Streamlit 默认 -16px 抵消段落下边距；标题没有段落会叠到下一元素上 */
+[data-testid="stMarkdownContainer"] p { margin-bottom: .25rem; }
+[data-testid="stMarkdownContainer"] p:last-child { margin-bottom: 0; }
+[data-baseweb="tab-panel"] { padding-top: .5rem !important; }             /* tab 内容顶部留白 */
+[data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 1rem; }
+hr { margin-top: .25rem !important; margin-bottom: .25rem !important; }
+/* 紧凑化 终止 */
 
 /* 等级采购金额卡（page30·自包含：等级 / 总额 / 上月环比 / 挂账 / 预付款·复刻 metric 卡观感） */
 .cms-rank-card { background:#F8FAFC; border:1px solid #E2E8F0; border-radius:10px;

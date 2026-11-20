@@ -138,7 +138,6 @@ if step == 1:
     )
 
     # 部門固定含「輸出」（NST 仅采輸出事業·自动锁定不在 UI 暴露）
-    LOC_BOTH = "全仓库（默认）"
     HANDLE_PRESET_ALL = "全部"
 
     # 場所(warehouse) 候选 = 该快照下的仓库
@@ -152,14 +151,9 @@ if step == 1:
         "WHERE handling_cd IS NOT NULL ORDER BY handling_cd"
     ).fetchall() if r["handling_cd"]]
 
-    loc_choices = [LOC_BOTH] + loc_all
-    c1, c2 = st.columns(2)
-    with c1:
-        loc_pick = st.selectbox(t("場所（仓库）"), loc_choices, index=0, format_func=t)
-    with c2:
-        handle_pick = st.multiselect(t("取扱区分"), handle_all, placeholder=t(HANDLE_PRESET_ALL))
-
-    sel_locs = loc_all if loc_pick == LOC_BOTH else [loc_pick]
+    # 場所（仓库）选择は弁天 1 倉庫のみで無意味 → 削除（Boss 2026-11-20）· 常に弁天
+    handle_pick = st.multiselect(t("取扱区分"), handle_all, placeholder=t(HANDLE_PRESET_ALL))
+    sel_locs = loc_all
     sel_handle = handle_pick  # 空選＝全部（下方 if sel_handle 空则不加筛选）
 
     st.caption(

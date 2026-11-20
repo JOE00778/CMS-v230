@@ -32,7 +32,7 @@ st.title(t("📦 库存监控"))
 
 def _render_composition(tab1, tab2, tab4):
     st.title(t("📦 库存构成分析（弁天）"))
-    st.caption(t("弁天按棚番号分类（输出 / 输出中国 / 返品 / 不良品）· 只看大分弁天倉庫（不含京东仓 / CGF）"))
+    st.caption(t("弁天按棚番号分类（输出 / 输出中国 / 返品 / 不良品）· 只看大分弁天倉庫"))
 
 
     def _df(sql: str, params=None) -> pd.DataFrame:
@@ -235,7 +235,7 @@ def _render_composition(tab1, tab2, tab4):
                 lo=float(t_cat["amt"].min()), hi=float(t_cat["amt"].max())))
 
         _bn_from = tdf.loc[tdf["as_of"].notna(), "ym"].min()
-        st.caption(t("弁天＝bin 快照月末值，{b} 起才有 · 不含京东仓 · "
+        st.caption(t("弁天＝bin 快照月末值，{b} 起才有 · "
                      "当月为进行中月份 · 金额按当前定义原价换算").format(
             b=str(_bn_from) if pd.notna(_bn_from) else "—"))
 

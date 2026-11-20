@@ -158,7 +158,7 @@ with tab3:
             "minor_abs_threshold": int(_rabs),
             "minor_pct_threshold": float(_rpct),
         })
-        st.success(t("✅ 已保存。到「📦 库存监控 → 库存构成分析 → 📊 弁天 vs 斑马 库存对账」tab 刷新即生效。"))
+        st.success(t("✅ 已保存。到「📦 库存监控 → 📊 弁天 vs 斑马 库存对账」tab 刷新即生效。"))
 
     st.divider()
     st.caption(t("当前生效：绝对值 ≤ {n} 件 · {pct}").format(
