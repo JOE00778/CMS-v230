@@ -601,8 +601,8 @@ def _render_composition(tab1, tab2, tab4):
 
 tab_comp, tab1, tab2, tab4, tab_risk = st.tabs([
     t("📦 库存构成分析"),
-    t("🔎 按棚番号查商品（弁天）"),
-    t("🔍 按 SKU 查库存分布（弁天）"),
+    t("🔎 按棚番号查商品"),
+    t("🔍 按 SKU 查库存分布"),
     t("📊 弁天 vs 斑马 库存对账"),
     t("🛡️ 库存风控"),
 ])
