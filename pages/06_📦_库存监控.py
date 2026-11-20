@@ -243,11 +243,8 @@ def _render_composition(tab1, tab2, tab4):
 
     # ----- 各 ランク 库存金额（A/B/C/NEW/取扱中止/未分类 等） -----
     st.markdown("##### " + t("📊 各等级 库存金额"))
-    _wh_opts_rank = [t("全部")] + sorted(df["warehouse"].dropna().unique().tolist())
-    sel_wh_rank = st.radio(
-        t("仓库范围（等级构成）"), _wh_opts_rank, horizontal=True, index=0, key="rank_wh_sel",
-    )
-    df_rank = df.copy() if sel_wh_rank == t("全部") else df[df["warehouse"] == sel_wh_rank].copy()
+    # 仓库范围ラジオ（全部/弁天）は弁天 1 倉庫のみで無意味 → 削除（Boss 2026-11-20）
+    df_rank = df.copy()
     df_rank["rank_label"] = _rank_label(df_rank)
     by_rank = (df_rank.groupby("rank_label", as_index=False)
                .agg(qty=("qty_on_hand", "sum"), amt=("amt", "sum")))
@@ -265,9 +262,9 @@ def _render_composition(tab1, tab2, tab4):
                            delta=f"{pct_r:.0f}% {t('占比')} · {float(r['qty']):,.0f} {t('数量')}",
                            delta_color="off")
 
-    # ----- 等级别 月次推移（上の「仓库范围」ラジオに追従） -----
+    # ----- 等级别 月次推移 -----
     if not tdf.empty:
-        t_rank_src = tdf.copy() if sel_wh_rank == t("全部") else tdf[tdf["warehouse"] == sel_wh_rank].copy()
+        t_rank_src = tdf.copy()
         t_rank_src["rank_label"] = _rank_label(t_rank_src)
         t_rank = t_rank_src.groupby(["ym", "rank_label"], as_index=False).agg(
             qty=("qty", "sum"), amt=("amt", "sum"))
