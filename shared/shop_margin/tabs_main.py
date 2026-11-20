@@ -12,6 +12,16 @@ _perf_tab_lbl = "📋 運営業績" if get_lang() == "ja" else "📋 运营绩�
 # ============================================================
 # Tab 0：月内日次推移（曲線図）← Boss 依頼の核心
 # ============================================================
+# 订单数（Boss 2026-11-20）: 当月正票の注文番号を 1 回だけ取得し、日次/市場/担当者なしで共用。
+#   締め = df と同じ前日まで（開票日基準）。
+from shared.order_date_daily import ORDERS_SQL, daily_order_counts
+_ord_all, _ord_err = _query(ORDERS_SQL, (ym,))
+if _ord_err or _ord_all is None:
+    st.error(("注文数の取得に失敗: " if get_lang() == "ja" else "订单数取数失败: ") + str(_ord_err))
+    _ord_all = pd.DataFrame(columns=["shop", "order_no", "inv_date", "order_date"])
+_ord_all = _ord_all[pd.to_datetime(_ord_all["inv_date"]).dt.date <= _cutoff]
+_ord = _ord_all[_ord_all["shop"].isin(set(df["shop"].unique()))]
+
 with tab_day:
     # 按下单日（Boss 2026-11-20）：NST は開票日計上で日曜に開票が無い → 下単日へ按分。
     #   Shopee/Coupang は下単日あり、その他は開票日のまま。上月下単分は本月日次から除外し注記。
@@ -27,6 +37,8 @@ with tab_day:
         _shop_day, _shares if _shares is not None else pd.DataFrame(
             columns=["shop", "inv_date", "order_date", "amt"]), ym)
     daily["sale_date"] = pd.to_datetime(daily["sale_date"]).dt.date
+    daily = daily.merge(daily_order_counts(_ord, ym), on="sale_date", how="left")
+    daily["orders"] = daily["orders"].fillna(0)
     daily = daily[daily["sale_date"] <= _cutoff]
     for _c in ("revenue", "defined_cost", "gross_profit"):
         daily[_c] = daily[_c].map(_rhu)
@@ -93,8 +105,9 @@ with tab_day:
 
     # ⚠️ 列変数に `pa` を使うな — shared.price_alert の import 別名を遮蔽して
     #    価格預警タブが落ちる（2026-09-08 実際に発生）
-    pq, pr, pg, pm, p_ad, p_cm = st.columns(6)
+    pq, po, pr, pg, pm, p_ad, p_cm = st.columns(7)
     pq.metric(_col("qty"), f"{int(_last['qty']):,}", _delta("qty"))
+    po.metric(_col("orders"), f"{int(_last['orders']):,}", _delta("orders"))
     pr.metric(_col("revenue"), f"¥{_last['revenue']:,.0f}", _delta("revenue"))
     pg.metric(_col("gross_profit"), f"¥{_last['gross_profit']:,.0f}", _delta("gross_profit"))
     pm.metric(_col("gross_margin"), f"{_last['gross_margin']:.2f}%", _delta("gross_margin", pct=True))
@@ -160,7 +173,7 @@ with tab_day:
     st.altair_chart(bar_chart, use_container_width=True)
 
     # 明细表（日付倒序·最近日在上。daily 本体は昇順維持＝前日指標/曲線図が依存）
-    day_cols = ("sale_date", "qty", "revenue", "defined_cost",
+    day_cols = ("sale_date", "qty", "orders", "revenue", "defined_cost",
                 "gross_profit", "gross_margin", "ad", "cm_est",
                 "n_shop")
     html_table(_disp(daily.sort_values("sale_date", ascending=False), day_cols))
@@ -474,9 +487,13 @@ with tab_market:
         g["gross_profit"] / g["revenue"].where(g["revenue"] != 0)
     ).fillna(0) * 100
     g = _with_cm(g, "market")
+    _shop_mkt = df[["shop", "market"]].drop_duplicates()
+    g = g.merge(_ord.merge(_shop_mkt, on="shop").groupby("market", as_index=False)
+                .agg(orders=("order_no", "nunique")), on="market", how="left")
+    g["orders"] = g["orders"].fillna(0)
     g = g.sort_values("gross_profit", ascending=False)
 
-    mkt_cols = ("market", "qty", "revenue", "cancel_est", "revenue_adj",
+    mkt_cols = ("market", "qty", "orders", "revenue", "cancel_est", "revenue_adj",
                 "defined_cost", "gross_profit", "gross_margin",
                 "fee", "ad", "cm", "cm_rate",
                 "fee_match", "payout_rate", "n_shop", "n_sku")
@@ -515,8 +532,11 @@ with tab_market:
         _ng2["gross_margin"] = (
             _ng2["gross_profit"] / _ng2["revenue"].where(_ng2["revenue"] != 0)
         ).fillna(0) * 100
+        _ng2 = _ng2.merge(_ord_all.groupby("shop", as_index=False)
+                          .agg(orders=("order_no", "nunique")), on="shop", how="left")
+        _ng2["orders"] = _ng2["orders"].fillna(0)
         _ng2 = _ng2.sort_values("gross_profit", ascending=False)
-        html_table(_disp(_ng2, ("shop", "market", "qty", "revenue", "defined_cost",
+        html_table(_disp(_ng2, ("shop", "market", "qty", "orders", "revenue", "defined_cost",
                                 "gross_profit", "gross_margin", "n_sku")))
         st.caption(
             ("担当者を割り当てると、翌計算からは上の市場統計・KPI に入ります"

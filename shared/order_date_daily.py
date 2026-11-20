@@ -64,3 +64,33 @@ def redistribute(daily_shop: pd.DataFrame, shares: pd.DataFrame, ym: str):
            .rename(columns={"order_date": "sale_date"})
            .sort_values("sale_date").reset_index(drop=True))
     return out, prior
+
+
+# 订单数（Boss 2026-11-20「销售数量保留，另外增加订单数」= 订单ID 的个数）
+# 1 注文 1 行: 当月正票に載った注文番号 · 初回開票日 · 下単日（Shopee/Coupang のみ）。
+ORDERS_SQL = (
+    "SELECT trim(si.shop) AS shop, io.order_no, min(si.tran_date) AS inv_date, "
+    "       min(coalesce((e.order_create_time AT TIME ZONE 'Asia/Tokyo')::date, "
+    "                    cr.sale_date)) AS order_date "
+    "FROM nst.sales_invoice si "
+    "JOIN nst.invoice_order io ON io.invoice_id = si.invoice_id "
+    "LEFT JOIN shopee.escrow_order e ON e.order_sn = io.order_no "
+    "LEFT JOIN coupang.v_revenue_order cr ON cr.order_no = io.order_no "
+    "WHERE to_char(si.tran_date, 'YYYY-MM') = ? AND si.total_jpy > 0 "
+    "GROUP BY 1, 2"
+)
+
+
+def daily_order_counts(orders: pd.DataFrame, ym: str) -> pd.DataFrame:
+    """orders: shop, order_no, inv_date, order_date(None=未知)
+    → 下单日别 订单数 DataFrame[sale_date, orders]。下单日不明は開票日、上月下单は除外。"""
+    if orders.empty:
+        return pd.DataFrame(columns=["sale_date", "orders"])
+    o = orders.copy()
+    inv = pd.to_datetime(o["inv_date"]).dt.date
+    od = pd.to_datetime(o["order_date"]).dt.date
+    o["sale_date"] = [d if pd.notna(d) else i for d, i in zip(od, inv)]
+    o = o[pd.to_datetime(o["sale_date"]).dt.strftime("%Y-%m") == ym]
+    return (o.groupby("sale_date", as_index=False)
+            .agg(orders=("order_no", "nunique"))
+            .sort_values("sale_date").reset_index(drop=True))
