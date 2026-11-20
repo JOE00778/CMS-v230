@@ -1,7 +1,9 @@
 """自建站上架 · 候选品（NST）与台账（PG）。
 
 候选 = 商品等级 NEW · 取扱中 · 非無効 · 本体行（item_code = jan）· JAN 8/13 位（14 位 = 整箱 = 组合，排除）
-       · 定義原価 > 1 · 厂商已定（brand.item_vendor_brand）· Shopify 查无此 JAN（在页面层用 existing_jans 去掉）。
+       · 定義原価 > 1 · Shopify 查无此 JAN（在页面层用 existing_jans 去掉）。
+厂商/品牌取 brand.item_vendor_brand（Boss 拍板口径）；表里没有的由 AI 按规则填，上传时标需人工确认。
+⚠️ brand schema 只读账号 cms_reader 无权限 → 用 get_connection() 读。
 handling_cd 与 item_rank 是两个独立字段，两个都要筛（2026-11 实证：只看等级会把取扱中止误上架）。
 """
 from __future__ import annotations
@@ -26,26 +28,19 @@ WHERE im.item_rank = 'NEW' AND im.handling_cd = '取扱中' AND NOT im.is_inacti
 
 
 def load(conn) -> tuple[list[dict], dict]:
-    """→ (候选[dict, 含预填列 + brand_tags], 排除计数{原因: 件数})。"""
+    """→ (候选[dict, 含预填列 + vendor_known], 排除计数{原因: 件数})。"""
     rows = [dict(r) for r in conn.execute(_SQL).fetchall()]
-    out, skipped = [], {"原価缺失(空或≤1)": 0, "厂商未定": 0}
+    out, skipped = [], {"原価缺失(空或≤1)": 0}
     for r in rows:
         price = S.price_usd(r.get("cost"))
         if price is None:
             skipped["原価缺失(空或≤1)"] += 1
             continue
         vendor, brand = (r.get("vendor") or "").strip(), (r.get("brand") or "").strip()
-        if not vendor:
-            skipped["厂商未定"] += 1
-            continue
-        tags = []
-        for x in (vendor, brand):
-            t = "brand-" + S.slug(x) if x and S.slug(x) else ""
-            if t and t not in tags:
-                tags.append(t)
+        # 厂商未进口径表（10 月之后的新 NEW 品）→ 厂商/品牌留给 AI 填，上传时要人工确认
         out.append({"jan": r["jan"], "nst_name": r.get("nst_name") or "", "vendor": vendor, "brand": brand,
-                    "brand_display": S.display_name(vendor, brand), "price_usd": price,
-                    "stock": r.get("stock"), "brand_tags": tags})
+                    "brand_display": S.display_name(vendor, brand) if vendor else "", "price_usd": price,
+                    "stock": r.get("stock"), "vendor_known": bool(vendor)})
     return out, skipped
 
 

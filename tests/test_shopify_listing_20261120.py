@@ -102,3 +102,32 @@ def test_workbook_roundtrip():
     rows = W.read(buf.getvalue())
     assert len(rows) == 1 and rows[0]["jan"] == s["jan"] and rows[0]["title"] == s["title"]
     assert _chk(rows[0])["errors"] == []
+
+
+def test_vendor_open_when_not_in_brand_table():
+    s = dict(W.samples()[0])
+    exp = {"vendor": "", "brand": "", "brand_display": "", "price_usd": s["price_usd"]}
+    kw = dict(existing_jans=set(), existing_handles=set(), live_cat_tags=ALL_CAT, dup_handles=set())
+    r = V.check_row({**s, "vendor": "Kao", "brand": "Curel"}, exp, **kw)
+    assert r["errors"] == [] and any(f == "vendor" for f, _ in r["warns"])     # AI 填的厂商 → 人工确认
+    r = V.check_row({**s, "vendor": "", "brand": ""}, exp, **kw)
+    assert any(f == "vendor" for f, _ in r["errors"])                          # 没填 → 错
+    r = V.check_row({**s, "vendor": "KOSÉ", "brand": ""}, exp, **kw)
+    assert any("重音" in m for _, m in r["errors"])
+    assert "brand-curel" in V.final_tags({**s, "vendor": "Kao", "brand": "Curel"}, exp)
+    from shared.shopify_listing.shopify import build_input
+    inp = build_input({**s, "vendor": "Kao", "brand": "Curel"}, exp)
+    assert inp["vendor"] == "Kao" and inp["status"] == "DRAFT"
+    assert inp["variants"][0]["inventoryPolicy"] == "DENY" and inp["variants"][0]["inventoryItem"]["tracked"]
+    assert {"namespace": "smikie", "key": "brand_display", "type": "single_line_text_field",
+            "value": "Kao Curel"} in inp["metafields"]
+
+
+def test_workbook_vendor_cells_white_when_unknown():
+    s = W.samples()[0]
+    known = {k: s.get(k) for k in S.PRE_KEYS + ["nst_name", "brand_display", "stock"]}
+    unknown = {**known, "jan": "4900000000001", "vendor": "", "brand": "", "brand_display": ""}
+    ws = load_workbook(io.BytesIO(W.build([known, unknown])))[W.SHEET]
+    col = [c.value for c in ws[1]].index("vendor") + 1
+    assert ws.cell(2, col).fill.fgColor.rgb.endswith("E5E7EB")       # 已定 → 灰
+    assert not str(ws.cell(3, col).fill.fgColor.rgb).endswith("E5E7EB")   # 未定 → 白

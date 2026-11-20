@@ -155,14 +155,24 @@ def display_name(vendor: str, brand: str) -> str:
     return brand
 
 
+def brand_tags(vendor: str, brand: str) -> list[str]:
+    """brand- 标签：厂商 + 品牌两个都打（只加不减 · HANDOFF §3.4）。"""
+    out = []
+    for x in (vendor, brand):
+        t = "brand-" + slug(x) if x and slug(x) else ""
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
 # ── 「商品」工作表的列 ──
 # kind: pre = 系统预填（不许改，上传时核对）/ info = 系统预填仅供参考 / ai = AI 填
 # (key, 中文名, kind, 必填, 字数上限, 说明)
 COLUMNS: list[tuple[str, str, str, bool, int | None, str]] = [
     ("jan", "JAN", "pre", True, None, "商品身份。一切以 JAN 为准，标题/规格必须对应这个 JAN 的实物"),
     ("nst_name", "NST 商品名（日文）", "info", False, None, "仅供识别，常混错厂商名，不能当事实"),
-    ("vendor", "厂商 Vendor", "pre", True, None, "Boss 确认过的厂商写法，不要改"),
-    ("brand", "品牌", "pre", False, None, "Boss 确认过的品牌写法，不要改；标题里的品牌照这个写"),
+    ("vendor", "厂商 Vendor", "pre", True, None, "灰色=口径表已定，不要改；白色=口径表还没有，按 README 第 3.5 节查官网填写"),
+    ("brand", "品牌", "pre", False, None, "灰色=口径表已定，不要改；白色=按 README 第 3.5 节填写（没有品牌就填厂商名）"),
     ("brand_display", "前台品牌展示名", "info", False, None, "商品页品牌行显示的名字；标题开头用这个"),
     ("price_usd", "美国价 USD", "pre", True, None, "= 定義原価 ÷ 55.8 向上取到 .99，系统算好，不要改"),
     ("stock", "可用库存", "info", False, None, "大分弁天仓（斑马）当前可用数，仅供参考"),

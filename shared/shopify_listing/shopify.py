@@ -172,7 +172,9 @@ def build_input(row: dict, expected: dict) -> dict:
 
     add("smikie", "jan_code", "single_line_text_field", jan)
     add("smikie", "origin_city", "single_line_text_field", "Japan")
-    add("smikie", "brand_display", "single_line_text_field", _s(expected.get("brand_display")))
+    vendor = _s(expected.get("vendor")) or _s(row.get("vendor"))
+    brand = _s(expected.get("brand")) if _s(expected.get("vendor")) else _s(row.get("brand"))
+    add("smikie", "brand_display", "single_line_text_field", S.display_name(vendor, brand))
     add("smikie", "acc_intro_html", "rich_text_field", richtext(row.get("description"), "intro"))
     add("smikie", "acc_geo_us_html", "rich_text_field", richtext(row.get("geo_us"), "geo"))
     add("smikie", "brand_subtitle", "single_line_text_field", _s(row.get("brand_subtitle")))
@@ -193,7 +195,7 @@ def build_input(row: dict, expected: dict) -> dict:
             add("smikie", "acc_storage_html", "rich_text_field", richtext(row.get("food_storage"), "intro"))
     price = f"{float(expected['price_usd']):.2f}"
     return {
-        "title": _s(row["title"]), "handle": _s(row["handle"]), "vendor": _s(expected.get("vendor")),
+        "title": _s(row["title"]), "handle": _s(row["handle"]), "vendor": vendor,
         "productType": f"{_s(row['l1'])} {_s(row['l2'])}".strip(),
         "status": "DRAFT", "templateSuffix": S.TEMPLATES.get(pt, "smikie-standard"),
         "tags": final_tags(row, expected),

@@ -40,6 +40,16 @@
 - 同系列不同规格要能区分：标题里写清香型 / 色号 / 容量。
 - 商品名依据官方商品名翻译，不照抄 NST 商品名。
 
+## 3.5 厂商 / 品牌（只有「厂商」列是白色时才填）
+- 厂商和品牌列是灰色的：写法已经确认过，一个字都不要改。
+- 是白色的：这件商品的厂商还没有确认过，请你查证后填写。上传后会由人再确认一次。
+- 厂商（vendor）填公司的英文名，只去掉法人格（株式会社 / 有限会社 / Co., Ltd.），不要自己缩写或意译。例：花王株式会社 → Kao；牛乳石鹸共進社 不能缩写成 Cow Soap。
+- 英文写法以厂商官网为准（logo、版权栏、公司概要）；官网查不到或自相矛盾时用全大写。拉丁字母不带重音（KOSE 不是 KOSÉ）。
+- 品牌（brand）填消费者认识的品牌名（如 Biore、Canmake）；没有单独品牌的，品牌 = 厂商名。不要把法人名或商品名填进品牌。
+- 例外：Softymo / Clear Turn / Biolis / Suncut / Escalat 的厂商写 KOSE COSMEPORT；Ma Cherie / Senka / Uno 的厂商写 FineToday。
+- 白色时「前台品牌展示名」是空的：标题开头用品牌名；厂商是 Kao / Shiseido / KOSE / Kanebo / Rohto / Lion / Unilever / P&G / mandom / Kracie / Pigeon / FineToday / Sunstar 之一时，写成「厂商 品牌」，如 Kao Biore。
+- 判断不了就留空，并在备注写明，不要猜。
+
 ## 4. handle
 - 把标题转成：全小写、& 和空格及符号都换成 -、连续的 - 合并、首尾不留 -。例：P&G Febreze Car Clip 2.2mL → p-g-febreze-car-clip-2-2ml
 - 全店唯一。系统会检查重复。

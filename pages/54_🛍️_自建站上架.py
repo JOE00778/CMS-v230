@@ -60,7 +60,7 @@ def _live_cat_tags() -> set:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _cands() -> tuple[list, dict]:
-    return C.load(get_readonly_connection())
+    return C.load(get_connection())   # brand schema は cms_reader 権限なし
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -99,13 +99,15 @@ with tab_dl:
             cands, skipped = _cands()
             have = _existing_jans()
         todo = [c for c in cands if c["jan"] not in have]
-        st.caption(_u("候选 = NST 商品等级 NEW · 取扱中 · 非無効 · JAN 8/13 位（整箱 14 位排除）· 定義原価已录 · 厂商已定 · Shopify 还没有这个 JAN。",
-                      "候補 = NST ランク NEW · 取扱中 · 無効でない · JAN 8/13 桁（ケース 14 桁は除外）· 定義原価あり · メーカー確定 · Shopify 未登録。"))
-        m1, m2, m3 = st.columns(3)
+        st.caption(_u("候选 = NST 商品等级 NEW · 取扱中 · 非無効 · JAN 8/13 位（整箱 14 位排除）· 定義原価已录 · Shopify 还没有这个 JAN。"
+                      "厂商口径表里还没有的商品，厂商/品牌列留白由 AI 填，上传时要人工确认。",
+                      "候補 = NST ランク NEW · 取扱中 · 無効でない · JAN 8/13 桁（ケース 14 桁は除外）· 定義原価あり · Shopify 未登録。"
+                      "メーカー確定表にない商品はメーカー/ブランド欄を空けて AI が記入、アップ時に要確認。"))
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric(_u("可上架候选", "出品候補"), f"{len(todo):,}")
-        m2.metric(_u("Shopify 已有", "Shopify 登録済"), f"{len(cands) - len(todo):,}")
-        m3.metric(_u("排除（原価/厂商）", "除外（原価/メーカー）"), f"{sum(skipped.values()):,}",
-                  " · ".join(f"{k} {v}" for k, v in skipped.items()), delta_color="off")
+        m2.metric(_u("其中厂商待 AI 填", "うちメーカー AI 記入"), f"{sum(1 for c in todo if not c['vendor_known']):,}")
+        m3.metric(_u("Shopify 已有", "Shopify 登録済"), f"{len(cands) - len(todo):,}")
+        m4.metric(_u("排除（原価缺失）", "除外（原価なし）"), f"{sum(skipped.values()):,}")
         f1, f2 = st.columns([2, 1])
         kw = f1.text_input(_u("筛选（JAN / 商品名 / 厂商 / 品牌）", "絞り込み（JAN / 商品名 / メーカー / ブランド）"))
         only_stock = f2.toggle(_u("只看有库存", "在庫ありのみ"), value=True)
@@ -133,7 +135,7 @@ with tab_dl:
                           "全 {n} 件、選択 {k} 件。1 パック 30 件以内を推奨（AI が一度に調べられる量に限りがあるため）。")
                        .format(n=len(df), k=len(picked)))
             if len(picked):
-                data = W.build(picked.drop(columns=["sel"]).to_dict("records"))
+                data = W.build(picked.drop(columns=["sel"]).to_dict("records"))   # vendor_known=False → 厂商白格
                 st.download_button(
                     _u("⬇️ 下载上架包（Excel · {k} 件）", "⬇️ 出品パックをダウンロード（Excel · {k} 件）").format(k=len(picked)),
                     data, file_name=f"上架包_US_{dt.datetime.now():%Y%m%d_%H%M}_{len(picked)}件.xlsx",

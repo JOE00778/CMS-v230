@@ -33,7 +33,9 @@ def final_tags(row: dict, expected: dict) -> list[str]:
         tags.append(t1)
         if l2 in subs:
             tags.append(subs[l2])
-    tags += expected.get("brand_tags") or []
+    vendor = _s(expected.get("vendor")) or _s(row.get("vendor"))
+    brand = _s(expected.get("brand")) if _s(expected.get("vendor")) else _s(row.get("brand"))
+    tags += S.brand_tags(vendor, brand)
     tags.append("template-" + (_s(row.get("page_type")) or "standard"))
     tags += _split_tags(_s(row.get("tags")))
     out, seen = [], set()
@@ -64,9 +66,18 @@ def check_row(row: dict, expected: dict | None, *, existing_jans: set, existing_
         E.append(("jan", "不在可上架候选里（非 NEW / 非取扱中 / 原価缺失 / 组合品）"))
     exp = expected or {}
 
-    # 预填列不许改
+    # 预填列不许改（厂商口径表里没有的商品：厂商/品牌由 AI 填，改为人工确认）
+    vendor_open = bool(exp) and not _s(exp.get("vendor"))
+    if vendor_open:
+        if not _s(row.get("vendor")):
+            E.append(("vendor", "必填（这件商品的厂商还没进口径表，要按官网查填）"))
+        else:
+            W.append(("vendor", f"厂商「{_s(row.get('vendor'))}」/ 品牌「{_s(row.get('brand'))}」由 AI 填写，"
+                                "请确认写法（官网为准，查不到用全大写，无重音）"))
+            if S.deacc(_s(row.get("vendor")) + _s(row.get("brand"))) != _s(row.get("vendor")) + _s(row.get("brand")):
+                E.append(("vendor", "厂商/品牌名不能带重音符号"))
     for k in S.PRE_KEYS:
-        if k == "jan" or not exp:
+        if k == "jan" or not exp or (vendor_open and k in ("vendor", "brand")):
             continue
         got, want = _s(row.get(k)), exp.get(k)
         if k == "price_usd":
@@ -100,7 +111,7 @@ def check_row(row: dict, expected: dict | None, *, existing_jans: set, existing_
             E.append(("title", "标题里有日文"))
         if re.search(r"\bmedicated\b", title, re.I) and re.search(r"\bwhiten", title, re.I):
             E.append(("title", "Medicated 和 Whitening 不能同时出现"))
-        disp = exp.get("brand_display") or ""
+        disp = exp.get("brand_display") or (S.display_name(_s(row.get("vendor")), _s(row.get("brand"))) if vendor_open else "")
         if disp and not title.lower().startswith(disp.lower()):
             W.append(("title", f"标题没有以品牌展示名「{disp}」开头"))
         caps = list(_CAPACITY.finditer(title))

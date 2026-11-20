@@ -79,7 +79,8 @@ def build(cands: list[dict]) -> bytes:
             if k == "jan":
                 c.value = str(v)
                 c.number_format = "@"
-            if kind[k] != "ai":
+            open_vendor = k in ("vendor", "brand") and not cand.get("vendor")   # 口径表没有 → AI 填
+            if kind[k] != "ai" and not open_vendor:
                 c.fill = GREY
             c.alignment = WRAP
     n = max(len(cands) + 1, 2)
