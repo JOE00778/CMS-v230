@@ -6,5 +6,5 @@ from pathlib import Path
 
 _D = Path(__file__).resolve().parent.parent / "shared" / "shop_margin"
 _g = runpy.run_path(str(_D / "common.py"),
-                    init_globals={"PAGE_TITLE": "退款明细", "PAGE_ICON": "💸"})
+                    init_globals={"PAGE_TITLE": "退款明细", "PAGE_ICON": "💸", "SHOW_KPI": False})
 runpy.run_path(str(_D / "tabs_refund.py"), init_globals=_g)

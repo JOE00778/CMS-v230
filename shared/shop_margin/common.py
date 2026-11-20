@@ -737,41 +737,43 @@ if _no_owner:
                 else "⚠️ 未设定负责人，已从全部计算中剔除：")
                + "、".join(_no_owner))
 
-m1, m2, m3, m4, m5, m6 = st.columns(6)
-_ja_kpi = get_lang() == "ja"
-m1.metric("総収益(NST)" if _ja_kpi else "总收益(NST)", f"¥{tot_r:,.0f}")
-m2.metric("取消控除見込" if _ja_kpi else "取消冲减估", f"¥{tot_cancel:,.0f}",
-          delta=None)
-m3.metric("調整後売上" if _ja_kpi else "调整后营业额", f"¥{tot_rev_adj:,.0f}")
-m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}",
-          ("粗利率 " if get_lang() == "ja" else "毛利率 ") + f"{margin:.2f}%",
-          delta_color="off")
-m5.metric("CM(調整後)" if _ja_kpi else "CM(调整后)", f"¥{tot_cm:,.0f}")
-m6.metric("CM率(調整後)" if _ja_kpi else "CM率(调整后)", f"{tot_cm_rate:.2f}%")
+# KPI 2 行は 店铺毛利ページだけ表示（Boss 2026-11-20：51/52/53 では不要）。集計値 tot_* は各タブが使うので計算は上で常に行う。
+if globals().get("SHOW_KPI", True):
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    _ja_kpi = get_lang() == "ja"
+    m1.metric("総収益(NST)" if _ja_kpi else "总收益(NST)", f"¥{tot_r:,.0f}")
+    m2.metric("取消控除見込" if _ja_kpi else "取消冲减估", f"¥{tot_cancel:,.0f}",
+              delta=None)
+    m3.metric("調整後売上" if _ja_kpi else "调整后营业额", f"¥{tot_rev_adj:,.0f}")
+    m4.metric(t("粗利 計"), f"¥{tot_g:,.0f}",
+              ("粗利率 " if get_lang() == "ja" else "毛利率 ") + f"{margin:.2f}%",
+              delta_color="off")
+    m5.metric("CM(調整後)" if _ja_kpi else "CM(调整后)", f"¥{tot_cm:,.0f}")
+    m6.metric("CM率(調整後)" if _ja_kpi else "CM率(调整后)", f"{tot_cm_rate:.2f}%")
 
-# 輸出事業 月次予算 vs 実績（Boss 2026-11-09）· 実績は市場/平台フィルタに関係なく全店 NST 総収益
-from shared import sales_budget as _SB  # noqa: E402
-try:
-    _SB.ensure_schema(conn_w)
-    _bud = _SB.load(conn_w).get(ym)
-except Exception:  # noqa: BLE001 — 予算表が無くても毛利画面は出す
+    # 輸出事業 月次予算 vs 実績（Boss 2026-11-09）· 実績は市場/平台フィルタに関係なく全店 NST 総収益
+    from shared import sales_budget as _SB  # noqa: E402
     try:
-        conn_w.rollback()
-    except Exception:
-        pass
-    _bud = None
-if _bud:
-    _act_df, _ = _query("SELECT SUM(revenue) AS r FROM nst.sales_daily "
-                        "WHERE to_char(sale_date, 'YYYY-MM') = ?", (ym,))
-    _act = float(_act_df["r"].iloc[0] or 0) if _act_df is not None and not _act_df.empty else 0.0
-    b1, b2, b3, _b4 = st.columns(4)
-    b1.metric("月次予算" if _ja_kpi else "月度预算", f"¥{_bud:,.0f}")
-    b2.metric("実績(NST)" if _ja_kpi else "实绩(NST)", f"¥{_act:,.0f}")
-    b3.metric("予算達成率" if _ja_kpi else "预算达成率", f"{_act / _bud * 100:.2f}%")
-    st.caption("予算=輸出事業 予実表の予算（システムパラメータ設定で編集）· 実績=当月 NST 総収益（NST「売上予算vs実績_FB」"
-               "輸出事業と同口径・フィルタ非連動）" if _ja_kpi else
-               "预算=输出事业 预实表的预算（在「系统参数设定」修改）· 实绩=当月 NST 总收益（与 NST「売上予算vs実績_FB」"
-               "输出事业同口径·不跟随上方筛选）")
+        _SB.ensure_schema(conn_w)
+        _bud = _SB.load(conn_w).get(ym)
+    except Exception:  # noqa: BLE001 — 予算表が無くても毛利画面は出す
+        try:
+            conn_w.rollback()
+        except Exception:
+            pass
+        _bud = None
+    if _bud:
+        _act_df, _ = _query("SELECT SUM(revenue) AS r FROM nst.sales_daily "
+                            "WHERE to_char(sale_date, 'YYYY-MM') = ?", (ym,))
+        _act = float(_act_df["r"].iloc[0] or 0) if _act_df is not None and not _act_df.empty else 0.0
+        b1, b2, b3, _b4 = st.columns(4)
+        b1.metric("月次予算" if _ja_kpi else "月度预算", f"¥{_bud:,.0f}")
+        b2.metric("実績(NST)" if _ja_kpi else "实绩(NST)", f"¥{_act:,.0f}")
+        b3.metric("予算達成率" if _ja_kpi else "预算达成率", f"{_act / _bud * 100:.2f}%")
+        st.caption("予算=輸出事業 予実表の予算（システムパラメータ設定で編集）· 実績=当月 NST 総収益（NST「売上予算vs実績_FB」"
+                   "輸出事業と同口径・フィルタ非連動）" if _ja_kpi else
+                   "预算=输出事业 预实表的预算（在「系统参数设定」修改）· 实绩=当月 NST 总收益（与 NST「売上予算vs実績_FB」"
+                   "输出事业同口径·不跟随上方筛选）")
 
 st.divider()
 
