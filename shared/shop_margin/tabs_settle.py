@@ -391,7 +391,7 @@ with tab_loss:
         "logistics_status, shipped_out, cancel_reason, refund_reason, "
         "refund_status, refund_amount_local, "
         "gmv_local, received_local, gmv_jpy, received_jpy, nst_amount_jpy "
-        f"FROM nst.v_shipped_order WHERE ym = '{ym}'")
+        f"FROM nst.mv_shipped_order WHERE ym = '{ym}'")
 
     if _lo_err:
         st.error(t("订单级视图未取得或连接错误: ") + _lo_err)

@@ -580,7 +580,7 @@ else:
 #        起票済は NST 売上に反映済みなので推定から丸ごと外すのが正しい。
 #     注文の帰属月 = min(ym)（出荷正票の月）。財務が補票すると当該注文が
 #     除外に回り本列が減り、NST 売上が下がり、調整後売上はほぼ動かない。
-# ⚠️ v_shipped_order 全量集計は ~36s（2026-11-20 実測）> cms_reader の statement_timeout 30s。
+# ⚠️ v_shipped_order 全量集計は ~36s → 2026-11-20 物化 nst.mv_shipped_order（日次 06:00/08:30 全量リフレッシュ）を読む。
 #    超時を握り潰すと「取消冲减估 ¥0」になり調整後売上/CM が過大に出る → この 1 本だけ延長し、失敗は表示する。
 #    ponytail: 本質対策はビューの事前集計（database 側）。結果は data_version で日次キャッシュ。
 try:
@@ -593,7 +593,7 @@ _cxl_df, _cxl_err = _query(
     "         sum(coalesce(nst_amount_jpy,0)) "
     "           FILTER (WHERE nst_amount_jpy > 0) AS pos_amt, "
     "         bool_or(nst_amount_jpy < 0) AS has_credit "
-    "  FROM nst.v_shipped_order "
+    "  FROM nst.mv_shipped_order "
     "  WHERE settle_status IN ('loss','preship_void') "
     "  GROUP BY 1, 2"
     ") "
