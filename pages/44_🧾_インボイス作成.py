@@ -88,135 +88,138 @@ ci = st.session_state.get("ci")
 if not ci:
     st.stop()
 order, jans, lines = ci["order"], ci["jans"], ci["lines"]
-WARN_TEXT = {
-    "no_name": t("清関品名が無い"),
-    "no_hs": t("HS コードが無い"),
-    "no_origin": t("原産国が無い"),
-    "no_weight": t("重量が無い"),
-    "origin_conflict": t("原産国を JP で出力・要確認（ネット上の表記が割れている）"),
-    "hs_flag": t("HS 要注意"),
-    # 監査 L19: PG の手動修正が斑马の値で上書きされた（斑马優先は Boss 設計のまま）
-    "manual_overridden": t("PG の手動修正と斑马の値が違う（斑马を優先・直すなら斑马で）"),
-}
-warn_by_jan: dict[str, list[str]] = {}
-for w in ci["warn"]:
-    msg = WARN_TEXT[w["code"]] + (f": {t(w['arg'])}" if w.get("arg") else "")
-    warn_by_jan.setdefault(w["jan"], []).append(msg)
+tab_ci, tab_tsca = st.tabs([t("インボイス（CI）"), t("TSCA 証明書")])
 
-st.subheader(t("明細（清関品名・HS・原産国・重量は直接直せる）"))
-st.caption(t("赤字の「要確認」がある行を確認・補完してから PDF を作る。"
-             "斑马に値がある項目（HS・清関品名・重量）は斑马の値が優先される。根本的に直すには斑马で修正する。"))
-# data_editor の列キーは固定（言語を切り替えても編集状態・読み戻しがずれない）。表示名は column_config の label。
-base = pd.DataFrame([{
-    "JAN": j,
-    "title": tt,
-    "desc": l.description,
-    "units": l.units,
-    "HS": l.hs_code or "",
-    "origin": l.origin or "",
-    "net_g": round(l.net_weight_kg * 1000, 1) if l.net_weight_kg else None,
-    "unit_value": l.unit_value,
-    "check": " / ".join(warn_by_jan.get(j, [])),
-} for j, l, tt in zip(jans, lines, ci["titles"])])
-edited = lang_stable_editor(
-    base, hide_index=True, use_container_width=True, key=f"ed_{ci['no']}", reset=tuple(base["JAN"]),
-    disabled=["JAN", "title", "units", "unit_value", "check"],
-    column_config={
-        "title": t("商品名"),
-        "desc": t("清関品名"),
-        "units": t("数量"),
-        "HS": st.column_config.TextColumn(help=t("6〜10 桁の数字")),
-        "origin": st.column_config.TextColumn(t("原産国"), help=t("ISO 2 文字（JP / CN / KR …）"), max_chars=2),
-        "net_g": st.column_config.NumberColumn(t("正味 g/個"), min_value=0.0, step=1.0),
-        "unit_value": t("単価"),
-        "check": t("要確認"),
-    })
-
-# 入力チェック（間違った値で PDF を出さない）
-bad = []
-for _, r in edited.iterrows():
-    hs, cc, wg = str(r["HS"] or "").strip(), str(r["origin"] or "").strip().upper(), r["net_g"]
-    if not str(r["desc"] or "").strip():
-        bad.append(f"{r['JAN']}: " + t("清関品名が空"))
-    if not re.fullmatch(r"\d{6,10}", hs):
-        bad.append(f"{r['JAN']}: " + t("HS が 6〜10 桁の数字でない") + f"（{hs or '-'}）")
-    if not re.fullmatch(r"[A-Z]{2}", cc):
-        bad.append(f"{r['JAN']}: " + t("原産国が 2 文字コードでない") + f"（{cc or '-'}）")
-    if not wg or pd.isna(wg) or wg <= 0:
-        bad.append(f"{r['JAN']}: " + t("重量が空"))
-if bad:
-    st.error(t("このままでは PDF を出せない：") + "\n\n" + "\n\n".join("· " + b for b in bad))
-
-new_lines = []
-for l, (_, r) in zip(lines, edited.iterrows()):
-    w = r["net_g"]
-    new_lines.append(type(l)(description=str(r["desc"] or "").strip(), units=l.units,
-                             net_weight_kg=round(float(w) / 1000, 3) if w and not pd.isna(w) else 0.0,
-                             hs_code=str(r["HS"] or "").strip(),
-                             origin=str(r["origin"] or "").strip().upper(),
-                             unit_value=l.unit_value))
-doc = so.to_ci_doc(order, new_lines, awb=awb.strip(), total_packages=int(pkgs),
-                   total_gross_kg=float(gross) or None)
-
-st.write(" / ".join(x for x in (
-    doc.consignee_name, *doc.consignee_addr, doc.consignee_city,
-    doc.consignee_country, doc.consignee_tel) if x))
-c1, c2, c3 = st.columns(3)
-c1.metric(t("ユニット数合計"), f"{doc.total_units:.0f}")
-c2.metric(t("正味重量合計 kg"), f"{doc.total_net_kg:.2f}")
-c3.metric(t("インボイス合計"), f"{doc.invoice_total:.2f} {order.get('currencyCode', '')}")
-
-save = st.checkbox(t("直した値を PG にも保存する（斑马に値がある項目は斑马が優先）"), value=True)
-if st.button(t("PDF を作る"), type="primary", disabled=bool(bad)):
-    if save:
-        changed = []
-        for (_, b), (_, e) in zip(base.iterrows(), edited.iterrows()):
-            row = {"jan": e["JAN"]}
-            if str(e["desc"]).strip() != str(b["desc"]).strip():
-                row["customs_name_en"] = str(e["desc"]).strip()
-            if str(e["HS"]).strip() != str(b["HS"]).strip():
-                row["hs_code"] = str(e["HS"]).strip()
-            if str(e["origin"]).strip().upper() != str(b["origin"]).strip().upper():
-                row["origin_country"] = str(e["origin"]).strip().upper()
-            if e["net_g"] != b["net_g"] and not pd.isna(e["net_g"]):
-                row["net_weight_g"] = float(e["net_g"])
-            if len(row) > 1 and row["jan"]:
-                changed.append(row)
-        if changed:
-            from shared.db import get_connection
-            conn = get_connection()
-            try:
-                n = so.save_manual(conn, changed)
-            finally:
-                conn.close()
-            st.success(t("PG に保存：") + f"{n} " + t("件"))
-    st.session_state["ci_pdf"] = build(doc)
-    st.session_state["ci_pdf_src"] = repr(doc)
-
-# 生成後に明細・AWB・重量を直したら古い PDF は出さない（監査 M4 2026-11-17：直す前の PDF がそのまま落とせた）
-if st.session_state.get("ci_pdf") and st.session_state.get("ci_pdf_src") != repr(doc):
-    st.warning(t("⚠️ 内容を直しました。もう一度「PDF を作る」を押してください（前の PDF は隠しています）"))
-elif st.session_state.get("ci_pdf"):
+with tab_tsca:
+    st.subheader(t("TSCA 証明書（FedEx 用）"))
+    from datetime import date  # noqa: E402
+    from shared import tsca_cert  # noqa: E402
+    tc1, tc2 = st.columns(2)
+    tsca_date = tc1.date_input(t("日付"), value=date.today(), key="tsca_date")
+    tsca_kind = tc2.radio(t("証明の種類"), ["Negative", "Positive"], horizontal=True, key="tsca_kind",
+                          help=t("Negative = 全商品が TSCA 対象外。Positive = TSCA 対象品があり、規則に適合"))
+    tsca_items = [tsca_cert.item_text(tt, l.units, j)
+                  for j, l, tt in zip(jans, lines, ci["titles"]) if l.units]
+    if not awb.strip():
+        st.caption(t("Air Waybill No. が空のまま（上の欄に入れると証明書にも入る）"))
     st.download_button(
-        t("PDF をダウンロード"), data=st.session_state["ci_pdf"],
-        file_name=f"CI_{so.normalize_order_no(ci['no']).lstrip('#')}.pdf",
-        mime="application/pdf", type="primary")
+        t("TSCA 証明書をダウンロード"),
+        data=tsca_cert.build(tsca_date, awb.strip(), tsca_items, negative=tsca_kind == "Negative"),
+        file_name=f"TSCA_{awb.strip() or so.normalize_order_no(ci['no']).lstrip('#')}.pdf",
+        mime="application/pdf")
 
-# === TSCA Certification（Boss 2026-11-24：FedEx から求められたら出す。全行掲載・既定 Negative・署名 XU YUE）===
-st.divider()
-st.subheader(t("TSCA 証明書（FedEx 用）"))
-from datetime import date  # noqa: E402
-from shared import tsca_cert  # noqa: E402
-tc1, tc2 = st.columns(2)
-tsca_date = tc1.date_input(t("日付"), value=date.today(), key="tsca_date")
-tsca_kind = tc2.radio(t("証明の種類"), ["Negative", "Positive"], horizontal=True, key="tsca_kind",
-                      help=t("Negative = 全商品が TSCA 対象外。Positive = TSCA 対象品があり、規則に適合"))
-tsca_items = [tsca_cert.item_text(tt, l.units, j)
-              for j, l, tt in zip(jans, lines, ci["titles"]) if l.units]
-if not awb.strip():
-    st.caption(t("Air Waybill No. が空のまま（上の欄に入れると証明書にも入る）"))
-st.download_button(
-    t("TSCA 証明書をダウンロード"),
-    data=tsca_cert.build(tsca_date, awb.strip(), tsca_items, negative=tsca_kind == "Negative"),
-    file_name=f"TSCA_{awb.strip() or so.normalize_order_no(ci['no']).lstrip('#')}.pdf",
-    mime="application/pdf")
+
+with tab_ci:
+    WARN_TEXT = {
+        "no_name": t("清関品名が無い"),
+        "no_hs": t("HS コードが無い"),
+        "no_origin": t("原産国が無い"),
+        "no_weight": t("重量が無い"),
+        "origin_conflict": t("原産国を JP で出力・要確認（ネット上の表記が割れている）"),
+        "hs_flag": t("HS 要注意"),
+        # 監査 L19: PG の手動修正が斑马の値で上書きされた（斑马優先は Boss 設計のまま）
+        "manual_overridden": t("PG の手動修正と斑马の値が違う（斑马を優先・直すなら斑马で）"),
+    }
+    warn_by_jan: dict[str, list[str]] = {}
+    for w in ci["warn"]:
+        msg = WARN_TEXT[w["code"]] + (f": {t(w['arg'])}" if w.get("arg") else "")
+        warn_by_jan.setdefault(w["jan"], []).append(msg)
+
+    st.subheader(t("明細（清関品名・HS・原産国・重量は直接直せる）"))
+    st.caption(t("赤字の「要確認」がある行を確認・補完してから PDF を作る。"
+                 "斑马に値がある項目（HS・清関品名・重量）は斑马の値が優先される。根本的に直すには斑马で修正する。"))
+    # data_editor の列キーは固定（言語を切り替えても編集状態・読み戻しがずれない）。表示名は column_config の label。
+    base = pd.DataFrame([{
+        "JAN": j,
+        "title": tt,
+        "desc": l.description,
+        "units": l.units,
+        "HS": l.hs_code or "",
+        "origin": l.origin or "",
+        "net_g": round(l.net_weight_kg * 1000, 1) if l.net_weight_kg else None,
+        "unit_value": l.unit_value,
+        "check": " / ".join(warn_by_jan.get(j, [])),
+    } for j, l, tt in zip(jans, lines, ci["titles"])])
+    edited = lang_stable_editor(
+        base, hide_index=True, use_container_width=True, key=f"ed_{ci['no']}", reset=tuple(base["JAN"]),
+        disabled=["JAN", "title", "units", "unit_value", "check"],
+        column_config={
+            "title": t("商品名"),
+            "desc": t("清関品名"),
+            "units": t("数量"),
+            "HS": st.column_config.TextColumn(help=t("6〜10 桁の数字")),
+            "origin": st.column_config.TextColumn(t("原産国"), help=t("ISO 2 文字（JP / CN / KR …）"), max_chars=2),
+            "net_g": st.column_config.NumberColumn(t("正味 g/個"), min_value=0.0, step=1.0),
+            "unit_value": t("単価"),
+            "check": t("要確認"),
+        })
+
+    # 入力チェック（間違った値で PDF を出さない）
+    bad = []
+    for _, r in edited.iterrows():
+        hs, cc, wg = str(r["HS"] or "").strip(), str(r["origin"] or "").strip().upper(), r["net_g"]
+        if not str(r["desc"] or "").strip():
+            bad.append(f"{r['JAN']}: " + t("清関品名が空"))
+        if not re.fullmatch(r"\d{6,10}", hs):
+            bad.append(f"{r['JAN']}: " + t("HS が 6〜10 桁の数字でない") + f"（{hs or '-'}）")
+        if not re.fullmatch(r"[A-Z]{2}", cc):
+            bad.append(f"{r['JAN']}: " + t("原産国が 2 文字コードでない") + f"（{cc or '-'}）")
+        if not wg or pd.isna(wg) or wg <= 0:
+            bad.append(f"{r['JAN']}: " + t("重量が空"))
+    if bad:
+        st.error(t("このままでは PDF を出せない：") + "\n\n" + "\n\n".join("· " + b for b in bad))
+
+    new_lines = []
+    for l, (_, r) in zip(lines, edited.iterrows()):
+        w = r["net_g"]
+        new_lines.append(type(l)(description=str(r["desc"] or "").strip(), units=l.units,
+                                 net_weight_kg=round(float(w) / 1000, 3) if w and not pd.isna(w) else 0.0,
+                                 hs_code=str(r["HS"] or "").strip(),
+                                 origin=str(r["origin"] or "").strip().upper(),
+                                 unit_value=l.unit_value))
+    doc = so.to_ci_doc(order, new_lines, awb=awb.strip(), total_packages=int(pkgs),
+                       total_gross_kg=float(gross) or None)
+
+    st.write(" / ".join(x for x in (
+        doc.consignee_name, *doc.consignee_addr, doc.consignee_city,
+        doc.consignee_country, doc.consignee_tel) if x))
+    c1, c2, c3 = st.columns(3)
+    c1.metric(t("ユニット数合計"), f"{doc.total_units:.0f}")
+    c2.metric(t("正味重量合計 kg"), f"{doc.total_net_kg:.2f}")
+    c3.metric(t("インボイス合計"), f"{doc.invoice_total:.2f} {order.get('currencyCode', '')}")
+
+    save = st.checkbox(t("直した値を PG にも保存する（斑马に値がある項目は斑马が優先）"), value=True)
+    if st.button(t("PDF を作る"), type="primary", disabled=bool(bad)):
+        if save:
+            changed = []
+            for (_, b), (_, e) in zip(base.iterrows(), edited.iterrows()):
+                row = {"jan": e["JAN"]}
+                if str(e["desc"]).strip() != str(b["desc"]).strip():
+                    row["customs_name_en"] = str(e["desc"]).strip()
+                if str(e["HS"]).strip() != str(b["HS"]).strip():
+                    row["hs_code"] = str(e["HS"]).strip()
+                if str(e["origin"]).strip().upper() != str(b["origin"]).strip().upper():
+                    row["origin_country"] = str(e["origin"]).strip().upper()
+                if e["net_g"] != b["net_g"] and not pd.isna(e["net_g"]):
+                    row["net_weight_g"] = float(e["net_g"])
+                if len(row) > 1 and row["jan"]:
+                    changed.append(row)
+            if changed:
+                from shared.db import get_connection
+                conn = get_connection()
+                try:
+                    n = so.save_manual(conn, changed)
+                finally:
+                    conn.close()
+                st.success(t("PG に保存：") + f"{n} " + t("件"))
+        st.session_state["ci_pdf"] = build(doc)
+        st.session_state["ci_pdf_src"] = repr(doc)
+
+    # 生成後に明細・AWB・重量を直したら古い PDF は出さない（監査 M4 2026-11-17：直す前の PDF がそのまま落とせた）
+    if st.session_state.get("ci_pdf") and st.session_state.get("ci_pdf_src") != repr(doc):
+        st.warning(t("⚠️ 内容を直しました。もう一度「PDF を作る」を押してください（前の PDF は隠しています）"))
+    elif st.session_state.get("ci_pdf"):
+        st.download_button(
+            t("PDF をダウンロード"), data=st.session_state["ci_pdf"],
+            file_name=f"CI_{so.normalize_order_no(ci['no']).lstrip('#')}.pdf",
+            mime="application/pdf", type="primary")
