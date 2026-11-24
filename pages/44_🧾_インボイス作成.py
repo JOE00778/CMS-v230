@@ -201,3 +201,22 @@ elif st.session_state.get("ci_pdf"):
         t("PDF をダウンロード"), data=st.session_state["ci_pdf"],
         file_name=f"CI_{so.normalize_order_no(ci['no']).lstrip('#')}.pdf",
         mime="application/pdf", type="primary")
+
+# === TSCA Certification（Boss 2026-11-24：FedEx から求められたら出す。全行掲載・既定 Negative・署名 XU YUE）===
+st.divider()
+st.subheader(t("TSCA 証明書（FedEx 用）"))
+from datetime import date  # noqa: E402
+from shared import tsca_cert  # noqa: E402
+tc1, tc2 = st.columns(2)
+tsca_date = tc1.date_input(t("日付"), value=date.today(), key="tsca_date")
+tsca_kind = tc2.radio(t("証明の種類"), ["Negative", "Positive"], horizontal=True, key="tsca_kind",
+                      help=t("Negative = 全商品が TSCA 対象外。Positive = TSCA 対象品があり、規則に適合"))
+tsca_items = [tsca_cert.item_text(tt, l.units, j)
+              for j, l, tt in zip(jans, lines, ci["titles"]) if l.units]
+if not awb.strip():
+    st.caption(t("Air Waybill No. が空のまま（上の欄に入れると証明書にも入る）"))
+st.download_button(
+    t("TSCA 証明書をダウンロード"),
+    data=tsca_cert.build(tsca_date, awb.strip(), tsca_items, negative=tsca_kind == "Negative"),
+    file_name=f"TSCA_{awb.strip() or so.normalize_order_no(ci['no']).lstrip('#')}.pdf",
+    mime="application/pdf")

@@ -2637,6 +2637,11 @@ TRANSLATIONS_ZH: dict[str, str] = {
     'PDF を作る': '生成 PDF',
     'PG に保存：': '已保存到 PG：',
     'PDF をダウンロード': '下载 PDF',
+    'TSCA 証明書（FedEx 用）': 'TSCA 证明书（FedEx 用）',
+    '証明の種類': '证明类型',
+    'Negative = 全商品が TSCA 対象外。Positive = TSCA 対象品があり、規則に適合': 'Negative = 全部商品不属于 TSCA 管辖；Positive = 含 TSCA 管辖品且符合规则',
+    'Air Waybill No. が空のまま（上の欄に入れると証明書にも入る）': 'Air Waybill No. 为空（在上方填写后会同时写入证明书）',
+    'TSCA 証明書をダウンロード': '下载 TSCA 证明书',
     # === page 13/25/26/27 UI 言語補完（2026-05-21）===
     # --- Page 13 改廃確認 (日文 key → 中文) ---
     "JAN コード": "JAN 码",
