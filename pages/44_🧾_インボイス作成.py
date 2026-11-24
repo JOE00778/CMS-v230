@@ -33,7 +33,7 @@ lang_selector()
 from shared import shopify_order as so  # noqa: E402
 from shared.invoice_ci import build  # noqa: E402
 
-st.title(t("🧾 インボイス作成"))
+st.title(t("🧾 通関書類作成"))
 st.caption(t("Shopify の注文番号 → コマーシャル・インボイス PDF（斑马は経由しない）"))
 
 col_a, col_b, col_c, col_d = st.columns([2, 2, 1, 1])
