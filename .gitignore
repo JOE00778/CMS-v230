@@ -44,3 +44,4 @@ deploy/n8n/stock_monitor/cookies/*.json
 # 本地/生产 env（凭证 · 绝不入库）
 .env
 deploy/windows/.env
+shared/assets/signature_xuyue.png  # Boss 手写签名·不进 git·单独 scp 到元川
