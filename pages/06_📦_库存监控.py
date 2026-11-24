@@ -56,7 +56,7 @@ def _render_composition(tab1, tab2, tab4):
     st.caption(t("库存快照：{d1} · 弁天 bin 快照：{d2}").format(
         d1=str(inv_date), d2=str(bin_date) if bin_date else t("（暂无）")))
 
-    # 弁天 × item × bin level → 加 category 列（item × cost_estimate → 金额）
+    # 弁天 × item × bin level → 加 category 列（item × average_cost 平均原価 → 金额 · Boss 2026-11-24 NST と同口径）
     # 弁天倉庫のみ（Boss 2026-11-04「只用大分弁天库存」· JD / CGF は表示しない）
     # 弁天: LEFT JOIN nst.bin_category 按 bool 标识判定（优先级 返品 > 不良品 > 输出中国 > 输出）
     _SQL = """
@@ -78,7 +78,7 @@ def _render_composition(tab1, tab2, tab4):
         inv_all.item_internal_id,
         im.item_code, im.jan, im.display_name, im.maker, im.item_rank,
         inv_all.qty_on_hand,
-        (inv_all.qty_on_hand * COALESCE(im.cost_estimate, 0))::NUMERIC(16,2) AS amt
+        (inv_all.qty_on_hand * COALESCE(im.average_cost, 0))::NUMERIC(16,2) AS amt
     FROM inv_all
     LEFT JOIN nst.item_master_raw im ON im.internal_id = inv_all.item_internal_id
     LEFT JOIN nst.bin_category bc     ON bc.bin_number  = inv_all.bin_number
@@ -124,6 +124,42 @@ def _render_composition(tab1, tab2, tab4):
 
     st.caption(t("库存合計 ¥{a:,.0f} · 总数量 {q:,.0f}").format(a=tot_amt, q=tot_qty))
 
+    # ----- 总库存金额：全仓库 × 輸出事業 × 平均原価（= NST「FB_在庫評価」輸出事業行 · Boss 2026-11-24）-----
+    st.subheader(t("🏭 总库存金额（全仓库 · 输出事业）"))
+    try:
+        loc = _df("""
+            SELECT l.snapshot_date AS d, l.warehouse,
+                   SUM(l.qty_on_hand)::NUMERIC(16,2) AS qty,
+                   SUM(l.qty_on_hand * COALESCE(im.average_cost, 0))::NUMERIC(16,2) AS amt
+            FROM nst.inventory_location_snapshot l
+            LEFT JOIN nst.item_master_raw im ON im.internal_id = l.item_internal_id
+            WHERE l.snapshot_date = (SELECT max(snapshot_date) FROM nst.inventory_location_snapshot)
+              AND l.department = '輸出事業'
+            GROUP BY 1, 2 ORDER BY 4 DESC""")
+    except Exception as e:                                        # 表未作成（初回 inventory ジョブ前）
+        loc = pd.DataFrame()
+        st.caption(t("暂无全仓库快照") + f"（{e}）")
+    if not loc.empty:
+        loc["qty"] = pd.to_numeric(loc["qty"]).astype(float)
+        loc["amt"] = pd.to_numeric(loc["amt"]).astype(float)
+        _main = ["弁天倉庫", "CGF倉庫（COUPANG）", "Amazon\u3000USA倉庫"]
+        _wh_label = {"弁天倉庫": t("弁天仓库"), "CGF倉庫（COUPANG）": t("CGF仓库（Coupang）"),
+                     "Amazon\u3000USA倉庫": t("Amazon US 仓库")}
+        mc = st.columns(4)
+        mc[0].metric(t("总库存金额"), f"¥{loc['amt'].sum():,.0f}",
+                     delta=f"{loc['qty'].sum():,.0f} {t('数量')}", delta_color="off")
+        for col, w in zip(mc[1:], _main):
+            r = loc[loc["warehouse"] == w]
+            col.metric(_wh_label[w], f"¥{r['amt'].sum():,.0f}",
+                       delta=f"{r['qty'].sum():,.0f} {t('数量')}", delta_color="off")
+        _other = loc[~loc["warehouse"].isin(_main)]
+        if not _other.empty:
+            st.caption(t("其他仓库") + "：" + " · ".join(
+                f"{w} ¥{a:,.0f}（{q:,.0f}）" for w, a, q in
+                zip(_other["warehouse"], _other["amt"], _other["qty"])))
+        st.caption(t("NST 全仓库 · 部门＝输出事业 · 含停用商品 · 金额＝数量 × 平均原价（与 NST「FB_在庫評価」一致）· 快照 {d}")
+                   .format(d=str(loc["d"].iloc[0])))
+
     import altair as alt
 
     def _rank_label(d: pd.DataFrame) -> pd.Series:
@@ -145,7 +181,8 @@ def _render_composition(tab1, tab2, tab4):
     #   JD のみ＝返品/不良品/输出中国 の 3 線は 2026-05 より前に点が無い。
     # Boss 2026-11-20「月次推移改为出口整体库存金额」：京东撤仓後も過去月は JD に在庫があったので
     #   JD + 弁天 + CGF の合算に戻す（11-04 に弁天のみへ絞ったら 8 月以前が消えた）。用途別ラジオは廃止し合計 1 本。
-    # 金額 = その月の数量 × **現在の** cost_estimate。原価は履歴を持たないので、
+    # Boss 2026-11-24：金額は平均原価・2026-11 以降は全倉庫スナップショット（本社/サンプル/Amazon US 含む）。
+    # 金額 = その月の数量 × **現在の** average_cost。原価は履歴を持たないので、
     #   線は数量の増減だけを表す（原価改定のノイズが混ざらない）。ランクも現在値。
     st.markdown("##### " + t("📈 月次推移（输出整体库存金额 · 近 12 个月）"))
     _TREND_SQL = """
@@ -161,18 +198,29 @@ def _render_composition(tab1, tab2, tab4):
         FROM nst.inventory_snapshot, win
         WHERE snapshot_date >= win.d0 AND warehouse NOT IN ('JD-物流-千葉', '弁天倉庫')
         GROUP BY 1, 2
+    ), loc_me AS (
+        -- 全倉庫スナップショット（2026-11-24 開始）がある月はそれだけを使う（NST 在庫評価と同範囲）
+        SELECT to_char(snapshot_date,'YYYY-MM') AS ym, max(snapshot_date) AS d
+        FROM nst.inventory_location_snapshot, win WHERE snapshot_date >= win.d0 GROUP BY 1
     ), inv_all AS (
         SELECT a.year_month AS ym, NULL::DATE AS as_of, 'JD-物流-千葉' AS warehouse,
                a.item_internal_id, a.closing_qty AS qty_on_hand, NULL::TEXT AS bin_number
         FROM nst.inventory_activity_monthly a, win
         WHERE a.year_month >= win.ym0 AND a.location = 'JD-物流-千葉'
+          AND a.year_month NOT IN (SELECT ym FROM loc_me)
         UNION ALL
         SELECT m.ym, m.d, '弁天倉庫', b.item_internal_id, b.qty_on_hand, b.bin_number
         FROM nst.inventory_bin_snapshot b JOIN bin_me m ON m.d = b.snapshot_date
+        WHERE m.ym NOT IN (SELECT ym FROM loc_me)
         UNION ALL
         SELECT m.ym, m.d, s.warehouse, s.item_internal_id, s.qty_on_hand, NULL::TEXT
         FROM nst.inventory_snapshot s
         JOIN snap_me m ON m.d = s.snapshot_date AND m.warehouse = s.warehouse
+        WHERE m.ym NOT IN (SELECT ym FROM loc_me)
+        UNION ALL
+        SELECT m.ym, m.d, l.warehouse, l.item_internal_id, l.qty_on_hand, NULL::TEXT
+        FROM nst.inventory_location_snapshot l JOIN loc_me m ON m.d = l.snapshot_date
+        WHERE l.department = '輸出事業'
     )
     SELECT
         inv_all.ym, max(inv_all.as_of) AS as_of, inv_all.warehouse,
@@ -185,7 +233,7 @@ def _render_composition(tab1, tab2, tab4):
         END AS category,
         im.item_rank,
         SUM(inv_all.qty_on_hand)::NUMERIC(16,2) AS qty,
-        SUM(inv_all.qty_on_hand * COALESCE(im.cost_estimate, 0))::NUMERIC(16,2) AS amt
+        SUM(inv_all.qty_on_hand * COALESCE(im.average_cost, 0))::NUMERIC(16,2) AS amt
     FROM inv_all
     LEFT JOIN nst.item_master_raw im ON im.internal_id = inv_all.item_internal_id
     LEFT JOIN nst.bin_category bc     ON bc.bin_number  = inv_all.bin_number
@@ -246,8 +294,8 @@ def _render_composition(tab1, tab2, tab4):
             st.caption(t("最新月 ¥{a:,.0f} · 环比 {s}¥{d:,.0f}（{p:+.1f}%）· 期间内 最小 ¥{lo:,.0f} / 最大 ¥{hi:,.0f}").format(
                 a=_last, s="+" if _diff >= 0 else "-", d=abs(_diff), p=_pct,
                 lo=float(t_cat["amt"].min()), hi=float(t_cat["amt"].max())))
-        st.caption(t("含京东仓（月次入出库的月末在库 · 2025-12 起）+ 弁天（bin 快照月末 · 2026-05 起）+ CGF（日次快照月末）· "
-                     "当月为进行中月份 · 金额按当前定义原价换算"))
+        st.caption(t("2026-11 起为 NST 全仓库（输出事业）月末快照；之前为京东仓（月次入出库的月末在库）+ 弁天（bin 快照月末）+ CGF（日次快照月末）· "
+                     "当月为进行中月份 · 金额按当前平均原价换算"))
 
     st.divider()
 

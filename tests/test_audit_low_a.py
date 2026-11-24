@@ -29,9 +29,9 @@ def test_l23_non_ascii_password_is_mismatch_not_typeerror():
 def _sqlite_with_nst(*, sales_ok: bool = True):
     conn = sqlite3.connect(":memory:")
     conn.execute("ATTACH ':memory:' AS nst")
-    conn.execute("CREATE TABLE nst.item_master_raw (internal_id INTEGER, jan TEXT, cost_estimate REAL)")
-    conn.execute("CREATE TABLE nst.inventory_snapshot "
-                 "(item_internal_id INTEGER, qty_on_hand REAL, snapshot_date TEXT, warehouse TEXT)")
+    conn.execute("CREATE TABLE nst.item_master_raw (internal_id INTEGER, jan TEXT, average_cost REAL)")
+    conn.execute("CREATE TABLE nst.inventory_location_snapshot "
+                 "(item_internal_id INTEGER, qty_on_hand REAL, snapshot_date TEXT, warehouse TEXT, department TEXT)")
     if sales_ok:
         conn.execute("CREATE TABLE nst.sales_daily (sale_date TEXT, revenue REAL, gross_profit REAL)")
     conn.create_function("to_char", 2, lambda d, fmt: (d or "")[:7])

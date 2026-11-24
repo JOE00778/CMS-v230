@@ -148,14 +148,14 @@ st.markdown("##### " + t("业务大盘"))
 sku_total = _safe_scalar(
     "SELECT COUNT(*) FROM nst.item_master_raw WHERE jan IS NOT NULL", default=0)
 
-# 2) 在库金额（nst.inventory_snapshot 手持数 × 定義原価 · 弁天倉庫最新快照 · 对齐库存监控页06 合计 · Boss 2026-11-04 京东→弁天）
+# 2) 在库金额（全仓库 × 輸出事業 × 平均原価 · 对齐库存监控页06「总库存金额」与 NST FB_在庫評価 · Boss 2026-11-24）
 inv_amount = _safe_scalar(
     """
-    SELECT COALESCE(SUM(inv.qty_on_hand * COALESCE(im.cost_estimate, 0)), 0)
-    FROM nst.inventory_snapshot inv
-    JOIN nst.item_master_raw im ON im.internal_id = inv.item_internal_id
-    WHERE inv.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_snapshot)
-      AND inv.warehouse = '弁天倉庫'
+    SELECT COALESCE(SUM(l.qty_on_hand * COALESCE(im.average_cost, 0)), 0)
+    FROM nst.inventory_location_snapshot l
+    JOIN nst.item_master_raw im ON im.internal_id = l.item_internal_id
+    WHERE l.snapshot_date = (SELECT MAX(snapshot_date) FROM nst.inventory_location_snapshot)
+      AND l.department = '輸出事業'
     """,
     default=0,
 )
