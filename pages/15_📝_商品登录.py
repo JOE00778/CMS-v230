@@ -465,9 +465,16 @@ def _render_result(res: dict) -> None:
 
     st.divider()
     st.caption(t("確認が終わったら押してください。チェックありなら斑马へ API で登録し、取れた斑马 SKUID を入れて NST 取込 CSV を作ります（斑马に既にある SKU は登録せず SKUID だけ取ります）。チェックなしなら NST CSV だけ"))
-    to_banma = st.checkbox(t("斑马にも登録する（斑马 SKUID を NST CSV に入れる・商品ランク = NEW）"), value=True,
-                           key="page15_to_banma",
-                           help=t("外すと NST 取込 CSV だけ作ります。斑马には登録せず、SKUID・商品ランクは空のまま"))
+    # 用途（Boss 2026-11-25）：中国用 = 斑马に出さない・商品ランク空。中国以外用 = これまでどおり（下のチェックで決める）
+    usage = st.radio(t("用途"), ["non_cn", "cn"], horizontal=True, key="page15_usage",
+                     format_func=lambda v: t("中国以外用") if v == "non_cn" else t("中国用"))
+    if usage == "cn":
+        to_banma = False
+        st.caption(t("中国用：斑马には登録しません。商品ランクは空のまま、NST 取込 CSV だけ作ります"))
+    else:
+        to_banma = st.checkbox(t("斑马にも登録する（斑马 SKUID を NST CSV に入れる・商品ランク = NEW）"), value=True,
+                               key="page15_to_banma",
+                               help=t("外すと NST 取込 CSV だけ作ります。斑马には登録せず、SKUID・商品ランクは空のまま"))
     if st.button(t("📦 生成（NST.csv）＋ 斑马に登録") if to_banma else t("📦 生成（NST.csv のみ）"),
                  type="primary", key="page15_gen"):
         _generate(edited, res, to_banma=to_banma)

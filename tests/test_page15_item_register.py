@@ -293,6 +293,43 @@ def test_page15_unchecked_banma_makes_nst_csv_only(page15_offline):
     assert rec["SKUID"] == "" and rec["商品ランク"] == "" and rec["パッケージ重量(g)"] == "80"
 
 
+def test_page15_china_usage_skips_banma_rank_blank(page15_offline):
+    """用途=中国用 → 斑马に触らず・商品ランク空・斑马チェックは出さない（Boss 2026-11-25）。"""
+    import csv
+    import io
+    import zipfile
+
+    from shared import jan_web
+    st.cache_data.clear()
+    choices = NC.Choices(suppliers=("0001 ベストアンサ株式会社",), middle_by_large=dict(NC.MIDDLE_BY_LARGE))
+    up = mock.MagicMock()
+    up.getvalue.return_value = _filled_upload(choices)
+    conn = mock.MagicMock()
+    conn.__enter__.return_value = conn
+    with mock.patch("shared.db.get_connection", return_value=conn), \
+            mock.patch("streamlit.file_uploader", return_value=up), \
+            mock.patch.object(NC, "load_choices", return_value=choices), \
+            mock.patch.object(NC, "load_prefix_makers", return_value={}), \
+            mock.patch.object(NC, "existing_jans", return_value=(set(), [])), \
+            mock.patch.object(NC, "existing_item_codes", return_value=(set(), [])), \
+            mock.patch.object(jan_web, "fetch_meta",
+                              return_value=jan_web.JanMeta("4901234567894", "テスト クッキー 100g", "テスト製菓", "", "ok")), \
+            mock.patch.object(jan_web, "INTERVAL", 0):
+        at = AppTest.from_file(str(PAGE), default_timeout=60)
+        at.session_state["__auth_ok"] = True
+        at.run()
+        at.button(key="page15_run").click().run()
+        assert at.radio(key="page15_usage").value == "non_cn"         # 既定 = 中国以外用
+        at.radio(key="page15_usage").set_value("cn").run()
+        assert not any(c.key == "page15_to_banma" for c in at.checkbox)
+        at.button(key="page15_gen").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert page15_offline.call_count == 0                            # 斑马 API は呼ばない
+    assert "page15_bm_result" not in at.session_state and at.session_state["page15_skuid_blank"] == 0
+    rec = next(csv.DictReader(io.StringIO(at.session_state["page15_csv_bytes"].decode("utf-8-sig"))))
+    assert rec["SKUID"] == "" and rec["商品ランク"] == "" and rec["パッケージ重量(g)"] == "80"
+
+
 def test_page15_missing_weight_can_be_typed_in_cms(page15_offline):
     """重量がネットで取れない品 → 確認画面の小表に入れるだけで生成できる（再アップロード不要・Boss 2026-11-10）。"""
     import csv
